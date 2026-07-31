@@ -50,6 +50,7 @@ DATA_DIR = Path(os.environ.get("PAPER_HARNESS_DATA", BASE_DIR / "data"))
 PDF_DIR = DATA_DIR / "pdfs"
 TEXT_DIR = DATA_DIR / "text"
 SUMMARY_DIR = DATA_DIR / "summaries"
+IMAGE_DIR = DATA_DIR / "images"
 DB_PATH = DATA_DIR / "papers.db"
 
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -81,7 +82,7 @@ _last_arxiv_call = 0.0
 
 
 def _init_storage() -> None:
-    for d in (PDF_DIR, TEXT_DIR, SUMMARY_DIR):
+    for d in (PDF_DIR, TEXT_DIR, SUMMARY_DIR, IMAGE_DIR):
         d.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
         con.execute(
@@ -105,6 +106,18 @@ def _init_storage() -> None:
         existing = {row[1] for row in con.execute("PRAGMA table_info(papers)")}
         if "extract_method" not in existing:
             con.execute("ALTER TABLE papers ADD COLUMN extract_method TEXT")
+
+        # ⑥ 사람 판단 상태. review_app.py 가 쓴다 — 이 서버는 판단하지 않고
+        # 값을 저장·조회만 한다. 기본값 'pending' — 저장된 요약은 검토 전이 기본.
+        existing_s = {row[1] for row in con.execute("PRAGMA table_info(summaries)")}
+        if "review_status" not in existing_s:
+            con.execute(
+                "ALTER TABLE summaries ADD COLUMN review_status TEXT DEFAULT 'pending'"
+            )
+        if "review_note" not in existing_s:
+            con.execute("ALTER TABLE summaries ADD COLUMN review_note TEXT")
+        if "reviewed_at" not in existing_s:
+            con.execute("ALTER TABLE summaries ADD COLUMN reviewed_at TEXT")
 
 
 def _db() -> sqlite3.Connection:
@@ -224,6 +237,142 @@ def _text_from_pdf(path: Path) -> str:
 
     reader = PdfReader(str(path))
     return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+# 최소 이미지 크기(바이트) — 두 경로가 기준이 다르다.
+# PDF: <figure> 같은 구조적 단서가 없어 크기만으로 걸러야 한다. 실측(2601.12538,
+# 복수 기관 공저 논문): 3KB 기준으로는 92개가 뽑혔는데 다수가 로고·아이콘 조각
+# 이었다. 임계값을 크게 올려야 잡음이 줄어든다.
+# HTML: 이미 <figure> 태그로 걸러진 뒤라 크기 기준은 보조 수단일 뿐이다. 낮게
+# 잡아야 한다 — 실측(1706.03762)에서 진짜 Figure 2가 26KB로, PDF 기준(5만)을
+# 그대로 쓰면 정상적인 그림까지 잘려나간다.
+_MIN_IMAGE_BYTES_PDF = 50_000
+_MIN_IMAGE_BYTES_HTML = 5_000
+
+# 사람 판단(review_app.py)이 표·그림을 눈으로 확인할 수 있게 이미지를 추출한다.
+# 정확히 "Figure 4" 라고 매칭하는 건 못 한다 — PyMuPDF(AGPL)를 의도적으로 배제한
+# 상태에서 pypdf 만으로는 PDF 레이아웃(캡션-이미지 연결)까지 읽어내지 못한다.
+# 그래서 순서대로 뽑아 "그림 N" 으로 번호만 매긴다 — 갤러리를 보며 사람이 논문의
+# Figure/Table 번호와 눈으로 맞춰야 한다. HTML 원문은 figcaption/alt 가 있으면
+# 그걸 라벨로 쓴다 (품질이 더 좋다).
+# 표(Table)는 대부분 PDF 안에서 텍스트·벡터로 그려져 있어 이 방식으로는 거의
+# 못 뽑는다 — 실제로 뽑히는 건 대부분 Figure(사진·차트) 쪽이다.
+
+
+def _extract_images_from_html(html: str, base_url: str) -> list[dict]:
+    """반환: [{"url": 절대경로, "label": 캡션 또는 alt 또는 ""}]"""
+    from urllib.parse import urljoin
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(_HTML_DROP):
+        tag.decompose()
+    root = soup.find("article") or soup.body or soup
+
+    items: list[dict] = []
+    for img in root.find_all("img"):
+        src = img.get("src")
+        if not src:
+            continue
+        # <figure> 로 감싸지 않은 이미지는 저자 소속기관 로고·배너·아이콘일
+        # 가능성이 높다 — 논문 Figure 는 LaTeXML 변환 HTML 에서 거의 항상
+        # <figure><figcaption> 구조로 나온다. 이 기준 하나로 로고를 걸러낸다.
+        fig = img.find_parent("figure")
+        if fig is None:
+            continue
+        cap = fig.find("figcaption")
+        label = cap.get_text(" ", strip=True) if cap is not None else (img.get("alt") or "").strip()
+        items.append({"url": urljoin(base_url, src), "label": label})
+    return items
+
+
+async def _download_html_images(
+    client: httpx.AsyncClient, items: list[dict], out_dir: Path
+) -> None:
+    labels: dict[str, str] = {}
+    i = 0
+    for item in items:
+        try:
+            resp = await client.get(item["url"], timeout=30)
+            resp.raise_for_status()
+        except Exception:  # noqa: BLE001
+            continue
+        if len(resp.content) < _MIN_IMAGE_BYTES_HTML:
+            continue
+        i += 1
+        ext = Path(item["url"]).suffix or ".png"
+        if len(ext) > 5:  # 쿼리 스트링이 확장자로 잘못 붙는 경우 방지
+            ext = ".png"
+        fname = f"{i:03d}{ext}"
+        (out_dir / fname).write_bytes(resp.content)
+        if item["label"]:
+            labels[fname] = item["label"]
+    if labels:
+        (out_dir / "_labels.json").write_text(
+            json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
+def _save_pdf_images(pdf_path: Path, out_dir: Path) -> None:
+    from pypdf import PdfReader  # 지연 임포트
+
+    reader = PdfReader(str(pdf_path))
+    i = 0
+    for page_idx, page in enumerate(reader.pages):
+        # 1페이지(표지)는 건너뛴다 — 저자 소속기관 로고가 각각 별도 이미지로
+        # 박혀 있는 경우가 흔하다(실측: 공동연구 논문에서 대학·기업 로고 6~8개가
+        # Figure 로 오인돼 뽑힘). HTML 의 <figure> 태그 같은 구조적 단서가 PDF엔
+        # 없어서, "본문 Figure는 표지에 거의 안 나온다"는 경험칙으로 대신한다.
+        # 완벽하지 않다 — 표지에 진짜 그래픽 초록이 있는 논문은 그것도 같이 빠진다.
+        if page_idx == 0:
+            continue
+        for img in page.images:
+            if len(img.data) < _MIN_IMAGE_BYTES_PDF:
+                continue
+            i += 1
+            ext = Path(img.name).suffix or ".png"
+            (out_dir / f"{i:03d}{ext}").write_bytes(img.data)
+
+
+async def ensure_images_extracted(arxiv_id: str) -> Path:
+    """review_app.py 전용 — 이미지 폴더가 비어 있으면 지금 추출한다 (지연·멱등).
+
+    server.py 는 판단하지 않는다는 원칙과는 무관한 순수 데이터 준비 작업이다.
+    PDF 는 이미 로컬에 있는 파일을 읽을 뿐이라 네트워크가 안 든다. HTML 은
+    본문 텍스트만 저장해뒀지 원본 HTML은 안 남겨서, 이미지가 필요해지는
+    시점(리뷰 화면을 열 때)에 그때 한 번 다시 받는다.
+    """
+    arxiv_id = _clean_arxiv_id(arxiv_id)
+    out_dir = IMAGE_DIR / arxiv_id.replace("/", "_")
+    if out_dir.exists() and any(out_dir.iterdir()):
+        return out_dir
+
+    with _db() as con:
+        row = con.execute(
+            "SELECT extract_method, pdf_path FROM papers WHERE arxiv_id=?", (arxiv_id,)
+        ).fetchone()
+    if not row:
+        return out_dir
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if row["extract_method"] == "pdf" and row["pdf_path"]:
+            _save_pdf_images(Path(row["pdf_path"]), out_dir)
+        elif row["extract_method"] == "html":
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                resp = await client.get(ARXIV_HTML.format(arxiv_id=arxiv_id), timeout=60)
+                resp.raise_for_status()
+                # 상대경로(예: "1706.03762v7/Figures/x.png")가 이미 버전 붙은 id를
+                # 포함하므로, base 에 arxiv_id 를 또 붙이면 경로가 중복돼 404 난다.
+                # 실제 응답 URL(리다이렉트 반영)을 그대로 base 로 쓴다.
+                items = _extract_images_from_html(resp.text, str(resp.url))
+                await _download_html_images(client, items, out_dir)
+    except Exception:  # noqa: BLE001
+        # 이미지 추출 실패는 요약·검증 파이프라인과 무관하다 — 조용히 포기한다.
+        # (갤러리가 비어 보이는 것으로 실패가 드러나므로 사람이 알아챌 수 있다.)
+        pass
+    return out_dir
 
 
 def _error(msg: str, hint: str = "") -> str:
@@ -621,14 +770,36 @@ async def save_summary(params: SaveSummaryInput) -> str:
     out_path = SUMMARY_DIR / f"{arxiv_id.replace('/', '_')}.md"
     out_path.write_text(params.markdown, encoding="utf-8")
     with _db() as con:
+        # 컬럼명을 명시한다 — summaries 는 ⑥ 사람 판단용 컬럼(review_*)이 추가돼
+        # 위치 기반 INSERT 로는 값 개수가 안 맞는다. 요약을 새로 저장(재생성 포함)
+        # 하면 이전 검토 상태는 의미가 없어지므로 review_status 를 'pending' 으로
+        # 되돌린다 — 새 버전은 다시 사람이 봐야 한다.
         con.execute(
-            "INSERT OR REPLACE INTO summaries VALUES (?,?,?,?,?)",
+            """INSERT OR REPLACE INTO summaries
+               (arxiv_id, path, numbers_total, numbers_matched, created_at,
+                review_status, review_note, reviewed_at)
+               VALUES (?,?,?,?,?,'pending',NULL,NULL)""",
             (arxiv_id, str(out_path), report.total, report.matched, _now()),
         )
     return json.dumps(
         {"saved_path": str(out_path), "verification": report.to_dict()},
         ensure_ascii=False, indent=2,
     )
+
+
+def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:
+    """⑥ 사람 판단 결과를 기록한다. MCP 도구가 아니다 — 이 서버는 판단하지
+    않는다는 원칙대로, 판단은 review_app.py(사람)가 하고 이 함수는 그 결과를
+    저장만 한다. status: 'approved' | 'rejected' | 'pending'.
+    """
+    if status not in ("approved", "rejected", "pending"):
+        raise ValueError(f"알 수 없는 review_status: {status}")
+    arxiv_id = _clean_arxiv_id(arxiv_id)
+    with _db() as con:
+        con.execute(
+            "UPDATE summaries SET review_status=?, review_note=?, reviewed_at=? WHERE arxiv_id=?",
+            (status, note or None, _now(), arxiv_id),
+        )
 
 
 @mcp.tool(
