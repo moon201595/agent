@@ -7,3 +7,4 @@ __pycache__/
 # 논문 PDF·추출 텍스트·요약·SQLite 인덱스.
 # arXiv 전문은 제3자 재배포 권한이 없으므로 커밋하지 않는다.
 data/
+.env
