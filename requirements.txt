@@ -2,3 +2,4 @@ mcp>=2.0.0          # server.py 는 MCPServer(구 FastMCP) API 를 쓴다
 httpx>=0.27.0
 pypdf>=5.0.0
 beautifulsoup4>=4.12.0   # ③ arXiv HTML 우선 경로
+streamlit>=1.60.0        # ⑥ 사람 판단 UI (review_app.py). Apache-2.0
