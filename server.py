@@ -43,6 +43,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from selection import dedupe_and_rank
 from verify import verify_numbers
 
+# ---------------------------------------------------------------- .env 로드
+
+# 이 파일은 MCP 서버로 `claude`(별도 프로세스)가 띄우기 때문에, 터미널에서
+# export 한 환경변수를 물려받지 못하는 경우가 많다. summarize_engine.py 와
+# 같은 방식으로 .env 를 직접 읽어 os.environ 에 채운다 — 새 의존성 없이
+# 표준 라이브러리만 쓴다. 이미 설정된 환경변수는 덮어쓰지 않는다.
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+if _ENV_PATH.exists():
+    for _line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _v = _line.split("=", 1)
+        os.environ.setdefault(_k.strip(), _v.strip())
+
 # ---------------------------------------------------------------- 상수/경로
 
 BASE_DIR = Path(__file__).resolve().parent
