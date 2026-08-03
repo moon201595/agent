@@ -70,6 +70,33 @@ def _clean_url(url: str) -> str:
     return url.rstrip(".,;:)")
 
 
+def _drop_prefix_duplicates(candidates: list[RepoCandidate]) -> list[RepoCandidate]:
+    """줄바꿈 제거 과정에서 뒤 문장이 URL 끝에 그대로 붙는 경우가 있다
+    (예: "...tspulse-r1." + "1 INTRODUCTION" → "tspulse-r1.1", 또는
+    ".AcknowledgementsWe" 처럼 구두점·대문자로 시작하는 군더더기).
+
+    주의: 단순 문자열 접두사만 보면 "ogx"와 "ogx-k8s-operator"처럼 **같은
+    조직의 서로 다른 진짜 저장소**까지 중복으로 오판해 지워버린다 (실측으로
+    실제 발생 — 처음 짠 버전이 이 버그로 ogx-k8s-operator 를 삼켰다). 그래서
+    "-"나 "/"로 시작하는 추가 부분은 정당한 별개 경로로 보고 남긴다. 군더더기는
+    구분자 없이 글자/숫자가 바로 붙거나 "."로 시작하는 경우로 한정한다.
+    """
+    urls = sorted({c.url for c in candidates}, key=len)
+    keep: set[str] = set()
+    for url in urls:
+        is_garbage_dup = False
+        for shorter in keep:
+            if url == shorter or not url.startswith(shorter):
+                continue
+            extra = url[len(shorter):]
+            if not extra.startswith(("-", "/")):
+                is_garbage_dup = True
+                break
+        if not is_garbage_dup:
+            keep.add(url)
+    return [c for c in candidates if c.url in keep]
+
+
 def find_links_in_text(text: str) -> list[RepoCandidate]:
     """원문에서 코드 링크로 보이는 URL을 찾는다. 줄바꿈 제거는 필수 —
     PDF 추출 결과에서 URL이 줄 경계로 끊기는 사례가 실측으로 확인됐다.
@@ -97,7 +124,7 @@ def find_links_in_text(text: str) -> list[RepoCandidate]:
                 context=ctx[-40:],
             )
         )
-    return candidates
+    return _drop_prefix_duplicates(candidates)
 
 
 def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:

@@ -71,11 +71,9 @@ claude mcp list    # paper-harness: ... - ✔ Connected
 
 등록 문법은 버전에 따라 다르므로 확인할 것: https://code.claude.com/docs/en/mcp
 
-Semantic Scholar 는 공용 한도에서 429 가 잦다. 무료 키를 발급해 등록하면 완화된다:
+Semantic Scholar 는 공용 한도에서 429 가 잦다 — **2026-08-01 키 발급·등록 완료**, `.env` 에 `S2_API_KEY=키값` 한 줄 추가하면 된다 (server.py 가 기동 시 자동으로 읽는다. `export` 로 셸에 직접 넣을 필요 없음).
 
-```bash
-export S2_API_KEY=발급받은키
-```
+**주의 — 키가 있어도 공식 한도(초당 1회, 전체 엔드포인트 합산)는 그대로다.** 서버가 이 간격을 자동으로 지키도록 arXiv 와 동일한 패턴(`_throttled_s2_get`)으로 막아뒀다 — 직접 API 를 호출하는 코드를 새로 짤 때는 이 한도를 다시 확인할 것.
 
 ## 사용 흐름
 
@@ -139,7 +137,7 @@ python eval.py --min-ratio 0.9   # 기준 미달 시 종료코드 1
 이 목록은 `docs/PROGRESS.md` §8 이 최신이다 — 이 파일은 갱신이 늦을 수 있으니 날짜 있는 최신 상태는 그쪽을 볼 것. 2026-08-01 기준 남은 것만 추리면:
 
 - ⑦ 코드 재현 — 저장소 후보 탐색(`code_finder.py`: 본문 링크 스캔 + GitHub 검색)은 완료. **Docker 격리 실행(clone→설치→실행, 자율 루프 3회)만 남음.** 유일하게 안 끝난 단계
-- Semantic Scholar 키 발급 신청함(2026-08-01) — 도착하면 `.env` 에 `S2_API_KEY` 추가만 하면 됨 (server.py 가 자동으로 읽음)
+- ~~Semantic Scholar 키 발급~~ — 2026-08-01 완료. 등록·스로틀 적용까지 끝남
 - 평가셋 미구축 — 논문 약 20편을 투입해야 `eval.py` 기준선이 생긴다
 - 처리 시간·요약 정확도 수치 측정 없음 — **발표에서 수치를 만들지 말 것**
 
