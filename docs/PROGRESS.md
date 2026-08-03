@@ -17,7 +17,7 @@
 | | 정체 | 하는 일 |
 | --- | --- | --- |
 | MCP 서버 | `~/paper-harness` (Python) | 도구 8종 제공. **판단하지 않는다** |
-| MCP 클라이언트 | Claude Code | 도구를 언제·어떤 순서로 부를지 판단. ④ 요약 작성 |
+| MCP 클라이언트 | Claude Code | 도구를 언제·어떤 순서로 부를지 판단 |
 
 `for` 루프로 파이프라인을 돌리는 코드가 없다. 검색 → 선별 → 파싱 → 요약 → 검증의 순서는 클라이언트가 판단해 도구를 부르는 것으로 이뤄진다.
 
@@ -25,7 +25,7 @@
 
 ### 이 구조의 한계 (열려 있는 결정)
 
-1. ~~**사람이 Claude Code 를 띄워야 돌아간다.**~~ — ④ 요약 단계는 `batch_summarize.py` 로 해결됨(2026-07-31). Claude Code 없이 `python batch_summarize.py --ids ...` 로 검색부터 저장까지 무인 실행된다. 다만 ⑥⑦⑧ 은 여전히 Claude Code 세션 안에서 사람이 직접 수행하는 구간이라, 전체 파이프라인이 완전 무인은 아니다.
+1. ~~**사람이 Claude Code 를 띄워야 돌아간다.**~~ — ④⑥ 모두 Claude Code 밖에서 해결됨(2026-07-31). ④ 요약은 `batch_summarize.py` 로 검색부터 저장까지 무인 실행되고, ⑥ 사람 판단은 `review_app.py`(Streamlit, 브라우저 UI)로 옮겨져 Claude Code 채팅이 전혀 필요 없다. ⑦(코드 재현)·⑧(축적) 만 미착수라, 전체 파이프라인이 완전 무인은 아니다.
 2. **팀 배포가 안 된다.** 쓰는 사람마다 자기 `.env`(API 키)가 있어야 한다 — 다만 무료 API 키 발급은 상용 API 키보다 진입장벽이 낮다.
 
 무인 실행 자체는 ④ 한정으로 이미 됨. 남은 질문은 ⑥⑦⑧ 까지 포함한 전체 파이프라인을 어디까지 자동화할 것인가다.
@@ -67,7 +67,7 @@
 | ② | `dedupe_and_rank_papers` | ✅ 결정적 규칙, 네트워크 미사용 |
 | ③ | `fetch_paper` | ✅ HTML 우선 → PDF 폴백, 멱등 |
 | ③ | `get_paper_text` | ✅ 분할 열람 |
-| ④ | `batch_summarize.py` (Claude Code 세션 밖 별도 스크립트) | ✅ Gemini(`gemini-flash-latest`) 우선, Groq(`llama-3.3-70b-versatile`) 대체. Claude Code 세션 안에서는 여전히 클라이언트가 직접 작성 |
+| ④ | `batch_summarize.py` / `review_app.py` (Claude Code 밖에서 독립 실행) | ✅ Gemini(`gemini-flash-latest`) 우선, Groq(`llama-3.3-70b-versatile`) 대체. **Claude Code(나 자신)를 요약 엔진으로 쓰는 방안은 폐기됨(2026-07-31)** — 무인 실행·비용 문제로 무료 API 로 전환. §5 "④ 요약 엔진 선정" 참고 |
 | ⑤ | `verify_summary_numbers` | ✅ LLM 미사용 |
 | — | `save_summary` | ✅ 저장 직전 자동 검증, 불일치도 저장은 함 |
 | — | `list_stored_papers` | ✅ |
@@ -264,16 +264,23 @@ pypdf 는 2단 조판과 표를 자주 뭉개고 그게 ⑤ 의 거짓 불일치
 
 ## 7. 사용 흐름
 
+**④ 요약을 Claude Code(나)가 채팅 안에서 직접 작성하는 흐름은 폐기됐다(2026-07-31).** 아래처럼 채팅에서 요약문 작성까지 시키는 방식은 더 이상 표준 경로가 아니다 — 지금은 무료 API(Gemini/Groq)가 요약을 쓰고, Claude Code 는 검색·선별까지만 돕거나 아예 빠진다.
+
+**표준 경로 — 터미널에서 스크립트 실행:**
+
 ```bash
-cd ~/paper-harness && claude
+cd ~/paper-harness
+python batch_summarize.py --keyword "transformer 경량화" --top-n 3   # 검색→선별→요약→검증→저장까지 무인
+# 또는
+streamlit run review_app.py    # 브라우저에서 검색·요약 생성 + 승인/반려
 ```
+
+**채팅에서 검색·선별만 맡기고 싶을 때** (요약 작성은 시키지 않음):
 
 ```
 "transformer 경량화 논문을 arxiv_search_papers 와 s2_search_papers 로 각각 찾고,
-두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해.
-그 중 1편을 fetch_paper 로 저장한 뒤
-@prompts/summary_template.md 형식으로 정리해서 save_summary 로 저장해.
-검증 보고서에 unmatched 가 있으면 템플릿의 처리 절차대로 수정해."
+두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해줘. 요약은 내가
+batch_summarize.py 로 따로 돌릴게."
 ```
 
 두 검색 결과를 **함께** `dedupe_and_rank_papers` 에 넣어야 한다. 인용수는 S2 만 주므로 arXiv 결과만 넣으면 정렬이 연도만으로 이뤄진다.
