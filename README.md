@@ -8,14 +8,19 @@
 
 ## 구성
 
-- `server.py` — MCP 서버 (stdio). 도구 8종
+- `server.py` — MCP 서버 (stdio). 도구 8종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼. `.env` 자동 로드
+- `batch_summarize.py` — ④ 온디맨드 배치 요약 (Claude Code 밖 독립 실행, `server.py` 함수 직접 import)
+- `review_app.py` — ⑥ 사람 판단 UI (Streamlit). `streamlit run review_app.py`
+- `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 위 둘이 공유
+- `code_finder.py` — ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색). Docker 실행은 아직 없음
 - `selection.py` — ② 중복 제거·선별 규칙 (네트워크·LLM 미사용)
 - `verify.py` — ⑤ 수치 검증기. 요약문의 숫자를 원문과 문자열 대조 (LLM 미사용)
-- `prompts/summary_template.md` — 요약 템플릿과 작성 규칙 (프롬프트 자산, 버전 관리 대상)
+- `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
 - `test_smoke.py` — 실동작 스모크 7종 (네트워크 필요)
 - `test_verify_units.py` / `test_select.py` — 단위 테스트 22종 (네트워크 불필요)
-- `data/` — PDF·추출 텍스트·요약·SQLite 인덱스 (자동 생성, 커밋 제외)
+- `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
+- `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · (신청 중) `S2_API_KEY` (커밋 제외, 각자 발급)
 
 `selection.py` 는 `select.py` 로 두면 표준 라이브러리 `select` 를 가려 asyncio 가 깨지므로 이 이름이다.
 
@@ -131,10 +136,10 @@ python eval.py --min-ratio 0.9   # 기준 미달 시 종료코드 1
 
 ## 미해결
 
-이 목록은 `docs/PROGRESS.md` §8 이 최신이다 — 이 파일은 갱신이 늦을 수 있으니 날짜 있는 최신 상태는 그쪽을 볼 것. 2026-07-31 기준 남은 것만 추리면:
+이 목록은 `docs/PROGRESS.md` §8 이 최신이다 — 이 파일은 갱신이 늦을 수 있으니 날짜 있는 최신 상태는 그쪽을 볼 것. 2026-08-01 기준 남은 것만 추리면:
 
-- ⑦ 코드 재현 미착수 (Docker 격리 필요 — WSL 의 Docker Engine CE 사용). **남은 유일한 미착수 단계**
-- Semantic Scholar 정상 응답 미확인 (공용 한도에서 429 만 재현됨). 무료 키 발급 필요
+- ⑦ 코드 재현 — 저장소 후보 탐색(`code_finder.py`: 본문 링크 스캔 + GitHub 검색)은 완료. **Docker 격리 실행(clone→설치→실행, 자율 루프 3회)만 남음.** 유일하게 안 끝난 단계
+- Semantic Scholar 키 발급 신청함(2026-08-01) — 도착하면 `.env` 에 `S2_API_KEY` 추가만 하면 됨 (server.py 가 자동으로 읽음)
 - 평가셋 미구축 — 논문 약 20편을 투입해야 `eval.py` 기준선이 생긴다
 - 처리 시간·요약 정확도 수치 측정 없음 — **발표에서 수치를 만들지 말 것**
 
