@@ -1,6 +1,8 @@
 # paper-harness
 
-논문 수집·정리 하네스의 결정적(deterministic) 도구 계층이다. 에이전트 루프(판단·요약·코드 리뷰)는 MCP 클라이언트(Claude Code)가 담당하고, 이 저장소는 검색·선별·파싱·저장·수치 검증 도구만 제공한다. 이 분리가 설계의 핵심이다.
+논문 수집·정리 하네스의 결정적(deterministic) 도구 계층이다. 판단(선별 기준 조정, 사람 승인)은 MCP 클라이언트(Claude Code)가 담당하고, 이 저장소는 검색·선별·파싱·저장·수치 검증 도구만 제공한다. 이 분리가 설계의 핵심이다.
+
+**④ 요약은 Claude Code(LLM 자체)가 아니라 무료 API(Gemini 우선, Groq 대체)가 쓴다(2026-07-31 확정)** — `batch_summarize.py`(무인 배치) 또는 `review_app.py`(Streamlit, 사람 판단 UI)를 통해서만 생성된다. 비용·무인 실행 문제로 로컬 LLM 파인튜닝과 "Claude Code가 채팅에서 직접 작성" 방식 둘 다 폐기했다.
 
 **외부망 전제로 확정됐다 (2026-07-30).** 내부망 이식(vLLM + 자체 도구 루프)은 계획에서 빠졌다. 그 결과 오케스트레이션 코드를 직접 쓸 이유가 없어졌고, MCP + 상용 LLM 클라이언트 구조가 임시가 아니라 최종 형태다. 이전 문서의 "Phase 0 / Phase 1" 구분은 더 이상 유효하지 않다.
 
@@ -70,14 +72,20 @@ Semantic Scholar 는 공용 한도에서 429 가 잦다. 무료 키를 발급해
 export S2_API_KEY=발급받은키
 ```
 
-## 사용 흐름 (Claude Code에서)
+## 사용 흐름
+
+**표준 경로 — 터미널 스크립트** (요약은 무료 API가 씀, Claude Code 불필요):
+
+```bash
+python batch_summarize.py --keyword "transformer 경량화" --top-n 3
+streamlit run review_app.py
+```
+
+**Claude Code 채팅에서는 검색·선별까지만 맡긴다** (④ 요약 작성은 더 이상 시키지 않음):
 
 ```
 "transformer 경량화 논문을 arxiv_search_papers 와 s2_search_papers 로 각각 찾고,
-두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해.
-그 중 1편을 fetch_paper 로 저장한 뒤
-@prompts/summary_template.md 형식으로 정리해서 save_summary 로 저장해.
-검증 보고서에 unmatched 가 있으면 템플릿의 처리 절차대로 수정해."
+두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해줘."
 ```
 
 두 검색 결과를 **함께** `dedupe_and_rank_papers` 에 넣어야 한다. 인용수는 S2 만 주므로 arXiv 결과만 넣으면 정렬이 연도만으로 이뤄진다.
@@ -123,13 +131,14 @@ python eval.py --min-ratio 0.9   # 기준 미달 시 종료코드 1
 
 ## 미해결
 
-- **논문 1편 실제 왕복** — MCP 연결은 됐지만 도구를 순서대로 태워 요약까지 만든 적은 없다
-- ④ 실행 형태 미결정 — 사람이 Claude Code 를 띄우는 도구인가, 무인으로 도는 서비스인가. 후자면 자체 클라이언트 + API 키가 필요하다
-- ⑥ 사람 판단, ⑦ 코드 재현 미착수 (⑦ 은 Docker 격리 필요 — WSL 의 Docker Engine CE 사용)
+이 목록은 `docs/PROGRESS.md` §8 이 최신이다 — 이 파일은 갱신이 늦을 수 있으니 날짜 있는 최신 상태는 그쪽을 볼 것. 2026-07-31 기준 남은 것만 추리면:
+
+- ⑦ 코드 재현 미착수 (Docker 격리 필요 — WSL 의 Docker Engine CE 사용). **남은 유일한 미착수 단계**
 - Semantic Scholar 정상 응답 미확인 (공용 한도에서 429 만 재현됨). 무료 키 발급 필요
 - 평가셋 미구축 — 논문 약 20편을 투입해야 `eval.py` 기준선이 생긴다
 - 처리 시간·요약 정확도 수치 측정 없음 — **발표에서 수치를 만들지 말 것**
-- git 커밋 없음 (`user.name` / `user.email` 미설정)
+
+(참고: 논문 1편 실제 왕복·④ 실행 형태 결정·⑥ 사람 판단 구현·git 커밋/GitHub 등록은 모두 완료됐다. `batch_summarize.py`·`review_app.py` 참고.)
 
 도구 입력 스키마는 인자를 `params` 객체로 한 겹 감싼 형태다 (단일 pydantic 모델을 받는 구조 때문). 동작에는 문제가 없다.
 
