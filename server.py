@@ -76,6 +76,11 @@ S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 # arXiv 공식 안내에 따른 예의상 호출 간격 (초)
 ARXIV_MIN_INTERVAL = 3.0
 
+# Semantic Scholar 공식 문서: "1 request per second, cumulative across all
+# endpoints" — 키를 발급받아도 이 한도는 그대로 적용된다(더 완화되지 않음).
+# 2026-08-01 키 등록 시점에 사용자가 직접 확인한 값. 반드시 지킬 것.
+S2_MIN_INTERVAL = 1.0
+
 # ①~③ 구간의 제한 재시도 상한. 최초 1회 + 재시도 MAX_RETRIES 회.
 # 이것은 에이전틱 루프가 아니라 예외 처리다 — 무엇을 다시 부를지 LLM 이 정하지 않고
 # 코드가 정해진 횟수만 다시 부른다. 상한을 올리기 전에 왜 올리는지부터 정할 것.
@@ -94,6 +99,9 @@ mcp = MCPServer("paper_harness_mcp")
 
 _arxiv_lock = asyncio.Lock()
 _last_arxiv_call = 0.0
+
+_s2_lock = asyncio.Lock()
+_last_s2_call = 0.0
 
 
 def _init_storage() -> None:
@@ -197,6 +205,27 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
         return resp
 
     return await _with_retry(once, "arXiv API")
+
+
+async def _throttled_s2_get(client: httpx.AsyncClient, params: dict, headers: dict) -> httpx.Response:
+    """Semantic Scholar 호출 간 최소 간격(S2_MIN_INTERVAL)을 서버 전역에서 강제한다.
+    "초당 1회, 전체 엔드포인트 합산" 이 키 등록 여부와 무관하게 적용되는 공식 한도라
+    _throttled_arxiv_get 과 같은 패턴으로 막는다 — 재시도마다 다시 적용해야
+    재시도가 한도를 또 넘기지 않는다.
+    """
+
+    async def once() -> httpx.Response:
+        global _last_s2_call
+        async with _s2_lock:
+            wait = S2_MIN_INTERVAL - (time.monotonic() - _last_s2_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            resp = await client.get(S2_API, params=params, headers=headers, timeout=30)
+            _last_s2_call = time.monotonic()
+        resp.raise_for_status()
+        return resp
+
+    return await _with_retry(once, "Semantic Scholar")
 
 
 def _parse_arxiv_feed(xml_text: str) -> list[dict]:
@@ -523,8 +552,11 @@ async def arxiv_search_papers(params: ArxivSearchInput) -> str:
 )
 async def s2_search_papers(params: S2SearchInput) -> str:
     """Semantic Scholar Graph API로 검색한다. 인용 수(citationCount)가 포함되어
-    랭킹·선별에 유용하다. 환경변수 S2_API_KEY가 있으면 사용하고, 없으면 공용
-    한도로 동작한다 (429 발생 시 키 발급 권장).
+    랭킹·선별에 유용하다. 환경변수 S2_API_KEY가 있으면 사용한다.
+
+    공식 한도가 "초당 1회, 전체 엔드포인트 합산"이라 키 등록 여부와 무관하게
+    _throttled_s2_get 으로 서버 전역 간격을 강제한다 — 키가 있어도 이 한도 자체가
+    없어지는 게 아니라서, 안 막으면 여러 호출이 겹칠 때 여전히 429 가 난다.
 
     Returns:
         str: JSON — {"count": int, "papers": [{title, year, citation_count,
@@ -542,14 +574,7 @@ async def s2_search_papers(params: S2SearchInput) -> str:
         api_params["year"] = f"{params.year_from}-"
     try:
         async with httpx.AsyncClient() as client:
-
-            async def once() -> httpx.Response:
-                r = await client.get(S2_API, params=api_params, headers=headers, timeout=30)
-                r.raise_for_status()
-                return r
-
-            # 공용 한도에서 429 가 잦다. 재시도 상한 안에서 흡수되면 사용자가 안 겪는다.
-            resp = await _with_retry(once, "Semantic Scholar")
+            resp = await _throttled_s2_get(client, api_params, headers)
         data = resp.json()
     except Exception as e:  # noqa: BLE001
         return _http_error_to_message(e, "Semantic Scholar")
