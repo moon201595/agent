@@ -66,6 +66,9 @@ PDF_DIR = DATA_DIR / "pdfs"
 TEXT_DIR = DATA_DIR / "text"
 SUMMARY_DIR = DATA_DIR / "summaries"
 IMAGE_DIR = DATA_DIR / "images"
+# ⑦ 코드 재현 clone 대상. /mnt/c 밑이 아니라 WSL 네이티브 경로여야 한다 —
+# Docker 가 Windows 마운트 경로를 물면 느리고 권한이 꼬인다(§2 확인됨).
+REPRO_DIR = DATA_DIR / "repro"
 DB_PATH = DATA_DIR / "papers.db"
 
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -105,7 +108,7 @@ _last_s2_call = 0.0
 
 
 def _init_storage() -> None:
-    for d in (PDF_DIR, TEXT_DIR, SUMMARY_DIR, IMAGE_DIR):
+    for d in (PDF_DIR, TEXT_DIR, SUMMARY_DIR, IMAGE_DIR, REPRO_DIR):
         d.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
         con.execute(
@@ -141,6 +144,17 @@ def _init_storage() -> None:
             con.execute("ALTER TABLE summaries ADD COLUMN review_note TEXT")
         if "reviewed_at" not in existing_s:
             con.execute("ALTER TABLE summaries ADD COLUMN reviewed_at TEXT")
+
+        # ⑦ 코드 재현 결과 축적. docker_runner.py 가 쓴다 — 이 서버는 여기서도
+        # 판단하지 않고 실행 결과(성공 여부·exit code)만 저장한다.
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS repro_results (
+                arxiv_id TEXT, repo_url TEXT, source TEXT, confidence TEXT,
+                success INTEGER, exit_code INTEGER, stage TEXT, attempt INTEGER,
+                network_used INTEGER, duration_s REAL, log_path TEXT, created_at TEXT,
+                PRIMARY KEY (arxiv_id, repo_url)
+            )"""
+        )
 
 
 def _db() -> sqlite3.Connection:
@@ -839,6 +853,26 @@ def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:
         con.execute(
             "UPDATE summaries SET review_status=?, review_note=?, reviewed_at=? WHERE arxiv_id=?",
             (status, note or None, _now(), arxiv_id),
+        )
+
+
+def save_repro_result(
+    arxiv_id: str, repo_url: str, source: str, confidence: str,
+    success: bool, exit_code: int | None, stage: str, attempt: int,
+    network_used: bool, duration_s: float, log_path: str,
+) -> None:
+    """⑦ Docker 격리 실행 결과를 축적한다. MCP 도구가 아니다 — docker_runner.py
+    가 판단(성공/실패)까지 끝낸 뒤 결과만 저장한다(set_review_status 와 동일 패턴).
+    """
+    arxiv_id = _clean_arxiv_id(arxiv_id)
+    with _db() as con:
+        con.execute(
+            """INSERT OR REPLACE INTO repro_results
+               (arxiv_id, repo_url, source, confidence, success, exit_code,
+                stage, attempt, network_used, duration_s, log_path, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (arxiv_id, repo_url, source, confidence, int(success), exit_code,
+             stage, attempt, int(network_used), duration_s, log_path, _now()),
         )
 
 

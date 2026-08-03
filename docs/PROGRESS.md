@@ -6,7 +6,7 @@
 
 ## 한 줄 요약
 
-결정적 도구 8종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현은 저장소 후보 탐색(`code_finder.py`, 2026-08-01)에 이어 Docker 격리 실행도 수동 시행착오(2026-08-03)까지 마쳤다** — SWE-agent·TSPulse 두 저장소로 직접 돌려보며 얻은 설계 결론(git 바이너리 필수, 설치/실행 타임아웃 분리, `--network none` 조건부 적용, 타임아웃은 컨테이너 ID 직접 추적)이 §5에 있다. 아직 `docker_runner.py` 자동화 코드로는 안 옮겨졌다 — 유일하게 완전히 안 끝난 단계.
+결정적 도구 8종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현이 완료됐다(2026-08-03)** — 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, 자율 루프 3회)까지 도구 8종 이후 마지막 단계까지 구현·실측 검증됨(SWE-agent 완전 성공, TSPulse 는 거대 ML 모노레포 특성상 설치 예산 초과로 정직하게 실패 — 거짓 성공 없음. §5 참고). **더 이상 미완성 단계가 없다.**
 
 ---
 
@@ -72,7 +72,7 @@
 | — | `save_summary` | ✅ 저장 직전 자동 검증, 불일치도 저장은 함 |
 | — | `list_stored_papers` | ✅ |
 | ⑥ | `review_app.py` (Streamlit UI) | ✅ 승인·반려(사유 입력)·재생성. 원문 이미지 갤러리 포함 |
-| ⑦ | `code_finder.py` (저장소 찾기만 구현) | 🔸 **진행 중(2026-08-01)** — 코드 저장소 후보 탐색까지 완료, Docker 격리 실행은 아직 없음 |
+| ⑦ | `code_finder.py` + `docker_runner.py` | ✅ **완료(2026-08-03)** — 저장소 후보 탐색 + Docker 격리 실행(자율 루프 3회). `reproduce(arxiv_id)` |
 | ⑧ | 축적·피드백 | 🔸 SQLite 에 검증 결과 + ⑥ 검토 상태(review_status)가 쌓임. 규칙 보강·RAG 되먹임 없음 |
 
 **자율 루프는 아직 존재하지 않는다.**
@@ -84,7 +84,8 @@ server.py              MCP 서버 (stdio). 도구 8종 + ⑥ review_status 저�
 batch_summarize.py     ④ 온디맨드 배치 요약 (Claude Code 밖에서 독립 실행, server.py 함수 직접 import)
 review_app.py          ⑥ 사람 판단 UI (Streamlit) — 검색·요약 생성 탭 + 요약 검토 탭
 summarize_engine.py    ④ 요약 엔진 호출부 (Gemini/Groq). batch_summarize.py·review_app.py 공유
-code_finder.py          ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색). Docker 실행은 아직 없음
+code_finder.py         ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색 + HF 모델카드 경유 GitHub 추적)
+docker_runner.py       ⑦ Docker 격리 실행. reproduce(arxiv_id) 가 유일한 자율 재시도 루프(3회)
 selection.py           ② 중복 제거·선별 규칙
 verify.py              ⑤ 수치 검증기 (LLM 미사용)
 eval.py                통과율 일괄 측정 (회귀 기준선)
@@ -93,8 +94,8 @@ prompts/
 test_smoke.py          실동작 7종 (네트워크 필요)
 test_verify_units.py   ⑤ 경계 규칙 14종
 test_select.py         ② 규칙 8종
-data/                  PDF·텍스트·요약·이미지·SQLite (자동 생성, 커밋 제외)
-.env                   GOOGLE_API_KEY · GROQ_API_KEY (커밋 제외, 각자 발급)
+data/                  PDF·텍스트·요약·이미지·SQLite·⑦ clone 작업공간 (자동 생성, 커밋 제외)
+.env                   GOOGLE_API_KEY · GROQ_API_KEY · S2_API_KEY (커밋 제외, 각자 발급)
 ```
 
 `batch_summarize.py` 와 `review_app.py` 는 `server.py` 의 MCP 도구 함수를 `import server` 로 그대로 불러와 직접 호출한다 — `@mcp.tool` 데코레이터가 있어도 일반 함수처럼 호출 가능함을 실측으로 확인했다. 로직 중복 없이 ①②③⑤와 저장 경로를 그대로 재사용한다. 요약 엔진 호출부(Gemini/Groq)는 `summarize_engine.py` 로 따로 빼서 두 스크립트가 중복 없이 공유한다.
@@ -111,7 +112,7 @@ data/                  PDF·텍스트·요약·이미지·SQLite (자동 생성,
 | --- | --- | --- |
 | ①~③ 검색·파싱 | 제한 재시도 2회 | 코드가 정해진 횟수만 재시도. **루프가 아니라 예외 처리** |
 | ④⑤ 요약·검증 | **없음** | 단일 패스 + 검증 1회. 자동 되돌림 없음 |
-| ⑦ 코드 재현 | 자율 루프 3회 | 실행 성공 또는 시도 3회 (미구현) |
+| ⑦ 코드 재현 | 자율 루프 3회 | 실행 성공 또는 시도 3회 — `docker_runner.reproduce()` 로 구현됨(2026-08-03) |
 
 허용 기준은 하나 — **종료 조건을 기계가 자동으로, 위조 불가능하게 판정할 수 있는가.**
 
@@ -245,7 +246,7 @@ pass_ratio 숫자만 보면 셋 다 1.0으로 동일해 보이지만, **검증�
 | Agentic Reasoning (2601.12538) | 본문 링크는 페이지 번호가 섞여 살짝 깨졌으나(`...Reasoning1`) GitHub 검색이 정확한 버전(1,327★)으로 교차 확인 |
 | Securing the Agent | 본문에서 저장소 2개(ogx, ogx-k8s-operator) 정확히 발견 |
 
-**남은 것**: Docker 격리 실행(clone → 설치 → 실행, `--network none`, 자원 상한, 자율 루프 3회 시도)은 아직 없다. `code_finder.py` 는 후보 탐색까지만 한다.
+**추가(2026-08-03)**: HuggingFace 모델 링크만으로는 설치 대상이 없어 ⑦ 스모크 테스트가 공허해지는 문제를 TSPulse로 실측한 뒤, `find_repo_candidates()` 에 HF 모델카드 README 를 한 번 더 읽어 진짜 GitHub 코드 저장소를 찾는 홉을 추가했다(`_resolve_hf_repo_link`) — TSPulse 는 이제 `ibm-granite/granite-tsfm` 을 최우선 후보로 정확히 찾는다. Docker 격리 실행은 §5 아래 섹션에 있다.
 
 ### [확인됨] ⑦ Docker 격리 실행 — 수동 시행착오 2건 (2026-08-03)
 
@@ -275,6 +276,28 @@ Docker 실행 자체에서는 SWE-agent와 정반대의 함정이 나왔다:
 4. 타임아웃 강제는 셸 `timeout` 이 아니라 컨테이너 ID를 직접 추적해 `docker stop` 하는 방식으로 구현한다(Docker SDK 또는 `docker run -d` + 폴링).
 
 두 저장소 다 `--network none` 유무와 무관하게 **"설치+실행이 에러 없이 돈다"** 기준으로는 최종 성공(SWE-agent: 완전 격리 성공, TSPulse: 네트워크 열어둔 상태로 성공) — 성공 판정 기준 자체는 그대로 유효하다는 것도 같이 확인됐다.
+
+### [확인됨] ⑦ `docker_runner.py` 구현 및 실측 검증 (2026-08-03)
+
+위 4개 결론을 그대로 코드로 옮겼다. `detect_install_plan()` 이 저장소 구조(pyproject.toml/setup.py/requirements.txt, `[project.scripts]` 엔트리포인트)를 보고 설치·실행 명령을 결정론적으로 추정하고, `run_repo_in_docker()` 가 빌드+실행(네트워크 에러 감지 시 1회 재시도)을, `reproduce(arxiv_id)` 가 후보 저장소를 신뢰도 순으로 최대 3회 시도하는 유일한 자율 루프를 맡는다. 실행 결과는 `server.save_repro_result()` 로 SQLite `repro_results` 테이블에 축적된다(⑧).
+
+실제 논문 2편으로 끝까지 돌려보며 **네 가지를 더 실측으로 찾아 고쳤다** — 전부 "일단 되는 것처럼 보이지만 사실 아무것도 검증 안 함" 또는 "겉보기엔 사소한데 실행 자체가 안 됨" 부류라 검증기의 Goodhart 가드와 같은 원칙으로 다뤘다:
+
+1. **공허한 성공(hollow success)** — HuggingFace 가중치 저장소처럼 설치할 것도 임포트할 패키지도 없으면 placeholder `print` 문만 돌고 exit 0 이 나온다. 이걸 "성공"으로 세면 검증기의 넘버리스 요약과 같은 거짓 통과다. **고침**: 설치·실행 대상이 전혀 없으면 아예 시도하지 않고 `stage="no_target"`, `success=False` 로 명시적으로 남긴다.
+2. **배포 이름 ≠ import 이름** — `granite-tsfm` 패키지의 실제 임포트 이름은 `tsfm_public` 이다(scikit-learn→sklearn 과 같은 흔한 패턴). pyproject.toml 의 `name` 을 그대로 믿고 언더스코어만 바꾸면 `ModuleNotFoundError`. **고침**: 선언된 이름의 디렉터리가 실제 존재하는지 확인하고, 없으면 `__init__.py` 를 가진 최상위 디렉터리를 직접 찾는다(flat·`src/` 레이아웃 둘 다).
+3. **알파벳순 추정의 함정** — 위 방식으로 최상위 디렉터리를 찾을 때 `services`가 `tsfm_public`보다 알파벳순으로 먼저 걸려 엉뚱한 걸 골랐다. **고침**: `services`·`common`·`utils`·`core`·`shared` 같은 범용 이름을 후보에서 제외하는 목록에 추가.
+4. **clone 마다 Docker 빌드 캐시가 매번 깨짐** — 같은 저장소를 다시 clone 해도 `.git` 내부 팩파일이 미세하게 달라져 COPY 레이어 해시가 매번 바뀌고, 이미 한 번 받은 무거운 pip 설치까지 매번 처음부터 다시 했다. **고침**: `.dockerignore` 로 `.git` 을 빌드 컨텍스트에서 제외.
+
+**최종 실측 결과**:
+
+| 논문 | 후보 | 결과 |
+| --- | --- | --- |
+| SWE-agent (2405.15793) | GitHub 검색 1위(공식, 19,986★) | **성공** — 완전 격리(`--network none`, 1g/1cpu) 상태에서 `sweagent --help` exit 0 |
+| TSPulse (2505.13033) | HF 모델카드 경유 GitHub(`granite-tsfm`) → HF 원링크 → GitHub 검색 결과 | **3개 후보 전부 정직하게 실패** — `granite-tsfm` 은 거대 ML 모노레포라 from-source(`-e .`) 설치가 15분 예산을 넘겨 타임아웃, HF 원링크는 설치 대상 없음(`no_target`), GitHub 검색 결과(0★, 커뮤니티)도 설치 대상 없음. **거짓 성공 없이 3회 모두 정확히 실패로 기록됐다** — 이게 이 세션에서 확인하려던 것(Goodhart 가드가 ⑦에서도 지켜지는가)의 핵심 결과다. |
+
+TSPulse 가 "실패"로 끝난 것 자체는 문제가 아니다 — 성공 기준이 "설치+실행이 에러 없이 도는가"인 이상, 실제로 거대한 의존성(torch·transformers 풀스택)을 소스에서 빌드하는 저장소가 정해진 시간 예산 안에 못 끝나는 것은 정직한 결과다. 여기서 지켜야 했던 것은 "안 되는데 되는 척(거짓 성공)"을 안 하는 것이었고, 그건 성립했다.
+
+**알려진 한계(고치지 않고 남겨둠)**: 거대 ML 모노레포의 from-source 설치는 15분을 넘길 수 있다 — 무한정 타임아웃을 늘리는 것보다, 이런 저장소는 "설치 자체가 무겁다"는 별도 신호로 다루거나(예: `pip install <패키지명>` 처럼 PyPI 사전빌드 wheel 을 우선 시도) 애초에 예산 안에 못 끝나는 것을 정직한 결과로 받아들이는 쪽이 낫다고 판단했다.
 
 ### [확인됨] 단위 테스트 22개 (네트워크 불필요)
 
@@ -350,7 +373,7 @@ batch_summarize.py 로 따로 돌릴게."
 3. ~~**Semantic Scholar 무료 키 발급**~~ — 2026-08-01 완료. `.env` 에 `S2_API_KEY` 등록, 실제 검색 호출로 정상 동작 확인. **키를 받아도 "초당 1회, 전체 엔드포인트 합산" 공식 한도는 그대로 적용된다** — 서버가 이 한도를 안 지키고 있어서 `_throttled_s2_get`(arXiv 와 같은 패턴, `S2_MIN_INTERVAL=1.0`)을 새로 추가했다. 처음 `.env` 에 넣을 때 키 이름을 `S2_API_KEY` 대신 `S2 API Key`(띄어쓰기)로 잘못 써서 한 번 안 먹혔던 것도 함께 발견·수정.
 4. **평가셋 구축** — 이미 정리해 둔 논문 약 20편을 `fetch_paper` + `save_summary` 로 투입. `eval.py --min-ratio` 로 프롬프트 변경 회귀를 감지한다. 외부망 확정으로 "로컬 모델 전환 기준선"이라는 원래 목적은 없어졌지만 회귀 감지용으로는 유효하다.
 5. ~~**⑥ 사람 판단 구현**~~ — 2026-07-31 완료. `review_app.py`, §5 참고. ⑦ 재현 대상 선정 연결은 아직 안 함(⑦ 자체가 미착수라서).
-6. **⑦ 코드 재현 — 절반 진행.** 저장소 후보 탐색(`code_finder.py`, 본문 링크 스캔 + GitHub 검색)은 완료(2026-08-01, §5 참고). Docker 격리 실행은 후보 2개(SWE-agent, TSPulse)로 수동 시행착오까지 마쳤다(2026-08-03, §5 참고) — git 바이너리 기본 포함, 설치/실행 타임아웃 분리, `--network none` 은 설치 후 네트워크가 필요 없는 저장소에만 적용, 타임아웃은 컨테이너 ID 직접 추적으로 강제해야 한다는 결론까지 확인됨. **남은 것: 이 결론을 반영한 `docker_runner.py` 실제 구현** — clone(WSL 네이티브 경로 필수) → 설치+실행 → 성공 판정(에러 없이 돌아가면 성공, 논문 수치 재현 아님), 시도 상한 3회 자율 루프.
+6. ~~**⑦ 코드 재현**~~ — 2026-08-03 완료. 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, `reproduce(arxiv_id)` 자율 루프 3회)까지 §5 참고. SWE-agent 완전 성공, TSPulse 는 정직하게 실패(거짓 성공 없음) 확인됨.
 7. ~~git 커밋 — `user.name` / `user.email` 미설정~~ — 이미 전역 설정 완료(`moon201595 <answnsgur030@naver.com>`, `docs/SETUP.md` 참고). 이 항목은 폐기.
 8. 추출식 노트 검토 — ⑤ 를 "숫자 대조"에서 "근거 문장 번호 대조"로 격상하면 수치 환각이 구조적으로 불가능해진다. 프롬프트 난이도가 오르므로 평가셋 확보 후.
 

@@ -24,13 +24,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+import httpx
+
 import server
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # 알려진 코드/모델 호스팅 도메인 — 이 안에 있으면 "저장소 링크"로 확신한다.
 _KNOWN_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "huggingface.co")
@@ -46,6 +53,9 @@ _DENY_HOSTS = ("arxiv.org", "semanticscholar.org", "doi.org", "gnu.org",
 _CUE_RE = re.compile(r"(code|repo|implementation|release[sd]?|available|reproduc\w*|github|source)", re.I)
 _URL_RE = re.compile(r"https?://[\w.-]+(?:/[\w./#?=-]*)?")
 _CONTEXT_WINDOW = 60
+
+_HF_REPO_RE = re.compile(r"^https://huggingface\.co/([\w.-]+/[\w.-]+)")
+_GH_ROOT_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)")
 
 
 @dataclass
@@ -157,6 +167,36 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
     return out
 
 
+def _resolve_hf_repo_link(hf_url: str) -> str | None:
+    """HuggingFace 모델 페이지는 코드 저장소가 아니라 가중치 허브인 경우가 많다
+    (⑦ install+run 스모크 테스트를 못 만든다 — 실측 2505.13033: 이 링크만으로는
+    설치 대상 자체가 없어 "설치+실행" 판정이 공허해진다).
+
+    모델 카드 README 를 한 번 더 읽으면 진짜 GitHub 코드 저장소가 나온다는 걸
+    TSPulse 로 실측 확인했다(2026-08-03) — README 의 "Repository:" 필드가
+    `github.com/ibm-granite/granite-tsfm` 를 가리켰다. README 안에 나온
+    github.com 링크들을 저장소 루트(owner/repo)로 잘라 가장 많이 언급된 것을
+    고른다 — "Repository:" 라는 라벨 문구에 의존하지 않아 모델 카드마다
+    표현이 달라도 견딘다(같은 저장소의 /tree/, /blob/ 하위 경로가 여러 번
+    인용되는 패턴을 실측으로 확인했다).
+    """
+    m = _HF_REPO_RE.match(hf_url)
+    if not m:
+        return None
+    try:
+        resp = httpx.get(
+            f"https://huggingface.co/{m.group(1)}/raw/main/README.md", timeout=10
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    roots = _GH_ROOT_RE.findall(resp.text)
+    if not roots:
+        return None
+    (owner, repo), _count = Counter(roots).most_common(1)[0]
+    return f"https://github.com/{owner}/{repo}"
+
+
 def find_repo_candidates(arxiv_id: str) -> dict:
     """이 arxiv_id 논문의 코드 저장소 후보를 찾는다.
 
@@ -173,6 +213,23 @@ def find_repo_candidates(arxiv_id: str) -> dict:
 
     text = Path(row["text_path"]).read_text(encoding="utf-8")
     in_text = find_links_in_text(text)
+
+    # HuggingFace 모델 링크는 그 자체로는 설치 대상이 없다 — 모델 카드를 한 번
+    # 더 따라가 진짜 GitHub 코드가 있으면 그걸 최우선 후보로 앞에 얹는다.
+    hf_hops: list[RepoCandidate] = []
+    for c in in_text:
+        if "huggingface.co" not in c.url:
+            continue
+        gh_url = _resolve_hf_repo_link(c.url)
+        if gh_url and gh_url not in {x.url for x in in_text}:
+            hf_hops.append(
+                RepoCandidate(
+                    url=gh_url, source="in_text",
+                    confidence="author-stated",
+                    context=f"(HuggingFace 모델카드 경유: {c.url})",
+                )
+            )
+    in_text = hf_hops + in_text
 
     # 검색어: 제목에서 콜론 이하 부제는 잘라내고 특수문자를 제거한다 —
     # 부제·부가어가 많을수록 검색 정확도가 떨어지는 걸 실측으로 확인했다.
