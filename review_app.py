@@ -247,9 +247,11 @@ def render_review_tab():
             st.markdown("---")
             # 화면 폭(wide layout)에 텍스트를 그대로 채우면 줄이 끝까지 늘어져서
             # 읽기 힘들다 — 가운데 컬럼으로 폭을 제한해 적당한 지점에서 줄바꿈되게 한다.
+            # "1~7절"처럼 범위 표기에 쓴 물결표가 markdown 취소선(~text~)으로
+            # 오인식되는 걸 실측으로 확인 — 렌더링 직전에 이스케이프한다.
             _, mid, _ = st.columns([1, 4, 1])
             with mid:
-                st.markdown(summary_text)
+                st.markdown(summary_text.replace("~", "\\~"))
             st.markdown("---")
 
             col1, col2, col3 = st.columns([1, 2, 1])
