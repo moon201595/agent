@@ -182,9 +182,14 @@ def _now() -> str:
 
 
 def _clean_arxiv_id(raw: str) -> str:
-    """URL·버전 표기를 걷어내고 순수 ID만 남긴다. 예: 'abs/1706.03762v5' → '1706.03762'"""
+    """URL·버전 표기를 걷어내고 순수 ID만 남긴다. 예: 'abs/1706.03762v5' → '1706.03762'
+
+    2026-08-05 실측: /html/ 링크(arxiv.org/html/2505.19433v1)는 못 걷어내던
+    버그를 발견 — abs·pdf 만 처리했었다. 논문 목록에 arXiv HTML 링크를
+    그대로 붙여넣는 경우가 실제로 있어서 셋 다 처리하도록 고쳤다.
+    """
     raw = raw.strip()
-    raw = re.sub(r"^https?://arxiv\.org/(abs|pdf)/", "", raw)
+    raw = re.sub(r"^https?://arxiv\.org/(abs|pdf|html)/", "", raw)
     raw = re.sub(r"\.pdf$", "", raw)
     return re.sub(r"v\d+$", "", raw)
 
@@ -871,18 +876,27 @@ async def fetch_pdf_from_url(pdf_url: str, title: str = "", source_note: str = "
     open_access_pdf 필드나 resolve_unpaywall_pdf() 가 찾아준 링크용이다.
     이미 공개된 파일만 받으므로 페이월 우회가 아니다.
 
+    검증은 파일 시그니처(매직 바이트)로 한다 — content-type 헤더나 URL이
+    ".pdf"로 끝나는지는 안 믿는다. 실측(2026-08-05)으로 확인: nature.com의
+    "*.pdf" URL이 실제로는 HTML 로그인/에러 페이지를 200 OK로 돌려주는
+    경우가 있었고, URL이 ".pdf"로 끝난다는 이유로 그걸 그대로 받아들여
+    pypdf 단계에서야 "invalid pdf header"로 깨졌다. 진짜 PDF는 항상
+    %PDF- 로 시작한다 — 이거 하나만 보는 게 훨씬 신뢰할 만하다.
+
     Raises:
-        ValueError: PDF가 아닌 응답(초록 페이지로 리다이렉트된 경우 등)
+        ValueError: PDF가 아닌 응답(초록·로그인 페이지로 리다이렉트된 경우 등)
     """
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) paper-harness/1.0"}
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         resp = await client.get(pdf_url, timeout=60)
         resp.raise_for_status()
-        content_type = resp.headers.get("content-type", "")
-        if "pdf" not in content_type.lower() and not pdf_url.lower().endswith(".pdf"):
-            raise ValueError(
-                f"PDF가 아닌 응답(content-type={content_type!r}) — 링크가 초록 페이지일 수 있음"
-            )
         pdf_bytes = resp.content
+        if not pdf_bytes.startswith(b"%PDF-"):
+            content_type = resp.headers.get("content-type", "")
+            raise ValueError(
+                f"PDF가 아닌 응답(파일 시그니처 불일치, content-type={content_type!r}) — "
+                "링크가 초록·로그인 페이지일 수 있음"
+            )
     return ingest_local_pdf(pdf_bytes, title or "(제목 미입력)", source_note or f"open-access: {pdf_url}")
 
 
