@@ -342,9 +342,9 @@ pypdf 는 2단 조판과 표를 자주 뭉개고 그게 ⑤ 의 거짓 불일치
 
 ## 7. 사용 흐름
 
-**④ 요약을 Claude Code(나)가 채팅 안에서 직접 작성하는 흐름은 폐기됐다(2026-07-31).** 아래처럼 채팅에서 요약문 작성까지 시키는 방식은 더 이상 표준 경로가 아니다 — 지금은 무료 API(Gemini/Groq)가 요약을 쓰고, Claude Code 는 검색·선별까지만 돕거나 아예 빠진다.
+**④ 요약을 Claude Code(나)가 채팅 안에서 직접 작성하는 흐름은 폐기됐다(2026-07-31).** 지금은 무료 API(Gemini/Groq)가 요약을 쓴다.
 
-**표준 경로 — 터미널에서 스크립트 실행:**
+**표준 경로는 이 하나뿐이다 — 터미널에서 스크립트 실행, Claude Code 불필요:**
 
 ```bash
 cd ~/paper-harness
@@ -353,13 +353,7 @@ python batch_summarize.py --keyword "transformer 경량화" --top-n 3   # 검색
 streamlit run review_app.py    # 브라우저에서 검색·요약 생성 + 승인/반려
 ```
 
-**채팅에서 검색·선별만 맡기고 싶을 때** (요약 작성은 시키지 않음):
-
-```
-"transformer 경량화 논문을 arxiv_search_papers 와 s2_search_papers 로 각각 찾고,
-두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해줘. 요약은 내가
-batch_summarize.py 로 따로 돌릴게."
-```
+①②③(검색·선별·파싱)은 판단이 필요 없는 결정적 코드다 — `arxiv_search_papers`는 API 호출, `dedupe_and_rank_papers`는 인용수·날짜 규칙 정렬일 뿐이라 Claude Code 가 채팅에서 그 도구를 불러도 실행 로직은 동일하다. 그래도 이걸 README에 정식 대안 경로처럼 나란히 적어뒀다가 "그럼 검색·선별을 Claude 가 판단해서 하는 거냐"는 오해를 샀다(2026-08-04) — ④⑥⑦ 처럼 판단이 필요해서 채팅에서 뺀 것과는 다른 이유인데 같은 자리에 나란히 두니 구분이 안 됐다. `batch_summarize.py` 가 이미 전 과정을 무인으로 처리하므로 정상 사용에서는 채팅 개입이 아예 필요 없다 — 개별 도구 채팅 호출은 디버깅·탐색용일 뿐 정식 경로가 아니라는 걸 README에서 삭제하고 이 문단으로만 남겼다.
 
 두 검색 결과를 **함께** `dedupe_and_rank_papers` 에 넣어야 한다. 인용수는 S2 만 주므로 arXiv 결과만 넣으면 정렬이 연도만으로 이뤄진다.
 
