@@ -103,3 +103,24 @@ def test_summary_without_numbers_passes_vacuously():
     report = verify_numbers("숫자가 전혀 없는 요약", "원문")
     assert report.total == 0
     assert report.pass_ratio == 1.0
+
+
+# ── 출처 위치 표기 오탐 방지 (2026-08-06, VegaEdge 실측) ───────────
+# 프롬프트 v2 R2 규칙이 "본문 6.1절"류 출처 표기를 강제하는데, 이 안의
+# 숫자를 데이터로 착각해 검증기가 불일치로 잘못 신고했다 — "6.1"이
+# 소수처럼 생겨서 한 자리 정수 제외 규칙을 안 타고 통과했었다.
+
+
+def test_section_reference_is_not_a_data_number():
+    """'본문 6.1절' 의 6.1은 위치 표기지 데이터가 아니다."""
+    assert tokens("AUC-ROC 0.99 ★★★ — 본문 6.1절 및 Figure 3a") == ["0.99"]
+
+
+def test_table_reference_is_not_a_data_number():
+    assert tokens("정확도 92.4% (본문 4.2절 Table 12)") == ["92.4"]
+
+
+def test_multi_digit_table_reference_excluded_but_nearby_data_kept():
+    """'Table 12' 의 12는 한 자리 정수 제외 규칙(len<2)을 안 타서 이 수정
+    전에는 그대로 데이터로 오인됐다. 같은 문장의 진짜 데이터(92.4)는 그대로 남아야 한다."""
+    assert tokens("Table 12의 정확도는 92.4였다") == ["92.4"]
