@@ -6,7 +6,7 @@
 
 ## 한 줄 요약
 
-결정적 도구 8종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현이 완료됐다(2026-08-03)** — 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, 자율 루프 3회)까지 도구 8종 이후 마지막 단계까지 구현·실측 검증됨(SWE-agent 완전 성공, TSPulse 는 거대 ML 모노레포 특성상 설치 예산 초과로 정직하게 실패 — 거짓 성공 없음. §5 참고). **더 이상 미완성 단계가 없다.**
+결정적 도구 8종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현이 완료됐다(2026-08-03)** — 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, 자율 루프 3회)까지 도구 8종 이후 마지막 단계까지 구현·실측 검증됨(SWE-agent 완전 성공, TSPulse 는 거대 ML 모노레포 특성상 설치 예산 초과로 정직하게 실패 — 거짓 성공 없음. §5 참고). 8단계 파이프라인 자체는 전부 구현됐다. **다만 평가셋 구축을 시작하며 ③이 arXiv 전용이라 실제 문헌 목록의 절반 가까이를 못 읽는 문제가 새로 드러나, 수동 PDF 업로드 + Unpaywall 오픈액세스 자동 수집을 추가했다(2026-08-04, §5 참고).**
 
 ---
 
@@ -65,8 +65,9 @@
 | ① | `arxiv_search_papers` | ✅ 키 불필요, 호출 간 3초 강제 |
 | ① | `s2_search_papers` | ✅ 인용수 제공. `S2_API_KEY` 등록됨(2026-08-01) + 초당 1회 스로틀 적용 |
 | ② | `dedupe_and_rank_papers` | ✅ 결정적 규칙, 네트워크 미사용 |
-| ③ | `fetch_paper` | ✅ HTML 우선 → PDF 폴백, 멱등 |
+| ③ | `fetch_paper` | ✅ HTML 우선 → PDF 폴백, 멱등. **arXiv 전용** |
 | ③ | `get_paper_text` | ✅ 분할 열람 |
+| ③ | `ingest_local_pdf` / `fetch_pdf_from_url` / `resolve_unpaywall_pdf` | ✅ **완료(2026-08-04)** — arXiv 밖 논문(수동 업로드 + Unpaywall 오픈액세스 자동). MCP 도구 아님, `review_app.py`가 직접 import. §5 참고 |
 | ④ | `batch_summarize.py` / `review_app.py` (Claude Code 밖에서 독립 실행) | ✅ Gemini(`gemini-flash-latest`) 우선, Groq(`llama-3.3-70b-versatile`) 대체. **Claude Code(나 자신)를 요약 엔진으로 쓰는 방안은 폐기됨(2026-07-31)** — 무인 실행·비용 문제로 무료 API 로 전환. §5 "④ 요약 엔진 선정" 참고 |
 | ⑤ | `verify_summary_numbers` | ✅ LLM 미사용 |
 | — | `save_summary` | ✅ 저장 직전 자동 검증, 불일치도 저장은 함 |
@@ -95,7 +96,7 @@ test_smoke.py          실동작 7종 (네트워크 필요)
 test_verify_units.py   ⑤ 경계 규칙 14종
 test_select.py         ② 규칙 8종
 data/                  PDF·텍스트·요약·이미지·SQLite·⑦ clone 작업공간 (자동 생성, 커밋 제외)
-.env                   GOOGLE_API_KEY · GROQ_API_KEY · S2_API_KEY (커밋 제외, 각자 발급)
+.env                   GOOGLE_API_KEY · GROQ_API_KEY · S2_API_KEY · UNPAYWALL_EMAIL(선택) (커밋 제외, 각자 발급)
 ```
 
 `batch_summarize.py` 와 `review_app.py` 는 `server.py` 의 MCP 도구 함수를 `import server` 로 그대로 불러와 직접 호출한다 — `@mcp.tool` 데코레이터가 있어도 일반 함수처럼 호출 가능함을 실측으로 확인했다. 로직 중복 없이 ①②③⑤와 저장 경로를 그대로 재사용한다. 요약 엔진 호출부(Gemini/Groq)는 `summarize_engine.py` 로 따로 빼서 두 스크립트가 중복 없이 공유한다.
@@ -298,6 +299,23 @@ Docker 실행 자체에서는 SWE-agent와 정반대의 함정이 나왔다:
 TSPulse 가 "실패"로 끝난 것 자체는 문제가 아니다 — 성공 기준이 "설치+실행이 에러 없이 도는가"인 이상, 실제로 거대한 의존성(torch·transformers 풀스택)을 소스에서 빌드하는 저장소가 정해진 시간 예산 안에 못 끝나는 것은 정직한 결과다. 여기서 지켜야 했던 것은 "안 되는데 되는 척(거짓 성공)"을 안 하는 것이었고, 그건 성립했다.
 
 **알려진 한계(고치지 않고 남겨둠)**: 거대 ML 모노레포의 from-source 설치는 15분을 넘길 수 있다 — 무한정 타임아웃을 늘리는 것보다, 이런 저장소는 "설치 자체가 무겁다"는 별도 신호로 다루거나(예: `pip install <패키지명>` 처럼 PyPI 사전빌드 wheel 을 우선 시도) 애초에 예산 안에 못 끝나는 것을 정직한 결과로 받아들이는 쪽이 낫다고 판단했다.
+
+### [확인됨] ③ arXiv 밖 논문 수집 — 수동 업로드 + Unpaywall 오픈액세스 (2026-08-04)
+
+평가셋을 구축하려고 사용자의 실제 문헌 목록(Vision AI·Agentic AI·Onsensor AI·온디바이스 경량화·자율제조·배터리·AMMR·하드웨어 8개 카테고리, arXiv 스크린샷 확인)을 받아봤더니 상당수가 Nature·ScienceDirect·IEEE·ACM 등 arXiv 밖 저널·컨퍼런스였다. `fetch_paper` 는 arXiv 전용이라 이 목록의 절반 가까이를 아예 못 읽는 문제가 드러났다 — 평가셋만의 문제가 아니라 하네스 실사용 범위 자체의 문제였다.
+
+두 경로를 추가했다(둘 다 채택 — 사용자 확인):
+
+1. **수동 PDF 업로드** (`ingest_local_pdf`) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF를 사용자가 직접 올린다. 페이월 우회가 아니다. 어떤 저널이든 무조건 된다.
+2. **오픈액세스 자동 수집** (`fetch_pdf_from_url` + `resolve_unpaywall_pdf`) — Unpaywall API(무료, 키 불필요, `email` 파라미터만 요구)로 DOI에서 합법적 오픈액세스 PDF 위치를 찾아 자동으로 받는다.
+
+둘 다 `_text_from_pdf`(기존 pypdf 추출기)를 그대로 재사용한다 — 새 추출 로직 없음. arXiv ID가 없는 논문은 `pdf-<내용 해시 10자리>` 합성 ID를 쓰고(같은 파일 재업로드 시 같은 ID — 멱등), `papers.arxiv_id` 컬럼명은 그대로 두되 새 `papers.source` 컬럼으로 출처를 구분한다.
+
+**실측으로 걸린 함정 1개**: Unpaywall이 더미 이메일(`example.com`)을 실제로 거부했다(422 "Please use your own email address"). 기본값을 사용자 실제 이메일로 바꿔 해결.
+
+**검증**: `resolve_unpaywall_pdf` → `fetch_pdf_from_url` → `ingest_local_pdf` 전체 파이프라인을 실제 arXiv PDF(TSPulse, 152,447자)로 왕복 테스트, 동일 파일 재업로드 시 멱등 확인(같은 `pdf-11a125e40d` ID, 재처리 생략), `_clean_arxiv_id`·`get_paper_text` 등 다운스트림이 합성 ID를 그대로 통과시키는 것 확인. `review_app.py`에 "PDF 업로드"·"DOI/URL(오픈액세스)" 입력 모드 2개 추가, 실제 화면 캡쳐로 확인.
+
+**여전히 안 되는 것**: ScienceDirect·IEEE·ACM 같은 페이월+비-오픈액세스 논문은 자동 수집이 안 된다 — 수동 업로드로만 가능하다. 의도된 제약(라이선스·ToS 준수).
 
 ### [확인됨] 단위 테스트 22개 (네트워크 불필요)
 

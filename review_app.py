@@ -150,51 +150,129 @@ async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_bo
                 f"③ [{arxiv_id}] 완료 — {fetch_result.get('extract_method')}, "
                 f"{fetch_result.get('text_chars')}자"
             )
-
-            text_result = json.loads(
-                await server.get_paper_text(
-                    server.GetTextInput(arxiv_id=arxiv_id, offset=0, max_chars=engine.MAX_PAPER_CHARS)
-                )
-            )
-            status_box.write(f"④ [{arxiv_id}] 요약 생성 중...")
-            summary, used_engine = await engine.summarize(client, text_result["text"], template)
-            status_box.write(f"④ [{arxiv_id}] 완료 — {used_engine} 사용")
-
-            status_box.write(f"⑤ [{arxiv_id}] 검증 + 저장 중...")
-            save_result = json.loads(
-                await server.save_summary(
-                    server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=summary)
-                )
-            )
-            v = save_result.get("verification", {})
-            status_box.write(
-                f"✅ [{arxiv_id}] 완료 — pass_ratio={v.get('pass_ratio')} "
-                f"({v.get('matched')}/{v.get('total_numbers')})"
-            )
-            done.append(arxiv_id)
+            if await _summarize_target(arxiv_id, template, client, status_box):
+                done.append(arxiv_id)
 
     return done
+
+
+async def _summarize_target(arxiv_id: str, template: str, client: httpx.AsyncClient, status_box) -> bool:
+    """③(원문 수집)까지 끝난 논문 하나에 ④⑤(요약·검증+저장)만 돌린다.
+    키워드/ID/제목 검색과 PDF 업로드·오픈액세스 수집이 여기서부터 합류한다.
+    """
+    text_result = json.loads(
+        await server.get_paper_text(
+            server.GetTextInput(arxiv_id=arxiv_id, offset=0, max_chars=engine.MAX_PAPER_CHARS)
+        )
+    )
+    status_box.write(f"④ [{arxiv_id}] 요약 생성 중...")
+    summary, used_engine = await engine.summarize(client, text_result["text"], template)
+    status_box.write(f"④ [{arxiv_id}] 완료 — {used_engine} 사용")
+
+    status_box.write(f"⑤ [{arxiv_id}] 검증 + 저장 중...")
+    save_result = json.loads(
+        await server.save_summary(server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=summary))
+    )
+    v = save_result.get("verification", {})
+    status_box.write(
+        f"✅ [{arxiv_id}] 완료 — pass_ratio={v.get('pass_ratio')} "
+        f"({v.get('matched')}/{v.get('total_numbers')})"
+    )
+    return True
+
+
+async def _run_pdf_upload_and_summarize(pdf_bytes: bytes, title: str, status_box) -> list[str]:
+    """arXiv 밖 저널 PDF를 직접 업로드해 ③(수동)→④⑤ 를 돈다. 이미 합법적으로
+    접근 가능한 파일(기관 구독 등)을 사용자가 올리는 경로 — 페이월 우회 아님.
+    """
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    status_box.write("③ PDF 텍스트 추출 중...")
+    try:
+        result = server.ingest_local_pdf(pdf_bytes, title, source_note="manual-pdf: streamlit-upload")
+    except ValueError as e:
+        status_box.write(f"❌ 추출 실패: {e}")
+        return []
+    arxiv_id = result["arxiv_id"]
+    status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
+
+    async with httpx.AsyncClient() as client:
+        ok = await _summarize_target(arxiv_id, template, client, status_box)
+    return [arxiv_id] if ok else []
+
+
+async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box) -> list[str]:
+    """DOI 또는 PDF 직접 링크로 오픈액세스 논문을 받아 ③(자동)→④⑤ 를 돈다.
+    DOI 형태(슬래시 포함, .pdf로 안 끝남)면 Unpaywall 로 먼저 합법적 PDF
+    위치를 찾고, 이미 PDF 링크면 바로 받는다. 오픈액세스가 아니면 실패를
+    정직하게 보고한다 — 페이월을 다른 방법으로 우회하지 않는다.
+    """
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    pdf_url = doi_or_url
+    if not doi_or_url.lower().endswith(".pdf") and "/" in doi_or_url:
+        status_box.write(f"DOI '{doi_or_url}' 로 오픈액세스 PDF 위치 조회 중 (Unpaywall)...")
+        resolved = await server.resolve_unpaywall_pdf(doi_or_url)
+        if not resolved:
+            status_box.write("❌ 오픈액세스 버전을 찾지 못함 — 이 논문은 PDF 업로드로 들여와야 함")
+            return []
+        pdf_url = resolved
+        status_box.write(f"오픈액세스 PDF 발견: {pdf_url}")
+
+    status_box.write("③ PDF 다운로드·텍스트 추출 중...")
+    try:
+        result = await server.fetch_pdf_from_url(pdf_url, title=title, source_note=f"open-access: {doi_or_url}")
+    except (ValueError, httpx.HTTPError) as e:
+        status_box.write(f"❌ 수집 실패: {type(e).__name__}: {e}")
+        return []
+    arxiv_id = result["arxiv_id"]
+    status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
+
+    async with httpx.AsyncClient() as client:
+        ok = await _summarize_target(arxiv_id, template, client, status_box)
+    return [arxiv_id] if ok else []
 
 
 def render_search_tab():
     st.subheader("논문 검색 → 요약 생성")
     mode_label = st.radio(
-        "입력 방식", ["키워드 검색", "논문 ID 직접 지정", "제목으로 검색"], horizontal=True
+        "입력 방식",
+        ["키워드 검색", "논문 ID 직접 지정", "제목으로 검색", "PDF 업로드", "DOI/URL (오픈액세스)"],
+        horizontal=True,
     )
-    mode = {"키워드 검색": "keyword", "논문 ID 직접 지정": "id", "제목으로 검색": "title"}[mode_label]
+    mode = {
+        "키워드 검색": "keyword", "논문 ID 직접 지정": "id", "제목으로 검색": "title",
+        "PDF 업로드": "pdf", "DOI/URL (오픈액세스)": "oa",
+    }[mode_label]
 
     top_n = 3
+    uploaded_file = None
+    pdf_title = ""
     if mode == "keyword":
         value = st.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
         top_n = st.number_input("선별할 편수", min_value=1, max_value=10, value=3)
     elif mode == "id":
         value = st.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
-    else:
+    elif mode == "title":
         value = st.text_input("논문 제목", placeholder="예: TSPulse")
+    elif mode == "pdf":
+        st.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
+        uploaded_file = st.file_uploader("PDF 파일", type="pdf")
+        pdf_title = st.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
+        value = "ok" if (uploaded_file and pdf_title) else ""
+    else:  # oa
+        st.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
+        value = st.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
+        pdf_title = st.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
 
     if st.button("🚀 시작", type="primary", disabled=not value):
         status_box = st.status("진행 중...", expanded=True)
-        done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
+        if mode == "pdf":
+            done = run_async(
+                _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
+            )
+        elif mode == "oa":
+            done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
+        else:
+            done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
         if done:
             status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
             st.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
