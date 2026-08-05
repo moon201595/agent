@@ -795,6 +795,23 @@ async def get_paper_text(params: GetTextInput) -> str:
     )
 
 
+def read_full_text(arxiv_id: str) -> str:
+    """저장된 논문 원문 전체를 그대로 읽는다. MCP 도구가 아니다.
+
+    get_paper_text 는 max_chars 상한이 80,000자다(채팅 컨텍스트 절약용,
+    GetTextInput 검증 규칙) — 배치 스크립트가 요약 엔진에 원문 전체를 한
+    번에 넘길 때는 이 상한이 방해만 된다(2026-08-06 실측: 긴 논문이 상한
+    안에서 잘려 결과 절을 통째로 못 보는 사고가 있었다). summarize_engine
+    이 자체적으로 청크(300,000자 단위)를 나누므로 여기서는 자르지 않는다.
+    """
+    arxiv_id = _clean_arxiv_id(arxiv_id)
+    with _db() as con:
+        row = con.execute("SELECT text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
+    if not row:
+        raise ValueError(f"'{arxiv_id}'는 아직 저장되지 않음 — fetch_paper 먼저 호출할 것")
+    return Path(row["text_path"]).read_text(encoding="utf-8")
+
+
 def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pdf") -> dict:
     """arXiv 밖 논문(저널·컨퍼런스 PDF)을 수동으로 들여온다(2026-08-04).
 

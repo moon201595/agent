@@ -24,30 +24,27 @@ import argparse
 import asyncio
 import json
 import sys
-from pathlib import Path
 
 import httpx
 
 import server
 import summarize_engine as engine
 
-ROOT = Path(__file__).resolve().parent
-TEMPLATE_PATH = ROOT / "prompts" / "summary_template.md"
 
-
-async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, template: str) -> dict:
+async def _process_paper(client: httpx.AsyncClient, arxiv_id: str) -> dict:
     print(f"[{arxiv_id}] fetch_paper...")
     fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
     if "error" in fetch_result:
         print(f"[{arxiv_id}] fetch 실패: {fetch_result}")
         return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result}
 
-    text_result = json.loads(
-        await server.get_paper_text(
-            server.GetTextInput(arxiv_id=arxiv_id, offset=0, max_chars=engine.MAX_PAPER_CHARS)
-        )
-    )
-    paper_text = text_result["text"]
+    # get_paper_text(MCP 도구)는 채팅 컨텍스트 절약용 80,000자 상한이 있다 —
+    # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
+    paper_text = server.read_full_text(arxiv_id)
+
+    # 서베이/리뷰 논문은 결정적 키워드 규칙으로 감지해 전용 템플릿을 쓴다
+    # (판단은 LLM이 아니라 코드가 한다 — engine.select_template 참고).
+    template = engine.select_template(fetch_result.get("title", ""))
 
     print(f"[{arxiv_id}] 요약 생성 중...")
     summary, used_engine = await engine.summarize(client, paper_text, template)
@@ -123,8 +120,6 @@ async def main() -> None:
     if not engine.ENV.get("GOOGLE_API_KEY") and not engine.ENV.get("GROQ_API_KEY"):
         parser.error(".env 에 GOOGLE_API_KEY 또는 GROQ_API_KEY 가 필요함")
 
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
-
     async with httpx.AsyncClient() as client:
         targets = await _resolve_targets(args)
         if not targets:
@@ -135,7 +130,7 @@ async def main() -> None:
         results = []
         for arxiv_id in targets:
             try:
-                results.append(await _process_paper(client, arxiv_id, template))
+                results.append(await _process_paper(client, arxiv_id))
             except Exception as e:  # noqa: BLE001
                 print(f"[{arxiv_id}] 처리 실패: {e}", file=sys.stderr)
                 results.append({"arxiv_id": arxiv_id, "status": "error", "detail": str(e)})

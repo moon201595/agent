@@ -26,9 +26,6 @@ import server
 import summarize_engine as engine
 import verify
 
-ROOT = Path(__file__).resolve().parent
-TEMPLATE_PATH = ROOT / "prompts" / "summary_template.md"
-
 st.set_page_config(page_title="논문 검색·분석 에이전트", layout="wide")
 
 
@@ -94,8 +91,6 @@ def _render_image_gallery(arxiv_id: str) -> None:
 
 
 async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_box) -> list[str]:
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
-
     if mode == "id":
         targets = [t.strip() for t in value.replace(",", " ").split() if t.strip()]
     elif mode == "title":
@@ -150,23 +145,29 @@ async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_bo
                 f"③ [{arxiv_id}] 완료 — {fetch_result.get('extract_method')}, "
                 f"{fetch_result.get('text_chars')}자"
             )
-            if await _summarize_target(arxiv_id, template, client, status_box):
+            if await _summarize_target(arxiv_id, client, status_box):
                 done.append(arxiv_id)
 
     return done
 
 
-async def _summarize_target(arxiv_id: str, template: str, client: httpx.AsyncClient, status_box) -> bool:
+async def _summarize_target(arxiv_id: str, client: httpx.AsyncClient, status_box) -> bool:
     """③(원문 수집)까지 끝난 논문 하나에 ④⑤(요약·검증+저장)만 돌린다.
     키워드/ID/제목 검색과 PDF 업로드·오픈액세스 수집이 여기서부터 합류한다.
+
+    템플릿(기본 v2 / 서베이 변형)은 저장된 제목으로 여기서 결정론적으로
+    고른다 — engine.select_template 참고, LLM 판단 아님.
     """
-    text_result = json.loads(
-        await server.get_paper_text(
-            server.GetTextInput(arxiv_id=arxiv_id, offset=0, max_chars=engine.MAX_PAPER_CHARS)
-        )
-    )
+    with server._db() as con:
+        row = con.execute("SELECT title FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
+    title = row["title"] if row and row["title"] else ""
+    template = engine.select_template(title)
+
+    # get_paper_text(MCP 도구)는 채팅 컨텍스트 절약용 80,000자 상한이 있다 —
+    # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
+    paper_text = server.read_full_text(arxiv_id)
     status_box.write(f"④ [{arxiv_id}] 요약 생성 중...")
-    summary, used_engine = await engine.summarize(client, text_result["text"], template)
+    summary, used_engine = await engine.summarize(client, paper_text, template)
     status_box.write(f"④ [{arxiv_id}] 완료 — {used_engine} 사용")
 
     status_box.write(f"⑤ [{arxiv_id}] 검증 + 저장 중...")
@@ -185,7 +186,6 @@ async def _run_pdf_upload_and_summarize(pdf_bytes: bytes, title: str, status_box
     """arXiv 밖 저널 PDF를 직접 업로드해 ③(수동)→④⑤ 를 돈다. 이미 합법적으로
     접근 가능한 파일(기관 구독 등)을 사용자가 올리는 경로 — 페이월 우회 아님.
     """
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
     status_box.write("③ PDF 텍스트 추출 중...")
     try:
         result = server.ingest_local_pdf(pdf_bytes, title, source_note="manual-pdf: streamlit-upload")
@@ -196,7 +196,7 @@ async def _run_pdf_upload_and_summarize(pdf_bytes: bytes, title: str, status_box
     status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
 
     async with httpx.AsyncClient() as client:
-        ok = await _summarize_target(arxiv_id, template, client, status_box)
+        ok = await _summarize_target(arxiv_id, client, status_box)
     return [arxiv_id] if ok else []
 
 
@@ -206,7 +206,6 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     위치를 찾고, 이미 PDF 링크면 바로 받는다. 오픈액세스가 아니면 실패를
     정직하게 보고한다 — 페이월을 다른 방법으로 우회하지 않는다.
     """
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
     pdf_url = doi_or_url
     if not doi_or_url.lower().endswith(".pdf") and "/" in doi_or_url:
         status_box.write(f"DOI '{doi_or_url}' 로 오픈액세스 PDF 위치 조회 중 (Unpaywall)...")
@@ -227,7 +226,7 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
 
     async with httpx.AsyncClient() as client:
-        ok = await _summarize_target(arxiv_id, template, client, status_box)
+        ok = await _summarize_target(arxiv_id, client, status_box)
     return [arxiv_id] if ok else []
 
 
@@ -345,20 +344,12 @@ def render_review_tab():
             with col3:
                 if st.button("🔄 다시 생성", key=f"regen_{arxiv_id}"):
                     with st.spinner("재생성 중..."):
-                        template = TEMPLATE_PATH.read_text(encoding="utf-8")
-                        text_result = json.loads(
-                            run_async(
-                                server.get_paper_text(
-                                    server.GetTextInput(
-                                        arxiv_id=arxiv_id, offset=0, max_chars=engine.MAX_PAPER_CHARS
-                                    )
-                                )
-                            )
-                        )
+                        template = engine.select_template(row["title"] or "")
+                        paper_text = server.read_full_text(arxiv_id)
 
                         async def _regen():
                             async with httpx.AsyncClient() as client:
-                                return await engine.summarize(client, text_result["text"], template)
+                                return await engine.summarize(client, paper_text, template)
 
                         new_summary, used_engine = run_async(_regen())
                         run_async(
