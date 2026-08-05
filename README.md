@@ -8,7 +8,7 @@
 
 ## 구성
 
-- `server.py` — MCP 서버 (stdio). 도구 8종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
+- `server.py` — MCP 서버 (stdio). 도구 10종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
 - `batch_summarize.py` — ④ 온디맨드 배치 요약 (Claude Code 밖 독립 실행, `server.py` 함수 직접 import)
 - `review_app.py` — ⑥ 사람 판단 UI (Streamlit). `streamlit run review_app.py`
 - `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 긴 논문은 청크로 나눠 전문을 다 읽는다(Gemini 300,000자·Groq 15,000자 단위, 둘 다 상한 있음 — Groq는 TPM 한도 때문에 청크 사이 60초 간격). 제목으로 서베이/실증 연구 템플릿을 결정론적으로 고른다(`select_template`). 위 둘이 공유
@@ -26,18 +26,22 @@
 
 `selection.py` 는 `select.py` 로 두면 표준 라이브러리 `select` 를 가려 asyncio 가 깨지므로 이 이름이다.
 
-## 도구 8종
+## 도구 10종
 
 | 도구 | 단계 | 비고 |
 | --- | --- | --- |
 | `arxiv_search_papers` | ① | 키 불필요, 호출 간 3초 강제 |
 | `s2_search_papers` | ① | 인용수 제공. `S2_API_KEY` 없으면 공용 한도 |
+| `s2_get_references` | ① | 인용망 backward — 이 논문이 인용한 것 |
+| `s2_get_citations` | ① | 인용망 forward — 이 논문을 인용한 것 |
 | `dedupe_and_rank_papers` | ② | 결정적 규칙. 네트워크 미사용 |
 | `fetch_paper` | ③ | HTML 우선 → PDF 폴백. 멱등 |
 | `get_paper_text` | ③ | 저장 텍스트 분할 열람 |
 | `verify_summary_numbers` | ⑤ | 읽기 전용 |
 | `save_summary` | — | 저장 직전 자동 검증, 불일치도 저장은 함 |
 | `list_stored_papers` | — | 저장소 목록 |
+
+`s2_get_references`/`s2_get_citations`는 Crawler/Selector 패턴(PaSa)에서 **Crawler만** 구현한다 — depth는 항상 1, 후보 수는 `limit`으로 코드가 상한을 강제하는 결정적 조회다. 어떤 후보가 관련 있는지 판정(Selector)은 이 서버의 일이 아니다 — 반환된 제목·초록을 사람이나 Claude Code가 보고 판단한다.
 
 ④ 요약, ⑥ 사람 판단, ⑦ 코드 재현은 이 서버의 일이 아니다.
 
