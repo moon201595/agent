@@ -7,6 +7,8 @@
 도구 목록:
   - arxiv_search_papers      ① arXiv 검색 (키 불필요, 호출 간 3초 간격 준수)
   - s2_search_papers         ① Semantic Scholar 검색 (인용수 포함, 키는 선택)
+  - s2_get_references        ① 인용망 backward — 이 논문이 인용한 것
+  - s2_get_citations         ① 인용망 forward — 이 논문을 인용한 것
   - dedupe_and_rank_papers   ② 중복 제거·선별 (결정적 규칙, 네트워크 미사용)
   - fetch_paper              ③ 원문 수집 (HTML 우선, 없으면 PDF) + 텍스트 추출·저장
   - get_paper_text           ③ 저장된 원문 텍스트 페이지 단위 열람
@@ -240,11 +242,17 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
     return await _with_retry(once, "arXiv API")
 
 
-async def _throttled_s2_get(client: httpx.AsyncClient, params: dict, headers: dict) -> httpx.Response:
+async def _throttled_s2_get(
+    client: httpx.AsyncClient, params: dict, headers: dict, url: str = S2_API,
+) -> httpx.Response:
     """Semantic Scholar 호출 간 최소 간격(S2_MIN_INTERVAL)을 서버 전역에서 강제한다.
     "초당 1회, 전체 엔드포인트 합산" 이 키 등록 여부와 무관하게 적용되는 공식 한도라
     _throttled_arxiv_get 과 같은 패턴으로 막는다 — 재시도마다 다시 적용해야
     재시도가 한도를 또 넘기지 않는다.
+
+    url 을 파라미터로 받는다(기본값은 검색 엔드포인트) — "전체 엔드포인트 합산"이라
+    references/citations 처럼 다른 엔드포인트를 불러도 이 락을 그대로 같이 써야
+    간격이 실제로 지켜진다. 엔드포인트마다 별도 락을 두면 한도를 우회하게 된다.
     """
 
     async def once() -> httpx.Response:
@@ -253,7 +261,7 @@ async def _throttled_s2_get(client: httpx.AsyncClient, params: dict, headers: di
             wait = S2_MIN_INTERVAL - (time.monotonic() - _last_s2_call)
             if wait > 0:
                 await asyncio.sleep(wait)
-            resp = await client.get(S2_API, params=params, headers=headers, timeout=30)
+            resp = await client.get(url, params=params, headers=headers, timeout=30)
             _last_s2_call = time.monotonic()
         resp.raise_for_status()
         return resp
@@ -498,6 +506,12 @@ class S2SearchInput(BaseModel):
                                      description="이 연도 이후 논문만 (예: 2023)")
 
 
+class S2CitationGraphInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    arxiv_id: str = Field(..., description="기준 논문의 arXiv ID (fetch_paper로 이미 저장돼 있을 필요는 없음)")
+    limit: int = Field(default=20, ge=1, le=100, description="최대 결과 수 (1~100)")
+
+
 class SelectPapersInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     papers: list[dict] = Field(
@@ -625,6 +639,83 @@ async def s2_search_papers(params: S2SearchInput) -> str:
             }
         )
     return json.dumps({"count": len(papers), "papers": papers}, ensure_ascii=False, indent=2)
+
+
+async def _s2_citation_graph(arxiv_id: str, limit: int, edge: str) -> str:
+    """s2_get_references/s2_get_citations 공용 구현. edge: 'references'(backward,
+    이 논문이 인용한 것) | 'citations'(forward, 이 논문을 인용한 것).
+
+    문헌 조사에서 실제로 자주 필요한 동작인데 지금까지 완전히 빠져 있던 축이다
+    (2026-08-04 조사 문서 §0.3, §1-A-5). Crawler/Selector 패턴(PaSa)에서
+    Crawler 에 해당하는 결정적 부분만 구현한다 — depth는 항상 1(이 논문 기준
+    한 홉만), 후보 수는 limit 으로 코드가 상한을 강제한다. 어떤 후보가
+    사용자 관심사와 관련 있는지 판정(Selector)은 이 서버의 일이 아니다 —
+    사람이나 Claude Code 가 반환된 제목·초록을 보고 판단한다.
+    """
+    headers = {}
+    if os.environ.get("S2_API_KEY"):
+        headers["x-api-key"] = os.environ["S2_API_KEY"]
+    url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}/{edge}"
+    api_params = {
+        "fields": "title,abstract,year,citationCount,externalIds",
+        "limit": limit,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await _throttled_s2_get(client, api_params, headers, url=url)
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        return _http_error_to_message(e, "Semantic Scholar")
+    key = "citedPaper" if edge == "references" else "citingPaper"
+    papers = []
+    for item in data.get("data", []):
+        p = item.get(key) or {}
+        ext = p.get("externalIds") or {}
+        papers.append(
+            {
+                "title": p.get("title"),
+                "year": p.get("year"),
+                "citation_count": p.get("citationCount"),
+                "arxiv_id": ext.get("ArXiv"),
+                "abstract": (p.get("abstract") or "")[:600],
+            }
+        )
+    return json.dumps(
+        {"arxiv_id": arxiv_id, "edge": edge, "count": len(papers), "papers": papers},
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="s2_get_references",
+    annotations={"title": "① 인용망 — 이 논문이 인용한 것(backward)", "readOnlyHint": True,
+                 "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def s2_get_references(params: S2CitationGraphInput) -> str:
+    """이 논문이 참고문헌으로 인용한 논문 목록(backward). 예: 이 논문이 쓴
+    벤치마크·베이스라인의 원 논문을 찾을 때 쓴다.
+
+    Returns:
+        str: JSON — {arxiv_id, edge:"references", count, papers:[{title, year,
+             citation_count, arxiv_id, abstract}, ...]}
+    """
+    return await _s2_citation_graph(_clean_arxiv_id(params.arxiv_id), params.limit, "references")
+
+
+@mcp.tool(
+    name="s2_get_citations",
+    annotations={"title": "① 인용망 — 이 논문을 인용한 것(forward)", "readOnlyHint": True,
+                 "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def s2_get_citations(params: S2CitationGraphInput) -> str:
+    """이 논문을 인용한 후속 논문 목록(forward). 예: 이 논문의 벤치마크·방법론에
+    대한 후속 지적·개선이 있었는지 찾을 때 쓴다.
+
+    Returns:
+        str: JSON — {arxiv_id, edge:"citations", count, papers:[{title, year,
+             citation_count, arxiv_id, abstract}, ...]}
+    """
+    return await _s2_citation_graph(_clean_arxiv_id(params.arxiv_id), params.limit, "citations")
 
 
 @mcp.tool(
