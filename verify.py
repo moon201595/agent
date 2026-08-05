@@ -23,6 +23,18 @@ from dataclasses import dataclass, field
 # 백트래킹으로 숫자가 잘려 나간다 (예: "99.87도" → "99").
 _NUMBER_RE = re.compile(r"(?<![\d.a-zA-Z])(\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?)(?!\d)")
 
+# 2026-08-06 실측: 프롬프트 v2 R2 규칙("값 ... — 출처위치")이 "본문 6.1절",
+# "Table 3", "Figure 4(a)" 같은 출처 표기를 강제하는데, 이 표기 안의 숫자를
+# 데이터 수치로 착각해 검증기가 오탐을 냈다(VegaEdge 등 실측 확인 — 불일치로
+# 잡힌 게 전부 "6.1", "6.2" 같은 절 번호였다). "6.1절"은 소수처럼 생겨서
+# 한 자리 정수 제외 규칙(len<2)을 안 타고 그대로 통과했었다.
+# 숫자 바로 앞/뒤에 이런 출처 마커가 붙어 있으면 데이터가 아니라 위치
+# 표기로 보고 검증 대상에서 아예 뺀다(불일치로도 안 세고 총계에도 안 넣음).
+_LOCATION_MARKER = r"(절|장|Section|Sec\.|Table|표|Figure|Fig\.|그림|Appendix|부록|Eq\.|식|Chapter)"
+_LOCATION_SUFFIX_RE = re.compile(r"^\s*" + _LOCATION_MARKER, re.I)
+_LOCATION_PREFIX_RE = re.compile(_LOCATION_MARKER + r"\s*$", re.I)
+_LOCATION_CONTEXT_CHARS = 12
+
 
 @dataclass
 class NumberCheck:
@@ -58,14 +70,24 @@ def _normalize(token: str) -> str:
     return token.replace(",", "")
 
 
+def _is_location_reference(text: str, start: int, end: int) -> bool:
+    """이 숫자가 '본문 6.1절'·'Table 3'·'Figure 4(a)' 같은 출처 위치
+    표기의 일부인지 본다 — 데이터 값이 아니라 문서 좌표라 검증 대상이 아니다."""
+    after = text[end:end + _LOCATION_CONTEXT_CHARS]
+    before = text[max(0, start - _LOCATION_CONTEXT_CHARS):start]
+    return bool(_LOCATION_SUFFIX_RE.match(after) or _LOCATION_PREFIX_RE.search(before))
+
+
 def _extract_numbers(text: str) -> list[tuple[str, str, str]]:
-    """(원토큰, 정규화값, 문맥) 목록. 한 자리 정수는 제외."""
+    """(원토큰, 정규화값, 문맥) 목록. 한 자리 정수·출처 위치 표기는 제외."""
     out: list[tuple[str, str, str]] = []
     for m in _NUMBER_RE.finditer(text):
         token = m.group(1)
         norm = _normalize(token)
         # 한 자리 정수는 검증 의미가 없어 제외 (소수점 있으면 포함: "0.5" 등)
         if "." not in norm and "e" not in norm.lower() and len(norm) < 2:
+            continue
+        if _is_location_reference(text, m.start(), m.end()):
             continue
         start = max(0, m.start() - 30)
         end = min(len(text), m.end() + 30)
