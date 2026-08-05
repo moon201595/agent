@@ -12,6 +12,7 @@ Gemini 무료 API가 실사용 가능한 유일한 무료 후보였다.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -30,6 +31,19 @@ ENV_PATH = ROOT / ".env"
 # Gemini는 넉넉히, Groq 무료 TPM 한도(12,000/분)에 걸리지 않게 폴백 시 더 줄인다.
 MAX_PAPER_CHARS = 60000
 GROQ_FALLBACK_CHARS = 15000
+
+# 2026-08-05 실측: 논문 34편을 연속 호출로 돌렸더니 22편째부터 Gemini·Groq
+# 무료 티어 둘 다 429(분당 한도 초과)를 맞았다 — 호출 사이에 페이싱이 전혀
+# 없었기 때문이다. 수동으로 25초 간격을 두고 재시도하니 12/12 전부 성공했다.
+# 그 교훈을 배치 스크립트마다 따로 페이싱하게 두지 않고 여기 한 곳에 고정한다
+# — ①~③(arXiv/S2)의 _throttled_*_get 과 같은 발상이다. 429 상한(초과)까지만
+# 재시도한다 — 무한 재시도가 아니라 상한 있는 예외 처리다.
+RATE_LIMIT_RETRIES = 2
+RATE_LIMIT_BACKOFF = (20.0, 40.0)  # 재시도 1회차·2회차 대기(초)
+
+
+def _is_rate_limited(e: Exception) -> bool:
+    return isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
 
 
 def load_env() -> dict:
@@ -109,13 +123,33 @@ async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -
     return resp.json()["choices"][0]["message"]["content"]
 
 
+async def _call_with_rate_limit_retry(call_fn, client, paper_text, template, label: str) -> str:
+    """429 만 상한(RATE_LIMIT_RETRIES)까지 재시도한다. 429 가 아닌 실패(키 없음,
+    5xx 등)는 즉시 올려서 summarize() 가 바로 다른 엔진으로 넘어가게 한다 —
+    429 만 "잠깐 기다리면 풀릴 수 있는" 실패이기 때문이다.
+    """
+    last: Exception | None = None
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return await call_fn(client, paper_text, template)
+        except Exception as e:  # noqa: BLE001
+            if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
+                raise
+            wait = RATE_LIMIT_BACKOFF[attempt]
+            print(f"  [경고] {label} 429 — {wait:.0f}초 대기 후 재시도 "
+                  f"({attempt + 1}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
+            last = e
+            await asyncio.sleep(wait)
+    raise last  # pragma: no cover — 루프가 항상 return 또는 raise 로 빠짐
+
+
 async def summarize(client: httpx.AsyncClient, paper_text: str, template: str) -> tuple[str, str]:
     """returns (summary_markdown, engine_name)"""
     try:
-        return await call_gemini(client, paper_text, template), "gemini"
+        return await _call_with_rate_limit_retry(call_gemini, client, paper_text, template, "Gemini"), "gemini"
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] Gemini 실패({e}) → Groq로 전환", file=sys.stderr)
     try:
-        return await call_groq(client, paper_text, template), "groq"
+        return await _call_with_rate_limit_retry(call_groq, client, paper_text, template, "Groq"), "groq"
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Gemini·Groq 둘 다 실패: {e}") from e
