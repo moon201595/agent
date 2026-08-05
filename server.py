@@ -75,6 +75,14 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 ARXIV_PDF = "https://arxiv.org/pdf/{arxiv_id}"
 ARXIV_HTML = "https://arxiv.org/html/{arxiv_id}"
 S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
+# DOI → 합법적 오픈액세스 PDF 위치 조회. 키 불필요, 대신 email 로 정중한 사용을
+# 식별해야 한다(공식 요구사항) — 스크레이핑이 아니라 이미 공개된 버전의 소재를
+# 알려주는 색인 서비스다. 페이월 우회 아님: 오픈액세스가 없으면 그냥 못 찾는다.
+UNPAYWALL_API = "https://api.unpaywall.org/v2/{doi}"
+# Unpaywall 은 example.com 류 더미 이메일을 실제로 거부한다(실측 확인,
+# 422 "Please use your own email address"). .env 에 UNPAYWALL_EMAIL 로
+# 재정의할 수 있게 하되, 기본값은 실제 연락 가능한 주소로 둔다.
+UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "answnsgur030@naver.com")
 
 # arXiv 공식 안내에 따른 예의상 호출 간격 (초)
 ARXIV_MIN_INTERVAL = 3.0
@@ -132,6 +140,12 @@ def _init_storage() -> None:
         existing = {row[1] for row in con.execute("PRAGMA table_info(papers)")}
         if "extract_method" not in existing:
             con.execute("ALTER TABLE papers ADD COLUMN extract_method TEXT")
+        # arXiv 밖 논문(저널 PDF 수동 업로드·오픈액세스 자동 수집) 지원(2026-08-04).
+        # arxiv_id 컬럼은 이름 그대로 두되 값으로 합성 ID(pdf-<hash>)도 받는다 —
+        # 이 컬럼이 어디서 왔는지는 source 로 구분한다: 'arxiv' | 'manual-pdf: <출처>'
+        # | 'open-access: <URL>'. 기존 arXiv 행은 NULL로 남고 fetch_paper 는 안 건드림.
+        if "source" not in existing:
+            con.execute("ALTER TABLE papers ADD COLUMN source TEXT")
 
         # ⑥ 사람 판단 상태. review_app.py 가 쓴다 — 이 서버는 판단하지 않고
         # 값을 저장·조회만 한다. 기본값 'pending' — 저장된 요약은 검토 전이 기본.
@@ -774,6 +788,102 @@ async def get_paper_text(params: GetTextInput) -> str:
          "has_more": params.offset + len(chunk) < len(text), "text": chunk},
         ensure_ascii=False, indent=2,
     )
+
+
+def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pdf") -> dict:
+    """arXiv 밖 논문(저널·컨퍼런스 PDF)을 수동으로 들여온다(2026-08-04).
+
+    이미 합법적으로 접근 가능한 파일(기관 구독 등으로 사용자가 이미 갖고 있는
+    PDF)을 사용자가 직접 올리는 경로다 — 페이월 우회나 스크레이핑이 아니다.
+    MCP 도구가 아니다: review_app.py 가 파일 업로더에서 받은 bytes 를 그대로
+    넘겨 호출한다 (바이너리를 JSON 파라미터로 감싸는 건 MCP 에 안 맞는다 —
+    save_repro_result·set_review_status 와 같은 "plain 함수" 패턴).
+
+    arxiv_id 대신 파일 내용 해시로 합성 ID(pdf-<hash10>)를 만든다 — 같은
+    파일을 다시 올려도 같은 ID 가 나와 fetch_paper 처럼 멱등하다.
+
+    Returns:
+        dict: {arxiv_id, title, text_chars, pdf_path, text_path, preview}
+    Raises:
+        ValueError: 텍스트 추출 실패(스캔본·손상 파일 등)
+    """
+    import hashlib
+
+    synth_id = f"pdf-{hashlib.sha1(pdf_bytes).hexdigest()[:10]}"
+
+    with _db() as con:
+        row = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (synth_id,)).fetchone()
+    if row and row["text_path"] and Path(row["text_path"]).exists():
+        return {"arxiv_id": synth_id, "title": row["title"], "text_chars": row["text_chars"],
+                "pdf_path": row["pdf_path"], "text_path": row["text_path"],
+                "note": "이미 저장된 파일 — 재처리 생략"}
+
+    pdf_path = PDF_DIR / f"{synth_id}.pdf"
+    pdf_path.write_bytes(pdf_bytes)
+    try:
+        text = _text_from_pdf(pdf_path)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"PDF 텍스트 추출 실패: {type(e).__name__}: {e}") from e
+    if not text.strip():
+        raise ValueError("PDF에서 텍스트를 추출하지 못함 — 스캔본이거나 손상된 파일일 수 있음")
+
+    text_path = TEXT_DIR / f"{synth_id}.txt"
+    text_path.write_text(text, encoding="utf-8")
+
+    with _db() as con:
+        con.execute(
+            """INSERT OR REPLACE INTO papers
+               (arxiv_id, title, authors, published, categories, abstract,
+                pdf_path, text_path, text_chars, fetched_at, extract_method, source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (synth_id, title, json.dumps([], ensure_ascii=False), None,
+             json.dumps([], ensure_ascii=False), None, str(pdf_path), str(text_path),
+             len(text), _now(), "pdf", source_note),
+        )
+    return {"arxiv_id": synth_id, "title": title, "text_chars": len(text),
+            "pdf_path": str(pdf_path), "text_path": str(text_path), "preview": text[:400]}
+
+
+async def resolve_unpaywall_pdf(doi: str) -> str | None:
+    """DOI로 합법적 오픈액세스 PDF 위치를 찾는다(Unpaywall API). 못 찾으면
+    None — 그 경우 이 논문은 오픈액세스가 아니라는 뜻이고, 수동 업로드로
+    가야 한다(ingest_local_pdf).
+    """
+    doi = doi.strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
+        if doi.startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            UNPAYWALL_API.format(doi=doi), params={"email": UNPAYWALL_EMAIL}, timeout=20,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+    best = data.get("best_oa_location") or {}
+    return best.get("url_for_pdf")
+
+
+async def fetch_pdf_from_url(pdf_url: str, title: str = "", source_note: str = "") -> dict:
+    """오픈액세스 PDF를 URL로 직접 받아 들여온다 — S2 검색 결과의
+    open_access_pdf 필드나 resolve_unpaywall_pdf() 가 찾아준 링크용이다.
+    이미 공개된 파일만 받으므로 페이월 우회가 아니다.
+
+    Raises:
+        ValueError: PDF가 아닌 응답(초록 페이지로 리다이렉트된 경우 등)
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(pdf_url, timeout=60)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" not in content_type.lower() and not pdf_url.lower().endswith(".pdf"):
+            raise ValueError(
+                f"PDF가 아닌 응답(content-type={content_type!r}) — 링크가 초록 페이지일 수 있음"
+            )
+        pdf_bytes = resp.content
+    return ingest_local_pdf(pdf_bytes, title or "(제목 미입력)", source_note or f"open-access: {pdf_url}")
 
 
 @mcp.tool(

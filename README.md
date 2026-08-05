@@ -8,7 +8,7 @@
 
 ## 구성
 
-- `server.py` — MCP 서버 (stdio). 도구 8종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼. `.env` 자동 로드
+- `server.py` — MCP 서버 (stdio). 도구 8종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
 - `batch_summarize.py` — ④ 온디맨드 배치 요약 (Claude Code 밖 독립 실행, `server.py` 함수 직접 import)
 - `review_app.py` — ⑥ 사람 판단 UI (Streamlit). `streamlit run review_app.py`
 - `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 위 둘이 공유
@@ -21,7 +21,7 @@
 - `test_smoke.py` — 실동작 스모크 7종 (네트워크 필요)
 - `test_verify_units.py` / `test_select.py` — 단위 테스트 22종 (네트워크 불필요)
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
-- `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` (커밋 제외, 각자 발급)
+- `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL`(선택, 미설정 시 기본값 사용) (커밋 제외, 각자 발급)
 
 `selection.py` 는 `select.py` 로 두면 표준 라이브러리 `select` 를 가려 asyncio 가 깨지므로 이 이름이다.
 
@@ -39,6 +39,24 @@
 | `list_stored_papers` | — | 저장소 목록 |
 
 ④ 요약, ⑥ 사람 판단, ⑦ 코드 재현은 이 서버의 일이 아니다.
+
+## ③ arXiv 밖 논문 — 수동 업로드 · 오픈액세스 자동 수집 (2026-08-04)
+
+`fetch_paper`는 arXiv 전용이다. 그런데 실제 문헌 조사는 Nature·ScienceDirect·IEEE·ACM 처럼 arXiv에 없는 저널·컨퍼런스 논문이 더 많다 — 특히 산업/하드웨어 계열은 거의 그렇다. 이걸 못 넣으면 평가셋은 물론 하네스 자체의 실사용 범위가 arXiv로 좁혀진다. 그래서 두 경로를 추가했다:
+
+| 함수 | 위치 | 용도 |
+| --- | --- | --- |
+| `server.ingest_local_pdf(pdf_bytes, title, source_note)` | `server.py` | 이미 합법적으로 접근 가능한 PDF(기관 구독 등)를 직접 업로드. 페이월 우회 아님 |
+| `server.fetch_pdf_from_url(pdf_url, title, source_note)` | `server.py` | 오픈액세스 PDF를 URL로 직접 수집 |
+| `server.resolve_unpaywall_pdf(doi)` | `server.py` | DOI → 합법적 오픈액세스 PDF 위치 조회 (Unpaywall API, 무료·키 불필요, `email` 파라미터만 요구) |
+
+전부 **MCP 도구가 아니다** — `ingest_local_pdf`는 바이너리(PDF bytes)를 받는데 이걸 JSON 파라미터로 감싸는 건 MCP 관례에 안 맞아서, `save_repro_result`/`set_review_status`와 같은 "plain 함수, `server.py`에서 직접 import" 패턴을 그대로 따른다. `review_app.py`의 "PDF 업로드"·"DOI/URL(오픈액세스)" 입력 모드가 이걸 쓴다.
+
+arXiv ID가 없는 논문은 `pdf-<내용 해시 10자리>` 형태의 합성 ID를 쓴다 — 같은 파일을 다시 올려도 같은 ID가 나와 `fetch_paper`처럼 멱등하다. `papers.arxiv_id` 컬럼 이름은 그대로 두고(스키마 변경 최소화), 새로 추가한 `papers.source` 컬럼으로 출처(`arxiv` / `manual-pdf: ...` / `open-access: ...`)를 구분한다.
+
+**주의**: Unpaywall은 더미 이메일(`example.com` 등)을 422로 거부한다(실측 확인). `UNPAYWALL_EMAIL`을 `.env`에 설정하지 않으면 기본값(사용자 실제 이메일)을 쓴다.
+
+**여전히 안 되는 것**: ScienceDirect·IEEE·ACM처럼 페이월이면서 오픈액세스도 아닌 논문은 자동 수집이 안 된다 — PDF 업로드 경로로 사용자가 직접 넣어야 한다. 이건 의도된 제약이다(라이선스·ToS 준수).
 
 ## 자율성 경계
 
