@@ -77,7 +77,19 @@ def select_template(title: str, abstract: str = "", force: str | None = None) ->
 MAX_PAPER_CHARS = 300000
 CHUNK_SIZE = MAX_PAPER_CHARS
 MAX_CHUNKS = 4  # 300,000 × 4 = 최대 1,200,000자까지 커버
+GEMINI_CHUNK_DELAY = 3.0  # 청크 사이 최소 간격(초) — 429 재시도와 별개로 두는 예방적 여유
+
+# 2026-08-06: Gemini만 청킹하고 Groq는 그냥 15,000자에서 잘랐었는데,
+# "둘 다 전문을 읽을 수 있어야 한다"는 지적을 받아들여 Groq도 청킹한다.
+# 청크 크기는 12,000 TPM 한도 그대로 유지(GROQ_FALLBACK_CHARS)하되, 청크
+# 사이 간격을 60초로 크게 둔다 — 한 번 호출이 토큰 예산 대부분을 쓰기
+# 때문에(발췌 15,000자 + 템플릿 + 응답 2,000토큰), 분당 한도가 찰 시간을
+# 그대로 기다려야 한다. 그만큼 느리다(최악의 경우 논문 1편에 30분 안팎) —
+# Gemini 가 완전히 막혔을 때만 타는 경로라 감수할 만하다고 판단했다.
 GROQ_FALLBACK_CHARS = 15000
+GROQ_CHUNK_SIZE = GROQ_FALLBACK_CHARS
+GROQ_MAX_CHUNKS = 32  # 15,000 × 32 = 480,000자 — 지금까지 실측된 최대 논문(462,289자) 커버
+GROQ_CHUNK_DELAY = 60.0
 
 # 2026-08-05 실측: 논문 34편을 연속 호출로 돌렸더니 22편째부터 Gemini·Groq
 # 무료 티어 둘 다 429(분당 한도 초과)를 맞았다 — 호출 사이에 페이싱이 전혀
@@ -173,11 +185,10 @@ async def call_gemini_addendum(client: httpx.AsyncClient, chunk_text: str) -> st
     return await _post_gemini(client, prompt)
 
 
-async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
+async def _post_groq(client: httpx.AsyncClient, prompt: str) -> str:
     key = ENV.get("GROQ_API_KEY")
     if not key:
         raise RuntimeError("GROQ_API_KEY 없음")
-    prompt = build_prompt(paper_text, template, GROQ_FALLBACK_CHARS)
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
@@ -196,6 +207,29 @@ async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
+
+
+async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
+    return await _post_groq(client, build_prompt(paper_text, template, GROQ_FALLBACK_CHARS))
+
+
+async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
+    """call_gemini_addendum 과 같은 발상, Groq 용. 발췌 자체도 GROQ_FALLBACK_CHARS
+    이내로 자른다 — 청크 크기 자체가 이미 그 값이라 여기선 그대로 쓴다."""
+    prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
+이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
+이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
+값(조건/비교대상/지표) — 출처위치 ★등급 형식을 지켜라. 새로 뽑을 것이 없으면
+두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
+
+### 추가 결과 (원문 후반부)
+
+### 추가 한계점 (원문 후반부)
+
+# 논문 원문 (후반부 발췌)
+{chunk_text}
+"""
+    return await _post_groq(client, prompt)
 
 
 async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
@@ -222,42 +256,63 @@ async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
     raise last  # pragma: no cover — 루프가 항상 return 또는 raise 로 빠짐
 
 
+async def _summarize_chunked(
+    client: httpx.AsyncClient, paper_text: str, template: str,
+    call_single, call_addendum, chunk_size: int, max_chunks: int,
+    chunk_delay: float, label: str,
+) -> str:
+    """첫 chunk_size자로 전체 템플릿을 채운 뒤, 남은 원문을 chunk_size자씩
+    이어붙여(최대 max_chunks개) "추가 결과·추가 한계점"만 보충한다 — 긴
+    논문이라고 뒷부분을 조용히 안 보고 넘어가지 않는다. 청크 처리 중
+    하나가 실패하면 그 뒤는 포기하고 지금까지 만든 결과로 마무리한다
+    (무한정 재시도하지 않음). Gemini·Groq 둘 다 이 함수를 쓴다 — 청크
+    크기·상한·간격만 엔진별로 다르게 준다(summarize() 참고).
+    """
+    summary = await _call_with_rate_limit_retry(
+        lambda: call_single(client, paper_text, template), label,
+    )
+    remainder = paper_text[chunk_size:]
+    chunk_num = 1
+    while remainder and chunk_num < max_chunks:
+        chunk_num += 1
+        chunk_text, remainder = remainder[:chunk_size], remainder[chunk_size:]
+        if chunk_delay:
+            await asyncio.sleep(chunk_delay)
+        try:
+            addendum = await _call_with_rate_limit_retry(
+                lambda: call_addendum(client, chunk_text), f"{label}(청크{chunk_num})",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  [경고] {label} 청크 {chunk_num} 처리 실패({e}) — 이 이후 구간은 건너뜀",
+                  file=sys.stderr)
+            break
+        if _ADDENDUM_NO_CONTENT not in addendum:
+            summary += f"\n\n{addendum}"
+    return summary
+
+
 async def summarize(client: httpx.AsyncClient, paper_text: str, template: str) -> tuple[str, str]:
     """returns (summary_markdown, engine_name)
 
-    Gemini 경로는 첫 CHUNK_SIZE자로 전체 템플릿을 채운 뒤, 남은 원문을
-    CHUNK_SIZE자씩 이어붙여(최대 MAX_CHUNKS개) "추가 결과·추가 한계점"만
-    보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지 않는다.
-    청크 처리 중 하나가 실패하면 그 뒤는 포기하고 지금까지 만든 결과로
-    마무리한다(무한정 재시도하지 않음). Groq 폴백은 청크를 안 한다 — 무료
-    TPM 한도가 이미 빠듯해서 청크를 늘리면 오히려 더 자주 막힌다.
+    Gemini·Groq 둘 다 청크로 전문을 읽는다(2026-08-06, "둘 다 되게 하자"
+    요청 반영) — 청크 크기·상한·간격만 다르다. Groq는 12,000 TPM 한도가
+    빠듯해서 청크 사이 간격을 60초로 크게 둔다 — 그만큼 느리다(최악의
+    경우 논문 1편에 30분 안팎). Gemini가 완전히 막혔을 때만 타는 경로라
+    감수할 만하다고 판단했다.
     """
     try:
-        summary = await _call_with_rate_limit_retry(
-            lambda: call_gemini(client, paper_text, template), "Gemini",
+        summary = await _summarize_chunked(
+            client, paper_text, template, call_gemini, call_gemini_addendum,
+            CHUNK_SIZE, MAX_CHUNKS, GEMINI_CHUNK_DELAY, "Gemini",
         )
-        remainder = paper_text[CHUNK_SIZE:]
-        chunk_num = 1
-        while remainder and chunk_num < MAX_CHUNKS:
-            chunk_num += 1
-            chunk_text, remainder = remainder[:CHUNK_SIZE], remainder[CHUNK_SIZE:]
-            try:
-                addendum = await _call_with_rate_limit_retry(
-                    lambda: call_gemini_addendum(client, chunk_text), f"Gemini(청크{chunk_num})",
-                )
-            except Exception as e:  # noqa: BLE001
-                print(f"  [경고] 청크 {chunk_num} 처리 실패({e}) — 이 이후 구간은 건너뜀",
-                      file=sys.stderr)
-                break
-            if _ADDENDUM_NO_CONTENT not in addendum:
-                summary += f"\n\n{addendum}"
         return summary, "gemini"
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] Gemini 실패({e}) → Groq로 전환", file=sys.stderr)
     try:
-        result = await _call_with_rate_limit_retry(
-            lambda: call_groq(client, paper_text, template), "Groq",
+        summary = await _summarize_chunked(
+            client, paper_text, template, call_groq, call_groq_addendum,
+            GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, GROQ_CHUNK_DELAY, "Groq",
         )
-        return result, "groq"
+        return summary, "groq"
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Gemini·Groq 둘 다 실패: {e}") from e

@@ -11,7 +11,7 @@
 - `server.py` — MCP 서버 (stdio). 도구 8종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
 - `batch_summarize.py` — ④ 온디맨드 배치 요약 (Claude Code 밖 독립 실행, `server.py` 함수 직접 import)
 - `review_app.py` — ⑥ 사람 판단 UI (Streamlit). `streamlit run review_app.py`
-- `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 긴 논문은 300,000자 단위로 청크를 이어붙여 전문을 다 읽는다. 제목으로 서베이/실증 연구 템플릿을 결정론적으로 고른다(`select_template`). 위 둘이 공유
+- `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 긴 논문은 청크로 나눠 전문을 다 읽는다(Gemini 300,000자·Groq 15,000자 단위, 둘 다 상한 있음 — Groq는 TPM 한도 때문에 청크 사이 60초 간격). 제목으로 서베이/실증 연구 템플릿을 결정론적으로 고른다(`select_template`). 위 둘이 공유
 - `code_finder.py` — ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색 + HuggingFace 모델카드 경유 GitHub 링크 추적)
 - `docker_runner.py` — ⑦ Docker 격리 실행. `reproduce(arxiv_id)` 가 유일한 자율 재시도 루프(최대 3회)
 - `selection.py` — ② 중복 제거·선별 규칙 (네트워크·LLM 미사용)
