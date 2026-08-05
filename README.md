@@ -78,21 +78,16 @@ Semantic Scholar 는 공용 한도에서 429 가 잦다 — **2026-08-01 키 발
 
 ## 사용 흐름
 
-**표준 경로 — 터미널 스크립트** (요약은 무료 API가 씀, Claude Code 불필요):
+**표준 경로는 이 하나뿐이다 — 터미널 스크립트** (검색→선별→요약→검증→저장까지 전부 무인, Claude Code 불필요):
 
 ```bash
 python batch_summarize.py --keyword "transformer 경량화" --top-n 3
 streamlit run review_app.py
 ```
 
-**Claude Code 채팅에서는 검색·선별까지만 맡긴다** (④ 요약 작성은 더 이상 시키지 않음):
+①②③(검색·선별·파싱)은 판단이 필요 없는 결정적 코드라 Claude Code 채팅으로 개별 도구를 호출해도 실행되는 로직은 동일하다 — 다만 그건 디버깅·탐색용 수동 조작일 뿐 정식 경로가 아니다. `batch_summarize.py`가 이미 전 과정을 무인으로 처리하므로, 정상적인 사용에서는 채팅 개입이 전혀 필요 없다.
 
-```
-"transformer 경량화 논문을 arxiv_search_papers 와 s2_search_papers 로 각각 찾고,
-두 결과를 합쳐 dedupe_and_rank_papers 로 상위 3편을 선별해줘."
-```
-
-두 검색 결과를 **함께** `dedupe_and_rank_papers` 에 넣어야 한다. 인용수는 S2 만 주므로 arXiv 결과만 넣으면 정렬이 연도만으로 이뤄진다.
+두 검색 결과(arXiv·S2)를 **함께** `dedupe_and_rank_papers` 에 넣어야 한다. 인용수는 S2 만 주므로 arXiv 결과만 넣으면 정렬이 연도만으로 이뤄진다 — `batch_summarize.py` 내부에서 이미 이렇게 처리한다.
 
 `save_summary` 는 저장 직전에 수치 검증을 자동 수행하지만 불일치가 있어도 **저장을 차단하지 않는다** — 과제 KPI "(목표)" 수치처럼 원문 밖 출처의 숫자는 정당하게 불일치할 수 있다. 불일치는 사람이 원문·출처를 확인한다.
 
