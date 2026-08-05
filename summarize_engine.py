@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -27,9 +28,55 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
+TEMPLATE_PATH = ROOT / "prompts" / "summary_template.md"
+SURVEY_TEMPLATE_PATH = ROOT / "prompts" / "summary_template_survey.md"
+
+# 2026-08-06 실측: 실증 연구용 템플릿(방법 상세→실험 설정→결과)을 서베이
+# 논문에 그대로 쓰면 "④ 결과" 절이 억지로 비거나 남의 수치를 자기 결과처럼
+# 적는 위험이 있다 — 실측(Small VLM Survey 등)에서 통과율은 1.0인데 검증된
+# 숫자가 9개뿐이었다(정확하지만 빈약함, 검증기가 못 잡는 완전성 문제).
+# 판정은 LLM 판단이 아니라 제목·초록의 결정적 키워드 규칙이다 — 서버가
+# 판단하지 않는다는 원칙을 요약 엔진 쪽에서도 지킨다. 오판정되면 사람이
+# 직접 템플릿을 지정해 덮어쓸 수 있다(select_template 의 force 인자).
+_SURVEY_KEYWORDS = re.compile(
+    r"\b(a\s+survey|surveys?\b|systematic\s+review|literature\s+review|"
+    r"a\s+review\s+of|an?\s+overview\s+of)\b", re.I,
+)
+
+
+def is_survey_paper(title: str, abstract: str = "") -> bool:
+    """제목에 서베이/리뷰임을 명시하는 표현이 있으면 서베이로 분류한다.
+    제목이 가장 강한 신호다("X: A Survey", "A Survey of X") — 초록은 거짓
+    양성이 잦아(예: "본 논문은 관련 연구를 review한다"는 흔한 도입 문구)
+    제목에 신호가 없을 때만 약하게 참고한다.
+    """
+    if title and _SURVEY_KEYWORDS.search(title):
+        return True
+    if abstract and re.match(r"^\s*(this|we present|in this)\b.{0,80}" + _SURVEY_KEYWORDS.pattern,
+                              abstract, re.I):
+        return True
+    return False
+
+
+def select_template(title: str, abstract: str = "", force: str | None = None) -> str:
+    """force: None(자동 판정) | 'default' | 'survey' — 오판정 시 수동 지정용."""
+    if force == "survey" or (force is None and is_survey_paper(title, abstract)):
+        return SURVEY_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return TEMPLATE_PATH.read_text(encoding="utf-8")
 
 # Gemini는 넉넉히, Groq 무료 TPM 한도(12,000/분)에 걸리지 않게 폴백 시 더 줄인다.
-MAX_PAPER_CHARS = 60000
+#
+# 2026-08-06 실측: 60,000자에서 자르니 Feelbert(236,983자)가 3.1절 도중
+# 잘려 결과 절 자체를 못 보고 통과율 0.71로 떨어졌다("일부만 보고 요약"은
+# 검증이 무의미하다는 지적을 받아들여, 자르지 않고 전부 읽도록 바꿨다).
+# Gemini flash 의 실제 컨텍스트 창은 수백만 자 단위라 60,000자는 애초에
+# 보수적으로 잡은 값이었다 — CHUNK_SIZE 를 크게 올려 대부분의 논문(지금까지
+# 실측된 최대 462,289자도 청크 2개면 끝)을 한두 번 호출로 끝낸다. 그래도
+# 넘치면 MAX_CHUNKS 상한까지 이어붙인다 — 상한 없는 루프가 아니라 여기도
+# 상한 있는 예외 처리(이 프로젝트 전체 원칙과 동일).
+MAX_PAPER_CHARS = 300000
+CHUNK_SIZE = MAX_PAPER_CHARS
+MAX_CHUNKS = 4  # 300,000 × 4 = 최대 1,200,000자까지 커버
 GROQ_FALLBACK_CHARS = 15000
 
 # 2026-08-05 실측: 논문 34편을 연속 호출로 돌렸더니 22편째부터 Gemini·Groq
@@ -76,18 +123,18 @@ def build_prompt(paper_text: str, template: str, max_chars: int) -> str:
 """
 
 
-async def call_gemini(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
+_GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+)
+
+
+async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
     key = ENV.get("GOOGLE_API_KEY")
     if not key:
         raise RuntimeError("GOOGLE_API_KEY 없음")
-    prompt = build_prompt(paper_text, template, MAX_PAPER_CHARS)
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-flash-latest:generateContent"
-    )
     # URL 쿼리 파라미터로 키를 보내면 로그·프록시 기록에 그대로 남는다 — 헤더로 보낸다.
     resp = await client.post(
-        url,
+        _GEMINI_URL,
         json={"contents": [{"parts": [{"text": prompt}]}]},
         headers={"x-goog-api-key": key},
         timeout=180,
@@ -96,6 +143,34 @@ async def call_gemini(client: httpx.AsyncClient, paper_text: str, template: str)
     data = resp.json()
     parts = data["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts)
+
+
+async def call_gemini(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
+    return await _post_gemini(client, build_prompt(paper_text, template, MAX_PAPER_CHARS))
+
+
+_ADDENDUM_NO_CONTENT = "추가로 뽑을 새 내용 없음"
+
+
+async def call_gemini_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
+    """이어지는 청크에서 새 결과·한계점만 뽑는 보충 호출. 청크 1 이 이미
+    만든 템플릿 구조를 마크다운 파싱으로 고쳐 끼워 넣는 위험한 수술을 하지
+    않는다 — 그냥 뒤에 이어붙일 독립된 절을 새로 쓰게 한다.
+    """
+    prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
+이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
+이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
+값(조건/비교대상/지표) — 출처위치 ★등급 형식을 지켜라. 새로 뽑을 것이 없으면
+두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
+
+### 추가 결과 (원문 후반부)
+
+### 추가 한계점 (원문 후반부)
+
+# 논문 원문 (후반부 발췌)
+{chunk_text}
+"""
+    return await _post_gemini(client, prompt)
 
 
 async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
@@ -123,15 +198,19 @@ async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -
     return resp.json()["choices"][0]["message"]["content"]
 
 
-async def _call_with_rate_limit_retry(call_fn, client, paper_text, template, label: str) -> str:
+async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
     """429 만 상한(RATE_LIMIT_RETRIES)까지 재시도한다. 429 가 아닌 실패(키 없음,
-    5xx 등)는 즉시 올려서 summarize() 가 바로 다른 엔진으로 넘어가게 한다 —
+    5xx 등)는 즉시 올려서 호출부가 바로 다른 엔진으로 넘어가게 한다 —
     429 만 "잠깐 기다리면 풀릴 수 있는" 실패이기 때문이다.
+
+    coro_fn: 인자 없이 바로 await 할 수 있는 커루틴을 만드는 팩토리(같은
+    커루틴 객체는 재사용할 수 없어서 함수로 받는다). 이렇게 하면 청크 1개짜리
+    호출이든 보충 청크 호출이든 시그니처 상관없이 그대로 감쌀 수 있다.
     """
     last: Exception | None = None
     for attempt in range(RATE_LIMIT_RETRIES + 1):
         try:
-            return await call_fn(client, paper_text, template)
+            return await coro_fn()
         except Exception as e:  # noqa: BLE001
             if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
                 raise
@@ -144,12 +223,41 @@ async def _call_with_rate_limit_retry(call_fn, client, paper_text, template, lab
 
 
 async def summarize(client: httpx.AsyncClient, paper_text: str, template: str) -> tuple[str, str]:
-    """returns (summary_markdown, engine_name)"""
+    """returns (summary_markdown, engine_name)
+
+    Gemini 경로는 첫 CHUNK_SIZE자로 전체 템플릿을 채운 뒤, 남은 원문을
+    CHUNK_SIZE자씩 이어붙여(최대 MAX_CHUNKS개) "추가 결과·추가 한계점"만
+    보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지 않는다.
+    청크 처리 중 하나가 실패하면 그 뒤는 포기하고 지금까지 만든 결과로
+    마무리한다(무한정 재시도하지 않음). Groq 폴백은 청크를 안 한다 — 무료
+    TPM 한도가 이미 빠듯해서 청크를 늘리면 오히려 더 자주 막힌다.
+    """
     try:
-        return await _call_with_rate_limit_retry(call_gemini, client, paper_text, template, "Gemini"), "gemini"
+        summary = await _call_with_rate_limit_retry(
+            lambda: call_gemini(client, paper_text, template), "Gemini",
+        )
+        remainder = paper_text[CHUNK_SIZE:]
+        chunk_num = 1
+        while remainder and chunk_num < MAX_CHUNKS:
+            chunk_num += 1
+            chunk_text, remainder = remainder[:CHUNK_SIZE], remainder[CHUNK_SIZE:]
+            try:
+                addendum = await _call_with_rate_limit_retry(
+                    lambda: call_gemini_addendum(client, chunk_text), f"Gemini(청크{chunk_num})",
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  [경고] 청크 {chunk_num} 처리 실패({e}) — 이 이후 구간은 건너뜀",
+                      file=sys.stderr)
+                break
+            if _ADDENDUM_NO_CONTENT not in addendum:
+                summary += f"\n\n{addendum}"
+        return summary, "gemini"
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] Gemini 실패({e}) → Groq로 전환", file=sys.stderr)
     try:
-        return await _call_with_rate_limit_retry(call_groq, client, paper_text, template, "Groq"), "groq"
+        result = await _call_with_rate_limit_retry(
+            lambda: call_groq(client, paper_text, template), "Groq",
+        )
+        return result, "groq"
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Gemini·Groq 둘 다 실패: {e}") from e
