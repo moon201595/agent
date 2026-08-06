@@ -9,11 +9,13 @@
   - s2_search_papers         ① Semantic Scholar 검색 (인용수 포함, 키는 선택)
   - s2_get_references        ① 인용망 backward — 이 논문이 인용한 것
   - s2_get_citations         ① 인용망 forward — 이 논문을 인용한 것
+  - hybrid_search_local_papers ① 로컬 저장 논문 대상 BM25+임베딩 하이브리드 검색
   - dedupe_and_rank_papers   ② 중복 제거·선별 (결정적 규칙, 네트워크 미사용)
   - fetch_paper              ③ 원문 수집 (HTML 우선, 없으면 PDF) + 텍스트 추출·저장
   - get_paper_text           ③ 저장된 원문 텍스트 페이지 단위 열람
   - verify_summary_numbers   ⑤ 요약문 수치를 원문과 대조 (읽기 전용)
   - save_summary             요약 저장 (+ 자동 수치 검증, 경고만 하고 저장은 함)
+  - get_summary_json         저장된 요약을 구조화 JSON으로 변환 (읽기 전용)
   - list_stored_papers       로컬 저장소 목록
 
 ①~③ 은 실패 시 상한 2회까지 코드가 재시도한다 (MAX_RETRIES). 이는 에이전틱
@@ -42,6 +44,8 @@ import httpx
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
+import hybrid_search
+import summary_parser
 from selection import dedupe_and_rank
 from verify import verify_numbers
 
@@ -169,6 +173,16 @@ def _init_storage() -> None:
                 success INTEGER, exit_code INTEGER, stage TEXT, attempt INTEGER,
                 network_used INTEGER, duration_s REAL, log_path TEXT, created_at TEXT,
                 PRIMARY KEY (arxiv_id, repo_url)
+            )"""
+        )
+
+        # ① 하이브리드 검색(2026-08-06)용 임베딩 캐시. 논문 텍스트(제목+초록)가
+        # 바뀌지 않는 한 임베딩도 안 바뀌므로, 검색할 때마다 다시 계산하지
+        # 않고 여기 저장해 재사용한다 — hybrid_search.py 는 이 캐시를 모른다
+        # (DB 접근 없는 순수 계산 모듈로 남겨둠, 다른 모듈들과 같은 경계 원칙).
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS paper_embeddings (
+                arxiv_id TEXT PRIMARY KEY, model TEXT, embedding TEXT, updated_at TEXT
             )"""
         )
 
@@ -549,6 +563,18 @@ class SaveSummaryInput(BaseModel):
     markdown: str = Field(..., min_length=1, description="템플릿 형식을 따른 요약 마크다운 전문")
 
 
+class HybridSearchInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    query: str = Field(..., min_length=1, max_length=300,
+                       description="검색어. fetch_paper 로 이미 저장해 둔 논문 안에서 찾는다")
+    top_k: int = Field(default=10, ge=1, le=50, description="최대 결과 수 (1~50)")
+
+
+class SummaryJsonInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    arxiv_id: str = Field(..., description="요약이 저장된 논문의 arXiv ID")
+
+
 class ListPapersInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     limit: int = Field(default=20, ge=1, le=100)
@@ -716,6 +742,110 @@ async def s2_get_citations(params: S2CitationGraphInput) -> str:
              citation_count, arxiv_id, abstract}, ...]}
     """
     return await _s2_citation_graph(_clean_arxiv_id(params.arxiv_id), params.limit, "citations")
+
+
+_EMBED_MODEL = "gemini-embedding-001"
+_EMBED_CALL_DELAY = 0.5  # 임베딩 캐시가 비어 있을 때(첫 실행) 연속 호출 사이 여유
+
+
+async def _get_or_compute_embedding(
+    client: httpx.AsyncClient, arxiv_id: str, text: str,
+) -> tuple[list[float] | None, bool]:
+    """paper_embeddings 캐시를 먼저 보고, 없으면 계산해서 채운다. 논문 텍스트
+    (제목+초록)는 저장 후 안 바뀌므로 한 번 계산하면 재사용해도 안전하다.
+    GOOGLE_API_KEY 가 없거나 호출이 실패하면 None 을 반환한다 — 그 논문은
+    hybrid_search.rank_documents 에서 BM25 랭킹에만 참여하고 하이브리드
+    검색 자체는 죽지 않는다(hybrid_search.py 의 부분 실패 허용 설계 참고).
+
+    returns (embedding, was_cache_hit) — 호출부가 실제로 네트워크를 탄
+    경우에만 호출 간 지연을 넣게 하려고 캐시 적중 여부를 함께 돌려준다.
+    """
+    with _db() as con:
+        row = con.execute(
+            "SELECT embedding FROM paper_embeddings WHERE arxiv_id=? AND model=?",
+            (arxiv_id, _EMBED_MODEL),
+        ).fetchone()
+    if row:
+        return json.loads(row["embedding"]), True
+    try:
+        vec = await hybrid_search.embed_text(client, text, "RETRIEVAL_DOCUMENT")
+    except Exception:  # noqa: BLE001 — 임베딩 실패는 검색 전체를 막지 않는다
+        return None, False
+    with _db() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO paper_embeddings (arxiv_id, model, embedding, updated_at) "
+            "VALUES (?,?,?,?)",
+            (arxiv_id, _EMBED_MODEL, json.dumps(vec), _now()),
+        )
+    return vec, False
+
+
+@mcp.tool(
+    name="hybrid_search_local_papers",
+    annotations={"title": "① 로컬 저장 논문 하이브리드 검색", "readOnlyHint": False,
+                 "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def hybrid_search_local_papers(params: HybridSearchInput) -> str:
+    """`fetch_paper`로 이미 로컬에 저장해 둔 논문들 안에서 검색한다(외부
+    "심층 조사와 발전 설계" 문서가 제안한 Hybrid Search, 2026-08-06).
+    arxiv_search_papers/s2_search_papers 는 외부 API 자체를 검색하는 도구고,
+    이건 그와 달리 **이미 모아둔 논문 중에서** 다시 찾는 용도다 — 평가셋이나
+    수집한 문헌이 쌓일수록 "전에 저장해 둔 논문 중에 관련된 게 있었나"를
+    찾기 어려워지는 문제를 푼다.
+
+    BM25(어휘 일치)와 임베딩 코사인 유사도(의미 일치, gemini-embedding-001)를
+    Reciprocal Rank Fusion으로 합친다 — 자세한 설계 이유는 hybrid_search.py
+    모듈 docstring 참고. 논문 임베딩은 paper_embeddings 테이블에 캐시된다
+    (idempotentHint=False로 표시한 이유: 첫 호출에서 캐시를 채우는 부수효과가
+    있다 — 검색 결과 자체는 몇 번을 불러도 같다). GOOGLE_API_KEY 가 없으면
+    BM25 단독으로 동작한다(하이브리드가 아니라도 검색 자체는 계속 됨).
+
+    Returns:
+        str: JSON — {count, query, embeddings_used: bool, papers: [{arxiv_id,
+             title, bm25_score, cosine_score, fused_score}, ...]}
+    """
+    with _db() as con:
+        rows = con.execute("SELECT arxiv_id, title, abstract FROM papers").fetchall()
+    if not rows:
+        return json.dumps({"count": 0, "query": params.query, "papers": []}, ensure_ascii=False)
+
+    documents = [f"{r['title'] or ''}. {r['abstract'] or ''}" for r in rows]
+    corpus_tokens = [hybrid_search.tokenize(d) for d in documents]
+    bm25 = hybrid_search.BM25(corpus_tokens)
+    query_tokens = hybrid_search.tokenize(params.query)
+
+    query_vec: list[float] | None = None
+    doc_vecs: list[list[float] | None] = [None] * len(rows)
+    if os.environ.get("GOOGLE_API_KEY"):
+        async with httpx.AsyncClient() as client:
+            try:
+                query_vec = await hybrid_search.embed_text(client, params.query, "RETRIEVAL_QUERY")
+            except Exception:  # noqa: BLE001
+                query_vec = None
+            if query_vec is not None:
+                for i, r in enumerate(rows):
+                    doc_vecs[i], cache_hit = await _get_or_compute_embedding(
+                        client, r["arxiv_id"], documents[i]
+                    )
+                    if not cache_hit:
+                        await asyncio.sleep(_EMBED_CALL_DELAY)
+
+    results = hybrid_search.rank_documents(query_tokens, bm25, query_vec, doc_vecs, params.top_k)
+    papers = [
+        {
+            "arxiv_id": rows[r["index"]]["arxiv_id"],
+            "title": rows[r["index"]]["title"],
+            "bm25_score": r["bm25_score"],
+            "cosine_score": r["cosine_score"],
+            "fused_score": r["fused_score"],
+        }
+        for r in results
+    ]
+    return json.dumps(
+        {"count": len(papers), "query": params.query, "embeddings_used": query_vec is not None,
+         "papers": papers},
+        ensure_ascii=False, indent=2,
+    )
 
 
 @mcp.tool(
@@ -1071,6 +1201,49 @@ async def save_summary(params: SaveSummaryInput) -> str:
         {"saved_path": str(out_path), "verification": report.to_dict()},
         ensure_ascii=False, indent=2,
     )
+
+
+@mcp.tool(
+    name="get_summary_json",
+    annotations={"title": "요약 구조화 JSON 변환", "readOnlyHint": True,
+                 "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+)
+async def get_summary_json(params: SummaryJsonInput) -> str:
+    """저장된 요약 마크다운을 구조화 JSON으로 바꾼다(외부 "심층 조사와 발전
+    설계" 문서가 제안한 항목, 2026-08-06). "### 절 제목" 구조를 그대로 살려
+    절마다 불릿 목록으로 뽑고, verify.py 로 각 수치 주장을 다시 검증해
+    found/grounded/sentence_id 를 함께 붙인다 — "이 요약이 뭐라고 썼는지"와
+    "그중 뭐가 실제로 검증됐는지"를 한 번에 기계가 읽을 수 있게 준다.
+
+    값의 조건/비교대상/지표 같은 자연어 세부 필드는 정규식으로 억지로
+    쪼개지 않는다(summary_parser.py 모듈 docstring 참고) — 그건 애매한
+    문장을 필드로 분류하는 판단이라 이 서버의 일이 아니다.
+
+    Returns:
+        str: JSON — {meta, sections: {절제목: [불릿, ...]}, verification: {
+             total, matched, pass_ratio, grounded, claims: [{token, found,
+             grounded, sentence_id, context}, ...]}}
+    """
+    arxiv_id = _clean_arxiv_id(params.arxiv_id)
+    with _db() as con:
+        row = con.execute(
+            """SELECT p.title, p.authors, p.published, p.text_path, s.path AS summary_path
+               FROM papers p LEFT JOIN summaries s ON p.arxiv_id = s.arxiv_id
+               WHERE p.arxiv_id = ?""",
+            (arxiv_id,),
+        ).fetchone()
+    if not row:
+        return _error(f"'{arxiv_id}'는 아직 저장되지 않음", "fetch_paper를 먼저 호출할 것.")
+    if not row["summary_path"]:
+        return _error(f"'{arxiv_id}'는 아직 요약이 없음", "save_summary를 먼저 호출할 것.")
+    summary_md = Path(row["summary_path"]).read_text(encoding="utf-8")
+    source_text = Path(row["text_path"]).read_text(encoding="utf-8")
+    meta = {
+        "arxiv_id": arxiv_id, "title": row["title"],
+        "authors": row["authors"], "published": row["published"],
+    }
+    result = summary_parser.parse_summary(summary_md, source_text, meta)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:

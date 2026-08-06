@@ -6,7 +6,7 @@
 
 ## 한 줄 요약
 
-결정적 도구 10종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현이 완료됐다(2026-08-03)** — 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, 자율 루프 3회)까지 도구 8종 이후 마지막 단계까지 구현·실측 검증됨(SWE-agent 완전 성공, TSPulse 는 거대 ML 모노레포 특성상 설치 예산 초과로 정직하게 실패 — 거짓 성공 없음. §5 참고). 8단계 파이프라인 자체는 전부 구현됐다. 평가셋 구축을 시작하며 ③이 arXiv 전용이라 실제 문헌 목록의 절반 가까이를 못 읽는 문제가 새로 드러나, 수동 PDF 업로드 + Unpaywall 오픈액세스 자동 수집을 추가했다(2026-08-04). **평가셋 39편 구축과 `eval.py` 첫 기준선(숫자 1103개 중 1064개 일치, 통과율 0.965)까지 완료됐다(2026-08-05, §5 참고)** — §8 우선순위 목록의 마지막 미해결 항목이었다. 평가셋으로 실제 통과율 저하 원인을 진단해 검증기 위치참조 오탐 수정·서베이 전용 템플릿·Gemini/Groq 양쪽 청킹(전문 안 잘림)까지 세 가지를 고쳤고(2026-08-06), 외부 발전 설계 문서가 제안한 항목 중 **인용 그래프(Citation Search, `s2_get_references`/`s2_get_citations`)** 를 PaSa Crawler/Selector 분리 원칙대로 Crawler만 구현했다(2026-08-06, §5 참고) — 도구 8종에서 **10종**으로 늘었다. 일일 한도 소진으로 미뤘던 서베이 템플릿·청킹 검증도 한도 회복 후 실제 API로 재검증 완료(0/0→16/16, 1/1→9/9, 5/7→20/20 등 실측 개선 확인, §5 참고). 이어서 **⑤ 검증기를 "숫자 대조"에서 "근거 문장 대조"로 격상했다(2026-08-06)** — 원문을 문장 단위로 잘라 `[S번호]` 태그를 붙이고(`sentence_grounding.py` 신설) 요약이 그 번호를 그대로 인용하게 해, 검증기가 "숫자가 원문 어딘가에 있다"가 아니라 "인용한 그 문장에 있다"까지 확인한다. 실전에서 조작 없이 진짜 hallucination 하나를 잡아냈다(모델이 프롬프트의 예시 문장을 실제 논문 내용처럼 베낀 것) — §5 참고. 태그 없는 구형 요약은 자동으로 기존 방식에 폴백해 하위 호환을 지켰다.
+결정적 도구 12종을 MCP 서버로 노출하고 에이전트 루프는 Claude Code 에 맡기는 구조가 동작한다. **MCP 연결까지 검증됐고, 논문 1편을 실제로 끝까지 태워 저장까지 확인했다(2026-07-30).** **④ 는 `batch_summarize.py` 온디맨드 배치 스크립트로, ⑥ 은 `review_app.py` (Streamlit) 로 둘 다 구현 완료됐다(2026-07-31)** — 검색→선별→파싱→요약→검증→저장까지 채팅 승인 없이 돌고, 저장된 요약은 브라우저 화면에서 승인/반려/재생성한다. 요약 엔진은 로컬 파인튜닝이 아니라 **무료 API(Gemini 우선, Groq 대체)** 로 방향이 바뀌었다 — §8-2 참고. 요약 템플릿은 v2로 교체됐다 — §5 참고. **⑦ 코드 재현이 완료됐다(2026-08-03)** — 저장소 후보 탐색(`code_finder.py`, HuggingFace 모델카드 경유 GitHub 링크 추적 포함) + Docker 격리 실행(`docker_runner.py`, 자율 루프 3회)까지 도구 8종 이후 마지막 단계까지 구현·실측 검증됨(SWE-agent 완전 성공, TSPulse 는 거대 ML 모노레포 특성상 설치 예산 초과로 정직하게 실패 — 거짓 성공 없음. §5 참고). 8단계 파이프라인 자체는 전부 구현됐다. 평가셋 구축을 시작하며 ③이 arXiv 전용이라 실제 문헌 목록의 절반 가까이를 못 읽는 문제가 새로 드러나, 수동 PDF 업로드 + Unpaywall 오픈액세스 자동 수집을 추가했다(2026-08-04). **평가셋 39편 구축과 `eval.py` 첫 기준선(숫자 1103개 중 1064개 일치, 통과율 0.965)까지 완료됐다(2026-08-05, §5 참고)** — §8 우선순위 목록의 마지막 미해결 항목이었다. 평가셋으로 실제 통과율 저하 원인을 진단해 검증기 위치참조 오탐 수정·서베이 전용 템플릿·Gemini/Groq 양쪽 청킹(전문 안 잘림)까지 세 가지를 고쳤고(2026-08-06), 외부 발전 설계 문서가 제안한 항목 중 **인용 그래프(Citation Search, `s2_get_references`/`s2_get_citations`)** 를 PaSa Crawler/Selector 분리 원칙대로 Crawler만 구현했다(2026-08-06, §5 참고) — 도구 8종에서 **10종**으로 늘었다. 일일 한도 소진으로 미뤘던 서베이 템플릿·청킹 검증도 한도 회복 후 실제 API로 재검증 완료(0/0→16/16, 1/1→9/9, 5/7→20/20 등 실측 개선 확인, §5 참고). 이어서 **⑤ 검증기를 "숫자 대조"에서 "근거 문장 대조"로 격상했다(2026-08-06)** — 원문을 문장 단위로 잘라 `[S번호]` 태그를 붙이고(`sentence_grounding.py` 신설) 요약이 그 번호를 그대로 인용하게 해, 검증기가 "숫자가 원문 어딘가에 있다"가 아니라 "인용한 그 문장에 있다"까지 확인한다. 실전에서 조작 없이 진짜 hallucination 하나를 잡아냈다(모델이 프롬프트의 예시 문장을 실제 논문 내용처럼 베낀 것) — §5 참고. 태그 없는 구형 요약은 자동으로 기존 방식에 폴백해 하위 호환을 지켰다. 같은 날 외부 발전 설계 문서의 남은 두 항목도 마저 구현했다 — **Hybrid Search**(`hybrid_search_local_papers`, BM25+임베딩을 Reciprocal Rank Fusion으로 융합, 로컬 저장 논문 대상)와 **구조화 JSON 출력**(`get_summary_json`, 절별 구조 + 그라운딩된 수치 주장) — 도구 10종에서 **12종**으로 늘었고, 그 문서가 제안한 항목은 이제 전부 처리됐다.
 
 ---
 
@@ -16,7 +16,7 @@
 
 | | 정체 | 하는 일 |
 | --- | --- | --- |
-| MCP 서버 | `~/paper-harness` (Python) | 도구 10종 제공. **판단하지 않는다** |
+| MCP 서버 | `~/paper-harness` (Python) | 도구 12종 제공. **판단하지 않는다** |
 | MCP 클라이언트 | Claude Code | 도구를 언제·어떤 순서로 부를지 판단 |
 
 `for` 루프로 파이프라인을 돌리는 코드가 없다. 검색 → 선별 → 파싱 → 요약 → 검증의 순서는 클라이언트가 판단해 도구를 부르는 것으로 이뤄진다.
@@ -58,20 +58,22 @@
 
 ---
 
-## 3. 도구 10종과 구현 현황
+## 3. 도구 12종과 구현 현황
 
 | 단계 | 도구 | 상태 |
 | --- | --- | --- |
 | ① | `arxiv_search_papers` | ✅ 키 불필요, 호출 간 3초 강제 |
 | ① | `s2_search_papers` | ✅ 인용수 제공. `S2_API_KEY` 등록됨(2026-08-01) + 초당 1회 스로틀 적용 |
 | ① | `s2_get_references` / `s2_get_citations` | ✅ **완료(2026-08-06)** — 인용 그래프(Citation Search). PaSa의 Crawler/Selector 분리에서 Crawler만 구현(depth=1 고정, `limit`으로 후보 수 강제 상한). `s2_search_papers`와 스로틀 상태(`_s2_lock`/`_last_s2_call`) 공유. §5 참고 |
+| ① | `hybrid_search_local_papers` | ✅ **완료(2026-08-06)** — 로컬 저장 논문 대상 BM25+임베딩(`gemini-embedding-001`) 하이브리드 검색, Reciprocal Rank Fusion. `paper_embeddings` 테이블에 캐시. §5 참고 |
 | ② | `dedupe_and_rank_papers` | ✅ 결정적 규칙, 네트워크 미사용 |
 | ③ | `fetch_paper` | ✅ HTML 우선 → PDF 폴백, 멱등. **arXiv 전용** |
 | ③ | `get_paper_text` | ✅ 분할 열람 |
 | ③ | `ingest_local_pdf` / `fetch_pdf_from_url` / `resolve_unpaywall_pdf` | ✅ **완료(2026-08-04)** — arXiv 밖 논문(수동 업로드 + Unpaywall 오픈액세스 자동). MCP 도구 아님, `review_app.py`가 직접 import. §5 참고 |
 | ④ | `batch_summarize.py` / `review_app.py` (Claude Code 밖에서 독립 실행) | ✅ Gemini(`gemini-flash-latest`) 우선, Groq(`llama-3.3-70b-versatile`) 대체. **Claude Code(나 자신)를 요약 엔진으로 쓰는 방안은 폐기됨(2026-07-31)** — 무인 실행·비용 문제로 무료 API 로 전환. §5 "④ 요약 엔진 선정" 참고 |
-| ⑤ | `verify_summary_numbers` | ✅ LLM 미사용 |
+| ⑤ | `verify_summary_numbers` | ✅ LLM 미사용. 2026-08-06 부터 문장 그라운딩(`[S번호]`) 지원 |
 | — | `save_summary` | ✅ 저장 직전 자동 검증, 불일치도 저장은 함 |
+| — | `get_summary_json` | ✅ **완료(2026-08-06)** — 저장된 요약을 구조화 JSON으로 변환(절별 불릿 + 검증된 수치 주장). §5 참고 |
 | — | `list_stored_papers` | ✅ |
 | ⑥ | `review_app.py` (Streamlit UI) | ✅ 승인·반려(사유 입력)·재생성. 원문 이미지 갤러리 포함 |
 | ⑦ | `code_finder.py` + `docker_runner.py` | ✅ **완료(2026-08-03)** — 저장소 후보 탐색 + Docker 격리 실행(자율 루프 3회). `reproduce(arxiv_id)` |
@@ -82,20 +84,28 @@
 ### 파일
 
 ```
-server.py              MCP 서버 (stdio). 도구 10종 + ⑥ review_status 저장·이미지 추출 헬퍼
+server.py              MCP 서버 (stdio). 도구 12종 + ⑥ review_status 저장·이미지 추출 헬퍼
 batch_summarize.py     ④ 온디맨드 배치 요약 (Claude Code 밖에서 독립 실행, server.py 함수 직접 import)
 review_app.py          ⑥ 사람 판단 UI (Streamlit) — 검색·요약 생성 탭 + 요약 검토 탭
 summarize_engine.py    ④ 요약 엔진 호출부 (Gemini/Groq). batch_summarize.py·review_app.py 공유
 code_finder.py         ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색 + HF 모델카드 경유 GitHub 추적)
 docker_runner.py       ⑦ Docker 격리 실행. reproduce(arxiv_id) 가 유일한 자율 재시도 루프(3회)
 selection.py           ② 중복 제거·선별 규칙
-verify.py              ⑤ 수치 검증기 (LLM 미사용)
+verify.py              ⑤ 수치 검증기 (LLM 미사용, [S번호] 문장 그라운딩 지원)
+sentence_grounding.py  ④⑤ 공유: 문장 세그멘테이션 + [S번호] 태깅 (verify.py 가 재사용)
+hybrid_search.py        ① BM25 + 임베딩 하이브리드 검색 (순수 계산, DB 접근 없음)
+summary_parser.py      요약 마크다운 → 구조화 JSON (get_summary_json 이 사용)
 eval.py                통과율 일괄 측정 (회귀 기준선)
 prompts/
-  summary_template.md  ④ 요약 템플릿 v2 (프롬프트 자산, 버전 관리 대상)
-test_smoke.py          실동작 7종 (네트워크 필요)
-test_verify_units.py   ⑤ 경계 규칙 14종
-test_select.py         ② 규칙 8종
+  summary_template.md         ④ 요약 템플릿 v2 (프롬프트 자산, 버전 관리 대상)
+  summary_template_survey.md  ④ 서베이/리뷰 논문 전용 변형
+test_smoke.py           실동작 7종 (네트워크 필요)
+test_verify_units.py    ⑤ 경계 규칙 24종
+test_select.py          ② 규칙 8종
+test_sentence_grounding.py  세그멘테이션·청킹 규칙 24종
+test_summarize_chunking.py  ④ 청킹 제어 흐름 5종 (모킹)
+test_hybrid_search.py       ① BM25/RRF/융합 랭킹 18종
+test_summary_parser.py      구조화 JSON 파싱 10종
 data/                  PDF·텍스트·요약·이미지·SQLite·⑦ clone 작업공간 (자동 생성, 커밋 제외)
 .env                   GOOGLE_API_KEY · GROQ_API_KEY · S2_API_KEY · UNPAYWALL_EMAIL(선택) (커밋 제외, 각자 발급)
 ```
@@ -423,9 +433,27 @@ Semantic Scholar Graph API의 `/paper/ARXIV:{id}/references`, `/paper/ARXIV:{id}
 
 **아직 안 한 것**: 멀티청크(2개 이상)에서 청크 2 이후 보충 인용이 실 API로 끝까지 성공하는 완전한 왕복은 관측 못 했다 — 검증 시점에 Gemini가 일시적으로 503을 자주 반환해(무료 티어 트래픽 문제로 추정, 429 아님) 재현이 두 번 다 중간 청크에서 끊겼다. 대신 다음까지는 실제로 확인됐다: (1) 청크 1은 정상적으로 태그·별점을 붙임, (2) 중간 청크가 503/429로 실패하면 설계대로 "그때까지 결과 보존하고 중단"함(Agentic Reasoning Groq 재생성은 청크 6에서 429 상한까지 재시도하다 정지 — 상한 있는 예외 처리가 실전에서도 그대로 작동), (3) 전역 번호가 청크 경계에서 안 겹치고 이어지는 것은 모킹 테스트(`test_summarize_chunking.py`)로 확인. 완전한 다중-청크 성공 왕복은 API 상태가 좋을 때 재확인할 것.
 
-### [확인됨] 단위 테스트 63개 (네트워크 불필요)
+### [확인됨] Hybrid Search(BM25+임베딩) + 구조화 JSON 출력 (2026-08-06)
 
-`verify.py` 경계 규칙 24종(2026-08-06 문장 그라운딩 규칙 7종 추가) + `selection.py` 규칙 8종 + `sentence_grounding.py` 세그멘테이션·청킹 규칙 24종(신설) + `summarize_engine.py` 청킹 제어 흐름 5종(신설, 모킹). 전부 "한 번 틀렸거나 틀릴 뻔한" 케이스다.
+외부 "심층 조사와 발전 설계" 문서가 제안한 나머지 두 항목을 구현했다. Citation Search(§0.3-2)에 이어 이 세션에서 그 문서 항목을 전부 처리한 셈이다.
+
+**Hybrid Search — `hybrid_search_local_papers`**: `arxiv_search_papers`/`s2_search_papers`(①)는 외부 API 자체의 검색·랭킹을 그대로 쓴다 — 우리가 알고리즘을 바꿀 수 없다. 이건 그와 다른 자리다: **이미 `fetch_paper`로 저장해 둔 논문들 안에서** 다시 찾는 도구다. 평가셋이 쌓일수록 "전에 모아둔 논문 중에 관련된 게 있었나"를 다시 찾기 어려워지는 문제를 푼다.
+
+BM25(어휘 일치)와 임베딩 코사인 유사도(의미 일치, `gemini-embedding-001` — summarize_engine.py 와 같은 `GOOGLE_API_KEY` 재사용)를 **Reciprocal Rank Fusion**으로 합친다. 가중합이 아니라 RRF를 쓴 이유: BM25는 상한 없는 양수, 코사인 유사도는 대략 [-1,1]이라 스케일이 완전히 다르다 — 직접 더하면 스케일 큰 쪽이 사실상 지배한다. RRF는 점수가 아니라 순위만 써서 이 문제가 아예 없다(정보검색의 표준 기법). `hybrid_search.py`는 순수 계산만 한다(BM25/코사인/RRF, DB 접근 없음 — verify.py/selection.py/sentence_grounding.py 와 같은 경계 원칙). 캐싱은 DB를 아는 `server.py` 쪽 책임 — 새 `paper_embeddings` 테이블에 논문별 임베딩을 저장해 재검색 시 재사용한다.
+
+`GOOGLE_API_KEY`가 없거나 임베딩 호출이 실패해도 BM25 단독으로 계속 동작한다 — 하이브리드가 안 되면 조용히 실패하는 대신 성긴 검색으로 저하만 시킨다(부분 실패 허용 설계).
+
+**실측(로컬 40편 코퍼스)**: "on-device model compression for edge AI" 질의 → AWQ(가중치 양자화), GPTQ(양자화), 여러 edge inference/deployment 논문이 상위에 정확히 뜸 — 실제로 관련 있는 결과. 캐시 효과도 확인: 첫 검색(임베딩 40개 전부 새로 계산, 논문마다 0.5초 간격)은 90초 이상 걸렸지만, 이후 다른 질의로 재검색하니 캐시 덕에 **3.6초**로 끝남(질의 임베딩 1개만 새로 계산).
+
+**구조화 JSON 출력 — `get_summary_json`**: 값의 조건/비교대상/지표 같은 자연어 세부 필드를 정규식으로 억지로 쪼개려 하지 않는다(`summary_parser.py` 모듈 docstring 참고) — LLM이 매번 조금씩 다르게 쓰는 자연어라 정규식이 쉽게 깨지고, 애매한 문장을 필드로 분류하는 것 자체가 판단이라 "서버는 판단하지 않는다" 원칙과도 맞지 않는다. 대신 확실히 결정적인 것만 뽑는다: "### 절 제목" 구조(마크다운 자체가 이미 구조적)를 절별 불릿 목록으로, 그리고 `verify.py`가 이미 결정적으로 추출해 둔 숫자·`[S번호]` 인용·검증 결과(2026-08-06 문장 그라운딩과 그대로 맞물림 — 각 주장에 `found`/`grounded`/`sentence_id`가 붙어 나온다).
+
+**실측(Feelbert)**: `sections`에 9개 절이 정확히 분리됐고(기본정보~파싱 품질 노트), `verification.claims`에 26개 수치 주장이 전부 `found`/`grounded`/`sentence_id`와 함께 나왔다 — 하드웨어 스펙 숫자(Intel i9-9900, 32GB 등)는 `grounded=false`(결과 절이 아니라서 태그가 없음), 결과 절 수치는 `grounded=true`로 정확히 구분됨. 조작된 인용 번호를 넣어도 구조화 결과의 `claims` 안에서 `found=false`로 정확히 잡히는 것도 단위 테스트로 확인(`test_parse_summary_catches_fabricated_citation`).
+
+**검증 방법**: 두 기능 다 순수 계산 로직은 모킹 없는 단위 테스트로(BM25 랭킹 순서, RRF 융합, 코사인 유사도 경계값, 섹션 파싱), 네트워크 쪽은 실 API로(임베딩 호출, 실제 로컬 코퍼스 검색, 실제 저장된 요약 파싱) 검증했다. 회귀 없음 확인(`pytest` 91개 전부 통과).
+
+### [확인됨] 단위 테스트 91개 (네트워크 불필요)
+
+`verify.py` 경계 규칙 24종(2026-08-06 문장 그라운딩 규칙 7종 추가) + `selection.py` 규칙 8종 + `sentence_grounding.py` 세그멘테이션·청킹 규칙 24종 + `summarize_engine.py` 청킹 제어 흐름 5종(모킹) + `hybrid_search.py` BM25/RRF/융합 랭킹 18종(신설) + `summary_parser.py` 구조화 JSON 파싱 10종(신설). 전부 "한 번 틀렸거나 틀릴 뻔한" 케이스다.
 
 | 잠근 것 | 왜 |
 | --- | --- |
@@ -497,7 +525,7 @@ streamlit run review_app.py    # 브라우저에서 검색·요약 생성 + 승�
 7. ~~git 커밋 — `user.name` / `user.email` 미설정~~ — 이미 전역 설정 완료(`moon201595 <answnsgur030@naver.com>`, `docs/SETUP.md` 참고). 이 항목은 폐기.
 8. ~~**인용 그래프(Citation Search)**~~ — 2026-08-06 완료. `s2_get_references`/`s2_get_citations`, PaSa Crawler/Selector 분리에서 Crawler만 구현. §5 참고.
 9. ~~**추출식 노트 검토 — ⑤ 를 "숫자 대조"에서 "근거 문장 대조"로 격상**~~ — 2026-08-06 완료. `sentence_grounding.py` 신설(문장 세그멘테이션 + `[S번호]` 태깅), `verify.py`가 인용된 문장(±1) 안에서만 숫자를 찾도록 격상. 실전에서 진짜 hallucination 하나를 조작 없이 잡아냈다(모델이 템플릿 예시 문장을 그대로 베낀 것을 그라운딩이 감지) — §5 "⑤ 검증기를 근거 문장 대조로 격상" 참고. 태그 없는 구형 요약은 자동 폴백 — 하위 호환.
-10. Hybrid Search(BM25+임베딩), 구조화 JSON 출력 — 외부 "심층 조사와 발전 설계" 문서가 제안한 나머지 항목, 미착수.
+10. ~~**Hybrid Search(BM25+임베딩), 구조화 JSON 출력**~~ — 2026-08-06 완료. `hybrid_search_local_papers`(RRF 융합, `paper_embeddings` 캐시) + `get_summary_json`(절별 구조화 + 검증된 수치 주장). 외부 "심층 조사와 발전 설계" 문서가 제안한 항목을 이걸로 전부 처리했다. §5 참고.
 11. Groq 보충 프롬프트(`call_groq_addendum`)의 별점(★) 표기 흔들림 — ~~2026-08-06 완료~~. R3 세 가지 옵션을 직접 나열해 고쳤다. §5 참고.
 12. 프롬프트의 "나쁜 예/좋은 예" 절을 모델이 실제 논문 내용으로 착각할 위험 — 2026-08-06 실측 발견(§5 "⑤ 검증기를 근거 문장 대조로 격상" 참고, Agentic Reasoning/Groq 사례). 그라운딩이 결과적으로 잡아내긴 했지만 근본적으로는 예시 문구 자체를 덜 헷갈리게 다듬는 게 낫다. 우선순위 낮음.
 

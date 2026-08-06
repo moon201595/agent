@@ -8,7 +8,7 @@
 
 ## 구성
 
-- `server.py` — MCP 서버 (stdio). 도구 10종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
+- `server.py` — MCP 서버 (stdio). 도구 12종 + ⑥ 검토 상태 저장·이미지 추출 헬퍼 + ③ arXiv 밖 논문 수동/오픈액세스 수집. `.env` 자동 로드
 - `batch_summarize.py` — ④ 온디맨드 배치 요약 (Claude Code 밖 독립 실행, `server.py` 함수 직접 import)
 - `review_app.py` — ⑥ 사람 판단 UI (Streamlit). `streamlit run review_app.py`
 - `summarize_engine.py` — ④ 요약 엔진 호출부 (Gemini 우선/Groq 대체). 긴 논문은 청크로 나눠 전문을 다 읽는다(Gemini 300,000자·Groq 15,000자 단위, 둘 다 상한 있음 — Groq는 TPM 한도 때문에 청크 사이 60초 간격). 제목으로 서베이/실증 연구 템플릿을 결정론적으로 고른다(`select_template`). 위 둘이 공유
@@ -16,18 +16,20 @@
 - `docker_runner.py` — ⑦ Docker 격리 실행. `reproduce(arxiv_id)` 가 유일한 자율 재시도 루프(최대 3회)
 - `selection.py` — ② 중복 제거·선별 규칙 (네트워크·LLM 미사용)
 - `sentence_grounding.py` — ④⑤ 공유: 원문을 문장 단위로 잘라 `[S번호]` 태그를 붙인다. ④가 태그 붙은 원문을 LLM에 보내고, ⑤가 같은 함수로 원문을 다시 나눠 인용된 문장 안에 숫자가 실제로 있는지 대조한다
+- `hybrid_search.py` — ① 로컬 저장 논문 검색: BM25 + 임베딩 코사인 유사도를 Reciprocal Rank Fusion으로 합치는 순수 계산 모듈 (네트워크는 임베딩 호출 하나뿐, DB 접근 없음 — 캐싱은 `server.py` 쪽 책임)
+- `summary_parser.py` — 저장된 요약을 구조화 JSON으로 변환. `### 절 제목` 구조를 살려 불릿 목록으로 뽑고 `verify.py`로 각 수치를 재검증해 `found`/`grounded`/`sentence_id`를 붙인다
 - `verify.py` — ⑤ 수치 검증기. `[S번호]` 태그가 있으면 그 문장(±1) 안에서만, 없으면(구형 요약) 원문 전체에서 문자열 대조 (LLM 미사용)
 - `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
 - `test_smoke.py` — 실동작 스모크 7종 (네트워크 필요)
-- `test_verify_units.py` / `test_select.py` / `test_sentence_grounding.py` / `test_summarize_chunking.py` — 단위 테스트 63종 (네트워크 불필요)
+- `test_verify_units.py` / `test_select.py` / `test_sentence_grounding.py` / `test_summarize_chunking.py` / `test_hybrid_search.py` / `test_summary_parser.py` — 단위 테스트 91종 (네트워크 불필요)
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL`(선택, 미설정 시 기본값 사용) (커밋 제외, 각자 발급)
 
 `selection.py` 는 `select.py` 로 두면 표준 라이브러리 `select` 를 가려 asyncio 가 깨지므로 이 이름이다.
 
-## 도구 10종
+## 도구 12종
 
 | 도구 | 단계 | 비고 |
 | --- | --- | --- |
@@ -35,14 +37,20 @@
 | `s2_search_papers` | ① | 인용수 제공. `S2_API_KEY` 없으면 공용 한도 |
 | `s2_get_references` | ① | 인용망 backward — 이 논문이 인용한 것 |
 | `s2_get_citations` | ① | 인용망 forward — 이 논문을 인용한 것 |
+| `hybrid_search_local_papers` | ① | 로컬 저장 논문 대상 BM25+임베딩 하이브리드 검색 |
 | `dedupe_and_rank_papers` | ② | 결정적 규칙. 네트워크 미사용 |
 | `fetch_paper` | ③ | HTML 우선 → PDF 폴백. 멱등 |
 | `get_paper_text` | ③ | 저장 텍스트 분할 열람 |
 | `verify_summary_numbers` | ⑤ | 읽기 전용 |
 | `save_summary` | — | 저장 직전 자동 검증, 불일치도 저장은 함 |
+| `get_summary_json` | — | 저장된 요약을 구조화 JSON으로 변환. 읽기 전용 |
 | `list_stored_papers` | — | 저장소 목록 |
 
 `s2_get_references`/`s2_get_citations`는 Crawler/Selector 패턴(PaSa)에서 **Crawler만** 구현한다 — depth는 항상 1, 후보 수는 `limit`으로 코드가 상한을 강제하는 결정적 조회다. 어떤 후보가 관련 있는지 판정(Selector)은 이 서버의 일이 아니다 — 반환된 제목·초록을 사람이나 Claude Code가 보고 판단한다.
+
+`hybrid_search_local_papers`는 `arxiv_search_papers`/`s2_search_papers`(외부 API 자체를 검색)와 다르다 — **이미 `fetch_paper`로 저장해 둔 논문들 안에서** 다시 찾는 도구다. BM25(어휘 일치)와 임베딩 코사인 유사도(`gemini-embedding-001`, 의미 일치)를 Reciprocal Rank Fusion으로 합친다. 논문 임베딩은 `paper_embeddings` 테이블에 캐시돼 재검색이 빠르다. `GOOGLE_API_KEY`가 없으면 BM25 단독으로 계속 동작한다(하이브리드가 안 되면 조용히 실패하는 대신 성긴 검색으로 저하만 시킴).
+
+`get_summary_json`은 저장된 요약 마크다운을 `### 절 제목` 구조 그대로 살려 절마다 불릿 목록으로 뽑고, `verify.py`로 각 수치 주장을 다시 검증해 `found`/`grounded`/`sentence_id`를 함께 붙인다. 값의 조건·비교대상·지표 같은 자연어 세부 필드는 정규식으로 억지로 쪼개지 않는다 — 애매한 문장을 필드로 분류하는 것 자체가 판단이라 이 서버의 일이 아니다.
 
 ④ 요약, ⑥ 사람 판단, ⑦ 코드 재현은 이 서버의 일이 아니다.
 
@@ -158,7 +166,8 @@ python eval.py --min-ratio 0.9   # 기준 미달 시 종료코드 1
 
 - ~~⑦ 코드 재현~~ — 2026-08-03 완료. `code_finder.py`(후보 탐색) + `docker_runner.py`(Docker 격리 실행, 자율 루프 3회)로 8종 도구 이후 마지막 단계까지 구현됨. `reproduce(arxiv_id)` 하나로 후보 탐색부터 판정까지 끝난다. 실측(SWE-agent 완전 성공, TSPulse 계열은 거대 ML 모노레포 특성상 15분 설치 예산 내 실패 — 상세는 `docs/PROGRESS.md` §5)
 - ~~Semantic Scholar 키 발급~~ — 2026-08-01 완료. 등록·스로틀 적용까지 끝남
-- ~~평가셋 미구축~~ — 2026-08-05 완료. 39편 저장·요약, `eval.py` 기준선 확보(숫자 1103개 중 1064개 일치, 통과율 0.965). 나머지 13편은 페이월·자동 다운로드 차단으로 수동 업로드 대기 중 — `docs/PROGRESS.md` §5 참고
+- ~~평가셋 미구축~~ — 2026-08-05 완료. 39편 저장·요약, `eval.py` 기준선 확보. 나머지 13편은 의도적으로 안 채운다(2026-08-06 결정) — `docs/PROGRESS.md` §5 참고
+- ~~⑤ 검증기 격상(근거 문장 그라운딩) / 인용 그래프 / Hybrid Search / 구조화 JSON 출력~~ — 2026-08-06 완료. 상세는 `docs/PROGRESS.md` §5·§8
 - 처리 시간·요약 정확도 수치 측정 없음 — **발표에서 수치를 만들지 말 것**
 
 (참고: 논문 1편 실제 왕복·④ 실행 형태 결정·⑥ 사람 판단 구현·git 커밋/GitHub 등록은 모두 완료됐다. `batch_summarize.py`·`review_app.py` 참고.)
