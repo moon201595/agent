@@ -309,11 +309,20 @@ def render_review_tab():
             report = _verify_detail(arxiv_id, summary_text)
             ratio = report.matched / report.total if report.total else 1.0
             if ratio == 1.0:
-                st.success(f"수치 검증: {report.matched}/{report.total} 전부 일치")
+                st.success(f"수치 검증: {report.matched}/{report.total} 전부 일치 (문장 단위 확인 {report.grounded}건)")
             else:
                 st.warning(f"수치 검증: {report.matched}/{report.total} 일치 — 아래 불일치 항목 확인")
                 for c in report.unmatched:
-                    st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
+                    if c.grounded:
+                        # [S번호]로 인용한 문장까지 찾아봤지만 그 안에 없었다 — 지어냈거나
+                        # 엉뚱한 문장을 인용했을 가능성. 실제로 조회한 문장을 보여준다.
+                        cited = c.cited_text or "(인용한 문장 번호가 원문 범위 밖 — 지어낸 번호일 수 있음)"
+                        st.markdown(
+                            f"- **`{c.token}`** — 요약 문맥: _{c.context}_\n\n"
+                            f"  🔎 인용한 [S{c.sentence_id:04d}] 문장(±1): _{cited}_"
+                        )
+                    else:
+                        st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
 
             if row["review_note"]:
                 st.caption(f"이전 검토 메모: {row['review_note']}")

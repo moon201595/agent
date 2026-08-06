@@ -15,12 +15,13 @@
 - `code_finder.py` — ⑦ 코드 저장소 후보 탐색 (본문 링크 스캔 + GitHub 검색 + HuggingFace 모델카드 경유 GitHub 링크 추적)
 - `docker_runner.py` — ⑦ Docker 격리 실행. `reproduce(arxiv_id)` 가 유일한 자율 재시도 루프(최대 3회)
 - `selection.py` — ② 중복 제거·선별 규칙 (네트워크·LLM 미사용)
-- `verify.py` — ⑤ 수치 검증기. 요약문의 숫자를 원문과 문자열 대조 (LLM 미사용)
+- `sentence_grounding.py` — ④⑤ 공유: 원문을 문장 단위로 잘라 `[S번호]` 태그를 붙인다. ④가 태그 붙은 원문을 LLM에 보내고, ⑤가 같은 함수로 원문을 다시 나눠 인용된 문장 안에 숫자가 실제로 있는지 대조한다
+- `verify.py` — ⑤ 수치 검증기. `[S번호]` 태그가 있으면 그 문장(±1) 안에서만, 없으면(구형 요약) 원문 전체에서 문자열 대조 (LLM 미사용)
 - `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
 - `test_smoke.py` — 실동작 스모크 7종 (네트워크 필요)
-- `test_verify_units.py` / `test_select.py` — 단위 테스트 22종 (네트워크 불필요)
+- `test_verify_units.py` / `test_select.py` / `test_sentence_grounding.py` / `test_summarize_chunking.py` — 단위 테스트 63종 (네트워크 불필요)
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL`(선택, 미설정 시 기본값 사용) (커밋 제외, 각자 발급)
 

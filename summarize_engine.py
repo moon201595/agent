@@ -21,6 +21,8 @@ from pathlib import Path
 
 import httpx
 
+import sentence_grounding
+
 # httpx 기본 요청 로깅이 URL(쿼리 파라미터 포함)을 그대로 찍는다 — 키가 URL에
 # 실리는 실수를 해도 로그로 새지 않도록 방어적으로 꺼둔다.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -120,18 +122,30 @@ def load_env() -> dict:
 ENV = load_env()
 
 
-def build_prompt(paper_text: str, template: str, max_chars: int) -> str:
-    text = paper_text[:max_chars]
+def build_prompt(chunk_text: str, template: str) -> str:
+    """chunk_text 는 이미 sentence_grounding 이 문장 단위로 잘라 [S번호] 태그를
+    붙이고 청크 크기에 맞게 묶어둔 상태다 — 여기서는 더 자르지 않는다
+    (2026-08-06, ⑤를 "숫자 대조"에서 "근거 문장 대조"로 격상, docs/PROGRESS.md
+    §8-9). 태그를 요약문의 "출처위치"에 그대로 인용하게 해서, 검증기가
+    "그 숫자가 원문 어딘가에 있다"가 아니라 "그 숫자가 인용한 그 문장에
+    있다"까지 확인할 수 있게 한다.
+    """
     return f"""다음은 한 논문의 원문 일부다. 아래 템플릿의 '## 템플릿' 항목 구조만 채워서
 한국어로 정리하라. 템플릿 파일의 제목·작성규칙·작업순서 설명은 출력하지 말고,
 '### 기본정보'부터 시작하는 항목만 그대로 채워 출력하라.
 숫자·수치는 반드시 원문에서 확인한 것만 쓰고, 확인되지 않은 숫자는 쓰지 마라.
 
+아래 원문은 문장마다 "[S번호]" 태그가 붙어 있다(예: [S0142]). 수치를 인용할 때는
+템플릿이 요구하는 "출처위치" 뒤에 그 수치가 실제로 있는 문장의 태그를 **그대로**
+덧붙여라(예: "본문 4.1절 [S0142]"). 어느 문장에서 나온 값인지 확신할 수 없으면
+그 수치는 쓰지 마라. 태그는 원문에 이미 있는 것만 그대로 옮겨 적어야 한다 —
+직접 지어내면 안 된다.
+
 # 템플릿
 {template}
 
 # 논문 원문
-{text}
+{chunk_text}
 """
 
 
@@ -157,8 +171,8 @@ async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
     return "".join(p.get("text", "") for p in parts)
 
 
-async def call_gemini(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
-    return await _post_gemini(client, build_prompt(paper_text, template, MAX_PAPER_CHARS))
+async def call_gemini(client: httpx.AsyncClient, chunk_text: str, template: str) -> str:
+    return await _post_gemini(client, build_prompt(chunk_text, template))
 
 
 _ADDENDUM_NO_CONTENT = "추가로 뽑을 새 내용 없음"
@@ -168,12 +182,25 @@ async def call_gemini_addendum(client: httpx.AsyncClient, chunk_text: str) -> st
     """이어지는 청크에서 새 결과·한계점만 뽑는 보충 호출. 청크 1 이 이미
     만든 템플릿 구조를 마크다운 파싱으로 고쳐 끼워 넣는 위험한 수술을 하지
     않는다 — 그냥 뒤에 이어붙일 독립된 절을 새로 쓰게 한다.
+
+    2026-08-06 실측: 원래 프롬프트는 "★등급"이라는 자리표시자만 던지고 그게
+    구체적으로 뭔지(★★★/★★/★ 세 가지) 설명하지 않았다 — 본 템플릿(R3)의 전체
+    맥락 없이 이 프롬프트 하나만 보는 모델 입장에선 "★등급"이 진짜 출력해야
+    할 리터럴 문자열인지 자리표시자 설명인지 모호하다. Gemini는 이 모호함을
+    잘 넘겼지만 Groq(llama-3.3-70b)는 종종 "★등급"을 그대로 베끼거나 이
+    프로젝트에 없는 표기(★중, ★★★★)를 만들어냈다(§5 "서베이 템플릿·청킹
+    실측 재검증" 참고). 세 가지 리터럴 옵션을 R3 처럼 직접 나열해 모호함을
+    없앴다.
     """
     prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
 이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
 이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
-값(조건/비교대상/지표) — 출처위치 ★등급 형식을 지켜라. 새로 뽑을 것이 없으면
-두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
+이 발췌는 문장마다 "[S번호]" 태그가 붙어 있다(예: [S0142]) — "값(조건/비교대상/지표) —
+출처위치" 뒤에 그 수치가 실제로 있는 문장의 태그를 **그대로** 덧붙이고(직접 지어내지
+말 것, 원문에 있는 태그만 옮겨 적을 것), 이어서 다음 세 가지 중 **정확히 하나만** 그대로
+붙여라(다른 문자·설명은 절대 붙이지 마라): 본문 서술 문장에서 직접 확인했으면 ★★★,
+표나 부록에서 확인했으면 ★★, 초록에만 등장하거나 원문 미확인이면 ★.
+새로 뽑을 것이 없으면 두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
 
 ### 추가 결과 (원문 후반부)
 
@@ -209,8 +236,8 @@ async def _post_groq(client: httpx.AsyncClient, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-async def call_groq(client: httpx.AsyncClient, paper_text: str, template: str) -> str:
-    return await _post_groq(client, build_prompt(paper_text, template, GROQ_FALLBACK_CHARS))
+async def call_groq(client: httpx.AsyncClient, chunk_text: str, template: str) -> str:
+    return await _post_groq(client, build_prompt(chunk_text, template))
 
 
 async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
@@ -219,8 +246,12 @@ async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
     prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
 이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
 이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
-값(조건/비교대상/지표) — 출처위치 ★등급 형식을 지켜라. 새로 뽑을 것이 없으면
-두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
+이 발췌는 문장마다 "[S번호]" 태그가 붙어 있다(예: [S0142]) — "값(조건/비교대상/지표) —
+출처위치" 뒤에 그 수치가 실제로 있는 문장의 태그를 **그대로** 덧붙이고(직접 지어내지
+말 것, 원문에 있는 태그만 옮겨 적을 것), 이어서 다음 세 가지 중 **정확히 하나만** 그대로
+붙여라(다른 문자·설명은 절대 붙이지 마라): 본문 서술 문장에서 직접 확인했으면 ★★★,
+표나 부록에서 확인했으면 ★★, 초록에만 등장하거나 원문 미확인이면 ★.
+새로 뽑을 것이 없으면 두 항목 모두 "{_ADDENDUM_NO_CONTENT}"라고만 써라.
 
 ### 추가 결과 (원문 후반부)
 
@@ -261,21 +292,25 @@ async def _summarize_chunked(
     call_single, call_addendum, chunk_size: int, max_chunks: int,
     chunk_delay: float, label: str,
 ) -> str:
-    """첫 chunk_size자로 전체 템플릿을 채운 뒤, 남은 원문을 chunk_size자씩
-    이어붙여(최대 max_chunks개) "추가 결과·추가 한계점"만 보충한다 — 긴
-    논문이라고 뒷부분을 조용히 안 보고 넘어가지 않는다. 청크 처리 중
-    하나가 실패하면 그 뒤는 포기하고 지금까지 만든 결과로 마무리한다
-    (무한정 재시도하지 않음). Gemini·Groq 둘 다 이 함수를 쓴다 — 청크
-    크기·상한·간격만 엔진별로 다르게 준다(summarize() 참고).
+    """첫 청크로 전체 템플릿을 채운 뒤, 남은 청크들로 "추가 결과·추가
+    한계점"만 보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지
+    않는다. 청크 처리 중 하나가 실패하면 그 뒤는 포기하고 지금까지 만든
+    결과로 마무리한다(무한정 재시도하지 않음). Gemini·Groq 둘 다 이 함수를
+    쓴다 — 청크 크기·상한·간격만 엔진별로 다르게 준다(summarize() 참고).
+
+    2026-08-06: 청크 경계를 원문 char 위치로 그냥 자르던 방식에서
+    sentence_grounding.build_tagged_chunks 로 바꿨다 — 문장 단위로만 잘라
+    문장이 청크 경계에서 반토막 나지 않고, 문장마다 전체 논문 기준의
+    전역 [S번호]가 붙어 어느 청크에서 처리하든 인용 번호가 서로 안 겹친다
+    (⑤ 검증기가 그 번호로 원문 문장을 다시 찾아 대조한다 — §8-9 참고).
     """
+    chunks, _sentences = sentence_grounding.build_tagged_chunks(paper_text, chunk_size, max_chunks)
+    if not chunks:
+        chunks = [""]
     summary = await _call_with_rate_limit_retry(
-        lambda: call_single(client, paper_text, template), label,
+        lambda: call_single(client, chunks[0], template), label,
     )
-    remainder = paper_text[chunk_size:]
-    chunk_num = 1
-    while remainder and chunk_num < max_chunks:
-        chunk_num += 1
-        chunk_text, remainder = remainder[:chunk_size], remainder[chunk_size:]
+    for chunk_num, chunk_text in enumerate(chunks[1:], start=2):
         if chunk_delay:
             await asyncio.sleep(chunk_delay)
         try:
