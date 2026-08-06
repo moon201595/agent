@@ -38,26 +38,29 @@ def main() -> int:
 
     grand_total = 0
     grand_matched = 0
-    print(f"{'arxiv_id':<18} {'numbers':>7} {'matched':>7} {'ratio':>6}  unmatched")
-    print("-" * 78)
+    grand_grounded = 0
+    print(f"{'arxiv_id':<18} {'numbers':>7} {'matched':>7} {'ratio':>6} {'grounded':>8}  unmatched")
+    print("-" * 90)
     for s_path in summaries:
         arxiv_id = s_path.stem
         t_path = TEXT_DIR / f"{arxiv_id}.txt"
         if not t_path.exists():
-            print(f"{arxiv_id:<18} {'—':>7} {'—':>7} {'—':>6}  원문 텍스트 없음 (fetch_paper 필요)")
+            print(f"{arxiv_id:<18} {'—':>7} {'—':>7} {'—':>6} {'—':>8}  원문 텍스트 없음 (fetch_paper 필요)")
             continue
         report = verify_numbers(
             s_path.read_text(encoding="utf-8"), t_path.read_text(encoding="utf-8")
         )
         grand_total += report.total
         grand_matched += report.matched
+        grand_grounded += report.grounded
         unmatched = ", ".join(c.token for c in report.unmatched) or "-"
         print(f"{arxiv_id:<18} {report.total:>7} {report.matched:>7} "
-              f"{report.pass_ratio:>6.2f}  {unmatched}")
+              f"{report.pass_ratio:>6.2f} {report.grounded:>8}  {unmatched}")
 
     overall = 1.0 if grand_total == 0 else grand_matched / grand_total
-    print("-" * 78)
-    print(f"전체: 숫자 {grand_total}개 중 {grand_matched}개 일치 — 통과율 {overall:.3f}")
+    print("-" * 90)
+    print(f"전체: 숫자 {grand_total}개 중 {grand_matched}개 일치 — 통과율 {overall:.3f} "
+          f"(문장 단위 그라운딩 {grand_grounded}개 — [S번호] 태그 있는 요약만 해당, §8-9 참고)")
 
     if args.min_ratio is not None and overall < args.min_ratio:
         print(f"FAIL: 통과율 {overall:.3f} < 기준 {args.min_ratio}")
