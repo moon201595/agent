@@ -23,7 +23,7 @@
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
 - `test_smoke.py` — 실동작 스모크 7종 (네트워크 필요)
-- `test_verify_units.py` / `test_select.py` / `test_sentence_grounding.py` / `test_summarize_chunking.py` / `test_hybrid_search.py` / `test_summary_parser.py` — 단위 테스트 91종 (네트워크 불필요)
+- `test_verify_units.py` / `test_select.py` / `test_sentence_grounding.py` / `test_summarize_chunking.py` / `test_hybrid_search.py` / `test_summary_parser.py` / `test_prompt_templates.py` — 단위 테스트 94종 (네트워크 불필요)
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL`(선택, 미설정 시 기본값 사용) (커밋 제외, 각자 발급)
 
