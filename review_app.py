@@ -193,6 +193,31 @@ _STAR_ONLY_RE = re.compile(r"(?<!`)(?<!★)(★{1,3})(?!★)(?!`)")
 # 표시 시점에 ②③④ 앞에 빈 줄을 넣어 문단을 분리한다. 이미 빈 줄이 있으면
 # (?<!\n) 때문에 다시 안 건드려 — 두 번 적용해도 안전(idempotent).
 _CONCLUSION_ITEM_RE = re.compile(r"(?<!\n)\n(?=[②③④])")
+# ④ 결과 절 불릿이 "값(조건/비교대상/지표) — 출처위치 [S번호] ★등급" 형식을
+# 한 줄에 다 몰아 쓰다 보니, 정작 중요한 "값"이 문장 속에 묻혀 눈에 안 띈다는
+# 지적을 받았다(2026-08-10). 값과 조건 사이 경계는 이미 템플릿이 고정한
+# 문법(값 바로 뒤 첫 "(" ~ 대시 "—" 직전 마지막 ")")이라 자연어 해석 없이
+# 기계적으로 잘라낼 수 있다 — "필드별 검증"과 달리 숫자가 맞는지 판단하는
+# 게 아니라 이미 정해진 구두점 구조를 그대로 재배치만 하는 것이라 서버가
+# "판단"하는 것과는 다르다. detail 그룹을 그리디(.+)로 잡아야 "조건(대화형
+# 및 비대화형)"처럼 괄호가 중첩된 경우도 마지막 ")"까지 올바르게 잡힌다.
+# loc 에서 "[" 를 막지 않은 이유: "초록 [S0005] / 본문 4.2절 [S0158] ★★★"처럼
+# 본문 앞에 다른 [S번호]가 먼저 나오는 이중 인용 줄도 있어(1810.04805 BERT
+# 실측 확인) — 대괄호를 막으면 그 줄만 통째로 매치 실패한다.
+# 저장된 20편 전체(불릿+태그 116줄)를 대조해 전부 매치되는 것까지 확인했다.
+_R2_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*[-*]\s+)(?P<value>[^\n(]+?)\s*\((?P<detail>.+)\)\s*—\s*"
+    r"(?P<loc>[^\n]*?)\s*(?P<tag>\[S\d{4}\]\s*★{1,3})\s*$",
+    re.MULTILINE,
+)
+
+
+def _bold_r2_value(m: re.Match) -> str:
+    value = m.group("value").strip()
+    detail = m.group("detail").strip()
+    loc = m.group("loc").strip()
+    loc_part = f"{loc} " if loc else ""
+    return f"{m.group('indent')}**{value}** _({detail})_ — {loc_part}{m.group('tag')}"
 
 
 def _prettify_summary_markdown(text: str) -> str:
@@ -202,6 +227,9 @@ def _prettify_summary_markdown(text: str) -> str:
     """
     # "1~7절"의 물결표가 markdown 취소선(~text~)으로 오인되는 것부터 이스케이프
     text = text.replace("~", "\\~")
+    # ④ 결과류 불릿의 "값"을 볼드로, "(조건/비교대상/지표)"를 이탤릭으로 —
+    # [S번호]★ 칩 래핑보다 먼저 해야 태그 원문(백틱 없는 상태)을 그대로 재사용할 수 있다
+    text = _R2_LINE_RE.sub(_bold_r2_value, text)
     # [S번호]+별점을 하나의 칩으로 묶는다 (가장 흔한 R2/R3 형식)
     text = _TAG_STAR_RE.sub(lambda m: f"`{m.group(1)} {m.group(2)}`", text)
     # 태그 없이 별점만 있는 경우(그라운딩 안 된 항목·구형 요약)도 칩으로
@@ -395,19 +423,61 @@ def render_search_tab():
     st.subheader("논문 검색 → 요약 생성")
     mode_label = st.radio(
         "입력 방식",
-        ["키워드 검색", "논문 ID 직접 지정", "제목으로 검색", "PDF 업로드", "DOI/URL (오픈액세스)"],
+        ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
+         "PDF 업로드", "DOI/URL (오픈액세스)"],
         horizontal=True,
     )
     mode = {
-        "키워드 검색": "keyword", "논문 ID 직접 지정": "id", "제목으로 검색": "title",
+        "키워드 검색": "keyword", "저장된 논문 재검색 (한글 가능)": "hybrid",
+        "논문 ID 직접 지정": "id", "제목으로 검색": "title",
         "PDF 업로드": "pdf", "DOI/URL (오픈액세스)": "oa",
     }[mode_label]
+
+    # "키워드 검색"은 arxiv_search_papers/s2_search_papers — 외부 API 자체가
+    # 영문 키워드 매칭이라 한글 질의를 이해하지 못한다(2026-08-10, 사용자가
+    # 직접 확인해 지적). hybrid_search_local_papers는 처음부터 한글도
+    # 되도록 만들었지만(gemini-embedding-001가 다국어 임베딩 지원 + BM25
+    # 토크나이저가 한글 음절도 인식, hybrid_search.py 참고) 이 화면에는
+    # 연결이 안 돼 있었다 — 그래서 "그때 한글 되게 한다며" 검증이 어긋난
+    # 것처럼 보였다: 사용자가 실제로 두드린 건 이 UI의 "키워드 검색"(외부
+    # API)이지, 한글을 지원하도록 만든 하이브리드 검색이 아니었다. 이미
+    # `fetch_paper`로 모아둔 로컬 논문 안에서 다시 찾는 용도라 새로 수집·
+    # 요약하지 않는다 — 검색 결과만 보여주고, 실제 검토는 '요약 검토' 탭에서.
+    if mode == "hybrid":
+        st.caption(
+            "이미 저장된 논문들 안에서 다시 찾는다(BM25+임베딩) — 새로 수집·요약하지 않음. "
+            "한글 질의도 지원(임베딩이 다국어)."
+        )
+        hybrid_query = st.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
+        hybrid_top_k = st.number_input("표시할 편수", min_value=1, max_value=20, value=5)
+        if st.button("🔎 검색", disabled=not hybrid_query):
+            result = json.loads(
+                run_async(
+                    server.hybrid_search_local_papers(
+                        server.HybridSearchInput(query=hybrid_query, top_k=hybrid_top_k)
+                    )
+                )
+            )
+            if not result["papers"]:
+                st.info("저장된 논문 중 일치하는 게 없음.")
+            else:
+                if not result["embeddings_used"]:
+                    st.warning("GOOGLE_API_KEY 없음/실패 — BM25(어휘 일치)만 사용됨. 한글 질의는 정확도가 떨어질 수 있음.")
+                for p in result["papers"]:
+                    st.markdown(
+                        f"- **{p['title']}** (`{p['arxiv_id']}`) — "
+                        f"BM25 {p['bm25_score']}, 코사인 {p['cosine_score']}, 합산 {p['fused_score']}"
+                    )
+                st.caption("검토·재요약은 '✅ 요약 검토' 탭에서.")
+        return
 
     top_n = 3
     uploaded_file = None
     pdf_title = ""
     if mode == "keyword":
         value = st.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
+        st.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
+                   "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
         top_n = st.number_input("선별할 편수", min_value=1, max_value=10, value=3)
     elif mode == "id":
         value = st.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
