@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -124,6 +125,23 @@ def _inject_custom_style() -> None:
         /* 캡션·보조 텍스트 톤 다운 */
         [data-testid="stCaptionContainer"] { color: var(--text-muted); }
 
+        /* 요약 본문 리스트 — "값(조건/비교대상/지표) — 출처위치 [S번호] ★등급"
+           형식이 한 줄에 다 붙어 있어 읽기 힘들다는 지적(2026-08-10)을 받아
+           불릿 사이 간격을 넉넉히 벌리고 줄 간격도 늘렸다. */
+        [data-testid="stMarkdownContainer"] li {
+            margin-bottom: 0.6em; line-height: 1.65;
+        }
+        [data-testid="stMarkdownContainer"] li > ul,
+        [data-testid="stMarkdownContainer"] li > ol {
+            margin-top: 0.4em;
+        }
+        /* [S번호]·★등급 꼬리표(백틱 인라인 코드)를 하늘색 톤 칩으로 —
+           본문 문장과 시각적으로 분리되어 한눈에 "출처 표시"로 읽힌다. */
+        [data-testid="stMarkdownContainer"] code {
+            background-color: var(--sky-light); color: var(--sky-dark);
+            border-radius: 6px; padding: 0.15em 0.45em; font-size: 0.88em;
+        }
+
         /* Streamlit 기본 푸터("Made with Streamlit")만 숨김 — 메뉴는 유지 */
         footer { visibility: hidden; }
         </style>
@@ -154,6 +172,34 @@ def _fetch_review_rows(show_all: bool) -> list[dict]:
         query += " ORDER BY s.created_at DESC"
         rows = con.execute(query).fetchall()
     return [dict(r) for r in rows]
+
+
+# R2 형식("값(조건/비교대상/지표) — 출처위치 [S번호] ★등급")이 실제로 화면에
+# 뽑아보니 한 줄에 괄호·대시·태그·별점이 다 붙어 읽기 힘들다는 지적을 받았다
+# (2026-08-10, 실제 캡처 스크린샷 검토). 마크다운 구조 자체(절/불릿)는 안 건드리고
+# "[S번호] ★등급" 꼬리표만 인라인 코드(백틱)로 묶어 본문 문장과 시각적으로
+# 분리한다 — 백틱은 표준 마크다운이라 unsafe_allow_html 없이도 안전하게 렌더링된다.
+_TAG_STAR_RE = re.compile(r"(\[S\d{4}\])\s*(★{1,3})")
+# (?<!★)...(?!★)로 별점 런의 양끝을 고정해야 한다 — 그냥 (?<!`)(★{1,3})(?!`)만 쓰면
+# 1단계에서 이미 `[S번호] ★★★`로 묶인 별 3개짜리를 여기서 다시 훑을 때, 정규식 엔진이
+# 뒤 백틱을 피하려고 그리디 매칭을 3개→2개로 백트래킹해버려서 `[S0586] `★★`★`처럼
+# 별이 2+1로 쪼개지는 실제 버그가 있었다(2026-08-10, repr()로 재현·확인). 런의 시작/끝에
+# "다른 별이 인접하지 않음"을 강제하면 부분 매칭 자체가 봉쇄된다.
+_STAR_ONLY_RE = re.compile(r"(?<!`)(?<!★)(★{1,3})(?!★)(?!`)")
+
+
+def _prettify_summary_markdown(text: str) -> str:
+    """요약 마크다운을 화면 표시 직전에 다듬는다. 원본 저장 파일은 안 건드리고
+    렌더링할 때만 바꾼다 — save_summary/verify.py 는 원본 그대로를 대조해야
+    하므로 이 함수는 화면 표시 경로에서만 쓴다.
+    """
+    # "1~7절"의 물결표가 markdown 취소선(~text~)으로 오인되는 것부터 이스케이프
+    text = text.replace("~", "\\~")
+    # [S번호]+별점을 하나의 칩으로 묶는다 (가장 흔한 R2/R3 형식)
+    text = _TAG_STAR_RE.sub(lambda m: f"`{m.group(1)} {m.group(2)}`", text)
+    # 태그 없이 별점만 있는 경우(그라운딩 안 된 항목·구형 요약)도 칩으로
+    text = _STAR_ONLY_RE.sub(lambda m: f"`{m.group(1)}`", text)
+    return text
 
 
 def _verify_detail(arxiv_id: str, summary_text: str) -> verify.VerificationReport:
@@ -439,11 +485,9 @@ def render_review_tab():
             st.markdown("---")
             # 화면 폭(wide layout)에 텍스트를 그대로 채우면 줄이 끝까지 늘어져서
             # 읽기 힘들다 — 가운데 컬럼으로 폭을 제한해 적당한 지점에서 줄바꿈되게 한다.
-            # "1~7절"처럼 범위 표기에 쓴 물결표가 markdown 취소선(~text~)으로
-            # 오인식되는 걸 실측으로 확인 — 렌더링 직전에 이스케이프한다.
             _, mid, _ = st.columns([1, 4, 1])
             with mid:
-                st.markdown(summary_text.replace("~", "\\~"))
+                st.markdown(_prettify_summary_markdown(summary_text))
             st.markdown("---")
 
             col1, col2, col3 = st.columns([1, 2, 1])
