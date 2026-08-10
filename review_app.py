@@ -26,7 +26,113 @@ import server
 import summarize_engine as engine
 import verify
 
-st.set_page_config(page_title="논문 검색·분석 에이전트", layout="wide")
+st.set_page_config(page_title="논문 검색·분석 에이전트", layout="wide", page_icon="📄")
+
+
+def _inject_custom_style() -> None:
+    """하늘색·흰색 중심의 깔끔한 톤(2026-08-06). Streamlit 기본 테마만 쓰면
+    버튼·경고 박스·탭이 전부 진한 채도의 기본색이라 "AI가 급하게 만든
+    데모"처럼 보인다는 피드백을 받고 순수 시각 레이어만 추가했다 — 로직은
+    전혀 안 건드림. 색상 기반은 .streamlit/config.toml, 카드·탭·여백 같은
+    세부 모양은 여기서 담당한다. data-testid 셀렉터는 Streamlit이 공식
+    문서화한 안정적인 훅이라 버전이 올라가도 잘 안 깨진다.
+    """
+    st.markdown(
+        """
+        <style>
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
+
+        :root {
+            --sky: #0EA5E9;
+            --sky-dark: #0284C7;
+            --sky-light: #EAF6FD;
+            --sky-border: #D3EAF7;
+            --text-main: #1E293B;
+            --text-muted: #64748B;
+        }
+
+        html, body, [class*="css"] {
+            font-family: 'PretendardVariable', -apple-system, BlinkMacSystemFont,
+                "Segoe UI", Roboto, sans-serif;
+        }
+
+        /* 기본 레이아웃 여백 — Streamlit 기본값은 위쪽이 휑하게 남는다 */
+        .block-container { padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1100px; }
+
+        /* 제목 영역 */
+        h1 { font-weight: 700; color: var(--text-main); letter-spacing: -0.01em; }
+        h1 + div, h1 { margin-bottom: 0.3rem; }
+        h2, h3 { color: var(--text-main); font-weight: 600; }
+
+        /* 탭 — 밑줄 인디케이터 스타일로, 선택된 탭만 하늘색 */
+        [data-testid="stTabs"] [data-baseweb="tab-list"] {
+            gap: 4px; border-bottom: 1px solid var(--sky-border);
+        }
+        [data-testid="stTabs"] button[data-baseweb="tab"] {
+            color: var(--text-muted); font-weight: 500; border-radius: 8px 8px 0 0;
+        }
+        [data-testid="stTabs"] button[aria-selected="true"] {
+            color: var(--sky-dark); font-weight: 700;
+        }
+
+        /* 버튼 — 각지고 진한 기본 톤 대신 둥근 모서리 + 옅은 하늘색 */
+        [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button {
+            border-radius: 10px; border: 1px solid var(--sky-border);
+            transition: all 0.15s ease;
+        }
+        [data-testid="stBaseButton-primary"] {
+            background-color: var(--sky); border: none;
+        }
+        [data-testid="stBaseButton-primary"]:hover {
+            background-color: var(--sky-dark);
+        }
+        [data-testid="stButton"] button:hover {
+            border-color: var(--sky); color: var(--sky-dark);
+        }
+
+        /* 입력창·셀렉트·라디오 — 각진 기본 테두리를 둥글게, 포커스에 하늘색 */
+        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
+        [data-testid="stFileUploaderDropzone"] {
+            border-radius: 10px !important; border-color: var(--sky-border) !important;
+        }
+        [data-testid="stTextInput"] input:focus, [data-testid="stNumberInput"] input:focus {
+            border-color: var(--sky) !important; box-shadow: 0 0 0 1px var(--sky) !important;
+        }
+
+        /* 요약 검토 카드(expander) — 흰 배경 + 옅은 그림자로 "카드"처럼 분리 */
+        [data-testid="stExpander"] {
+            border: 1px solid var(--sky-border) !important; border-radius: 12px !important;
+            box-shadow: 0 1px 3px rgba(14, 165, 233, 0.06);
+            background-color: #FFFFFF; margin-bottom: 0.6rem;
+        }
+        [data-testid="stExpander"] summary {
+            font-weight: 600; color: var(--text-main);
+        }
+
+        /* 알림 박스(성공/경고/오류/정보) — 모서리만 둥글게, 성공=초록/경고=노랑/오류=빨강
+           같은 의미별 색상은 Streamlit 기본값을 그대로 둔다(하늘색으로 덮으면 경고·오류
+           박스까지 파랗게 보여서 오히려 의미 구분이 흐려진다). */
+        [data-testid="stAlert"] {
+            border-radius: 10px;
+        }
+
+        /* status 박스(진행 상황 로그) */
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p {
+            color: var(--text-main);
+        }
+
+        /* 캡션·보조 텍스트 톤 다운 */
+        [data-testid="stCaptionContainer"] { color: var(--text-muted); }
+
+        /* Streamlit 기본 푸터("Made with Streamlit")만 숨김 — 메뉴는 유지 */
+        footer { visibility: hidden; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_custom_style()
 
 
 def run_async(coro):

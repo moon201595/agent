@@ -1,0 +1,11 @@
+# review_app.py UI 테마 — 하늘색·흰색 중심, 깔끔한 톤(2026-08-06).
+# 세부 모양(카드 그림자, 탭 밑줄, 여백 등)은 review_app.py 상단의 인라인 CSS가
+# 담당하고, 여기서는 Streamlit 컴포넌트 전반(버튼·슬라이더·위젯 배경 등)에
+# 공통으로 적용되는 색상 기반만 정한다.
+[theme]
+base = "light"
+primaryColor = "#0EA5E9"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#EAF6FD"
+textColor = "#1E293B"
+font = "sans serif"
