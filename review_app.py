@@ -186,6 +186,13 @@ _TAG_STAR_RE = re.compile(r"(\[S\d{4}\])\s*(★{1,3})")
 # 별이 2+1로 쪼개지는 실제 버그가 있었다(2026-08-10, repr()로 재현·확인). 런의 시작/끝에
 # "다른 별이 인접하지 않음"을 강제하면 부분 매칭 자체가 봉쇄된다.
 _STAR_ONLY_RE = re.compile(r"(?<!`)(?<!★)(★{1,3})(?!★)(?!`)")
+# 템플릿(prompts/summary_template.md)의 "### 결론" 절은 ①②③④ 네 항목을 한 줄씩
+# 개행으로만 구분해 내놓는다(줄바꿈 하나 — 마크다운은 이걸 문단 구분으로 안 보고
+# 그대로 이어 붙여, ①부터 ④까지 한 문단으로 뭉쳐 렌더링된다). 저장된 20편 요약
+# 전부 이 형식(grep으로 실측 확인: 전부 정확히 4개)이라, 원본을 고치는 대신 화면
+# 표시 시점에 ②③④ 앞에 빈 줄을 넣어 문단을 분리한다. 이미 빈 줄이 있으면
+# (?<!\n) 때문에 다시 안 건드려 — 두 번 적용해도 안전(idempotent).
+_CONCLUSION_ITEM_RE = re.compile(r"(?<!\n)\n(?=[②③④])")
 
 
 def _prettify_summary_markdown(text: str) -> str:
@@ -199,6 +206,8 @@ def _prettify_summary_markdown(text: str) -> str:
     text = _TAG_STAR_RE.sub(lambda m: f"`{m.group(1)} {m.group(2)}`", text)
     # 태그 없이 별점만 있는 경우(그라운딩 안 된 항목·구형 요약)도 칩으로
     text = _STAR_ONLY_RE.sub(lambda m: f"`{m.group(1)}`", text)
+    # 결론 절의 ①②③④를 문단별로 분리
+    text = _CONCLUSION_ITEM_RE.sub("\n\n", text)
     return text
 
 
