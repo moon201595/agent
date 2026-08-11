@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -510,6 +512,87 @@ def render_search_tab():
             status_box.update(label="처리된 논문 없음", state="error")
 
 
+# ---------------------------------------------------------------- ⑥→⑦ 연결
+# "마무리" 슬라이드에 남은 유일한 우선순위로 적어 둔 항목: review_app.py에서
+# 승인(⑥)한 결과를 docker_runner.reproduce()(⑦)로 넘기는 연결부가 그동안
+# 수동(arxiv_id를 직접 CLI에 넣어 호출)이었다. 여기서 그 연결을 만든다.
+#
+# reproduce()는 Docker clone+install+run을 최대 3회 재시도하는 무거운 작업이라
+# (최악의 경우 후보당 install 15분+run 2분 — INSTALL_TIMEOUT/RUN_TIMEOUT,
+# docker_runner.py 참고) 승인 버튼 클릭 안에서 동기로 돌리면 화면이 그만큼
+# 멈춘다. batch_summarize.py와 같은 패턴 — "사람이 실행은 시키지만 그 다음은
+# 무인으로 돈다" — 그대로 따라, 승인 시 별도 프로세스로 무인 실행만 시키고
+# 화면은 즉시 돌아온다. 진행 상황은 결과가 쌓이는 repro_results 테이블로
+# 나중에 확인한다(server.save_repro_result — docker_runner.py가 이미 쓰고
+# 있음, 이 파일은 그 결과를 조회만 한다 — server.py는 판단하지 않는다는
+# 원칙과 동일하게 이 파일도 실행 여부만 트리거하고 성공 판정엔 관여 안 함).
+
+
+def _fetch_repro_rows(arxiv_id: str) -> list[dict]:
+    with server._db() as con:
+        rows = con.execute(
+            "SELECT repo_url, source, confidence, success, exit_code, stage, "
+            "attempt, duration_s, created_at FROM repro_results "
+            "WHERE arxiv_id=? ORDER BY created_at DESC",
+            (arxiv_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _reproduce_running(arxiv_id: str) -> bool:
+    """docker_runner.py가 이 arxiv_id로 이미 떠 있는지 확인 — 승인 버튼을
+    실수로 두 번 눌러도(재승인) 같은 재현을 중복 실행하지 않는다."""
+    marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
+    return marker.exists()
+
+
+def _launch_reproduce_background(arxiv_id: str) -> str:
+    """⑦을 별도 프로세스로 무인 실행한다. 이미 성공 기록이 있으면(재현
+    완료됨) 다시 돌리지 않고, 이미 실행 중이면 중복 실행하지 않는다."""
+    rows = _fetch_repro_rows(arxiv_id)
+    if any(r["success"] for r in rows):
+        return "이미 성공 기록이 있어 재실행하지 않음"
+    if _reproduce_running(arxiv_id):
+        return "이미 실행 중"
+
+    server.REPRO_DIR.mkdir(parents=True, exist_ok=True)
+    marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
+    marker.write_text(server._now(), encoding="utf-8")
+    log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
+
+    # docker_runner.py 자체의 __main__은 마커 파일을 모르므로, 마커 정리까지
+    # 포함한 짧은 래퍼를 셸로 실행한다 — docker_runner.py 코드 자체는 안 건드림.
+    wrapper = (
+        f'"{sys.executable}" docker_runner.py "{arxiv_id}"; '
+        f'rm -f "{marker}"'
+    )
+    with open(log_path, "w", encoding="utf-8") as f:
+        subprocess.Popen(
+            ["/bin/bash", "-c", wrapper],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=f, stderr=subprocess.STDOUT,
+            start_new_session=True,  # 이 스트림릿 요청 처리가 끝나도 안 죽게
+        )
+    return "⑦ 코드 재현을 백그라운드에서 시작함"
+
+
+def _render_repro_status(arxiv_id: str) -> None:
+    rows = _fetch_repro_rows(arxiv_id)
+    if _reproduce_running(arxiv_id):
+        st.caption("⑦ 코드 재현 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
+        return
+    if not rows:
+        return
+    best = next((r for r in rows if r["success"]), rows[0])
+    if best["success"]:
+        st.caption(f"⑦ 코드 재현: ✅ 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+    else:
+        st.caption(
+            f"⑦ 코드 재현: ❌ 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
+            "— 승인을 다시 누르면 재시도"
+        )
+
+
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
 
 
@@ -558,6 +641,9 @@ def render_review_tab():
             if row["review_note"]:
                 st.caption(f"이전 검토 메모: {row['review_note']}")
 
+            if status == "approved":
+                _render_repro_status(arxiv_id)
+
             if st.toggle("🖼️ 그림·표 이미지 보기", key=f"imgtoggle_{arxiv_id}"):
                 _render_image_gallery(arxiv_id)
 
@@ -573,6 +659,8 @@ def render_review_tab():
             with col1:
                 if st.button("✅ 승인", key=f"approve_{arxiv_id}"):
                     server.set_review_status(arxiv_id, "approved")
+                    msg = _launch_reproduce_background(arxiv_id)
+                    st.toast(f"⑥→⑦ {msg}")
                     st.rerun()
             with col2:
                 reason = st.text_input("반려 사유 (선택)", key=f"reason_{arxiv_id}")
