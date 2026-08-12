@@ -102,14 +102,47 @@ def _inject_custom_style() -> None:
             border-color: var(--sky) !important; box-shadow: 0 0 0 1px var(--sky) !important;
         }
 
-        /* 요약 검토 카드(expander) — 흰 배경 + 옅은 그림자로 "카드"처럼 분리 */
+        /* 본문 배경에 옅은 톤을 줘서(사이드바와 같은 계열) 흰 카드가 그
+           위에 "떠 있는" 느낌이 나게 한다 — 카드까지 배경과 같은 흰색이라
+           경계가 안 보여 화면이 밋밋하다는 지적(2026-08-12)을 받았다.
+           실측으로 확인한 메인 컨텐츠 전용 testid(stMain, 사이드바와 분리
+           된 것)만 건드려서 사이드바 자체 배경색은 그대로 둔다. */
+        [data-testid="stMain"] { background-color: #F8FAFC; }
+
+        /* 요약 검토 카드(expander) — 흰 배경 + 그림자로 옅은 배경 위에 뜬
+           "카드"처럼 분리. hover에서 살짝 떠오르게 해 클릭 가능함을 암시. */
         [data-testid="stExpander"] {
             border: 1px solid var(--sky-border) !important; border-radius: 12px !important;
-            box-shadow: 0 1px 3px rgba(14, 165, 233, 0.06);
+            box-shadow: 0 1px 4px rgba(14, 165, 233, 0.08);
             background-color: #FFFFFF; margin-bottom: 0.6rem;
+            transition: box-shadow 0.15s ease, transform 0.15s ease;
+        }
+        [data-testid="stExpander"]:hover {
+            box-shadow: 0 4px 14px rgba(14, 165, 233, 0.14);
         }
         [data-testid="stExpander"] summary {
             font-weight: 600; color: var(--text-main);
+        }
+
+        /* 라디오 그룹(입력 방식 선택 등) — 기본 회색 원형 대신 하늘색 계열로,
+           선택된 항목의 라벨을 굵게 해서 지금 뭘 골랐는지 더 잘 드러나게 */
+        [data-testid="stRadio"] label { font-weight: 400; }
+        [data-testid="stRadio"] label:has(input:checked) {
+            font-weight: 700; color: var(--sky-dark);
+        }
+        [data-testid="stRadio"] [role="radiogroup"] {
+            gap: 0.4rem 1.2rem;
+        }
+
+        /* 검색 폼(입력 방식·검색어 등)을 옅은 카드로 감싸 리스트 카드와
+           같은 "표면" 언어를 준다. render_search_tab()의 st.container(
+           border=True)가 만드는 래퍼를 그대로 스타일링 — Python 쪽 구조는
+           안 바꾸고 여기서 시각적으로만 처리. */
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            background-color: #FFFFFF; border-radius: 14px !important;
+            border: 1px solid var(--sky-border) !important;
+            box-shadow: 0 1px 4px rgba(14, 165, 233, 0.08);
+            padding: 0.4rem 0.2rem;
         }
 
         /* 알림 박스(성공/경고/오류/정보) — 모서리만 둥글게, 성공=초록/경고=노랑/오류=빨강
@@ -194,13 +227,19 @@ def _inject_custom_style() -> None:
         .st-key-nav_review button {
             background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNMTUgMnY0aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik05IDEyLjVoNk05IDE2aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPg==");
         }
-        /* 현황 통계 — 숫자만 덩그러니 있지 않게 라벨·값을 한 줄에 양끝 정렬 */
-        [data-testid="stSidebar"] .sidebar-stats div {
-            display: flex; justify-content: space-between; align-items: baseline;
-            padding: 0.3rem 0.1rem; font-size: 0.85rem; color: var(--text-muted);
+        /* 현황을 숫자만 보여주다가 "어떤 논문인지 안 보인다"는 지적을 받아
+           (2026-08-12) 카테고리별 토글 + 실제 논문 목록으로 바꿨다. 사이드
+           바 폭이 좁아서 카드 전용 스타일(굵은 테두리·큰 그림자)이 본문
+           카드와 똑같으면 답답해 보여 사이드바 안에서만 더 가볍게 조정. */
+        [data-testid="stSidebar"] [data-testid="stExpander"] {
+            box-shadow: none; margin-bottom: 0.35rem;
         }
-        [data-testid="stSidebar"] .sidebar-stats b {
-            color: var(--text-main); font-size: 0.95rem;
+        [data-testid="stSidebar"] [data-testid="stExpander"] summary {
+            font-size: 0.82rem; padding: 0.4rem 0.6rem;
+        }
+        [data-testid="stSidebar"] .sidebar-item {
+            font-size: 0.8rem; color: var(--text-main); padding: 0.22rem 0.1rem;
+            overflow-wrap: break-word;
         }
 
         /* 본문 상단 헤더 영역 — subheader를 옅은 하늘색 배경 띠로 감싸서
@@ -487,7 +526,14 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
 
 def render_search_tab():
     st.subheader("논문 검색 → 요약 생성")
-    mode_label = st.radio(
+    # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
+    # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
+    # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수
+    # 위험이 크다 — 대신 container 객체를 만들어 그 메서드로 위젯을
+    # 그리는 방식(card.text_input(...) 등)을 쓰면 기존 로직 구조는
+    # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
+    card = st.container(border=True)
+    mode_label = card.radio(
         "입력 방식",
         ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
          "PDF 업로드", "DOI/URL (오픈액세스)"],
@@ -510,13 +556,13 @@ def render_search_tab():
     # `fetch_paper`로 모아둔 로컬 논문 안에서 다시 찾는 용도라 새로 수집·
     # 요약하지 않는다 — 검색 결과만 보여주고, 실제 검토는 '요약 검토' 탭에서.
     if mode == "hybrid":
-        st.caption(
+        card.caption(
             "이미 저장된 논문들 안에서 다시 찾는다(BM25+임베딩) — 새로 수집·요약하지 않음. "
             "한글 질의도 지원(임베딩이 다국어)."
         )
-        hybrid_query = st.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
-        hybrid_top_k = st.number_input("표시할 편수", min_value=1, max_value=20, value=5)
-        if st.button("🔎 검색", disabled=not hybrid_query):
+        hybrid_query = card.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
+        hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5)
+        if card.button("🔎 검색", disabled=not hybrid_query):
             result = json.loads(
                 run_async(
                     server.hybrid_search_local_papers(
@@ -525,42 +571,42 @@ def render_search_tab():
                 )
             )
             if not result["papers"]:
-                st.info("저장된 논문 중 일치하는 게 없음.")
+                card.info("저장된 논문 중 일치하는 게 없음.")
             else:
                 if not result["embeddings_used"]:
-                    st.warning("GOOGLE_API_KEY 없음/실패 — BM25(어휘 일치)만 사용됨. 한글 질의는 정확도가 떨어질 수 있음.")
+                    card.warning("GOOGLE_API_KEY 없음/실패 — BM25(어휘 일치)만 사용됨. 한글 질의는 정확도가 떨어질 수 있음.")
                 for p in result["papers"]:
-                    st.markdown(
+                    card.markdown(
                         f"- **{p['title']}** (`{p['arxiv_id']}`) — "
                         f"BM25 {p['bm25_score']}, 코사인 {p['cosine_score']}, 합산 {p['fused_score']}"
                     )
-                st.caption("검토·재요약은 '✅ 요약 검토' 탭에서.")
+                card.caption("검토·재요약은 '✅ 요약 검토' 탭에서.")
         return
 
     top_n = 3
     uploaded_file = None
     pdf_title = ""
     if mode == "keyword":
-        value = st.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
-        st.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
-                   "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
-        top_n = st.number_input("선별할 편수", min_value=1, max_value=10, value=3)
+        value = card.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
+        card.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
+                     "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
+        top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3)
     elif mode == "id":
-        value = st.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
+        value = card.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
     elif mode == "title":
-        value = st.text_input("논문 제목", placeholder="예: TSPulse")
+        value = card.text_input("논문 제목", placeholder="예: TSPulse")
     elif mode == "pdf":
-        st.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
-        uploaded_file = st.file_uploader("PDF 파일", type="pdf")
-        pdf_title = st.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
+        card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
+        uploaded_file = card.file_uploader("PDF 파일", type="pdf")
+        pdf_title = card.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
         value = "ok" if (uploaded_file and pdf_title) else ""
     else:  # oa
-        st.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
-        value = st.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
-        pdf_title = st.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
+        card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
+        value = card.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
+        pdf_title = card.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
 
-    if st.button("시작", type="primary", disabled=not value):
-        status_box = st.status("진행 중...", expanded=True)
+    if card.button("시작", type="primary", disabled=not value):
+        status_box = card.status("진행 중...", expanded=True)
         if mode == "pdf":
             done = run_async(
                 _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
@@ -571,7 +617,7 @@ def render_search_tab():
             done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
         if done:
             status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
-            st.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
+            card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
         else:
             status_box.update(label="처리된 논문 없음", state="error")
 
@@ -755,11 +801,15 @@ def _render_repro_status(arxiv_id: str) -> None:
 
 def render_review_tab():
     st.subheader("요약 검토 (⑥ 사람 판단)")
-    show_all = st.checkbox("전체 보기 (승인·반려 포함)", value=False)
-    rows = _fetch_review_rows(show_all)
+    # 예전엔 체크박스로 "전체 보기"를 켜야 승인·반려된 것까지 보였다 —
+    # 매번 체크해야 하는 게 번거롭다는 지적(2026-08-12)을 받아 항상 전체를
+    # 보여주는 것으로 기본값을 바꿨다. _fetch_review_rows(show_all=False)
+    # 경로(대기중만 필터)는 다른 데서 안 쓰여서 죽은 코드가 아니라 그냥
+    # 이 화면에서 옵션 자체를 없앤 것 — 함수 시그니처는 그대로 둔다.
+    rows = _fetch_review_rows(True)
 
     if not rows:
-        st.info("검토할 요약이 없습니다." if not show_all else "저장된 요약이 없습니다.")
+        st.info("저장된 요약이 없습니다.")
         return
 
     status_emoji = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
@@ -846,23 +896,74 @@ def render_review_tab():
 # ---------------------------------------------------------------- 메인
 
 
-def _fetch_sidebar_stats() -> dict:
-    """사이드바 현황 요약용 — 화면이 온통 흰 여백뿐이라 뭘 하는 앱인지
-    한눈에 안 들어온다는 지적(2026-08-12)을 받아, 참고 이미지(결제
-    대시보드)의 좌측 사이드바 구조를 그대로 베끼지는 않되 "구조·색 영역이
-    있는 화면"이라는 느낌만 가져왔다. 숫자는 실제 DB 조회 — 장식이 아니다."""
+def _fetch_sidebar_lists() -> dict:
+    """사이드바 '현황' — 숫자만 있으면 어떤 논문인지 안 보인다는 지적을
+    받아(2026-08-12), 카테고리별 실제 논문 목록을 반환한다. 카테고리는
+    서로 배타적인 버킷이 아니라 "이 조건에 해당하는 논문이 뭐가 있나"를
+    보여주는 4개의 서로 다른 렌즈다 — 예를 들어 승인됨이면서 동시에
+    재현 성공인 논문은 두 목록에 다 뜬다(정상 — 강제로 하나만 고르게
+    나누면 오히려 정보를 잃는다)."""
     with server._db() as con:
-        total = con.execute("SELECT COUNT(*) c FROM papers").fetchone()["c"]
         pending = con.execute(
-            "SELECT COUNT(*) c FROM summaries WHERE review_status='pending' OR review_status IS NULL"
-        ).fetchone()["c"]
+            "SELECT p.arxiv_id, p.title FROM papers p JOIN summaries s ON p.arxiv_id=s.arxiv_id "
+            "WHERE s.review_status='pending' OR s.review_status IS NULL ORDER BY p.title"
+        ).fetchall()
         approved = con.execute(
-            "SELECT COUNT(*) c FROM summaries WHERE review_status='approved'"
-        ).fetchone()["c"]
+            "SELECT p.arxiv_id, p.title FROM papers p JOIN summaries s ON p.arxiv_id=s.arxiv_id "
+            "WHERE s.review_status='approved' ORDER BY p.title"
+        ).fetchall()
         repro_ok = con.execute(
-            "SELECT COUNT(DISTINCT arxiv_id) c FROM repro_results WHERE success=1"
-        ).fetchone()["c"]
-    return {"total": total, "pending": pending, "approved": approved, "repro_ok": repro_ok}
+            "SELECT DISTINCT p.arxiv_id, p.title FROM papers p "
+            "JOIN repro_results r ON p.arxiv_id=r.arxiv_id "
+            "WHERE r.success=1 ORDER BY p.title"
+        ).fetchall()
+        repro_attempted = {
+            r["arxiv_id"] for r in con.execute("SELECT DISTINCT arxiv_id FROM repro_results").fetchall()
+        }
+
+    # "코드 없음" — repro_results에 행이 아예 없는 승인 논문 중 로그 파일이
+    # "저장소 후보 없음"으로 끝난 것만(_render_repro_status 폴백과 동일 이유
+    # — code_finder가 후보를 하나도 못 찾으면 save_repro_result가 안 불린다).
+    # 후보는 있었는데 설치·실행에 실패한 경우는 여기 안 넣는다 — 그건
+    # repro_results에 실패 행으로 남아 "코드가 없다"와는 다른 사실이라서다.
+    no_code = []
+    for r in approved:
+        aid = r["arxiv_id"]
+        if aid in repro_attempted:
+            continue
+        log_path = server.REPRO_DIR / f"{aid.replace('/', '_')}.log"
+        if not log_path.exists():
+            continue
+        text = log_path.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        try:
+            outcome = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if not outcome.get("success"):
+            no_code.append(dict(r))
+
+    return {
+        "pending": [dict(r) for r in pending],
+        "approved": [dict(r) for r in approved],
+        "repro_ok": [dict(r) for r in repro_ok],
+        "no_code": no_code,
+    }
+
+
+def _render_sidebar_category(label: str, items: list[dict], dot: str) -> None:
+    with st.expander(f"{label} ({len(items)})", expanded=False):
+        if not items:
+            st.caption("없음")
+            return
+        for it in items:
+            title = it["title"] or "(제목 없음)"
+            short = title if len(title) <= 32 else title[:32] + "…"
+            st.markdown(
+                f"<div class='sidebar-item'>{dot} {short}</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # 사이드바 브랜드 아이콘 — 사용자가 참고 이미지로 준 "짙은 남색 바탕에 금색
@@ -907,17 +1008,12 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    st.caption("현황")
-    stats = _fetch_sidebar_stats()
-    st.markdown(
-        f"""<div class="sidebar-stats">
-        <div><span>저장된 논문</span><b>{stats['total']}</b></div>
-        <div><span>검토 대기</span><b>{stats['pending']}</b></div>
-        <div><span>승인됨</span><b>{stats['approved']}</b></div>
-        <div><span>⑦ 재현 성공</span><b>{stats['repro_ok']}</b></div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    st.caption("현황 — 펼치면 논문 목록")
+    lists = _fetch_sidebar_lists()
+    _render_sidebar_category("저장만 됨 · 검토 대기", lists["pending"], "🟡")
+    _render_sidebar_category("승인됨", lists["approved"], "🟢")
+    _render_sidebar_category("⑦ 재현 성공", lists["repro_ok"], "🟢")
+    _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
 
 if st.session_state.nav_page == "search":
     render_search_tab()
