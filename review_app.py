@@ -485,12 +485,21 @@ async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_bo
     return done
 
 
-async def _summarize_target(arxiv_id: str, client: httpx.AsyncClient, status_box) -> bool:
+async def _summarize_target(
+    arxiv_id: str, client: httpx.AsyncClient, status_box, allow_title_backfill: bool = False
+) -> bool:
     """③(원문 수집)까지 끝난 논문 하나에 ④⑤(요약·검증+저장)만 돌린다.
     키워드/ID/제목 검색과 PDF 업로드·오픈액세스 수집이 여기서부터 합류한다.
 
     템플릿(기본 v2 / 서베이 변형)은 저장된 제목으로 여기서 결정론적으로
     고른다 — engine.select_template 참고, LLM 판단 아님.
+
+    allow_title_backfill: PDF·오픈액세스 경로에서 사용자가 제목을 직접
+    타이핑하지 않아 서버가 추정(또는 자리표시자)한 경우에만 True로 온다
+    (2026-08-12). "사람이 직접 쓴 제목은 절대 안 건드리고, 서버가 추측한
+    제목은 더 나은 정보(요약문은 LLM이 원문 전체를 읽고 뽑은 값이라 ingest
+    시점의 PDF 첫 줄 휴리스틱보다 신뢰도가 높음)가 생기면 계속 개선한다"는
+    원칙 — arXiv 검색으로 들어온 논문은 이 값이 항상 False라 절대 안 건드림.
     """
     with server._db() as con:
         row = con.execute("SELECT title FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
@@ -513,12 +522,21 @@ async def _summarize_target(arxiv_id: str, client: httpx.AsyncClient, status_box
         f"✅ [{arxiv_id}] 완료 — pass_ratio={v.get('pass_ratio')} "
         f"({v.get('matched')}/{v.get('total_numbers')})"
     )
+
+    if allow_title_backfill:
+        extracted = server.extract_title_from_summary(summary)
+        if extracted and extracted != title:
+            server.update_paper_title(arxiv_id, extracted)
+            status_box.write(f"📝 제목 자동 채움: {extracted}")
     return True
 
 
 async def _run_pdf_upload_and_summarize(pdf_bytes: bytes, title: str, status_box) -> list[str]:
     """arXiv 밖 저널 PDF를 직접 업로드해 ③(수동)→④⑤ 를 돈다. 이미 합법적으로
     접근 가능한 파일(기관 구독 등)을 사용자가 올리는 경로 — 페이월 우회 아님.
+
+    title이 비어 있으면(2026-08-12부터 화면에서 필수 입력이 아님)
+    server.ingest_local_pdf가 PDF 메타데이터·본문 첫 줄에서 자동 추정한다.
     """
     status_box.write("③ PDF 텍스트 추출 중...")
     try:
@@ -530,7 +548,9 @@ async def _run_pdf_upload_and_summarize(pdf_bytes: bytes, title: str, status_box
     status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
 
     async with httpx.AsyncClient() as client:
-        ok = await _summarize_target(arxiv_id, client, status_box)
+        ok = await _summarize_target(
+            arxiv_id, client, status_box, allow_title_backfill=result.get("title_auto", False)
+        )
     return [arxiv_id] if ok else []
 
 
@@ -539,6 +559,11 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     DOI 형태(슬래시 포함, .pdf로 안 끝남)면 Unpaywall 로 먼저 합법적 PDF
     위치를 찾고, 이미 PDF 링크면 바로 받는다. 오픈액세스가 아니면 실패를
     정직하게 보고한다 — 페이월을 다른 방법으로 우회하지 않는다.
+
+    title은 사용자가 직접 입력했으면 그걸 최우선으로 쓴다. 비어 있고
+    DOI 경로면 Unpaywall 응답에 이미 제목이 들어 있어(2026-08-12) 그걸
+    쓰고, 그것도 없으면 fetch_pdf_from_url→ingest_local_pdf의 자동 추정
+    체인으로 넘어간다.
     """
     pdf_url = doi_or_url
     if not doi_or_url.lower().endswith(".pdf") and "/" in doi_or_url:
@@ -547,7 +572,10 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
         if not resolved:
             status_box.write("❌ 오픈액세스 버전을 찾지 못함 — 이 논문은 PDF 업로드로 들여와야 함")
             return []
-        pdf_url = resolved
+        pdf_url = resolved["url"]
+        if not title and resolved["title"]:
+            title = resolved["title"]
+            status_box.write(f"Unpaywall에서 제목 발견: {title}")
         status_box.write(f"오픈액세스 PDF 발견: {pdf_url}")
 
     status_box.write("③ PDF 다운로드·텍스트 추출 중...")
@@ -560,7 +588,9 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     status_box.write(f"③ [{arxiv_id}] 완료 — {result['text_chars']}자 ({result.get('note', '신규 저장')})")
 
     async with httpx.AsyncClient() as client:
-        ok = await _summarize_target(arxiv_id, client, status_box)
+        ok = await _summarize_target(
+            arxiv_id, client, status_box, allow_title_backfill=result.get("title_auto", False)
+        )
     return [arxiv_id] if ok else []
 
 
@@ -644,12 +674,20 @@ def render_search_tab():
         elif mode == "pdf":
             card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
             uploaded_file = card.file_uploader("PDF 파일", type="pdf")
-            pdf_title = card.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
-            value = "ok" if (uploaded_file and pdf_title) else ""
+            # 제목을 직접 타이핑해야 하는 게 번거롭다는 지적(2026-08-12,
+            # "PDF 제목 따라 입력하면 되잖아") — 필수 입력을 없애고 PDF
+            # 메타데이터·본문에서 자동 추정하도록 바꿨다(server.
+            # ingest_local_pdf 참고). 잘못 추정됐을 때 고칠 수 있게 입력창
+            # 자체는 남겨 둔다.
+            pdf_title = card.text_input("제목 (선택 — 비우면 PDF에서 자동 추출)", placeholder="논문 제목")
+            value = "ok" if uploaded_file else ""
         else:  # oa
             card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
             value = card.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
-            pdf_title = card.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
+            # DOI 경로면 Unpaywall 응답에 제목이 이미 들어 있어(2026-08-12)
+            # 대부분 자동으로 채워진다 — 그래도 안 채워지면 PDF 폴백 체인이
+            # 이어받는다.
+            pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)")
 
         if card.button("시작", type="primary", disabled=not value):
             status_box = card.status("진행 중...", expanded=True)

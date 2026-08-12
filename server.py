@@ -1042,7 +1042,96 @@ def read_full_text(arxiv_id: str) -> str:
     return Path(row["text_path"]).read_text(encoding="utf-8")
 
 
-def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pdf") -> dict:
+# PDF·오픈액세스로 들여온 논문의 제목을 직접 타이핑해야 하는 게 번거롭다는
+# 지적(2026-08-12, "PDF 제목 따라 입력하면 되잖아") — 세 단계 폴백으로
+# 자동화한다: ①PDF 메타데이터 →②추출 텍스트 첫 줄 휴리스틱→③(둘 다 실패
+# 시) 이 자리표시자로 저장해 두고 요약 생성 후 요약문 "제목 :" 줄에서 다시
+# 채운다(_summarize_target 참고). 접두어로 검색해 "아직 못 채운" 논문을
+# 찾을 수 있게 상수로 뺐다.
+_TITLE_PLACEHOLDER_PREFIX = "(제목 미확인"
+
+
+# 제목 후보가 "정상적인 글자로 된 문구"인지 보는 필터. 두 가지 실제 사례를
+# 실측(2026-08-12, pdf-5bd2ec925e.pdf — 한글 학술 DB PDF)해서 만들었다:
+# ① pypdf가 지원 안 하는 폰트 인코딩(UniKS-UTF16-H 등)을 쓰는 PDF는 본문
+#    첫 줄들이 통째로 깨진 제어문자·사설 유니코드로 나온다.
+# ② 이런 PDF는 /Title 메타데이터조차 논문 제목이 아니라 배포 플랫폼
+#    워터마크("DBPIA-NURIMEDIA")인 경우가 있다 — 메타데이터라고 무조건
+#    믿으면 안 된다. 두 경로(메타데이터/본문 첫 줄) 모두 이 필터를 거친다.
+_TITLE_OK_CHAR_RE = re.compile(r"[A-Za-z0-9가-힣\s.,:;'\"()\-–—/&%+·]")
+
+
+def _looks_like_title(candidate: str) -> bool:
+    if not (8 <= len(candidate) <= 300):
+        return False
+    if candidate.lower().startswith(("arxiv:", "http", "untitled")):
+        return False
+    if " " not in candidate:
+        return False  # 실제 제목은 거의 항상 여러 단어 — 워터마크 같은 단일 토큰 제외
+    ok_ratio = len(_TITLE_OK_CHAR_RE.findall(candidate)) / len(candidate)
+    # 0.85로는 부족했다 — 실측(2026-08-12, 같은 PDF)에서 "-Ի fault detection
+    # and classification (FDC)іԂ ଡ." 처럼 키릴·아르메니아·오리야 문자 4개가
+    # 섞인 줄(ratio 0.92)이 통과해 반쯤 깨진 문장을 제목으로 잘못 골랐다.
+    # 정상적인 영문/한글 제목에 다른 문자 체계가 섞일 이유가 없다는 점에
+    # 착안해 0.95로 올렸다 — 애매하면 빈 문자열을 돌려주고 요약 생성 후
+    # 폴백(extract_title_from_summary)에 넘기는 쪽이 더 안전하다.
+    return ok_ratio >= 0.95
+
+
+def _guess_title_from_pdf(pdf_path: Path, text: str) -> str:
+    """PDF에서 제목을 기계적으로 추정한다. 완벽한 정답이 목표가 아니라
+    "빈 칸·수동 타이핑보다 낫다"가 목표라 실패하면 조용히 빈 문자열을
+    반환한다(호출자가 다음 폴백으로 넘어감) — 틀린 값을 억지로 만들어
+    내지 않는다.
+    """
+    try:
+        from pypdf import PdfReader  # 지연 임포트
+
+        reader = PdfReader(str(pdf_path))
+        meta_title = ((reader.metadata.title if reader.metadata else None) or "").strip()
+        if _looks_like_title(meta_title):
+            return meta_title
+    except Exception:  # noqa: BLE001
+        pass
+
+    for line in text.splitlines():
+        candidate = line.strip()
+        if _looks_like_title(candidate):
+            return candidate
+    return ""
+
+
+_TITLE_LINE_RE = re.compile(r"^-\s*제목\s*[:：]\s*(.+)$", re.MULTILINE)
+
+
+def extract_title_from_summary(markdown: str) -> str:
+    """생성된 요약문의 "### 기본정보 - 제목 : ..." 줄에서 제목을 뽑는다.
+    템플릿이 고정한 구두점 구조를 그대로 읽는 기계적 파싱이지 LLM 재해석이
+    아니다(review_app.py의 _FIELD_LABEL_RE와 같은 성격). PDF에서 제목을
+    못 찾아 자리표시자로 저장된 논문의 제목을 요약 생성 후 사후에 채우는
+    용도(2026-08-12) — LLM이 원문 전체를 읽고 뽑은 값이라 첫 줄 휴리스틱
+    보다 신뢰도가 높다.
+    """
+    m = _TITLE_LINE_RE.search(markdown)
+    if not m:
+        return ""
+    value = m.group(1).strip()
+    if not value or "확인 불가" in value or "미상" in value:
+        return ""
+    return value
+
+
+def update_paper_title(arxiv_id: str, title: str) -> None:
+    """papers.title을 갱신한다. save_repro_result·set_review_status와 같은
+    plain 함수 패턴 — MCP 도구가 아니다."""
+    title = title.strip()
+    if not title:
+        return
+    with _db() as con:
+        con.execute("UPDATE papers SET title=? WHERE arxiv_id=?", (title, arxiv_id))
+
+
+def ingest_local_pdf(pdf_bytes: bytes, title: str = "", source_note: str = "manual-pdf") -> dict:
     """arXiv 밖 논문(저널·컨퍼런스 PDF)을 수동으로 들여온다(2026-08-04).
 
     이미 합법적으로 접근 가능한 파일(기관 구독 등으로 사용자가 이미 갖고 있는
@@ -1054,8 +1143,15 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pd
     arxiv_id 대신 파일 내용 해시로 합성 ID(pdf-<hash10>)를 만든다 — 같은
     파일을 다시 올려도 같은 ID 가 나와 fetch_paper 처럼 멱등하다.
 
+    title을 안 주면(빈 문자열) _guess_title_from_pdf로 자동 추정한다
+    (2026-08-12) — 그것도 실패하면 _TITLE_PLACEHOLDER_PREFIX 자리표시자로
+    저장해 둔다. 반환값의 title_auto가 True면(= 호출자가 title을 안 줘서
+    서버가 추정/자리표시자를 채운 경우) review_app._summarize_target이
+    생성된 요약문에서 제목을 다시 뽑아 개선할 수 있다 — 사용자가 직접 친
+    제목(title_auto=False)은 절대 안 건드린다.
+
     Returns:
-        dict: {arxiv_id, title, text_chars, pdf_path, text_path, preview}
+        dict: {arxiv_id, title, title_auto, text_chars, pdf_path, text_path, preview}
     Raises:
         ValueError: 텍스트 추출 실패(스캔본·손상 파일 등)
     """
@@ -1066,9 +1162,12 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pd
     with _db() as con:
         row = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (synth_id,)).fetchone()
     if row and row["text_path"] and Path(row["text_path"]).exists():
-        return {"arxiv_id": synth_id, "title": row["title"], "text_chars": row["text_chars"],
-                "pdf_path": row["pdf_path"], "text_path": row["text_path"],
-                "note": "이미 저장된 파일 — 재처리 생략"}
+        # 이미 저장된 파일 재업로드 — 이전에 제목이 자동/수동 어느 쪽으로
+        # 채워졌는지 기록이 없어 title_auto는 보수적으로 False로 둔다(재
+        # 처리를 안 하니 어차피 이후 backfill 대상도 아님).
+        return {"arxiv_id": synth_id, "title": row["title"], "title_auto": False,
+                "text_chars": row["text_chars"], "pdf_path": row["pdf_path"],
+                "text_path": row["text_path"], "note": "이미 저장된 파일 — 재처리 생략"}
 
     pdf_path = PDF_DIR / f"{synth_id}.pdf"
     pdf_path.write_bytes(pdf_bytes)
@@ -1078,6 +1177,14 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pd
         raise ValueError(f"PDF 텍스트 추출 실패: {type(e).__name__}: {e}") from e
     if not text.strip():
         raise ValueError("PDF에서 텍스트를 추출하지 못함 — 스캔본이거나 손상된 파일일 수 있음")
+
+    given_title = (title or "").strip()
+    title = given_title
+    if not title:
+        title = _guess_title_from_pdf(pdf_path, text)
+    if not title:
+        title = f"{_TITLE_PLACEHOLDER_PREFIX} · {synth_id})"
+    title_auto = not given_title
 
     text_path = TEXT_DIR / f"{synth_id}.txt"
     text_path.write_text(text, encoding="utf-8")
@@ -1092,14 +1199,21 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str, source_note: str = "manual-pd
              json.dumps([], ensure_ascii=False), None, str(pdf_path), str(text_path),
              len(text), _now(), "pdf", source_note),
         )
-    return {"arxiv_id": synth_id, "title": title, "text_chars": len(text),
+    return {"arxiv_id": synth_id, "title": title, "title_auto": title_auto, "text_chars": len(text),
             "pdf_path": str(pdf_path), "text_path": str(text_path), "preview": text[:400]}
 
 
-async def resolve_unpaywall_pdf(doi: str) -> str | None:
-    """DOI로 합법적 오픈액세스 PDF 위치를 찾는다(Unpaywall API). 못 찾으면
-    None — 그 경우 이 논문은 오픈액세스가 아니라는 뜻이고, 수동 업로드로
-    가야 한다(ingest_local_pdf).
+async def resolve_unpaywall_pdf(doi: str) -> dict | None:
+    """DOI로 합법적 오픈액세스 PDF 위치와 제목을 찾는다(Unpaywall API). 못
+    찾으면 None — 그 경우 이 논문은 오픈액세스가 아니라는 뜻이고, 수동
+    업로드로 가야 한다(ingest_local_pdf).
+
+    Unpaywall 응답에 논문 제목이 이미 들어 있어서(2026-08-12, "오픈액세스도
+    링크 따라가면 제목이 분명 있을거다" 지적) 사람이 따로 안 쳐도 되게
+    같이 돌려준다 — 예전엔 url_for_pdf만 뽑고 title은 버렸었다.
+
+    Returns:
+        dict | None: {"url": PDF 직링크, "title": Unpaywall이 아는 제목(없으면 "")}
     """
     doi = doi.strip()
     for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
@@ -1115,7 +1229,10 @@ async def resolve_unpaywall_pdf(doi: str) -> str | None:
         resp.raise_for_status()
         data = resp.json()
     best = data.get("best_oa_location") or {}
-    return best.get("url_for_pdf")
+    url = best.get("url_for_pdf")
+    if not url:
+        return None
+    return {"url": url, "title": (data.get("title") or "").strip()}
 
 
 async def fetch_pdf_from_url(pdf_url: str, title: str = "", source_note: str = "") -> dict:
@@ -1144,7 +1261,11 @@ async def fetch_pdf_from_url(pdf_url: str, title: str = "", source_note: str = "
                 f"PDF가 아닌 응답(파일 시그니처 불일치, content-type={content_type!r}) — "
                 "링크가 초록·로그인 페이지일 수 있음"
             )
-    return ingest_local_pdf(pdf_bytes, title or "(제목 미입력)", source_note or f"open-access: {pdf_url}")
+    # title이 비어 있으면 ingest_local_pdf 자체의 폴백 체인(PDF 메타데이터
+    # →첫 줄 휴리스틱→자리표시자)이 이어받는다 — 여기서 하드코딩된 자리
+    # 표시자로 덮어쓰지 않는다(2026-08-12, 이전엔 "(제목 미입력)"으로 바로
+    # 덮어써서 자동 추정이 끼어들 틈이 없었다).
+    return ingest_local_pdf(pdf_bytes, title, source_note or f"open-access: {pdf_url}")
 
 
 @mcp.tool(
