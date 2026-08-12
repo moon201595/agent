@@ -565,7 +565,7 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
 
 
 def render_search_tab():
-    st.subheader("논문 검색 → 요약 생성")
+    st.subheader("논문 검색 및 요약본 생성")
     # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
     # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
     # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수
@@ -660,6 +660,34 @@ def render_search_tab():
             card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
         else:
             status_box.update(label="처리된 논문 없음", state="error")
+
+    # 검색 폼 아래가 빈 흰 공간으로 휑하다는 지적(2026-08-12) — 장식용
+    # 채우기가 아니라 실제로 쓸모 있는 두 카드로 채운다: "최근 활동"은
+    # _fetch_review_rows가 이미 created_at 기준 내림차순으로 주는 걸 앞
+    # N개만 잘라 쓰고(사이드바 카테고리 목록과 달리 "방금 뭘 했나"를 시간
+    # 순으로 보여준다는 점에서 안 겹침), "입력 방식 안내"는 위 라디오 6개
+    # 선택지 각각이 언제 쓰는 건지 짧게 설명하는 정적 텍스트다.
+    col_recent, col_help = st.columns(2)
+
+    recent_card = col_recent.container(border=True)
+    recent_card.markdown("**🕓 최근 활동**")
+    recent_rows = _fetch_review_rows(True)[:6]
+    if not recent_rows:
+        recent_card.caption("아직 저장된 논문 없음")
+    else:
+        for r in recent_rows:
+            dot = _STATUS_EMOJI.get(r["review_status"], "🟡")
+            ts = (r["created_at"] or "")[:16].replace("T", " ")
+            recent_card.caption(f"{dot} {r['title'][:36]} · {ts}")
+
+    help_card = col_help.container(border=True)
+    help_card.markdown("**ℹ️ 입력 방식 안내**")
+    help_card.caption("**키워드 검색** — arXiv·Semantic Scholar에서 새로 찾음 (영문 권장)")
+    help_card.caption("**저장된 논문 재검색** — 이미 모아둔 논문에서 한글로 다시 찾음")
+    help_card.caption("**논문 ID 직접 지정** — arXiv ID를 이미 알고 있을 때")
+    help_card.caption("**제목으로 검색** — 제목 일부만 알 때")
+    help_card.caption("**PDF 업로드** — 접근 권한 있는 PDF를 직접 첨부")
+    help_card.caption("**DOI/URL** — DOI로 오픈액세스 PDF를 자동으로 찾음")
 
 
 # ---------------------------------------------------------------- ⑥→⑦ 연결
@@ -836,11 +864,17 @@ def _render_repro_status(arxiv_id: str) -> None:
         )
 
 
+# 승인/반려/대기 상태를 색상 원으로 통일해 표시하는 데 검색 탭(최근 활동)과
+# 검토 탭 둘 다에서 쓴다 — 원래 render_review_tab 안에 지역 변수로만 있었는데
+# 검색 탭에도 같은 표시가 필요해져(2026-08-12) 모듈 상수로 뺐다.
+_STATUS_EMOJI = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
+
+
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
 
 
 def render_review_tab():
-    st.subheader("요약 검토 (사람 판단)")
+    st.subheader("요약본")
     # 예전엔 체크박스로 "전체 보기"를 켜야 승인·반려된 것까지 보였다 —
     # 매번 체크해야 하는 게 번거롭다는 지적(2026-08-12)을 받아 항상 전체를
     # 보여주는 것으로 기본값을 바꿨다. _fetch_review_rows(show_all=False)
@@ -852,12 +886,10 @@ def render_review_tab():
         st.info("저장된 요약이 없습니다.")
         return
 
-    status_emoji = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
-
     for row in rows:
         arxiv_id = row["arxiv_id"]
         status = row["review_status"] or "pending"
-        emoji = status_emoji.get(status, "🟡")
+        emoji = _STATUS_EMOJI.get(status, "🟡")
         header = f"{emoji} {row['title']} ({arxiv_id}) — {row['numbers_matched']}/{row['numbers_total']}"
 
         with st.expander(header):
