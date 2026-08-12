@@ -581,16 +581,35 @@ def _render_repro_status(arxiv_id: str) -> None:
     if _reproduce_running(arxiv_id):
         st.caption("⑦ 코드 재현 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
         return
-    if not rows:
+    if rows:
+        best = next((r for r in rows if r["success"]), rows[0])
+        if best["success"]:
+            st.caption(f"⑦ 코드 재현: ✅ 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+        else:
+            st.caption(
+                f"⑦ 코드 재현: ❌ 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
+                "— 승인을 다시 누르면 재시도"
+            )
         return
-    best = next((r for r in rows if r["success"]), rows[0])
-    if best["success"]:
-        st.caption(f"⑦ 코드 재현: ✅ 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+    # repro_results에 행이 없는 경우 — docker_runner.reproduce()는 저장소 후보가
+    # 아예 없으면(code_finder가 못 찾음) server.save_repro_result()를 한 번도
+    # 안 부르고 조기 반환한다(그 경로엔 시도랄 게 없어서). 그래서 DB만 보면
+    # "아직 실행 안 함"과 "실행은 했는데 후보가 없었음"을 구분할 수 없다 —
+    # 실측으로 실제 발견(2026-08-12, pdf-* 논문 승인 후 재현이 조용히 끝남).
+    # docker_runner.py __main__이 찍는 JSON 로그에 그 이유가 남으니 거기서 읽는다.
+    log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
+    if not log_path.exists() or not log_path.read_text(encoding="utf-8").strip():
+        return
+    try:
+        outcome = json.loads(log_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        st.caption("⑦ 코드 재현: 완료됐지만 결과를 못 읽음 — 로그 파일 확인 필요")
+        return
+    if outcome.get("success"):
+        st.caption("⑦ 코드 재현: ✅ 성공")
     else:
-        st.caption(
-            f"⑦ 코드 재현: ❌ 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
-            "— 승인을 다시 누르면 재시도"
-        )
+        reason = outcome.get("reason", "저장소 후보를 찾지 못함")
+        st.caption(f"⑦ 코드 재현: ⚪ 시도 못함 — {reason} (이 논문엔 관련 코드 저장소가 없을 수 있음)")
 
 
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
