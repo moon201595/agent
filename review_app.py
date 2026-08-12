@@ -170,18 +170,29 @@ def _inject_custom_style() -> None:
         [data-testid="stSidebar"] .sidebar-brand-sub {
             font-size: 0.8rem; color: var(--text-muted); font-weight: 400;
         }
+        [data-testid="stSidebar"] .sidebar-brand-icon {
+            width: 26px; height: 26px; vertical-align: middle; border-radius: 6px;
+            margin-right: 2px; position: relative; top: -2px;
+        }
         [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.6rem; }
-        /* 내비게이션 버튼 — primary(선택된 페이지)는 하늘색 채움,
-           secondary는 투명해서 사이드바 배경과 섞이게 해 "지금 여기
-           있다"는 게 자연히 드러난다. */
+        /* 내비게이션 버튼 — 사용자 요청(2026-08-12)으로 둘 다 하늘색 채움 +
+           왼쪽 정렬. 아이콘은 참고 이미지 스타일을 재현한 인라인 SVG를
+           data URI로 만들어 버튼 자체의 background-image로 얹는다 —
+           st.button은 커스텀 이미지 아이콘을 못 받는다(emoji/Material만
+           지원). 버튼별 고유 클래스(.st-key-nav_*)는 실측으로 실제 DOM에서
+           확인한 훅. */
         [data-testid="stSidebar"] [data-testid="stButton"] button {
             justify-content: flex-start; text-align: left; font-weight: 500;
         }
-        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
-            background-color: transparent; border-color: transparent;
+        .st-key-nav_search button, .st-key-nav_review button {
+            padding-left: 2.4rem; background-repeat: no-repeat;
+            background-size: 18px 18px; background-position: 14px center;
         }
-        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
-            background-color: var(--sky-light); border-color: var(--sky-border);
+        .st-key-nav_search button {
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMiIgeT0iMyIgd2lkdGg9IjE0IiBoZWlnaHQ9IjExIiByeD0iMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTYgNi41TDQgOC41bDIgMk0xMSA2LjVsMiAyLTIgMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8Y2lyY2xlIGN4PSIxNy41IiBjeT0iMTcuNSIgcj0iNCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTIwLjUgMjAuNUwyMyAyMyIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4=");
+        }
+        .st-key-nav_review button {
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNMTUgMnY0aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik05IDEyLjVoNk05IDE2aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPg==");
         }
         /* 현황 통계 — 숫자만 덩그러니 있지 않게 라벨·값을 한 줄에 양끝 정렬 */
         [data-testid="stSidebar"] .sidebar-stats div {
@@ -854,26 +865,44 @@ def _fetch_sidebar_stats() -> dict:
     return {"total": total, "pending": pending, "approved": approved, "repro_ok": repro_ok}
 
 
+# 사이드바 브랜드 아이콘 — 사용자가 참고 이미지로 준 "짙은 남색 바탕에 금색
+# 점들이 연결된 네트워크" 느낌을 재현한 인라인 SVG(2026-08-12). 이모지
+# 대신 데이터 URI로 직접 그려서 색상·구성을 세밀하게 맞췄다.
+_BRAND_ICON = (
+    "data:image/svg+xml;base64,"
+    "PHN2ZyB3aWR0aD0iMzAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
+    "KPHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzBGMUUzRCIvPgo8bGluZSB4MT0iMTYiIHkxPS"
+    "IxNiIgeDI9IjciIHkyPSI5IiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8+CjxsaW5lIHgxPSIxN"
+    "iIgeTE9IjE2IiB4Mj0iMjUiIHkyPSI5IiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8+CjxsaW5l"
+    "IHgxPSIxNiIgeTE9IjE2IiB4Mj0iNyIgeTI9IjIzIiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8"
+    "+CjxsaW5lIHgxPSIxNiIgeTE9IjE2IiB4Mj0iMjUiIHkyPSIyMyIgc3Ryb2tlPSIjRThCMDRCIiBzdHJva2Utd2lkdGg9IjAuOSIgb3BhY2l0eT"
+    "0iMC43NSIvPgo8bGluZSB4MT0iNyIgeTE9IjkiIHgyPSI3IiB5Mj0iMjMiIHN0cm9rZT0iI0U4QjA0QiIgc3Ryb2tlLXdpZHRoPSIwLjYiIG9wY"
+    "WNpdHk9IjAuNCIvPgo8bGluZSB4MT0iMjUiIHkxPSI5IiB4Mj0iMjUiIHkyPSIyMyIgc3Ryb2tlPSIjRThCMDRCIiBzdHJva2Utd2lkdGg9IjAu"
+    "NiIgb3BhY2l0eT0iMC40Ii8+CjxjaXJjbGUgY3g9IjE2IiBjeT0iMTYiIHI9IjMuMSIgZmlsbD0iI0Y0Qzg2OCIvPgo8Y2lyY2xlIGN4PSI3IiB"
+    "jeT0iOSIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaXJjbGUgY3g9IjI1IiBjeT0iOSIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaX"
+    "JjbGUgY3g9IjciIGN5PSIyMyIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaXJjbGUgY3g9IjI1IiBjeT0iMjMiIHI9IjEuOSIgZmlsbD0i"
+    "I0U4QjA0QiIvPgo8L3N2Zz4="
+)
+
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "search"
 
 with st.sidebar:
     st.markdown(
-        '<div class="sidebar-brand">📄 <b>논문 검색·분석</b><br>'
+        f'<div class="sidebar-brand"><img src="{_BRAND_ICON}" class="sidebar-brand-icon"/> '
+        '<b>논문 검색·분석</b><br>'
         '<span class="sidebar-brand-sub">에이전트 하네스</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    if st.button(
-        "🔍 검색·요약 생성", key="nav_search", use_container_width=True,
-        type="primary" if st.session_state.nav_page == "search" else "secondary",
-    ):
+    # 두 내비게이션 버튼 다 하늘색 채움으로(사용자 요청, 2026-08-12) — 활성/비활성
+    # 구분(primary/secondary)은 포기하는 대신, 아이콘은 st.button이 커스텀
+    # 이미지를 못 받아서(emoji/Material만 지원) CSS background-image로 주입한다
+    # (버튼 고유 클래스 .st-key-nav_* — 실측으로 실제 DOM에서 확인한 훅).
+    if st.button("검색·요약 생성", key="nav_search", use_container_width=True, type="primary"):
         st.session_state.nav_page = "search"
         st.rerun()
-    if st.button(
-        "✅ 요약 검토", key="nav_review", use_container_width=True,
-        type="primary" if st.session_state.nav_page == "review" else "secondary",
-    ):
+    if st.button("요약 검토", key="nav_review", use_container_width=True, type="primary"):
         st.session_state.nav_page = "review"
         st.rerun()
 
