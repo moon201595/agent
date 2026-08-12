@@ -685,8 +685,14 @@ def _render_repro_status(arxiv_id: str) -> None:
     if outcome.get("success"):
         st.caption("⑦ 코드 재현: 🟢 성공")
     else:
+        # "시도 못함"이라고 쓰면 검색 자체가 안 된 것처럼 읽혀서 오해를 살 수
+        # 있다는 지적(2026-08-12) — 실제로는 검색은 끝났고 후보가 0개였던
+        # 것이므로 "검색 완료·후보 없음"으로 명확히 구분해서 쓴다.
         reason = outcome.get("reason", "저장소 후보를 찾지 못함")
-        st.caption(f"⑦ 코드 재현: 🟠 시도 못함 — {reason} (이 논문엔 관련 코드 저장소가 없을 수 있음)")
+        st.caption(
+            f"⑦ 코드 재현: 🟠 검색 완료 · 후보 없음 — {reason} "
+            "(이 논문엔 공개된 관련 코드 저장소가 없을 수 있음, 설치·실행은 시도 안 함)"
+        )
 
 
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
@@ -701,7 +707,7 @@ def render_review_tab():
         st.info("검토할 요약이 없습니다." if not show_all else "저장된 요약이 없습니다.")
         return
 
-    status_emoji = {"pending": "🟡", "approved": "✅", "rejected": "❌", None: "🟡"}
+    status_emoji = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
 
     for row in rows:
         arxiv_id = row["arxiv_id"]
