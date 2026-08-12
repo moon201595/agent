@@ -155,6 +155,50 @@ def _inject_custom_style() -> None:
         */
         [data-testid="stAppDeployButton"] { display: none; }
         [data-testid="stMainMenu"] { display: none; }
+
+        /* 사이드바 — "화면이 너무 하얗다"는 지적(2026-08-12)에 좌측에 색이
+           들어간 영역을 둬서 구조를 준다. 참고로 보여준 결제 대시보드를
+           그대로 베끼진 않고, "탐색 영역과 본문 영역이 색으로 구분된다"는
+           느낌만 가져왔다. */
+        [data-testid="stSidebar"] {
+            background-color: #F8FAFC; border-right: 1px solid var(--sky-border);
+        }
+        [data-testid="stSidebar"] .sidebar-brand {
+            padding: 0.4rem 0 1rem 0; font-size: 1.05rem; color: var(--text-main);
+            border-bottom: 1px solid var(--sky-border); margin-bottom: 0.2rem;
+        }
+        [data-testid="stSidebar"] .sidebar-brand-sub {
+            font-size: 0.8rem; color: var(--text-muted); font-weight: 400;
+        }
+        [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.6rem; }
+        /* 내비게이션 버튼 — primary(선택된 페이지)는 하늘색 채움,
+           secondary는 투명해서 사이드바 배경과 섞이게 해 "지금 여기
+           있다"는 게 자연히 드러난다. */
+        [data-testid="stSidebar"] [data-testid="stButton"] button {
+            justify-content: flex-start; text-align: left; font-weight: 500;
+        }
+        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
+            background-color: transparent; border-color: transparent;
+        }
+        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
+            background-color: var(--sky-light); border-color: var(--sky-border);
+        }
+        /* 현황 통계 — 숫자만 덩그러니 있지 않게 라벨·값을 한 줄에 양끝 정렬 */
+        [data-testid="stSidebar"] .sidebar-stats div {
+            display: flex; justify-content: space-between; align-items: baseline;
+            padding: 0.3rem 0.1rem; font-size: 0.85rem; color: var(--text-muted);
+        }
+        [data-testid="stSidebar"] .sidebar-stats b {
+            color: var(--text-main); font-size: 0.95rem;
+        }
+
+        /* 본문 상단 헤더 영역 — subheader를 옅은 하늘색 배경 띠로 감싸서
+           참고 이미지의 상단 바처럼 "여기가 페이지 제목 영역"임을 표시 */
+        /* st.subheader()는 h3로 렌더링된다(실측 확인, h2 아님) — 페이지
+           최상단의 subheader에만 밑줄을 줘 "여기가 헤더"임을 표시한다. */
+        [data-testid="stAppViewContainer"] .block-container > div:first-child h3:first-of-type {
+            padding-bottom: 0.6rem; border-bottom: 1px solid var(--sky-border);
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -791,10 +835,62 @@ def render_review_tab():
 # ---------------------------------------------------------------- 메인
 
 
-st.title("📄 논문 검색·분석 에이전트")
+def _fetch_sidebar_stats() -> dict:
+    """사이드바 현황 요약용 — 화면이 온통 흰 여백뿐이라 뭘 하는 앱인지
+    한눈에 안 들어온다는 지적(2026-08-12)을 받아, 참고 이미지(결제
+    대시보드)의 좌측 사이드바 구조를 그대로 베끼지는 않되 "구조·색 영역이
+    있는 화면"이라는 느낌만 가져왔다. 숫자는 실제 DB 조회 — 장식이 아니다."""
+    with server._db() as con:
+        total = con.execute("SELECT COUNT(*) c FROM papers").fetchone()["c"]
+        pending = con.execute(
+            "SELECT COUNT(*) c FROM summaries WHERE review_status='pending' OR review_status IS NULL"
+        ).fetchone()["c"]
+        approved = con.execute(
+            "SELECT COUNT(*) c FROM summaries WHERE review_status='approved'"
+        ).fetchone()["c"]
+        repro_ok = con.execute(
+            "SELECT COUNT(DISTINCT arxiv_id) c FROM repro_results WHERE success=1"
+        ).fetchone()["c"]
+    return {"total": total, "pending": pending, "approved": approved, "repro_ok": repro_ok}
 
-tab1, tab2 = st.tabs(["🔍 검색·요약 생성", "✅ 요약 검토"])
-with tab1:
+
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "search"
+
+with st.sidebar:
+    st.markdown(
+        '<div class="sidebar-brand">📄 <b>논문 검색·분석</b><br>'
+        '<span class="sidebar-brand-sub">에이전트 하네스</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
+    if st.button(
+        "🔍 검색·요약 생성", key="nav_search", use_container_width=True,
+        type="primary" if st.session_state.nav_page == "search" else "secondary",
+    ):
+        st.session_state.nav_page = "search"
+        st.rerun()
+    if st.button(
+        "✅ 요약 검토", key="nav_review", use_container_width=True,
+        type="primary" if st.session_state.nav_page == "review" else "secondary",
+    ):
+        st.session_state.nav_page = "review"
+        st.rerun()
+
+    st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
+    st.caption("현황")
+    stats = _fetch_sidebar_stats()
+    st.markdown(
+        f"""<div class="sidebar-stats">
+        <div><span>저장된 논문</span><b>{stats['total']}</b></div>
+        <div><span>검토 대기</span><b>{stats['pending']}</b></div>
+        <div><span>승인됨</span><b>{stats['approved']}</b></div>
+        <div><span>⑦ 재현 성공</span><b>{stats['repro_ok']}</b></div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+if st.session_state.nav_page == "search":
     render_search_tab()
-with tab2:
+else:
     render_review_tab()
