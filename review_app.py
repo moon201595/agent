@@ -325,6 +325,31 @@ def _bold_r2_value(m: re.Match) -> str:
     return f"{m.group('indent')}**{value}** _({detail})_ — {loc_part}{m.group('tag')}"
 
 
+# "연구 개요"·"방법 상세"·"실험 설정"·"파싱 품질 노트"·결론 ①②③④ 등 템플릿
+# 전반에 쓰이는 "- 레이블 : 설명" 불릿에서 레이블이 설명 글과 같은 굵기라
+# 안 눈에 띈다는 지적(2026-08-12) — "무엇을 하려고 했는가", "데이터셋" 같은
+# 레이블만 볼드로 만든다. 콜론 앞 텍스트가 곧 레이블이라는 건 템플릿이
+# 이미 고정한 구두점 구조이지 자연어 해석이 아니라, R2 불릿 볼드 처리와
+# 같은 "판단 아님" 성격이다. 레이블 길이를 26자로 제한해 일반 문장 중간의
+# 콜론(드묾)까지 잘못 걸리는 걸 방지했고, 논문 제목 자체에 콜론이 있는
+# "제목 : LF-YOLO: A Lighter..." 같은 경우도 첫 콜론까지만 레이블로 잡혀
+# 문제없이 처리되는 것을 실측 확인(2026-08-12). 저장된 46편 전체를 대조해
+# 1,375줄 중 1,125줄이 매치, R2 결과 불릿(콜론 없음)엔 오탐 없음을 확인했다.
+_FIELD_LABEL_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:[-*]|[①②③④])\s+)"
+    r"(?P<label>[^:：\n]{1,26}?)"
+    r"\s*(?P<colon>[:：])\s*"
+    r"(?P<rest>\S.*)$",
+    re.MULTILINE,
+)
+
+
+def _bold_field_label(m: re.Match) -> str:
+    # 콜론 앞 공백은 템플릿 관례("레이블 : 내용")를 유지 — 볼드만 추가하고
+    # 나머지 타이포그래피는 안 바꾼다.
+    return f"{m.group('prefix')}**{m.group('label').strip()}** {m.group('colon')} {m.group('rest')}"
+
+
 def _prettify_summary_markdown(text: str) -> str:
     """요약 마크다운을 화면 표시 직전에 다듬는다. 원본 저장 파일은 안 건드리고
     렌더링할 때만 바꾼다 — save_summary/verify.py 는 원본 그대로를 대조해야
@@ -332,6 +357,9 @@ def _prettify_summary_markdown(text: str) -> str:
     """
     # "1~7절"의 물결표가 markdown 취소선(~text~)으로 오인되는 것부터 이스케이프
     text = text.replace("~", "\\~")
+    # "레이블 : 설명" 불릿의 레이블을 볼드로 — R2 불릿(값이 콜론 없이 시작)과
+    # 겹치는 줄이 없어 어느 순서로 해도 안전하지만, "구조 먼저" 순서로 앞에 둔다.
+    text = _FIELD_LABEL_RE.sub(_bold_field_label, text)
     # ④ 결과류 불릿의 "값"을 볼드로, "(조건/비교대상/지표)"를 이탤릭으로 —
     # [S번호]★ 칩 래핑보다 먼저 해야 태그 원문(백틱 없는 상태)을 그대로 재사용할 수 있다
     text = _R2_LINE_RE.sub(_bold_r2_value, text)
@@ -1012,7 +1040,7 @@ with st.sidebar:
     lists = _fetch_sidebar_lists()
     _render_sidebar_category("저장만 됨 · 검토 대기", lists["pending"], "🟡")
     _render_sidebar_category("승인됨", lists["approved"], "🟢")
-    _render_sidebar_category("⑦ 재현 성공", lists["repro_ok"], "🟢")
+    _render_sidebar_category("재현 성공", lists["repro_ok"], "🟢")
     _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
 
 if st.session_state.nav_page == "search":
