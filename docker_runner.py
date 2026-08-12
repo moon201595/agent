@@ -363,17 +363,32 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
         outcome = run_repo_in_docker(repo_dir)
         attempts_log.append({"candidate": cand, **outcome})
 
+        # 성공한 clone만 남긴다 — "설치+실행 성공 여부만 본다"는 원칙은 그대로
+        # 지키되(코드 내용을 판단하지 않는다), 성공했을 때 그 코드를 review_app.py
+        # 에서 실제로 열어볼 수 있어야 한다는 지적을 받아들였다(2026-08-12).
+        # 실패한 시도는 그대로 지운다 — 실패 이유는 stage/exit_code로 이미
+        # 충분히 남고, 코드까지 보관할 필요는 없다(디스크 낭비).
+        local_path = ""
+        if outcome["success"]:
+            persist_dir = server.REPRO_DIR / "code" / arxiv_id.replace("/", "_")
+            shutil.rmtree(persist_dir, ignore_errors=True)  # 이전 성공 잔재가 있으면 교체
+            persist_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(repo_dir), str(persist_dir))
+            local_path = str(persist_dir)
+        else:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+
         last_attempt = outcome["attempts"][-1] if outcome["attempts"] else None
         server.save_repro_result(
             arxiv_id, cand["url"], cand["source"], cand["confidence"],
             outcome["success"], (last_attempt or {}).get("exit_code"),
             outcome["stage"], i, (last_attempt or {}).get("network_enabled", False),
-            (last_attempt or {}).get("duration_s", 0.0), "",
+            (last_attempt or {}).get("duration_s", 0.0), "", local_path,
         )
-        shutil.rmtree(repo_dir, ignore_errors=True)
 
         if outcome["success"]:
-            return {"arxiv_id": arxiv_id, "success": True, "attempt": i, "log": attempts_log}
+            return {"arxiv_id": arxiv_id, "success": True, "attempt": i,
+                    "local_path": local_path, "log": attempts_log}
 
     return {"arxiv_id": arxiv_id, "success": False, "attempt": len(attempts_log), "log": attempts_log}
 

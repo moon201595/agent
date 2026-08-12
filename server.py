@@ -175,6 +175,15 @@ def _init_storage() -> None:
                 PRIMARY KEY (arxiv_id, repo_url)
             )"""
         )
+        # 성공한 시도의 clone 코드가 어디 남아있는지. 원래 docker_runner.py는
+        # 성공이든 실패든 clone을 즉시 지웠다("설치+실행 성공 여부만 본다"는
+        # 원칙 — 코드 보관은 처음부터 범위 밖이었음) — 그런데 사용자가 "재현이
+        # 됐으면 그 코드를 어디서 보냐"고 실제로 물어봐서(2026-08-12), 성공한
+        # 경우에 한해 코드를 남기기로 했다. 실패한 시도는 그대로 안 남긴다
+        # (디스크 낭비 — 실패 이유는 이미 stage/exit_code로 충분히 남음).
+        existing_r = {row[1] for row in con.execute("PRAGMA table_info(repro_results)")}
+        if "local_path" not in existing_r:
+            con.execute("ALTER TABLE repro_results ADD COLUMN local_path TEXT")
 
         # ① 하이브리드 검색(2026-08-06)용 임베딩 캐시. 논문 텍스트(제목+초록)가
         # 바뀌지 않는 한 임베딩도 안 바뀌므로, 검색할 때마다 다시 계산하지
@@ -1265,19 +1274,23 @@ def save_repro_result(
     arxiv_id: str, repo_url: str, source: str, confidence: str,
     success: bool, exit_code: int | None, stage: str, attempt: int,
     network_used: bool, duration_s: float, log_path: str,
+    local_path: str = "",
 ) -> None:
     """⑦ Docker 격리 실행 결과를 축적한다. MCP 도구가 아니다 — docker_runner.py
     가 판단(성공/실패)까지 끝낸 뒤 결과만 저장한다(set_review_status 와 동일 패턴).
+
+    local_path: 성공한 시도만 docker_runner.py가 clone을 지우지 않고 여기 남긴다
+    (review_app.py가 "재현된 코드 보기"에서 읽는다) — 실패한 시도는 빈 문자열.
     """
     arxiv_id = _clean_arxiv_id(arxiv_id)
     with _db() as con:
         con.execute(
             """INSERT OR REPLACE INTO repro_results
                (arxiv_id, repo_url, source, confidence, success, exit_code,
-                stage, attempt, network_used, duration_s, log_path, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                stage, attempt, network_used, duration_s, log_path, created_at, local_path)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (arxiv_id, repo_url, source, confidence, int(success), exit_code,
-             stage, attempt, int(network_used), duration_s, log_path, _now()),
+             stage, attempt, int(network_used), duration_s, log_path, _now(), local_path),
         )
 
 
