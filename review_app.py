@@ -595,6 +595,13 @@ def render_search_tab():
     # API)이지, 한글을 지원하도록 만든 하이브리드 검색이 아니었다. 이미
     # `fetch_paper`로 모아둔 로컬 논문 안에서 다시 찾는 용도라 새로 수집·
     # 요약하지 않는다 — 검색 결과만 보여주고, 실제 검토는 '요약 검토' 탭에서.
+    # hybrid 모드는 원래 여기서 바로 return 했었는데, 그러면 아래 "최근
+    # 활동/입력 방식 안내" 카드까지 같이 건너뛰어 "저장된 논문 재검색"을
+    # 고르면 그 두 카드가 안 보이는 문제가 있었다(2026-08-12, 사용자가
+    # 실제로 이 모드를 골라보고 발견) — return을 없애고 if/else로 바꿔
+    # 두 갈래 다 아래 카드 렌더링까지 도달하게 했다. 버튼 라벨도 다른
+    # 모드와 다르게 "🔎 검색"이라 따로 놀았던 것("시작"으로 안 바뀌어
+    # 있다는 지적)까지 "시작" + type="primary"로 맞췄다.
     if mode == "hybrid":
         card.caption(
             "이미 저장된 논문들 안에서 다시 찾는다(BM25+임베딩) — 새로 수집·요약하지 않음. "
@@ -602,7 +609,7 @@ def render_search_tab():
         )
         hybrid_query = card.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
         hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5)
-        if card.button("🔎 검색", disabled=not hybrid_query):
+        if card.button("시작", type="primary", disabled=not hybrid_query):
             result = json.loads(
                 run_async(
                     server.hybrid_search_local_papers(
@@ -621,45 +628,44 @@ def render_search_tab():
                         f"BM25 {p['bm25_score']}, 코사인 {p['cosine_score']}, 합산 {p['fused_score']}"
                     )
                 card.caption("검토·재요약은 '✅ 요약 검토' 탭에서.")
-        return
+    else:
+        top_n = 3
+        uploaded_file = None
+        pdf_title = ""
+        if mode == "keyword":
+            value = card.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
+            card.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
+                         "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
+            top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3)
+        elif mode == "id":
+            value = card.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
+        elif mode == "title":
+            value = card.text_input("논문 제목", placeholder="예: TSPulse")
+        elif mode == "pdf":
+            card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
+            uploaded_file = card.file_uploader("PDF 파일", type="pdf")
+            pdf_title = card.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
+            value = "ok" if (uploaded_file and pdf_title) else ""
+        else:  # oa
+            card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
+            value = card.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
+            pdf_title = card.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
 
-    top_n = 3
-    uploaded_file = None
-    pdf_title = ""
-    if mode == "keyword":
-        value = card.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
-        card.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
-                     "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
-        top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3)
-    elif mode == "id":
-        value = card.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
-    elif mode == "title":
-        value = card.text_input("논문 제목", placeholder="예: TSPulse")
-    elif mode == "pdf":
-        card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
-        uploaded_file = card.file_uploader("PDF 파일", type="pdf")
-        pdf_title = card.text_input("제목", placeholder="논문 제목 (필수 — PDF에서 자동 추출 안 함)")
-        value = "ok" if (uploaded_file and pdf_title) else ""
-    else:  # oa
-        card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
-        value = card.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
-        pdf_title = card.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
-
-    if card.button("시작", type="primary", disabled=not value):
-        status_box = card.status("진행 중...", expanded=True)
-        if mode == "pdf":
-            done = run_async(
-                _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
-            )
-        elif mode == "oa":
-            done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
-        else:
-            done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
-        if done:
-            status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
-            card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
-        else:
-            status_box.update(label="처리된 논문 없음", state="error")
+        if card.button("시작", type="primary", disabled=not value):
+            status_box = card.status("진행 중...", expanded=True)
+            if mode == "pdf":
+                done = run_async(
+                    _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
+                )
+            elif mode == "oa":
+                done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
+            else:
+                done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
+            if done:
+                status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
+                card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
+            else:
+                status_box.update(label="처리된 논문 없음", state="error")
 
     # 검색 폼 아래가 빈 흰 공간으로 휑하다는 지적(2026-08-12) — 장식용
     # 채우기가 아니라 실제로 쓸모 있는 두 카드로 채운다: "최근 활동"은
