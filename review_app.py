@@ -532,7 +532,7 @@ def _fetch_repro_rows(arxiv_id: str) -> list[dict]:
     with server._db() as con:
         rows = con.execute(
             "SELECT repo_url, source, confidence, success, exit_code, stage, "
-            "attempt, duration_s, created_at FROM repro_results "
+            "attempt, duration_s, created_at, local_path FROM repro_results "
             "WHERE arxiv_id=? ORDER BY created_at DESC",
             (arxiv_id,),
         ).fetchall()
@@ -576,6 +576,73 @@ def _launch_reproduce_background(arxiv_id: str) -> str:
     return "⑦ 코드 재현을 백그라운드에서 시작함"
 
 
+# 미리보기에 쓸 언어 힌트 — 있으면 문법 강조가 되고, 없으면 그냥 평문으로
+# 보여준다(st.code의 language=None도 안전하게 동작).
+_CODE_EXT_LANG = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript", ".json": "json",
+    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".md": "markdown",
+    ".sh": "bash", ".dockerfile": "dockerfile", ".txt": None, ".cfg": None,
+    ".ini": None, ".cpp": "cpp", ".c": "c", ".h": "c", ".java": "java",
+    ".go": "go", ".rs": "rust", ".sql": "sql",
+}
+_PREVIEW_SIZE_CAP = 200_000  # 200KB — 이보다 크면 브라우저가 버벅이므로 앞부분만
+
+
+def _render_code_browser(arxiv_id: str, local_path: str) -> None:
+    """성공한 재현의 clone 코드를 화면에서 직접 열어본다. docker_runner.py가
+    성공 시 이 경로에 코드를 남겨 둔다(server.py의 local_path 컬럼) — 이 함수는
+    그걸 읽기만 한다, 실행하지 않는다(승인 화면에서 임의 코드를 또 돌리는 건
+    별개의 위험이라 스모크 테스트는 이미 끝난 결과만 보여준다)."""
+    if not local_path:
+        return
+    root = Path(local_path)
+    if not root.exists():
+        st.caption("⚠️ 재현된 코드 경로를 찾을 수 없음 — 이후에 정리됐을 수 있음")
+        return
+
+    if not st.toggle("🗂️ 재현된 코드 보기", key=f"codetoggle_{arxiv_id}"):
+        return
+
+    st.caption(f"로컬 경로: `{local_path}`")
+    files = sorted(
+        p for p in root.rglob("*")
+        if p.is_file() and ".git" not in p.relative_to(root).parts
+    )
+    if not files:
+        st.caption("파일 없음")
+        return
+    if len(files) > 300:
+        st.caption(f"파일 {len(files)}개 중 상위 300개만 표시")
+        files = files[:300]
+
+    rel_paths = [str(p.relative_to(root)) for p in files]
+    # 흔히 먼저 보고 싶은 것부터: README, 진입점 스크립트류를 앞으로
+    def _priority(name: str) -> tuple[int, str]:
+        lower = name.lower()
+        if "readme" in lower:
+            return (0, lower)
+        if lower.endswith((".py", ".sh")) and "/" not in name:
+            return (1, lower)
+        return (2, lower)
+
+    rel_paths.sort(key=_priority)
+
+    selected = st.selectbox("파일 선택", rel_paths, key=f"codefile_{arxiv_id}")
+    target = root / selected
+    try:
+        size = target.stat().st_size
+        raw = target.read_bytes()[:_PREVIEW_SIZE_CAP]
+        text = raw.decode("utf-8", errors="replace")
+    except OSError as e:
+        st.caption(f"읽기 실패: {e}")
+        return
+
+    lang = _CODE_EXT_LANG.get(target.suffix.lower(), None)
+    if size > _PREVIEW_SIZE_CAP:
+        st.caption(f"{size:,} bytes 중 앞 {_PREVIEW_SIZE_CAP:,} bytes만 표시")
+    st.code(text, language=lang)
+
+
 def _render_repro_status(arxiv_id: str) -> None:
     rows = _fetch_repro_rows(arxiv_id)
     if _reproduce_running(arxiv_id):
@@ -585,6 +652,7 @@ def _render_repro_status(arxiv_id: str) -> None:
         best = next((r for r in rows if r["success"]), rows[0])
         if best["success"]:
             st.caption(f"⑦ 코드 재현: ✅ 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+            _render_code_browser(arxiv_id, best["local_path"])
         else:
             st.caption(
                 f"⑦ 코드 재현: ❌ 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
