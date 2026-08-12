@@ -108,6 +108,16 @@ def _inject_custom_style() -> None:
            실측으로 확인한 메인 컨텐츠 전용 testid(stMain, 사이드바와 분리
            된 것)만 건드려서 사이드바 자체 배경색은 그대로 둔다. */
         [data-testid="stMain"] { background-color: #F8FAFC; }
+        /* stMain은 내부적으로 flex-column + align-items:center라 카드
+           (block-container, max-width 1100px)가 남는 공간 한가운데로
+           밀려서 사이드바 바로 옆에 큰 여백이 생긴다 — 넓은 화면(1920px)
+           에서 실측하니 좌우로 260px씩 붕 떠 있었다. "왼쪽으로, 사이드바
+           옆에 붙게" 지적(2026-08-12)에 맞춰 좌측 정렬로 바꾼다. */
+        [data-testid="stMain"] { align-items: flex-start !important; }
+        /* 페이지 최상단 헤더 바(햄버거·Deploy 자리)가 항상 흰색이라 그
+           아래 F8FAFC 톤과 이어지지 않고 두꺼운 흰 띠로 보인다는 지적
+           (2026-08-12) — 본문·사이드바와 같은 톤으로 맞춰 이어지게 한다. */
+        [data-testid="stHeader"] { background-color: #F8FAFC; }
 
         /* 요약 검토 카드(expander) — 흰 배경 + 그림자로 옅은 배경 위에 뜬
            "카드"처럼 분리. hover에서 살짝 떠오르게 해 클릭 가능함을 암시. */
@@ -196,16 +206,18 @@ def _inject_custom_style() -> None:
         [data-testid="stSidebar"] {
             background-color: #F8FAFC; border-right: 1px solid var(--sky-border);
         }
+        /* 브랜드 글자가 너무 작아 잘 안 보인다는 지적(2026-08-12) — 제목·
+           부제·아이콘을 함께 키운다(아이콘만 그대로면 균형이 깨져서 같이). */
         [data-testid="stSidebar"] .sidebar-brand {
-            padding: 0.4rem 0 1rem 0; font-size: 1.05rem; color: var(--text-main);
+            padding: 0.4rem 0 1rem 0; font-size: 1.3rem; color: var(--text-main);
             border-bottom: 1px solid var(--sky-border); margin-bottom: 0.2rem;
         }
         [data-testid="stSidebar"] .sidebar-brand-sub {
-            font-size: 0.8rem; color: var(--text-muted); font-weight: 400;
+            font-size: 0.9rem; color: var(--text-muted); font-weight: 400;
         }
         [data-testid="stSidebar"] .sidebar-brand-icon {
-            width: 26px; height: 26px; vertical-align: middle; border-radius: 6px;
-            margin-right: 2px; position: relative; top: -2px;
+            width: 32px; height: 32px; vertical-align: middle; border-radius: 6px;
+            margin-right: 3px; position: relative; top: -2px;
         }
         [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.6rem; }
         /* 내비게이션 버튼 — 사용자 요청(2026-08-12)으로 둘 다 하늘색 채움 +
@@ -711,7 +723,7 @@ def _launch_reproduce_background(arxiv_id: str) -> str:
             stdout=f, stderr=subprocess.STDOUT,
             start_new_session=True,  # 이 스트림릿 요청 처리가 끝나도 안 죽게
         )
-    return "⑦ 코드 재현을 백그라운드에서 시작함"
+    return "코드 재현을 백그라운드에서 시작함"
 
 
 # 미리보기에 쓸 언어 힌트 — 있으면 문법 강조가 되고, 없으면 그냥 평문으로
@@ -784,16 +796,16 @@ def _render_code_browser(arxiv_id: str, local_path: str) -> None:
 def _render_repro_status(arxiv_id: str) -> None:
     rows = _fetch_repro_rows(arxiv_id)
     if _reproduce_running(arxiv_id):
-        st.caption("⑦ 코드 재현: 🔵 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
+        st.caption("코드 재현: 🔵 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
         return
     if rows:
         best = next((r for r in rows if r["success"]), rows[0])
         if best["success"]:
-            st.caption(f"⑦ 코드 재현: 🟢 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+            st.caption(f"코드 재현: 🟢 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
             _render_code_browser(arxiv_id, best["local_path"])
         else:
             st.caption(
-                f"⑦ 코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
+                f"코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
                 "— 승인을 다시 누르면 재시도"
             )
         return
@@ -809,17 +821,17 @@ def _render_repro_status(arxiv_id: str) -> None:
     try:
         outcome = json.loads(log_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        st.caption("⑦ 코드 재현: 완료됐지만 결과를 못 읽음 — 로그 파일 확인 필요")
+        st.caption("코드 재현: 완료됐지만 결과를 못 읽음 — 로그 파일 확인 필요")
         return
     if outcome.get("success"):
-        st.caption("⑦ 코드 재현: 🟢 성공")
+        st.caption("코드 재현: 🟢 성공")
     else:
         # "시도 못함"이라고 쓰면 검색 자체가 안 된 것처럼 읽혀서 오해를 살 수
         # 있다는 지적(2026-08-12) — 실제로는 검색은 끝났고 후보가 0개였던
         # 것이므로 "검색 완료·후보 없음"으로 명확히 구분해서 쓴다.
         reason = outcome.get("reason", "저장소 후보를 찾지 못함")
         st.caption(
-            f"⑦ 코드 재현: 🟠 검색 완료 · 후보 없음 — {reason} "
+            f"코드 재현: 🟠 검색 완료 · 후보 없음 — {reason} "
             "(이 논문엔 공개된 관련 코드 저장소가 없을 수 있음, 설치·실행은 시도 안 함)"
         )
 
@@ -828,7 +840,7 @@ def _render_repro_status(arxiv_id: str) -> None:
 
 
 def render_review_tab():
-    st.subheader("요약 검토 (⑥ 사람 판단)")
+    st.subheader("요약 검토 (사람 판단)")
     # 예전엔 체크박스로 "전체 보기"를 켜야 승인·반려된 것까지 보였다 —
     # 매번 체크해야 하는 게 번거롭다는 지적(2026-08-12)을 받아 항상 전체를
     # 보여주는 것으로 기본값을 바꿨다. _fetch_review_rows(show_all=False)
