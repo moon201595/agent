@@ -144,8 +144,17 @@ def _inject_custom_style() -> None:
             border-radius: 6px; padding: 0.15em 0.45em; font-size: 0.88em;
         }
 
-        /* Streamlit 기본 푸터("Made with Streamlit")만 숨김 — 메뉴는 유지 */
+        /* Streamlit 기본 푸터("Made with Streamlit") 숨김 */
         footer { visibility: hidden; }
+        /* Deploy 버튼·⋮ 메뉴(Rerun/Clear cache/Print/Record screen 등)는
+           streamlit.io 배포·공유용 기능이라 WSL 로컬 전용 내부 도구에는
+           의미가 없다 — 그대로 두면 "범용 Streamlit 데모" 티가 나서
+           숨긴다(2026-08-12, 실측: 실제 DOM에서 stAppDeployButton·
+           stMainMenu testid 확인 후 반영). 실행 중 표시(stStatusWidget)는
+           유용해서 남겨 둔다.
+        */
+        [data-testid="stAppDeployButton"] { display: none; }
+        [data-testid="stMainMenu"] { display: none; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -495,7 +504,7 @@ def render_search_tab():
         value = st.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
         pdf_title = st.text_input("제목 (선택 — 비우면 '(제목 미입력)'으로 저장)")
 
-    if st.button("🚀 시작", type="primary", disabled=not value):
+    if st.button("시작", type="primary", disabled=not value):
         status_box = st.status("진행 중...", expanded=True)
         if mode == "pdf":
             done = run_async(
@@ -646,16 +655,16 @@ def _render_code_browser(arxiv_id: str, local_path: str) -> None:
 def _render_repro_status(arxiv_id: str) -> None:
     rows = _fetch_repro_rows(arxiv_id)
     if _reproduce_running(arxiv_id):
-        st.caption("⑦ 코드 재현 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
+        st.caption("⑦ 코드 재현: 🔵 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
         return
     if rows:
         best = next((r for r in rows if r["success"]), rows[0])
         if best["success"]:
-            st.caption(f"⑦ 코드 재현: ✅ 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
+            st.caption(f"⑦ 코드 재현: 🟢 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
             _render_code_browser(arxiv_id, best["local_path"])
         else:
             st.caption(
-                f"⑦ 코드 재현: ❌ 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
+                f"⑦ 코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
                 "— 승인을 다시 누르면 재시도"
             )
         return
@@ -674,10 +683,10 @@ def _render_repro_status(arxiv_id: str) -> None:
         st.caption("⑦ 코드 재현: 완료됐지만 결과를 못 읽음 — 로그 파일 확인 필요")
         return
     if outcome.get("success"):
-        st.caption("⑦ 코드 재현: ✅ 성공")
+        st.caption("⑦ 코드 재현: 🟢 성공")
     else:
         reason = outcome.get("reason", "저장소 후보를 찾지 못함")
-        st.caption(f"⑦ 코드 재현: ⚪ 시도 못함 — {reason} (이 논문엔 관련 코드 저장소가 없을 수 있음)")
+        st.caption(f"⑦ 코드 재현: 🟠 시도 못함 — {reason} (이 논문엔 관련 코드 저장소가 없을 수 있음)")
 
 
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
