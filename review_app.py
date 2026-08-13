@@ -978,7 +978,14 @@ def render_review_tab():
                 st.markdown(_prettify_summary_markdown(summary_text))
             st.markdown("---")
 
-            col1, col2, col3 = st.columns([1, 2, 1])
+            # 예전엔 반려 사유 입력창이 "반려" 버튼 칸(col2) 안에만 있어서
+            # 그 칸만 위로 한 줄 더 밀리고, 세 버튼이 승인/다시생성은 위쪽 줄에
+            # 반려만 아래쪽 줄에 있는 것처럼 어긋나 보였다(2026-08-12, 사용자
+            # 스크린샷으로 지적: "위치가 중구난방"). 입력창을 버튼 행 위로
+            # 통째로 빼서 버튼 3개가 같은 줄에서 승인·반려·다시 생성 순서로
+            # 나란히 정렬되게 했다.
+            reason = st.text_input("반려 사유 (선택)", key=f"reason_{arxiv_id}")
+            col1, col2, col3 = st.columns(3)
             with col1:
                 if st.button("✅ 승인", key=f"approve_{arxiv_id}"):
                     server.set_review_status(arxiv_id, "approved")
@@ -986,7 +993,6 @@ def render_review_tab():
                     st.toast(f"⑥→⑦ {msg}")
                     st.rerun()
             with col2:
-                reason = st.text_input("반려 사유 (선택)", key=f"reason_{arxiv_id}")
                 if st.button("❌ 반려", key=f"reject_{arxiv_id}"):
                     server.set_review_status(arxiv_id, "rejected", note=reason)
                     st.rerun()
