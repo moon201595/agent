@@ -984,8 +984,14 @@ def render_review_tab():
             # 스크린샷으로 지적: "위치가 중구난방"). 입력창을 버튼 행 위로
             # 통째로 빼서 버튼 3개가 같은 줄에서 승인·반려·다시 생성 순서로
             # 나란히 정렬되게 했다.
+            #
+            # st.columns(3)은 셋을 화면 전체 폭에 균등 배분해 버튼 사이가
+            # 화면 폭만큼 벌어져 보였다("서로 너무 떨어져있다" 지적, 2026-08-12
+            # 후속) — 버튼 폭만큼만 좁은 칸 3개를 만들고 남는 공간은 오른쪽
+            # 여백 칸 하나로 몰아, 버튼들이 왼쪽에 붙어 서로 가깝게 보이도록
+            # 바꿨다.
             reason = st.text_input("반려 사유 (선택)", key=f"reason_{arxiv_id}")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, _spacer = st.columns([1, 1, 1, 5])
             with col1:
                 if st.button("✅ 승인", key=f"approve_{arxiv_id}"):
                     server.set_review_status(arxiv_id, "approved")
