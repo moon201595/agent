@@ -220,24 +220,33 @@ def _inject_custom_style() -> None:
             margin-right: 3px; position: relative; top: -2px;
         }
         [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.6rem; }
-        /* 내비게이션 버튼 — 사용자 요청(2026-08-12)으로 둘 다 하늘색 채움 +
-           왼쪽 정렬. 아이콘은 참고 이미지 스타일을 재현한 인라인 SVG를
-           data URI로 만들어 버튼 자체의 background-image로 얹는다 —
-           st.button은 커스텀 이미지 아이콘을 못 받는다(emoji/Material만
-           지원). 버튼별 고유 클래스(.st-key-nav_*)는 실측으로 실제 DOM에서
-           확인한 훅. */
+        /* 내비게이션 버튼 — 처음엔 항상 하늘색 채움(type="primary" 고정)
+           이었는데, "상시로 말고 커서 올렸을 때만 더 연한 하늘색으로"라는
+           지적(2026-08-12)을 받아 기본은 무채색(secondary), hover에서만
+           옅은 하늘색이 뜨도록 바꿨다 — 파이썬 쪽은 type="primary" 제거,
+           default 배경색은 아래 hover 규칙으로만 준다. 아이콘은 참고
+           이미지 스타일을 재현한 인라인 SVG를 data URI로 만들어 버튼
+           자체의 background-image로 얹는다 — st.button은 커스텀 이미지
+           아이콘을 못 받는다(emoji/Material만 지원). primary가 아니게
+           되면서 배경이 흰색 계열이라 아이콘 선 색을 흰색→sky-dark로
+           다시 그렸다(흰 배경에 흰 선은 안 보임). 버튼별 고유 클래스
+           (.st-key-nav_*)는 실측으로 실제 DOM에서 확인한 훅. */
         [data-testid="stSidebar"] [data-testid="stButton"] button {
             justify-content: flex-start; text-align: left; font-weight: 500;
         }
         .st-key-nav_search button, .st-key-nav_review button {
             padding-left: 2.4rem; background-repeat: no-repeat;
             background-size: 18px 18px; background-position: 14px center;
+            transition: background-color 0.12s ease;
+        }
+        .st-key-nav_search button:hover, .st-key-nav_review button:hover {
+            background-color: var(--sky-light); border-color: var(--sky);
         }
         .st-key-nav_search button {
-            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMiIgeT0iMyIgd2lkdGg9IjE0IiBoZWlnaHQ9IjExIiByeD0iMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTYgNi41TDQgOC41bDIgMk0xMSA2LjVsMiAyLTIgMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8Y2lyY2xlIGN4PSIxNy41IiBjeT0iMTcuNSIgcj0iNCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTIwLjUgMjAuNUwyMyAyMyIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4=");
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMiIgeT0iMyIgd2lkdGg9IjE0IiBoZWlnaHQ9IjExIiByeD0iMiIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNyIvPgo8cGF0aCBkPSJNNiA2LjVMNCA4LjVsMiAyTTExIDYuNWwyIDItMiAyIiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPGNpcmNsZSBjeD0iMTcuNSIgY3k9IjE3LjUiIHI9IjQiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTIwLjUgMjAuNUwyMyAyMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==");
         }
         .st-key-nav_review button {
-            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNMTUgMnY0aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik05IDEyLjVoNk05IDE2aDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPg==");
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+");
         }
         /* 현황을 숫자만 보여주다가 "어떤 논문인지 안 보인다"는 지적을 받아
            (2026-08-12) 카테고리별 토글 + 실제 논문 목록으로 바꿨다. 사이드
@@ -1124,19 +1133,23 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    # 두 내비게이션 버튼 다 하늘색 채움으로(사용자 요청, 2026-08-12) — 활성/비활성
-    # 구분(primary/secondary)은 포기하는 대신, 아이콘은 st.button이 커스텀
-    # 이미지를 못 받아서(emoji/Material만 지원) CSS background-image로 주입한다
-    # (버튼 고유 클래스 .st-key-nav_* — 실측으로 실제 DOM에서 확인한 훅).
-    if st.button("검색·요약 생성", key="nav_search", use_container_width=True, type="primary"):
+    # 처음엔 둘 다 하늘색 채움(type="primary")으로 상시 표시했는데, "상시
+    # 말고 커서 올렸을 때만 더 연한 하늘색으로"라는 지적(2026-08-12)을
+    # 받아 기본은 무채색(secondary, type 생략)으로 바꾸고 hover 배경색만
+    # CSS(.st-key-nav_* :hover)로 준다. 활성/비활성 구분은 여전히 안 함 —
+    # 이건 원래부터 포기한 부분(사용자 요청, 2026-08-12 오전). 아이콘은
+    # st.button이 커스텀 이미지를 못 받아서(emoji/Material만 지원) CSS
+    # background-image로 주입한다(버튼 고유 클래스 .st-key-nav_* — 실측으로
+    # 실제 DOM에서 확인한 훅).
+    if st.button("검색·요약 생성", key="nav_search", use_container_width=True):
         st.session_state.nav_page = "search"
         st.rerun()
-    if st.button("요약 검토", key="nav_review", use_container_width=True, type="primary"):
+    if st.button("요약 검토", key="nav_review", use_container_width=True):
         st.session_state.nav_page = "review"
         st.rerun()
 
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    st.caption("현황 — 펼치면 논문 목록")
+    st.caption("현황")
     lists = _fetch_sidebar_lists()
     _render_sidebar_category("저장만 됨 · 검토 대기", lists["pending"], "🟡")
     _render_sidebar_category("승인됨", lists["approved"], "🟢")
