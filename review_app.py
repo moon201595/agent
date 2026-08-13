@@ -1140,7 +1140,7 @@ if "nav_page" not in st.session_state:
 with st.sidebar:
     st.markdown(
         f'<div class="sidebar-brand"><img src="{_BRAND_ICON}" class="sidebar-brand-icon"/> '
-        '<b>논문 검색·분석</b><br>'
+        '<b>논문 검색·분석</b> '
         '<span class="sidebar-brand-sub">에이전트 하네스</span></div>',
         unsafe_allow_html=True,
     )
