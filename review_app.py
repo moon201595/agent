@@ -117,10 +117,11 @@ def _inject_custom_style() -> None:
            에서 실측하니 좌우로 260px씩 붕 떠 있었다. "왼쪽으로, 사이드바
            옆에 붙게" 지적(2026-08-12)에 맞춰 좌측 정렬로 바꾼다. */
         [data-testid="stMain"] { align-items: flex-start !important; }
-        /* 페이지 최상단 헤더 바(햄버거·Deploy 자리)가 항상 흰색이라 그
-           아래 F8FAFC 톤과 이어지지 않고 두꺼운 흰 띠로 보인다는 지적
-           (2026-08-12) — 본문·사이드바와 같은 톤으로 맞춰 이어지게 한다. */
-        [data-testid="stHeader"] { background-color: #F8FAFC; }
+        /* 페이지 최상단 헤더 바(햄버거·Deploy 자리)를 본문과 같은 톤으로
+           맞춰 이어지게 한다(2026-08-12) — 본문이 F8FAFC였다가 흰색으로
+           바뀌면서(2026-08-13) 헤더도 같이 흰색으로 맞췄다. 안 맞추면
+           헤더만 이전 톤(F8FAFC)으로 남아 본문 위에 옅은 띠가 보인다. */
+        [data-testid="stHeader"] { background-color: #FFFFFF; }
 
         /* 요약 검토 카드(expander) — 흰 배경 + 그림자로 옅은 배경 위에 뜬
            "카드"처럼 분리. hover에서 살짝 떠오르게 해 클릭 가능함을 암시. */
