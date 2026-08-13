@@ -102,12 +102,15 @@ def _inject_custom_style() -> None:
             border-color: var(--sky) !important; box-shadow: 0 0 0 1px var(--sky) !important;
         }
 
-        /* 본문 배경에 옅은 톤을 줘서(사이드바와 같은 계열) 흰 카드가 그
-           위에 "떠 있는" 느낌이 나게 한다 — 카드까지 배경과 같은 흰색이라
-           경계가 안 보여 화면이 밋밋하다는 지적(2026-08-12)을 받았다.
-           실측으로 확인한 메인 컨텐츠 전용 testid(stMain, 사이드바와 분리
-           된 것)만 건드려서 사이드바 자체 배경색은 그대로 둔다. */
-        [data-testid="stMain"] { background-color: #F8FAFC; }
+        /* 처음엔 본문도 사이드바와 같은 옅은 톤(#F8FAFC)을 줘서 흰 카드가
+           그 위에 "떠 있는" 느낌을 냈는데(2026-08-12), "왼쪽(사이드바)은
+           색 있게, 오른쪽(본문)은 흰색으로 나누자"는 요청(2026-08-13)을
+           받아 본문은 순백으로 바꿨다 — 카드는 배경 대비가 아니라 자체
+           테두리(border)·그림자(box-shadow)로 구분되므로 흰 배경이어도
+           카드 경계가 여전히 보인다. 실측으로 확인한 메인 컨텐츠 전용
+           testid(stMain, 사이드바와 분리된 것)만 건드려서 사이드바 자체
+           배경색은 그대로 둔다. */
+        [data-testid="stMain"] { background-color: #FFFFFF; }
         /* stMain은 내부적으로 flex-column + align-items:center라 카드
            (block-container, max-width 1100px)가 남는 공간 한가운데로
            밀려서 사이드바 바로 옆에 큰 여백이 생긴다 — 넓은 화면(1920px)
@@ -205,6 +208,14 @@ def _inject_custom_style() -> None:
            느낌만 가져왔다. */
         [data-testid="stSidebar"] {
             background-color: #F8FAFC; border-right: 1px solid var(--sky-border);
+        }
+        /* 기본 폭(300px)에선 32자로 자른 논문 제목도 종종 두 줄로 넘쳐
+           보였다("제목이 한 줄만 차지하게" 요청, 2026-08-13) — Streamlit
+           사이드바 폭은 리사이즈 핸들이 넣는 인라인 style="width:300px"라
+           !important로만 이긴다. 여전히 200~600px 사이에서 사용자가 드래그로
+           더 늘리거나 줄일 수 있다(Streamlit 자체 제약, 그대로 둠). */
+        [data-testid="stSidebar"] {
+            width: 360px !important;
         }
         /* 브랜드 글자가 너무 작아 잘 안 보인다는 지적(2026-08-12) — 제목·
            부제·아이콘을 함께 키운다(아이콘만 그대로면 균형이 깨져서 같이). */
