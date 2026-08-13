@@ -281,6 +281,7 @@ def _inject_custom_style() -> None:
            최상단의 subheader에만 밑줄을 줘 "여기가 헤더"임을 표시한다. */
         [data-testid="stAppViewContainer"] .block-container > div:first-child h3:first-of-type {
             padding-bottom: 0.6rem; border-bottom: 1px solid var(--sky-border);
+            margin-bottom: 1rem;
         }
         </style>
         """,
