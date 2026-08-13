@@ -979,10 +979,10 @@ def render_review_tab():
             st.markdown("---")
 
             # 예전엔 반려 사유 입력창이 "반려" 버튼 칸(col2) 안에만 있어서
-            # 그 칸만 위로 한 줄 더 밀리고, 세 버튼이 승인/다시생성은 위쪽 줄에
+            # 그 칸만 위로 한 줄 더 밀리고, 세 버튼이 승인/재생성은 위쪽 줄에
             # 반려만 아래쪽 줄에 있는 것처럼 어긋나 보였다(2026-08-12, 사용자
             # 스크린샷으로 지적: "위치가 중구난방"). 입력창을 버튼 행 위로
-            # 통째로 빼서 버튼 3개가 같은 줄에서 승인·반려·다시 생성 순서로
+            # 통째로 빼서 버튼 3개가 같은 줄에서 승인·반려·재생성 순서로
             # 나란히 정렬되게 했다.
             #
             # st.columns(3)은 셋을 화면 전체 폭에 균등 배분해 버튼 사이가
@@ -1003,7 +1003,7 @@ def render_review_tab():
                     server.set_review_status(arxiv_id, "rejected", note=reason)
                     st.rerun()
             with col3:
-                if st.button("🔄 다시 생성", key=f"regen_{arxiv_id}"):
+                if st.button("🔄 재생성", key=f"regen_{arxiv_id}"):
                     with st.spinner("재생성 중..."):
                         template = engine.select_template(row["title"] or "")
                         paper_text = server.read_full_text(arxiv_id)
