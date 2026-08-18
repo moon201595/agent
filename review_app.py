@@ -172,6 +172,13 @@ def _inject_custom_style() -> None:
             font-weight: 600; color: var(--text-main);
         }
 
+        /* 검색 카드 안의 "입력 방식"·"검색 키워드"·"선별할 편수" 같은
+           위젯 라벨이 기본 14px라 다른 텍스트에 비해 작아 보인다는
+           지적(2026-08-14 네 번째) — 이 카드 안 라벨만 16px로 키운다. */
+        .st-key-search_card [data-testid="stWidgetLabel"] p {
+            font-size: 1rem !important;
+        }
+
         /* 라디오 그룹(입력 방식 선택 등) — 기본 회색 원형 대신 하늘색 계열로,
            선택된 항목의 라벨을 굵게 해서 지금 뭘 골랐는지 더 잘 드러나게 */
         [data-testid="stRadio"] label { font-weight: 400; }
@@ -200,6 +207,18 @@ def _inject_custom_style() -> None:
             border: 1px solid #E4E7EC !important;
             box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
             padding: 1.25rem 1.5rem;
+        }
+
+        /* "시작" 버튼 — 오른쪽 정렬용 좁은 칸 안에서도 버튼 자체는 글자
+           크기만큼만 좁게 그려져 칸 왼쪽에 붙어 있었다("더 늘리고 더
+           오른쪽으로" 지적, 2026-08-14 네 번째). CSS로 width:100%를 줘
+           봤지만 버튼을 감싼 Streamlit 래퍼(stButton, element-container)
+           자체가 fit-content라 퍼센트가 먹지 않았다 — 대신 st.button의
+           네이티브 width="stretch" 인자를 써서 래퍼째로 칸을 채운다
+           (아래 button() 호출부, key="start_btn"/"hybrid_start_btn").
+           이 규칙은 세로 패딩만 키워 버튼을 살짝 더 크게 보이게 한다. */
+        .st-key-start_btn button, .st-key-hybrid_start_btn button {
+            padding-top: 0.6rem; padding-bottom: 0.6rem;
         }
 
         /* 알림 박스(성공/경고/오류/정보) — 모서리만 둥글게, 성공=초록/경고=노랑/오류=빨강
@@ -760,9 +779,17 @@ def render_search_tab(progress_slot=None):
         hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5)
         # "시작" 버튼이 왼쪽에 붙어 있던 걸 오른쪽 정렬로 바꿔 달라는
         # 요청(2026-08-14 세 번째) — 넓은 스페이서 칸 + 좁은 버튼 칸으로
-        # 나눠 버튼만 오른쪽 끝에 오게 한다.
+        # 나눠 버튼만 오른쪽 끝에 오게 한다. 그런데 버튼 칸 안에서도 버튼
+        # 자체는 글자 크기만큼만 좁게 그려져 칸 왼쪽에 붙고 칸 오른쪽엔
+        # 빈 공간이 남았다("더 늘리고 더 오른쪽으로" 지적, 2026-08-14
+        # 네 번째) — key=로 훅을 걸어 버튼이 칸 폭을 꽉 채우게(width:100%)
+        # CSS로 늘렸다. 칸을 다 채우면 자동으로 칸의 오른쪽 끝(=카드
+        # 오른쪽 끝)까지 붙는다.
         _hybrid_btn_spacer, hybrid_btn_col = card.columns([5, 1])
-        if hybrid_btn_col.button("시작", type="primary", disabled=not hybrid_query):
+        if hybrid_btn_col.button(
+            "시작", type="primary", disabled=not hybrid_query,
+            key="hybrid_start_btn", width="stretch",
+        ):
             result = json.loads(
                 run_async(
                     server.hybrid_search_local_papers(
@@ -813,8 +840,13 @@ def render_search_tab(progress_slot=None):
             pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)")
 
         # 오른쪽 정렬 — 위 hybrid 분기와 같은 스페이서+버튼 칸 나누기.
+        # key="start_btn"로 CSS 훅을 걸어 버튼을 칸 폭만큼 늘린다(위
+        # hybrid_start_btn과 같은 이유).
         _start_btn_spacer, start_btn_col = card.columns([5, 1])
-        if start_btn_col.button("시작", type="primary", disabled=not value):
+        if start_btn_col.button(
+            "시작", type="primary", disabled=not value,
+            key="start_btn", width="stretch",
+        ):
             status_box = card.status("진행 중...", expanded=True)
             if mode == "pdf":
                 done = run_async(
@@ -859,7 +891,9 @@ def render_search_tab(progress_slot=None):
         # 늘려 대부분의 논문 제목이 안 잘리게 했다(완전히 없애지 않은 건
         # 극단적으로 긴 제목이 한 줄을 넘겨 레이아웃을 깨는 걸 막기 위한
         # 안전판). 제목 한 줄, 오른쪽에 상태 배지·상대시간을 묶어 둔다
-        # ("상태를 상대 시간 옆으로" 요청, 2026-08-14 세 번째).
+        # ("상태를 상대 시간 옆으로" 요청, 2026-08-14 세 번째). 제목을
+        # 굵게 하니 상태 배지와 같이 있을 때 너무 튄다는 지적(2026-08-14
+        # 네 번째) — 일반 글씨로 바꾼다.
         for r in recent_rows:
             status = r["review_status"] or "pending"
             dot = _STATUS_EMOJI.get(status, "🟡")
@@ -868,7 +902,7 @@ def render_search_tab(progress_slot=None):
             recent_card.markdown(
                 f"<div class='recent-item'>"
                 f"<div class='recent-title-row'>"
-                f"<span class='recent-title'>{dot} <b>{r['title'][:70]}</b></span>"
+                f"<span class='recent-title'>{dot} {r['title'][:70]}</span>"
                 f"<span class='recent-meta'>"
                 f"<span class='status-pill {status}'>{label}</span>"
                 f"<span class='recent-time'>{rel}</span>"
