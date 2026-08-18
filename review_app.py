@@ -469,7 +469,9 @@ def _render_image_gallery(arxiv_id: str) -> None:
 # ---------------------------------------------------------------- 탭 ①: 검색·요약
 
 
-async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_box) -> list[str]:
+async def _run_search_and_summarize(
+    mode: str, value: str, top_n: int, status_box, progress_slot=None
+) -> list[str]:
     if mode == "id":
         targets = [t.strip() for t in value.replace(",", " ").split() if t.strip()]
     elif mode == "title":
@@ -511,8 +513,11 @@ async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_bo
         return []
 
     done = []
+    total = len(targets)
     async with httpx.AsyncClient() as client:
-        for arxiv_id in targets:
+        for i, arxiv_id in enumerate(targets, start=1):
+            if progress_slot is not None:
+                _render_sidebar_progress(progress_slot, i - 1, total, done=False)
             status_box.write(f"③ [{arxiv_id}] 원문 수집 중...")
             fetch_result = json.loads(
                 await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id))
@@ -526,7 +531,11 @@ async def _run_search_and_summarize(mode: str, value: str, top_n: int, status_bo
             )
             if await _summarize_target(arxiv_id, client, status_box):
                 done.append(arxiv_id)
+            if progress_slot is not None:
+                _render_sidebar_progress(progress_slot, i, total, done=False)
 
+    if progress_slot is not None:
+        _render_sidebar_progress(progress_slot, len(done), total, done=True)
     return done
 
 
@@ -639,7 +648,7 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     return [arxiv_id] if ok else []
 
 
-def render_search_tab():
+def render_search_tab(progress_slot=None):
     st.subheader("논문 검색 및 요약본 생성")
     # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
     # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
@@ -753,7 +762,9 @@ def render_search_tab():
             elif mode == "oa":
                 done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
             else:
-                done = run_async(_run_search_and_summarize(mode, value, top_n, status_box))
+                done = run_async(
+                    _run_search_and_summarize(mode, value, top_n, status_box, progress_slot)
+                )
             if done:
                 status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
                 card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
@@ -768,7 +779,13 @@ def render_search_tab():
     # 선택지 각각이 언제 쓰는 건지 짧게 설명하는 정적 텍스트다.
     col_recent, col_help = st.columns(2)
 
-    recent_card = col_recent.container(border=True)
+    # 최근 활동(항목 최대 6개, 2줄씩)이 입력 방식 안내(항목 6개, 1줄씩)보다
+    # 원래 자연스럽게 더 길어서 카드 높이가 서로 달랐다("하나는 크고
+    # 하나는 작고 이상하다" 지적, 2026-08-14) — st.container가 지원하는
+    # height=로 두 카드 높이를 고정값으로 맞춘다(내용이 넘치면 카드
+    # 안에서만 스크롤, 카드 자체 높이는 항상 동일).
+    _CARD_HEIGHT = 300
+    recent_card = col_recent.container(border=True, height=_CARD_HEIGHT)
     recent_card.markdown("**🕓 최근 활동**")
     recent_rows = _fetch_review_rows(True)[:6]
     if not recent_rows:
@@ -787,7 +804,7 @@ def render_search_tab():
                 unsafe_allow_html=True,
             )
 
-    help_card = col_help.container(border=True)
+    help_card = col_help.container(border=True, height=_CARD_HEIGHT)
     help_card.markdown("**ℹ️ 입력 방식 안내**")
     help_card.caption("**키워드 검색** — arXiv·Semantic Scholar에서 새로 찾음 (영문 권장)")
     help_card.caption("**저장된 논문 재검색** — 이미 모아둔 논문에서 한글로 다시 찾음")
@@ -1151,6 +1168,24 @@ def render_review_tab():
                     st.rerun()
 
 
+# 사이드바 "진행 중" 표시(2026-08-14 요청) — 검색·요약 배치가 실제로
+# 도는 동안만 나타난다. Streamlit은 한 번의 상호작용을 한 번의 스크립트
+# 실행으로 처리하고 그 안에서 화면을 순서대로 그리기 때문에, 나중에
+# 실행되는 render_search_tab() 안의 루프가 이미 그려진 사이드바 영역을
+# 다시 갱신하려면 그 자리를 가리키는 st.empty() 플레이스홀더가 필요하다
+# — 그래서 sidebar 블록에서 만든 슬롯을 render_search_tab까지 그대로
+# 넘겨서 매 논문 처리마다 같은 자리를 덮어쓴다. 고정 숫자가 아니라
+# 실제 루프 진행 상황(i/total)을 그대로 반영한다.
+def _render_sidebar_progress(slot, current: int, total: int, done: bool) -> None:
+    with slot.container():
+        if done:
+            st.caption(f"✅ 완료 · {current}/{total}편 처리됨")
+            st.progress(1.0 if total else 0.0)
+        else:
+            st.caption(f"🔵 진행 중 · 요약 생성 중... {current}/{total}")
+            st.progress(current / total if total else 0.0)
+
+
 # ---------------------------------------------------------------- 메인
 
 
@@ -1274,30 +1309,39 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    # 처음엔 둘 다 하늘색 채움(type="primary")으로 상시 표시했는데, "상시
-    # 말고 커서 올렸을 때만 더 연한 하늘색으로"라는 지적(2026-08-12)을
-    # 받아 기본은 무채색(secondary, type 생략)으로 바꾸고 hover 배경색만
-    # CSS(.st-key-nav_* :hover)로 준다. 활성/비활성 구분은 여전히 안 함 —
-    # 이건 원래부터 포기한 부분(사용자 요청, 2026-08-12 오전). 아이콘은
-    # st.button이 커스텀 이미지를 못 받아서(emoji/Material만 지원) CSS
-    # background-image로 주입한다(버튼 고유 클래스 .st-key-nav_* — 실측으로
-    # 실제 DOM에서 확인한 훅).
-    if st.button("검색·요약 생성", key="nav_search", use_container_width=True):
+    # hover는 "상시 말고 커서 올렸을 때만"이라는 지적(2026-08-12)대로 유지.
+    # 다만 "지금 보고 있는 페이지가 안 드러난다"는 후속 지적(2026-08-14)을
+    # 받아, 현재 페이지 버튼만 type="primary"(채움)로 켠다 — hover 규칙과
+    # 안 부딪힌다: primary는 자체 배경색이 있어서 secondary용 hover 규칙
+    # (.st-key-nav_*:hover)이 안 먹어도 이미 파란색이라 상관없다.
+    if st.button(
+        "검색·요약 생성", key="nav_search", use_container_width=True,
+        type="primary" if st.session_state.nav_page == "search" else "secondary",
+    ):
         st.session_state.nav_page = "search"
         st.rerun()
-    if st.button("요약 검토", key="nav_review", use_container_width=True):
+    if st.button(
+        "요약 검토", key="nav_review", use_container_width=True,
+        type="primary" if st.session_state.nav_page == "review" else "secondary",
+    ):
         st.session_state.nav_page = "review"
         st.rerun()
 
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     st.caption("현황")
     lists = _fetch_sidebar_lists()
-    _render_sidebar_category("저장만 됨 · 검토 대기", lists["pending"], "🟡")
+    _render_sidebar_category("저장된 논문", lists["pending"], "🟡")
     _render_sidebar_category("승인됨", lists["approved"], "🟢")
     _render_sidebar_category("재현 성공", lists["repro_ok"], "🟢")
     _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
 
+    # 검색·요약이 실제로 도는 동안만 나타나는 진행 표시(2026-08-14 요청)
+    # — 자리만 미리 잡아 두고, render_search_tab() 안의 루프가 이 슬롯을
+    # 실제 진행률로 채운다(고정 숫자 아님). 검토 탭에 있을 땐 채워질 일이
+    # 없어 빈 채로 남는다 — 그것도 정직한 상태(지금 진행 중인 게 없다는 뜻).
+    progress_slot = st.empty()
+
 if st.session_state.nav_page == "search":
-    render_search_tab()
+    render_search_tab(progress_slot)
 else:
     render_review_tab()
