@@ -181,11 +181,16 @@ def _inject_custom_style() -> None:
            stVerticalBlock에도 두루 걸려 있어 개별 선택이 안 되므로,
            카드 3개에 key=를 직접 주고 그 훅(.st-key-*)으로 골라 스타일링
            한다(사이드바 내비 버튼과 같은 패턴, 이미 검증된 방식). */
+        /* 테두리(파란)+그림자(파란)를 같이 쓰니 너무 튄다는 지적(2026-08-14)
+           — 테두리는 중립 회색으로 낮추고, 그림자도 파란 색조 대신 중립
+           슬레이트 톤으로 바꿔 "테두리는 선명하게, 그림자는 은은하게"로
+           역할을 나눴다. 안쪽 여백도 0.2rem은 텍스트가 왼쪽 끝에 거의
+           붙어 보일 만큼 좁았어서 넉넉하게 올렸다. */
         .st-key-search_card, .st-key-recent_card, .st-key-help_card {
             background-color: #FFFFFF; border-radius: 14px !important;
-            border: 1px solid var(--sky-border) !important;
-            box-shadow: 0 4px 16px rgba(76, 110, 245, 0.10), 0 1px 3px rgba(76, 110, 245, 0.06);
-            padding: 0.4rem 0.2rem;
+            border: 1px solid #E4E7EC !important;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+            padding: 1.25rem 1.5rem;
         }
 
         /* 알림 박스(성공/경고/오류/정보) — 모서리만 둥글게, 성공=초록/경고=노랑/오류=빨강
