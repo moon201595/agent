@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -283,6 +284,21 @@ def _inject_custom_style() -> None:
             padding-bottom: 0.6rem; border-bottom: 1px solid var(--sky-border);
             margin-bottom: 1rem;
         }
+
+        /* "최근 활동" 항목 — 참고 이미지(2026-08-14)처럼 제목(굵게) 아래에
+           상태·상대시간을 작은 보조줄로 둔다. */
+        .recent-item { margin-bottom: 0.55rem; line-height: 1.4; }
+        .recent-sub { font-size: 0.78rem; color: var(--text-muted); }
+
+        /* 상태 배지 — review_status 3종만 실제로 있어(작성/처리중 같은
+           중간 상태는 없음, 2026-08-14) 그 3개만 색을 준다. */
+        .status-pill {
+            display: inline-block; font-size: 0.75rem; font-weight: 600;
+            padding: 0.12rem 0.55rem; border-radius: 999px; white-space: nowrap;
+        }
+        .status-pill.pending { background: #FEF3C7; color: #92400E; }
+        .status-pill.approved { background: #DCFCE7; color: #166534; }
+        .status-pill.rejected { background: #FEE2E2; color: #991B1B; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -625,6 +641,16 @@ def render_search_tab():
     # 그리는 방식(card.text_input(...) 등)을 쓰면 기존 로직 구조는
     # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
     card = st.container(border=True)
+    # 참고 이미지(2026-08-14)의 카드 우측 장식 일러스트 — 순수 장식이라
+    # 클릭 동작은 없다. 문구는 카드가 실제로 하는 일(검색+요약 생성)을
+    # 그대로 요약한 한 줄.
+    head_l, head_r = card.columns([5, 1])
+    head_l.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
+    head_r.markdown(
+        f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:60px;'
+        'display:block;margin-left:auto;"/>',
+        unsafe_allow_html=True,
+    )
     mode_label = card.radio(
         "입력 방식",
         ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
@@ -741,10 +767,18 @@ def render_search_tab():
     if not recent_rows:
         recent_card.caption("아직 저장된 논문 없음")
     else:
+        # 참고 이미지(2026-08-14)처럼 제목·상태·상대시간을 두 줄로 —
+        # 절대 시각("2026-08-12 01:17")보다 "3분 전"이 한눈에 더 잘 들어와서
+        # _relative_time으로 바꿨다(고정 문구 아니라 실제 타임스탬프 계산).
         for r in recent_rows:
             dot = _STATUS_EMOJI.get(r["review_status"], "🟡")
-            ts = (r["created_at"] or "")[:16].replace("T", " ")
-            recent_card.caption(f"{dot} {r['title'][:36]} · {ts}")
+            label = _STATUS_LABEL.get(r["review_status"], "검토 대기")
+            rel = _relative_time(r["created_at"] or "")
+            recent_card.markdown(
+                f"<div class='recent-item'>{dot} <b>{r['title'][:36]}</b>"
+                f"<div class='recent-sub'>{label} · {rel}</div></div>",
+                unsafe_allow_html=True,
+            )
 
     help_card = col_help.container(border=True)
     help_card.markdown("**ℹ️ 입력 방식 안내**")
@@ -934,6 +968,35 @@ def _render_repro_status(arxiv_id: str) -> None:
 # 검토 탭 둘 다에서 쓴다 — 원래 render_review_tab 안에 지역 변수로만 있었는데
 # 검색 탭에도 같은 표시가 필요해져(2026-08-12) 모듈 상수로 뺐다.
 _STATUS_EMOJI = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
+# 참고 이미지(2026-08-14)의 "작성/처리중/검증완료/승인됨/분석중" 같은 세분화된
+# 상태 라벨은 실제 DB에 없는 중간 상태(예: "처리중")까지 지어내는 셈이라
+# 그대로 베끼지 않았다 — review_status가 실제로 갖는 값(pending/approved/
+# rejected) 그대로만 라벨을 붙인다. 저장된 시점엔 이미 요약·검증까지 끝난
+# 상태라 "검토 대기"가 정확한 표현이다.
+_STATUS_LABEL = {"pending": "검토 대기", "approved": "승인됨", "rejected": "반려됨", None: "검토 대기"}
+
+
+def _relative_time(iso_ts: str) -> str:
+    """'2026-08-14T05:12:33+00:00' 같은 UTC ISO 문자열을 'N분 전' 식으로
+    바꾼다. 참고 이미지의 "3분 전" 표시를 실제 타임스탬프로 계산한 것 —
+    화면에 고정 문구를 박아넣지 않는다."""
+    if not iso_ts:
+        return ""
+    try:
+        ts = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return iso_ts
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - ts
+    secs = delta.total_seconds()
+    if secs < 60:
+        return "방금 전"
+    if secs < 3600:
+        return f"{int(secs // 60)}분 전"
+    if secs < 86400:
+        return f"{int(secs // 3600)}시간 전"
+    return f"{int(secs // 86400)}일 전"
 
 
 # ---------------------------------------------------------------- 탭 ②: 요약 검토
@@ -950,6 +1013,28 @@ def render_review_tab():
 
     if not rows:
         st.info("저장된 요약이 없습니다.")
+        return
+
+    # 상단 검색·상태 필터(참고 이미지, 2026-08-14) — 장식이 아니라 실제로
+    # 목록을 걸러낸다. 상태 값은 _STATUS_LABEL에 실제로 있는 3개뿐(작성·
+    # 처리중 같은 중간 상태는 지어내지 않음).
+    col_q, col_status = st.columns([3, 1])
+    query = col_q.text_input(
+        "검색", placeholder="🔍 제목, arXiv ID로 검색", label_visibility="collapsed",
+    )
+    status_choice = col_status.selectbox(
+        "상태", ["전체 상태", "검토 대기", "승인됨", "반려됨"], label_visibility="collapsed",
+    )
+    if query:
+        q = query.strip().lower()
+        rows = [r for r in rows if q in r["title"].lower() or q in r["arxiv_id"].lower()]
+    if status_choice != "전체 상태":
+        label_to_status = {"검토 대기": "pending", "승인됨": "approved", "반려됨": "rejected"}
+        target = label_to_status[status_choice]
+        rows = [r for r in rows if (r["review_status"] or "pending") == target]
+
+    if not rows:
+        st.caption("검색·필터 조건에 맞는 요약이 없습니다.")
         return
 
     for row in rows:
@@ -1116,23 +1201,43 @@ def _render_sidebar_category(label: str, items: list[dict], dot: str) -> None:
             )
 
 
-# 사이드바 브랜드 아이콘 — 사용자가 참고 이미지로 준 "짙은 남색 바탕에 금색
-# 점들이 연결된 네트워크" 느낌을 재현한 인라인 SVG(2026-08-12). 이모지
-# 대신 데이터 URI로 직접 그려서 색상·구성을 세밀하게 맞췄다.
+# 사이드바 브랜드 아이콘 — 사용자가 새로 준 참고 이미지(파란 그라디언트
+# 배지 안에 arXiv 논문·돋보기 모티프)를 재현한 인라인 SVG(2026-08-14,
+# 이전의 남색+금색 네트워크 아이콘을 교체). 3D 렌더링을 그대로 옮길 순
+# 없어서(작은 사이드바 아이콘 크기에선 안 보임) "논문 + 돋보기"라는
+# 핵심 모티프만 단순한 2D 플랫 아이콘으로 재해석했다.
 _BRAND_ICON = (
     "data:image/svg+xml;base64,"
-    "PHN2ZyB3aWR0aD0iMzAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
-    "KPHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzBGMUUzRCIvPgo8bGluZSB4MT0iMTYiIHkxPS"
-    "IxNiIgeDI9IjciIHkyPSI5IiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8+CjxsaW5lIHgxPSIxN"
-    "iIgeTE9IjE2IiB4Mj0iMjUiIHkyPSI5IiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8+CjxsaW5l"
-    "IHgxPSIxNiIgeTE9IjE2IiB4Mj0iNyIgeTI9IjIzIiBzdHJva2U9IiNFOEIwNEIiIHN0cm9rZS13aWR0aD0iMC45IiBvcGFjaXR5PSIwLjc1Ii8"
-    "+CjxsaW5lIHgxPSIxNiIgeTE9IjE2IiB4Mj0iMjUiIHkyPSIyMyIgc3Ryb2tlPSIjRThCMDRCIiBzdHJva2Utd2lkdGg9IjAuOSIgb3BhY2l0eT"
-    "0iMC43NSIvPgo8bGluZSB4MT0iNyIgeTE9IjkiIHgyPSI3IiB5Mj0iMjMiIHN0cm9rZT0iI0U4QjA0QiIgc3Ryb2tlLXdpZHRoPSIwLjYiIG9wY"
-    "WNpdHk9IjAuNCIvPgo8bGluZSB4MT0iMjUiIHkxPSI5IiB4Mj0iMjUiIHkyPSIyMyIgc3Ryb2tlPSIjRThCMDRCIiBzdHJva2Utd2lkdGg9IjAu"
-    "NiIgb3BhY2l0eT0iMC40Ii8+CjxjaXJjbGUgY3g9IjE2IiBjeT0iMTYiIHI9IjMuMSIgZmlsbD0iI0Y0Qzg2OCIvPgo8Y2lyY2xlIGN4PSI3IiB"
-    "jeT0iOSIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaXJjbGUgY3g9IjI1IiBjeT0iOSIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaX"
-    "JjbGUgY3g9IjciIGN5PSIyMyIgcj0iMS45IiBmaWxsPSIjRThCMDRCIi8+CjxjaXJjbGUgY3g9IjI1IiBjeT0iMjMiIHI9IjEuOSIgZmlsbD0i"
-    "I0U4QjA0QiIvPgo8L3N2Zz4="
+    "PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
+    "KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMzIiIHkyPSIzMiIgZ3JhZGllbnRVbml0cz0idXNlclNwYW"
+    "NlT25Vc2UiPgo8c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM1QjhERUYiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMUUzQ"
+    "ThBIi8+CjwvbGluZWFyR3JhZGllbnQ+CjwvZGVmcz4KPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0idXJsKCNnKSIv"
+    "Pgo8cmVjdCB4PSI3IiB5PSI2IiB3aWR0aD0iMTIiIGhlaWdodD0iMTYiIHJ4PSIxLjUiIGZpbGw9IndoaXRlIiBmaWxsLW9wYWNpdHk9IjAuOTQ"
+    "iLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEwIiB4Mj0iMTYuNSIgeTI9IjEwIiBzdHJva2U9IiMxRTNBOEEiIHN0cm9rZS13aWR0aD0iMS4xIiBzdH"
+    "Jva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEzIiB4Mj0iMTYuNSIgeTI9IjEzIiBzdHJva2U9IiMxRTNBOEEiIHN0c"
+    "m9rZS13aWR0aD0iMS4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjE2IiB4Mj0iMTQiIHkyPSIxNiIgc3Ry"
+    "b2tlPSIjMUUzQThBIiBzdHJva2Utd2lkdGg9IjEuMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxjaXJjbGUgY3g9IjIwLjUiIGN5PSIxOS4"
+    "1IiByPSI0LjMiIGZpbGw9Im5vbmUiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIvPgo8bGluZSB4MT0iMjMuNiIgeTE9IjIyLjYiIH"
+    "gyPSIyNyIgeTI9IjI2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
+)
+
+# 검색 카드 우측 장식 일러스트 — 참고 이미지(2026-08-14)의 "문서+돋보기+
+# 추세선" 모티프를 순수 장식용 인라인 SVG로 재해석. 클릭 동작 없음.
+_SEARCH_ILLUSTRATION = (
+    "data:image/svg+xml;base64,"
+    "PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHZpZXdCb3g9IjAgMCA4MCA4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
+    "KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0iZzIiIHgxPSIwIiB5MT0iMCIgeDI9IjgwIiB5Mj0iODAiIGdyYWRpZW50VW5pdHM9InVzZXJTcG"
+    "FjZU9uVXNlIj4KPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjRUFGMkZGIi8+CjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI0Q2R"
+    "TRGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM+CjxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI3NiIgaGVpZ2h0PSI3NiIgcng9IjE4IiBm"
+    "aWxsPSJ1cmwoI2cyKSIvPgo8cmVjdCB4PSIxNiIgeT0iMTYiIHdpZHRoPSIzNCIgaGVpZ2h0PSI0NiIgcng9IjMiIGZpbGw9IndoaXRlIiBzdHJ"
+    "va2U9IiNCOUNDRUYiIHN0cm9rZS13aWR0aD0iMS4yIi8+CjxsaW5lIHgxPSIyMiIgeTE9IjI2IiB4Mj0iNDQiIHkyPSIyNiIgc3Ryb2tlPSIjOE"
+    "ZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxsaW5lIHgxPSIyMiIgeTE9IjMyIiB4Mj0iNDQiIHkyP"
+    "SIzMiIgc3Ryb2tlPSIjOEZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxsaW5lIHgxPSIyMiIgeTE9"
+    "IjM4IiB4Mj0iMzgiIHkyPSIzOCIgc3Ryb2tlPSIjOEZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjx"
+    "wb2x5bGluZSBwb2ludHM9IjIyLDUyIDI4LDQ2IDMzLDQ5IDQwLDQyIiBmaWxsPSJub25lIiBzdHJva2U9IiM1QjhERUYiIHN0cm9rZS13aWR0a"
+    "D0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPGNpcmNsZSBjeD0iNTQiIGN5PSI1MiIgcj0"
+    "iMTMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFFM0E4QSIgc3Ryb2tlLXdpZHRoPSIzIi8+CjxsaW5lIHgxPSI2MyIgeTE9IjYxIiB4Mj0iNzAiIH"
+    "kyPSI2OCIgc3Ryb2tlPSIjMUUzQThBIiBzdHJva2Utd2lkdGg9IjMuNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
 )
 
 if "nav_page" not in st.session_state:
