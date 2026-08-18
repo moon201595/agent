@@ -62,13 +62,30 @@ def _inject_custom_style() -> None:
             --text-muted: #64748B;
         }
 
-        html, body, [class*="css"] {
+        /* [class*="css"]로 전체 폰트를 지정했었는데, 실측해보니(2026-08-14)
+           Streamlit 1.60의 실제 클래스명은 st-emotion-cache-XXXX라 "css"라는
+           부분 문자열 자체가 없어서 이 규칙이 단 한 곳에도 안 먹고 있었다
+           (computed font-family가 Pretendard가 아니라 Streamlit 기본값
+           "Source Sans"로 나오는 것 확인) — "글씨체가 이상하다"는 지적이
+           실제 버그였다. 더 넓은 실제 루트 컨테이너에 !important로 걸어
+           Streamlit 자체 규칙을 확실히 이긴다.
+           *를 그대로 걸었더니 [data-testid="stIconMaterial"](화살표 등
+           아이콘을 "keyboard_arrow_right" 같은 리터럴 글자를 전용 아이콘
+           폰트로 그려서 만드는 요소)까지 Pretendard로 강제돼 아이콘이
+           그 글자 그대로 깨져 보이는 회귀가 실제로 났다(사이드바 화살표
+           확인) — 아이콘 폰트 요소는 :not()으로 제외한다. */
+        html, body,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] *:not([data-testid="stIconMaterial"]) {
             font-family: 'PretendardVariable', -apple-system, BlinkMacSystemFont,
-                "Segoe UI", Roboto, sans-serif;
+                "Segoe UI", Roboto, sans-serif !important;
         }
 
-        /* 기본 레이아웃 여백 — Streamlit 기본값은 위쪽이 휑하게 남는다 */
-        .block-container { padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1100px; }
+        /* 기본 레이아웃 여백 — Streamlit 기본값은 위쪽이 휑하게 남는다.
+           max-width 1100px 때문에 넓은 화면에서 오른쪽 여백이 크게
+           남았다("이미지처럼 꽉 채울 수 있잖아" 지적, 2026-08-14) —
+           참고 이미지처럼 폭을 거의 다 쓰도록 넉넉하게 올렸다. */
+        .block-container { padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1600px; }
 
         /* 제목 영역 */
         h1 { font-weight: 700; color: var(--text-main); letter-spacing: -0.01em; }
@@ -156,14 +173,18 @@ def _inject_custom_style() -> None:
             gap: 0.4rem 1.2rem;
         }
 
-        /* 검색 폼(입력 방식·검색어 등)을 옅은 카드로 감싸 리스트 카드와
-           같은 "표면" 언어를 준다. render_search_tab()의 st.container(
-           border=True)가 만드는 래퍼를 그대로 스타일링 — Python 쪽 구조는
-           안 바꾸고 여기서 시각적으로만 처리. */
-        [data-testid="stVerticalBlockBorderWrapper"] {
+        /* 검색 폼·최근 활동·입력 방식 안내 카드에 입체감(그림자)을 준다.
+           예전엔 [data-testid="stVerticalBlockBorderWrapper"]를 썼는데
+           실측해보니(2026-08-14) Streamlit 1.60에는 이 testid 자체가
+           없다 — st.container(border=True)가 지금은 그냥 stVerticalBlock
+           에 인라인 테두리만 준다. 이 testid는 카드가 아닌 다른 모든
+           stVerticalBlock에도 두루 걸려 있어 개별 선택이 안 되므로,
+           카드 3개에 key=를 직접 주고 그 훅(.st-key-*)으로 골라 스타일링
+           한다(사이드바 내비 버튼과 같은 패턴, 이미 검증된 방식). */
+        .st-key-search_card, .st-key-recent_card, .st-key-help_card {
             background-color: #FFFFFF; border-radius: 14px !important;
             border: 1px solid var(--sky-border) !important;
-            box-shadow: 0 1px 4px rgba(14, 165, 233, 0.08);
+            box-shadow: 0 4px 16px rgba(76, 110, 245, 0.10), 0 1px 3px rgba(76, 110, 245, 0.06);
             padding: 0.4rem 0.2rem;
         }
 
@@ -283,18 +304,24 @@ def _inject_custom_style() -> None:
             overflow-wrap: break-word;
         }
 
-        /* 본문 상단 헤더 영역 — subheader를 옅은 하늘색 배경 띠로 감싸서
-           참고 이미지의 상단 바처럼 "여기가 페이지 제목 영역"임을 표시 */
-        /* st.subheader()는 h3로 렌더링된다(실측 확인, h2 아님) — 페이지
-           최상단의 subheader에만 밑줄을 줘 "여기가 헤더"임을 표시한다. */
+        /* 제목 아래 밑줄 — "이미지처럼 선을 없애고 그 자리에 회색 설명
+           문구를 두자"는 요청(2026-08-14)으로 뺐다. 지금은 제목 바로
+           아래에 st.caption()으로 부제를 두므로 그 여백만으로 충분히
+           구분된다. */
         [data-testid="stAppViewContainer"] .block-container > div:first-child h3:first-of-type {
-            padding-bottom: 0.6rem; border-bottom: 1px solid var(--sky-border);
-            margin-bottom: 1rem;
+            margin-bottom: 0.3rem;
         }
 
-        /* "최근 활동" 항목 — 참고 이미지(2026-08-14)처럼 제목(굵게) 아래에
-           상태·상대시간을 작은 보조줄로 둔다. */
-        .recent-item { margin-bottom: 0.55rem; line-height: 1.4; }
+        /* "최근 활동" 항목 — 처음엔 제목 아래에 상태·시간을 같이 뒀는데,
+           참고 이미지는 제목과 상대시간이 한 줄(제목 왼쪽, 시간 오른쪽)
+           이고 상태만 그 아래 별도 줄이다("칸을 늘리면 제목 옆에 시간도
+           쓸 수 있다" 요청, 2026-08-14) — 폭을 넓힌 김에 그 배치로 맞춘다. */
+        .recent-item { margin-bottom: 0.6rem; line-height: 1.4; }
+        .recent-title-row {
+            display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem;
+        }
+        .recent-title-row b { flex: 1; min-width: 0; }
+        .recent-time { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
         .recent-sub { font-size: 0.78rem; color: var(--text-muted); }
 
         /* 상태 배지 — review_status 3종만 실제로 있어(작성/처리중 같은
@@ -650,18 +677,23 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
 
 def render_search_tab(progress_slot=None):
     st.subheader("논문 검색 및 요약본 생성")
+    # 회색 부제("키워드로 논문을 검색하고...")가 원래 카드 안 맨 위에
+    # 있었는데, 참고 이미지는 이 문구가 카드 밖 제목 바로 아래에 있다
+    # ("맨 위에 있던 회색 텍스트를 제목 아래로 옮기는 것" 요청,
+    # 2026-08-14) — 그 위치로 옮겼다.
+    st.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
     # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
     # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
     # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수
     # 위험이 크다 — 대신 container 객체를 만들어 그 메서드로 위젯을
     # 그리는 방식(card.text_input(...) 등)을 쓰면 기존 로직 구조는
     # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
-    card = st.container(border=True)
+    # key="search_card"는 CSS에서 이 카드에만 그림자를 주기 위한 훅.
+    card = st.container(border=True, key="search_card")
     # 참고 이미지(2026-08-14)의 카드 우측 장식 일러스트 — 순수 장식이라
-    # 클릭 동작은 없다. 문구는 카드가 실제로 하는 일(검색+요약 생성)을
-    # 그대로 요약한 한 줄.
-    head_l, head_r = card.columns([5, 1])
-    head_l.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
+    # 클릭 동작은 없다. 왼쪽 칸은 비워 둬 일러스트가 들어갈 위쪽 여백만
+    # 확보한다(부제는 위로 옮겼으므로 여기 텍스트는 없음).
+    _head_l, head_r = card.columns([5, 1])
     head_r.markdown(
         f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:60px;'
         'display:block;margin-left:auto;"/>',
@@ -785,26 +817,32 @@ def render_search_tab(progress_slot=None):
     # height=로 두 카드 높이를 고정값으로 맞춘다(내용이 넘치면 카드
     # 안에서만 스크롤, 카드 자체 높이는 항상 동일).
     _CARD_HEIGHT = 300
-    recent_card = col_recent.container(border=True, height=_CARD_HEIGHT)
+    recent_card = col_recent.container(border=True, height=_CARD_HEIGHT, key="recent_card")
     recent_card.markdown("**🕓 최근 활동**")
     recent_rows = _fetch_review_rows(True)[:6]
     if not recent_rows:
         recent_card.caption("아직 저장된 논문 없음")
     else:
-        # 참고 이미지(2026-08-14)처럼 제목·상태·상대시간을 두 줄로 —
         # 절대 시각("2026-08-12 01:17")보다 "3분 전"이 한눈에 더 잘 들어와서
         # _relative_time으로 바꿨다(고정 문구 아니라 실제 타임스탬프 계산).
+        # 처음엔 제목을 36자로 잘랐는데, 폭을 넓히면서("여백 채우기" 요청,
+        # 2026-08-14) 카드도 넓어져 그만큼 자를 필요가 줄었다 — 70자로
+        # 늘려 대부분의 논문 제목이 안 잘리게 했다(완전히 없애지 않은 건
+        # 극단적으로 긴 제목이 한 줄을 넘겨 레이아웃을 깨는 걸 막기 위한
+        # 안전판). 제목·상대시간을 같은 줄에, 상태는 그 아래 줄에 둔다.
         for r in recent_rows:
             dot = _STATUS_EMOJI.get(r["review_status"], "🟡")
             label = _STATUS_LABEL.get(r["review_status"], "검토 대기")
             rel = _relative_time(r["created_at"] or "")
             recent_card.markdown(
-                f"<div class='recent-item'>{dot} <b>{r['title'][:36]}</b>"
-                f"<div class='recent-sub'>{label} · {rel}</div></div>",
+                f"<div class='recent-item'>"
+                f"<div class='recent-title-row'>{dot} <b>{r['title'][:70]}</b>"
+                f"<span class='recent-time'>{rel}</span></div>"
+                f"<div class='recent-sub'>{label}</div></div>",
                 unsafe_allow_html=True,
             )
 
-    help_card = col_help.container(border=True, height=_CARD_HEIGHT)
+    help_card = col_help.container(border=True, height=_CARD_HEIGHT, key="help_card")
     help_card.markdown("**ℹ️ 입력 방식 안내**")
     help_card.caption("**키워드 검색** — arXiv·Semantic Scholar에서 새로 찾음 (영문 권장)")
     help_card.caption("**저장된 논문 재검색** — 이미 모아둔 논문에서 한글로 다시 찾음")
