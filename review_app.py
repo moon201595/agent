@@ -84,8 +84,17 @@ def _inject_custom_style() -> None:
         /* 기본 레이아웃 여백 — Streamlit 기본값은 위쪽이 휑하게 남는다.
            max-width 1100px 때문에 넓은 화면에서 오른쪽 여백이 크게
            남았다("이미지처럼 꽉 채울 수 있잖아" 지적, 2026-08-14) —
-           참고 이미지처럼 폭을 거의 다 쓰도록 넉넉하게 올렸다. */
-        .block-container { padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1600px; }
+           참고 이미지처럼 폭을 거의 다 쓰도록 넉넉하게 올렸다. 1600px로
+           고정했더니 1920px보다 넓은 모니터(2K/울트라와이드 등)에서는
+           여전히 오른쪽에 빈 여백이 남는다는 지적(2026-08-14 두 번째) —
+           고정 상한을 없애고 사이드바를 뺀 나머지 폭을 그대로 쓰게
+           바꿨다. 좌우에는 카드가 화면 끝에 바로 붙지 않도록 최소한의
+           여백만 padding으로 남긴다. */
+        .block-container {
+            padding-top: 2.5rem; padding-bottom: 3rem;
+            padding-left: 2rem; padding-right: 2rem;
+            max-width: 100%;
+        }
 
         /* 제목 영역 */
         h1 { font-weight: 700; color: var(--text-main); letter-spacing: -0.01em; }
@@ -320,14 +329,21 @@ def _inject_custom_style() -> None:
         /* "최근 활동" 항목 — 처음엔 제목 아래에 상태·시간을 같이 뒀는데,
            참고 이미지는 제목과 상대시간이 한 줄(제목 왼쪽, 시간 오른쪽)
            이고 상태만 그 아래 별도 줄이다("칸을 늘리면 제목 옆에 시간도
-           쓸 수 있다" 요청, 2026-08-14) — 폭을 넓힌 김에 그 배치로 맞춘다. */
+           쓸 수 있다" 요청, 2026-08-14) — 폭을 넓힌 김에 그 배치로 맞췄다.
+           이후 폭을 더 넓혔더니 상태만 있는 둘째 줄에 빈 공간이 남는 게
+           눈에 띄어("상태를 상대 시간 옆으로 옮기자" 요청, 2026-08-14
+           세 번째) 상태·시간을 한 그룹으로 묶어 제목과 같은 줄 오른쪽에
+           둔다 — 항목당 한 줄로 줄어든다. 제목이 길면 이 한 줄 안에서
+           말줄임(ellipsis)으로 잘리고, 상태·시간 그룹은 줄어들지 않는다. */
         .recent-item { margin-bottom: 0.6rem; line-height: 1.4; }
         .recent-title-row {
-            display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem;
+            display: flex; justify-content: space-between; align-items: center; gap: 0.6rem;
         }
-        .recent-title-row b { flex: 1; min-width: 0; }
+        .recent-title-row .recent-title {
+            flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .recent-meta { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
         .recent-time { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
-        .recent-sub { font-size: 0.78rem; color: var(--text-muted); }
 
         /* 상태 배지 — review_status 3종만 실제로 있어(작성/처리중 같은
            중간 상태는 없음, 2026-08-14) 그 3개만 색을 준다. */
@@ -695,20 +711,22 @@ def render_search_tab(progress_slot=None):
     # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
     # key="search_card"는 CSS에서 이 카드에만 그림자를 주기 위한 훅.
     card = st.container(border=True, key="search_card")
-    # 참고 이미지(2026-08-14)의 카드 우측 장식 일러스트 — 순수 장식이라
-    # 클릭 동작은 없다. 왼쪽 칸은 비워 둬 일러스트가 들어갈 위쪽 여백만
-    # 확보한다(부제는 위로 옮겼으므로 여기 텍스트는 없음).
-    _head_l, head_r = card.columns([5, 1])
-    head_r.markdown(
-        f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:60px;'
-        'display:block;margin-left:auto;"/>',
-        unsafe_allow_html=True,
-    )
-    mode_label = card.radio(
+    # 참고 이미지(2026-08-14)의 장식 일러스트 — 순수 장식이라 클릭 동작은
+    # 없다. 처음엔 카드 맨 위에 이 그림만 있는 별도 줄로 뒀는데, 그 줄에는
+    # 그림 하나뿐이라 위쪽에 여백만 덩그러니 남았다("일러스트만 맨 위에
+    # 덩그러니 있어서 여백이 심하다" 지적, 2026-08-14 세 번째) — 빈 줄을
+    # 없애고 "입력 방식" 라디오 행 오른쪽에 같이 배치한다.
+    radio_col, illus_col = card.columns([7, 1])
+    mode_label = radio_col.radio(
         "입력 방식",
         ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
          "PDF 업로드", "DOI/URL (오픈액세스)"],
         horizontal=True,
+    )
+    illus_col.markdown(
+        f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:52px;'
+        'display:block;margin-left:auto;margin-top:1.6rem;"/>',
+        unsafe_allow_html=True,
     )
     mode = {
         "키워드 검색": "keyword", "저장된 논문 재검색 (한글 가능)": "hybrid",
@@ -740,7 +758,11 @@ def render_search_tab(progress_slot=None):
         )
         hybrid_query = card.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
         hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5)
-        if card.button("시작", type="primary", disabled=not hybrid_query):
+        # "시작" 버튼이 왼쪽에 붙어 있던 걸 오른쪽 정렬로 바꿔 달라는
+        # 요청(2026-08-14 세 번째) — 넓은 스페이서 칸 + 좁은 버튼 칸으로
+        # 나눠 버튼만 오른쪽 끝에 오게 한다.
+        _hybrid_btn_spacer, hybrid_btn_col = card.columns([5, 1])
+        if hybrid_btn_col.button("시작", type="primary", disabled=not hybrid_query):
             result = json.loads(
                 run_async(
                     server.hybrid_search_local_papers(
@@ -790,7 +812,9 @@ def render_search_tab(progress_slot=None):
             # 이어받는다.
             pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)")
 
-        if card.button("시작", type="primary", disabled=not value):
+        # 오른쪽 정렬 — 위 hybrid 분기와 같은 스페이서+버튼 칸 나누기.
+        _start_btn_spacer, start_btn_col = card.columns([5, 1])
+        if start_btn_col.button("시작", type="primary", disabled=not value):
             status_box = card.status("진행 중...", expanded=True)
             if mode == "pdf":
                 done = run_async(
@@ -834,16 +858,21 @@ def render_search_tab(progress_slot=None):
         # 2026-08-14) 카드도 넓어져 그만큼 자를 필요가 줄었다 — 70자로
         # 늘려 대부분의 논문 제목이 안 잘리게 했다(완전히 없애지 않은 건
         # 극단적으로 긴 제목이 한 줄을 넘겨 레이아웃을 깨는 걸 막기 위한
-        # 안전판). 제목·상대시간을 같은 줄에, 상태는 그 아래 줄에 둔다.
+        # 안전판). 제목 한 줄, 오른쪽에 상태 배지·상대시간을 묶어 둔다
+        # ("상태를 상대 시간 옆으로" 요청, 2026-08-14 세 번째).
         for r in recent_rows:
-            dot = _STATUS_EMOJI.get(r["review_status"], "🟡")
-            label = _STATUS_LABEL.get(r["review_status"], "검토 대기")
+            status = r["review_status"] or "pending"
+            dot = _STATUS_EMOJI.get(status, "🟡")
+            label = _STATUS_LABEL.get(status, "검토 대기")
             rel = _relative_time(r["created_at"] or "")
             recent_card.markdown(
                 f"<div class='recent-item'>"
-                f"<div class='recent-title-row'>{dot} <b>{r['title'][:70]}</b>"
-                f"<span class='recent-time'>{rel}</span></div>"
-                f"<div class='recent-sub'>{label}</div></div>",
+                f"<div class='recent-title-row'>"
+                f"<span class='recent-title'>{dot} <b>{r['title'][:70]}</b></span>"
+                f"<span class='recent-meta'>"
+                f"<span class='status-pill {status}'>{label}</span>"
+                f"<span class='recent-time'>{rel}</span>"
+                f"</span></div></div>",
                 unsafe_allow_html=True,
             )
 
@@ -1108,7 +1137,16 @@ def render_review_tab():
         arxiv_id = row["arxiv_id"]
         status = row["review_status"] or "pending"
         emoji = _STATUS_EMOJI.get(status, "🟡")
-        header = f"{emoji} {row['title']} ({arxiv_id}) — {row['numbers_matched']}/{row['numbers_total']}"
+        # "최근 활동"처럼 여기도 제목 옆에 상태·상대시간을 보여 달라는
+        # 요청(2026-08-14 세 번째) — 단, st.expander의 label은 순수
+        # 텍스트만 받고 HTML을 못 넣어(색 있는 배지 불가) 그 카드에서 쓴
+        # status-pill 대신 이모지 + 일반 텍스트로 같은 정보를 붙인다.
+        label = _STATUS_LABEL.get(status, "검토 대기")
+        rel = _relative_time(row["created_at"] or "")
+        header = (
+            f"{emoji} {row['title']} ({arxiv_id}) — "
+            f"{row['numbers_matched']}/{row['numbers_total']} · {label} · {rel}"
+        )
         exp_key = f"exp_{arxiv_id}"
 
         # st.expander는 접혀 있어도 with 블록 안 파이썬 코드가 매 재실행마다
