@@ -193,21 +193,36 @@ _TRANSLATE_BACKOFF = 2.0  # 재시도 사이 대기(초)
 
 
 async def translate_ko(client: httpx.AsyncClient, text: str) -> str:
+    """Gemini 우선(짧은 503 재시도), 막히면 Groq로 폴백한다 — ④ 요약 생성과
+    같은 엔진 우선순위 패턴(2026-08-19). Gemini·Groq는 완전히 다른 계정·
+    다른 한도라 하나가 분당 한도(429)에 걸려도 다른 하나는 대개 멀쩡하다.
+    둘 다 막히면 억지로 세 번째 엔진을 찾지 않고 그냥 실패를 올린다 —
+    번역은 참고용 표시일 뿐이라 review_app.py가 "번역 실패"로 정직하게
+    보여주는 것으로 충분하다."""
     prompt = (
         "다음 영어 문장을 자연스러운 한국어로 번역하라. 숫자·단위·고유명사는 "
         "정확히 그대로 옮기고, 부연 설명 없이 번역문만 출력하라.\n\n"
         f"{text}"
     )
-    last_exc: Exception | None = None
+    gemini_exc: Exception | None = None
     for attempt in range(_TRANSLATE_RETRIES):
         try:
             return await _post_gemini(client, prompt)
         except httpx.HTTPStatusError as e:
+            gemini_exc = e
             if e.response.status_code != 503 or attempt >= _TRANSLATE_RETRIES - 1:
-                raise
-            last_exc = e
+                break  # 429(분당 한도)거나 503 재시도 소진 — Gemini는 포기
             await asyncio.sleep(_TRANSLATE_BACKOFF)
-    raise last_exc  # pragma: no cover — 루프가 항상 return 또는 raise 로 빠짐
+        except Exception as e:  # noqa: BLE001 — 네트워크 오류 등도 재시도 없이 바로 폴백
+            gemini_exc = e
+            break
+
+    try:
+        return await _post_groq(client, prompt)
+    except Exception:  # noqa: BLE001
+        # 둘 다 실패 — Gemini 쪽 에러를 올린다. review_app.py가 429/503을
+        # 구분해 메시지를 다르게 보여주는 기준이 Gemini 응답이기 때문.
+        raise gemini_exc  # noqa: B904
 
 
 _ADDENDUM_NO_CONTENT = "추가로 뽑을 새 내용 없음"
@@ -252,7 +267,13 @@ async def _post_groq(client: httpx.AsyncClient, prompt: str) -> str:
     if not key:
         raise RuntimeError("GROQ_API_KEY 없음")
     body = {
-        "model": "llama-3.3-70b-versatile",
+        # llama-3.3-70b-versatile은 Groq 쪽에서 완전히 퇴역했다(2026-08-19
+        # 실측: /v1/models 목록에 없고 호출하면 404 "model_not_found") —
+        # 즉 Gemini가 막히는 순간 이 폴백 경로 자체가 조용히 죽어있었다.
+        # 같은 급(크고 범용)인 openai/gpt-oss-120b로 교체 — 실제 한국어
+        # 번역 출력을 확인했다. 더 작은 openai/gpt-oss-20b는 같은 프롬프트로
+        # 빈 응답(200인데 content 없음)이 나와 후보에서 뺐다.
+        "model": "openai/gpt-oss-120b",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 2000,
         "temperature": 0.3,
