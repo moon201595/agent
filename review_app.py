@@ -1042,8 +1042,24 @@ def render_review_tab():
         status = row["review_status"] or "pending"
         emoji = _STATUS_EMOJI.get(status, "🟡")
         header = f"{emoji} {row['title']} ({arxiv_id}) — {row['numbers_matched']}/{row['numbers_total']}"
+        exp_key = f"exp_{arxiv_id}"
 
-        with st.expander(header):
+        # st.expander는 접혀 있어도 with 블록 안 파이썬 코드가 매 재실행마다
+        # 그대로 실행된다(화면에 안 보일 뿐) — 그래서 47편 전부에 대해
+        # _verify_detail·재현 상태 조회·마크다운 정리가 매번 다 돌아 "요약
+        # 검토" 탭 전환이 눈에 띄게 느렸다(2026-08-14 지적: "저 아래 것들이
+        # 사라지는데 오래걸리네"). key=를 주면 펼침 상태가 session_state에
+        # 그대로 들어오므로, 접힌 항목은 무거운 계산 자체를 건너뛴다.
+        # on_change 기본값('ignore')이면 펼치기·접기가 순수 클라이언트단
+        # 동작이라 재실행이 안 일어나서, session_state[exp_key]가 이번 클릭을
+        # 못 따라잡고 한 박자 늦게 반영됐다(실측: 펼쳤는데 "펼치면 표시됩니다"
+        # 안내문만 보임) — 'rerun'으로 줘서 펼침 상태가 바뀔 때마다 즉시
+        # 재실행되게 한다.
+        with st.expander(header, key=exp_key, on_change="rerun"):
+            if not st.session_state.get(exp_key, False):
+                st.caption("펼치면 세부 내용이 표시됩니다.")
+                continue
+
             summary_path = Path(row["path"])
             if not summary_path.exists():
                 st.error(f"요약 파일을 찾을 수 없음: {summary_path}")
