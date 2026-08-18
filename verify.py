@@ -136,6 +136,40 @@ def _cited_sentence_id(text: str, num_end: int, next_num_start: int | None) -> i
     return int(m.group(1))
 
 
+def _sentence_span(text: str, start: int, end: int) -> str:
+    """숫자가 속한 문장 전체를 반환한다(검토 화면용 문맥).
+
+    예전엔 숫자 앞뒤 고정 30자였는데, 그 폭이 하필 단어나 "[S0241]" 같은
+    인용 태그 중간에서 끊기는 경우가 실제로 있었다(2026-08-18, review_app.py
+    화면 보고 지적). 먼저 줄 경계로 좁힌다 — "라벨 : 내용" 한 줄짜리 불릿은
+    그 자체가 이미 문장 하나라 이걸로 충분하다. "결과" 절처럼 줄바꿈 없는
+    프로즈 한 문단에 문장·숫자가 여러 개 같이 있으면(실측: LF-YOLO 요약의
+    결과 절이 정확히 이 형태), ④가 원문에 [S번호]를 매길 때 쓰는 것과 같은
+    문장 분리기(sentence_grounding.segment_sentences)로 한 번 더 좁혀 숫자가
+    실제로 속한 문장만 남긴다."""
+    line_start = text.rfind("\n", 0, start)
+    line_start = 0 if line_start == -1 else line_start + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end == -1 else line_end
+    line = text[line_start:line_end].strip()
+
+    sentences = sentence_grounding.segment_sentences(line)
+    if len(sentences) <= 1:
+        return line
+
+    local_start = start - line_start
+    cursor = 0
+    for s in sentences:
+        idx = line.find(s, cursor)
+        if idx == -1:
+            idx = cursor
+        s_end = idx + len(s)
+        if idx <= local_start < s_end + 5:  # 문장 경계 인접 오차 흡수
+            return s
+        cursor = s_end
+    return line  # 못 찾으면 줄 전체로 폴백 — 항상 뭔가는 보여준다
+
+
 def _extract_numbers(text: str) -> list[tuple[str, str, str, int | None]]:
     """(원토큰, 정규화값, 문맥, 인용된 [S번호] 또는 None) 목록.
     한 자리 정수·출처 위치 표기는 제외."""
@@ -154,9 +188,7 @@ def _extract_numbers(text: str) -> list[tuple[str, str, str, int | None]]:
     for i, m in enumerate(candidates):
         token = m.group(1)
         norm = _normalize(token)
-        start = max(0, m.start() - 30)
-        end = min(len(text), m.end() + 30)
-        context = text[start:end].replace("\n", " ").strip()
+        context = _sentence_span(text, m.start(), m.end())
         next_start = candidates[i + 1].start() if i + 1 < len(candidates) else None
         sentence_id = _cited_sentence_id(text, m.end(), next_start)
         out.append((token, norm, context, sentence_id))
