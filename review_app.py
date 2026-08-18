@@ -46,12 +46,19 @@ def _inject_custom_style() -> None:
         <style>
         @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
 
+        /* 참고 이미지(2026-08-14)에 맞춰 하늘색(cyan) 톤 → 진한 인디고
+           블루 톤으로 색만 바꿨다("구조는 그대로 두고 색상이랑 느낌만"
+           요청) — 변수 이름은 --sky로 남겨뒀다(코드 전체에 var(--sky)가
+           널리 퍼져 있어 이름까지 바꾸면 손댈 곳이 훨씬 늘어나고 실수
+           위험만 커짐, 값만 바꿔도 색은 똑같이 다 바뀐다). 브랜드
+           아이콘(_BRAND_ICON)의 그라디언트(#5B8DEF→#1E3A8A)와 같은
+           계열로 맞춰 아이콘과 UI 전체 톤이 일치하게 했다. */
         :root {
-            --sky: #0EA5E9;
-            --sky-dark: #0284C7;
-            --sky-light: #EAF6FD;
-            --sky-border: #D3EAF7;
-            --text-main: #1E293B;
+            --sky: #4C6EF5;
+            --sky-dark: #3651D4;
+            --sky-light: #EEF1FF;
+            --sky-border: #D7DEFF;
+            --text-main: #1B2036;
             --text-muted: #64748B;
         }
 
