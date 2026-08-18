@@ -182,13 +182,32 @@ async def call_gemini(client: httpx.AsyncClient, chunk_text: str, template: str)
 # 나란히만 보여줘야 한다 — 번역이 조금이라도 부정확하면(특히 숫자·부정어)
 # "이 숫자가 원문 문맥에 정말 맞는지"를 사람이 잘못 판단할 위험이 있어서,
 # 번역을 원문 대신 판단 근거로 쓰면 안 된다(2026-08-18).
+#
+# 재시도 — 429가 아니라 503(Gemini 일시적 과부하)이 실제로 자주 났다
+# (2026-08-18, "다 번역실패로 나온다" 지적 받고 실측: 같은 요청 6회 중 4회
+# 503, 근데 몇 초 뒤 같은 요청이 성공하는 것도 확인 — 위 RATE_LIMIT_*는
+# 429 전용이라 503은 재시도 없이 바로 실패했었다). 사람이 화면에서 기다리는
+# 호출이라 429용 20·40초 백오프는 너무 길다 — 짧게 몇 번만 재시도한다.
+_TRANSLATE_RETRIES = 3
+_TRANSLATE_BACKOFF = 2.0  # 재시도 사이 대기(초)
+
+
 async def translate_ko(client: httpx.AsyncClient, text: str) -> str:
     prompt = (
         "다음 영어 문장을 자연스러운 한국어로 번역하라. 숫자·단위·고유명사는 "
         "정확히 그대로 옮기고, 부연 설명 없이 번역문만 출력하라.\n\n"
         f"{text}"
     )
-    return await _post_gemini(client, prompt)
+    last_exc: Exception | None = None
+    for attempt in range(_TRANSLATE_RETRIES):
+        try:
+            return await _post_gemini(client, prompt)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 503 or attempt >= _TRANSLATE_RETRIES - 1:
+                raise
+            last_exc = e
+            await asyncio.sleep(_TRANSLATE_BACKOFF)
+    raise last_exc  # pragma: no cover — 루프가 항상 return 또는 raise 로 빠짐
 
 
 _ADDENDUM_NO_CONTENT = "추가로 뽑을 새 내용 없음"

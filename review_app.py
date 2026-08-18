@@ -1249,7 +1249,18 @@ def render_review_tab():
                             try:
                                 translated = _translate_cached(c.cited_text)
                                 line += f"\n\n  🌐 번역(참고용): _{translated}_"
-                            except Exception:  # noqa: BLE001 — 번역 API 오류(일시적 503 등, 실제로 겪음)
+                            except httpx.HTTPStatusError as e:
+                                # 429(분당 20회 무료 한도 초과)와 503(일시 과부하)은
+                                # 원인이 다르다 — 429는 재시도해도 한동안 확실히
+                                # 또 막히므로(실측: "Please retry in 29s" 같은 구체적
+                                # 대기시간이 옴), "일시적 오류"로 뭉뚱그리지 않고
+                                # 정확히 알려준다(2026-08-18, 리뷰 화면에서 번역이
+                                # 계속 다 실패한다는 지적 받고 원인 확인).
+                                if e.response.status_code == 429:
+                                    line += "\n\n  🌐 번역 실패 — 무료 API 분당 요청 한도 초과, 1분 뒤 재시도"
+                                else:
+                                    line += "\n\n  🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)"
+                            except Exception:  # noqa: BLE001
                                 line += "\n\n  🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)"
                         st.markdown(line)
                     else:
