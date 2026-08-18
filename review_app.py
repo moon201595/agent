@@ -505,6 +505,23 @@ def _verify_detail(arxiv_id: str, summary_text: str) -> verify.VerificationRepor
     return verify.verify_numbers(summary_text, source)
 
 
+# 인용한 원문 문장(영어)을 참고용으로 한국어로 보여준다 — "번역 보기" 토글을
+# 켰을 때만 호출해서, 평소 화면 펼치기 속도(2026-08-18 이전에 이미 한 번
+# 느리다는 지적을 받아 lazy-load로 고친 부분)에 번역 API 왕복을 더하지 않는다.
+# st.cache_data는 같은 문장이면 세션이 바뀌어도 재호출 없이 캐시를 쓴다 —
+# 같은 논문을 여러 번 펼쳐 봐도 번역은 처음 한 번만 실제로 호출된다.
+# 예외를 여기서 삼키지 않는다 — st.cache_data는 예외가 난 호출은 캐싱하지
+# 않으므로, 실패(Gemini 일시적 503 등, 실제로 겪음)를 여기서 catch해 None을
+# 반환해버리면 그 "실패"가 캐시에 영구히 박제돼 나중에 API가 복구돼도 계속
+# 실패로 나온다. 실패 처리는 호출부(catch)에서만 한다.
+@st.cache_data(show_spinner=False)
+def _translate_cached(text: str) -> str:
+    async def _call():
+        async with httpx.AsyncClient() as client:
+            return await engine.translate_ko(client, text)
+    return run_async(_call())
+
+
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 
@@ -1211,15 +1228,30 @@ def render_review_tab():
                 st.success(f"수치 검증: {report.matched}/{report.total} 전부 일치 (문장 단위 확인 {report.grounded}건)")
             else:
                 st.warning(f"수치 검증: {report.matched}/{report.total} 일치 — 아래 불일치 항목 확인")
+                # 원문 인용문이 영어라 매번 언어를 오가며 대조해야 한다는 지적
+                # (2026-08-18) — 번역은 기본 꺼둔다(토글). 검증 근거는 항상
+                # 영어 원문이고 번역은 참고용일 뿐이라, 켰을 때도 원문과
+                # 나란히만 보여준다(번역으로 대체하지 않음).
+                show_translation = st.toggle(
+                    "🌐 인용 문장 번역 보기 (참고용, 원문과 함께 표시)",
+                    key=f"transtoggle_{arxiv_id}",
+                )
                 for c in report.unmatched:
                     if c.grounded:
                         # [S번호]로 인용한 문장까지 찾아봤지만 그 안에 없었다 — 지어냈거나
                         # 엉뚱한 문장을 인용했을 가능성. 실제로 조회한 문장을 보여준다.
                         cited = c.cited_text or "(인용한 문장 번호가 원문 범위 밖 — 지어낸 번호일 수 있음)"
-                        st.markdown(
+                        line = (
                             f"- **`{c.token}`** — 요약 문맥: _{c.context}_\n\n"
                             f"  🔎 인용한 [S{c.sentence_id:04d}] 문장(±1): _{cited}_"
                         )
+                        if show_translation and c.cited_text:
+                            try:
+                                translated = _translate_cached(c.cited_text)
+                                line += f"\n\n  🌐 번역(참고용): _{translated}_"
+                            except Exception:  # noqa: BLE001 — 번역 API 오류(일시적 503 등, 실제로 겪음)
+                                line += "\n\n  🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)"
+                        st.markdown(line)
                     else:
                         st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
 

@@ -175,6 +175,22 @@ async def call_gemini(client: httpx.AsyncClient, chunk_text: str, template: str)
     return await _post_gemini(client, build_prompt(chunk_text, template))
 
 
+# ⑥ 사람 판단 화면(review_app.py)에서 인용한 원문 문장(영어)을 참고용으로
+# 한국어로 보여주기 위한 번역 — ⑤ 검증(verify.py)에는 전혀 관여하지 않는다.
+# verify.py는 "LLM을 쓰지 않는 결정적 검증"이 core invariant라 이 함수를
+# 거기 넣지 않고 여기(순수 표시용 호출부)에 둔다. 번역문은 항상 원문 영어와
+# 나란히만 보여줘야 한다 — 번역이 조금이라도 부정확하면(특히 숫자·부정어)
+# "이 숫자가 원문 문맥에 정말 맞는지"를 사람이 잘못 판단할 위험이 있어서,
+# 번역을 원문 대신 판단 근거로 쓰면 안 된다(2026-08-18).
+async def translate_ko(client: httpx.AsyncClient, text: str) -> str:
+    prompt = (
+        "다음 영어 문장을 자연스러운 한국어로 번역하라. 숫자·단위·고유명사는 "
+        "정확히 그대로 옮기고, 부연 설명 없이 번역문만 출력하라.\n\n"
+        f"{text}"
+    )
+    return await _post_gemini(client, prompt)
+
+
 _ADDENDUM_NO_CONTENT = "추가로 뽑을 새 내용 없음"
 
 
