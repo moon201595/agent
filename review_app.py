@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 import streamlit as st
 
+import sentence_grounding
 import server
 import summarize_engine as engine
 import verify
@@ -1240,29 +1241,38 @@ def render_review_tab():
                     if c.grounded:
                         # [S번호]로 인용한 문장까지 찾아봤지만 그 안에 없었다 — 지어냈거나
                         # 엉뚱한 문장을 인용했을 가능성. 실제로 조회한 문장을 보여준다.
-                        cited = c.cited_text or "(인용한 문장 번호가 원문 범위 밖 — 지어낸 번호일 수 있음)"
-                        line = (
-                            f"- **`{c.token}`** — 요약 문맥: _{c.context}_\n\n"
-                            f"  🔎 인용한 [S{c.sentence_id:04d}] 문장(±1): _{cited}_"
-                        )
-                        if show_translation and c.cited_text:
-                            try:
-                                translated = _translate_cached(c.cited_text)
-                                line += f"\n\n  🌐 번역(참고용): _{translated}_"
-                            except httpx.HTTPStatusError as e:
-                                # 429(분당 20회 무료 한도 초과)와 503(일시 과부하)은
-                                # 원인이 다르다 — 429는 재시도해도 한동안 확실히
-                                # 또 막히므로(실측: "Please retry in 29s" 같은 구체적
-                                # 대기시간이 옴), "일시적 오류"로 뭉뚱그리지 않고
-                                # 정확히 알려준다(2026-08-18, 리뷰 화면에서 번역이
-                                # 계속 다 실패한다는 지적 받고 원인 확인).
-                                if e.response.status_code == 429:
-                                    line += "\n\n  🌐 번역 실패 — 무료 API 분당 요청 한도 초과, 1분 뒤 재시도"
-                                else:
-                                    line += "\n\n  🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)"
-                            except Exception:  # noqa: BLE001
-                                line += "\n\n  🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)"
-                        st.markdown(line)
+                        st.markdown(f"- **`{c.token}`** — 요약 문맥: _{c.context}_")
+                        if not c.cited_text:
+                            st.caption("(인용한 문장 번호가 원문 범위 밖 — 지어낸 번호일 수 있음)")
+                            continue
+                        st.caption(f"🔎 인용한 [S{c.sentence_id:04d}] 문장(±1):")
+                        # sentence_lookup(sentence_grounding.py)은 ±1 문장을 공백
+                        # 하나로 이어붙여 돌려준다 — verify.py 검증(숫자 대조)에는
+                        # 그걸로 충분하지만, 그 사이에 PDF 표가 뭉개져 끼어 있으면
+                        # (실측: Distilling 논문 Table 1이 "4 System Test Frame
+                        # Accuracy WER Baseline 58.9% ..." 식으로 문장 사이에 그대로
+                        # 끼어듦) 어디까지가 진짜 문장이고 어디가 표 잔해인지 안
+                        # 보여서 3문장이 한 덩어리로 안 읽힌다는 지적(2026-08-19)
+                        # — 같은 문장 분리기로 다시 나눠 문장별 줄로 보여준다.
+                        for sent in sentence_grounding.segment_sentences(c.cited_text):
+                            st.markdown(f"> {sent}")
+                            if show_translation:
+                                try:
+                                    translated = _translate_cached(sent)
+                                    st.markdown(f"> 🌐 _{translated}_")
+                                except httpx.HTTPStatusError as e:
+                                    # 429(분당 20회 무료 한도 초과)와 503(일시 과부하)은
+                                    # 원인이 다르다 — 429는 재시도해도 한동안 확실히
+                                    # 또 막히므로(실측: "Please retry in 29s" 같은 구체적
+                                    # 대기시간이 옴), "일시적 오류"로 뭉뚱그리지 않고
+                                    # 정확히 알려준다(2026-08-18, 리뷰 화면에서 번역이
+                                    # 계속 다 실패한다는 지적 받고 원인 확인).
+                                    if e.response.status_code == 429:
+                                        st.caption("🌐 번역 실패 — 무료 API 분당 요청 한도 초과, 1분 뒤 재시도")
+                                    else:
+                                        st.caption("🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)")
+                                except Exception:  # noqa: BLE001
+                                    st.caption("🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)")
                     else:
                         st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
 
