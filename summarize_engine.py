@@ -362,7 +362,7 @@ async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
 async def _summarize_chunked(
     client: httpx.AsyncClient, paper_text: str, template: str,
     call_single, call_addendum, chunk_size: int, max_chunks: int,
-    chunk_delay: float, label: str,
+    chunk_delay: float, label: str, on_progress=None,
 ) -> str:
     """첫 청크로 전체 템플릿을 채운 뒤, 남은 청크들로 "추가 결과·추가
     한계점"만 보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지
@@ -375,16 +375,28 @@ async def _summarize_chunked(
     문장이 청크 경계에서 반토막 나지 않고, 문장마다 전체 논문 기준의
     전역 [S번호]가 붙어 어느 청크에서 처리하든 인용 번호가 서로 안 겹친다
     (⑤ 검증기가 그 번호로 원문 문장을 다시 찾아 대조한다 — §8-9 참고).
+
+    on_progress(label, chunk_num, total_chunks): 선택적 콜백, 청크 하나를
+    시도하기 직전에 호출한다. 2026-08-19 실측: Groq 폴백은 청크 간격이
+    60초라 큰 논문(34.7만자짜리는 상한 32청크까지 참)은 한 편에 최대
+    31분까지 걸리는데, 그동안 batch_summarize.py의 progress 파일이
+    "이번 논문 done 카운트"만 갖고 있어 review_app.py 화면이 수십 분간
+    그대로 멈춰 보였다("10분째 이 상태" 지적). batch_summarize.py가 이
+    콜백으로 "지금 몇 번째 청크"를 progress 파일에 얹어 화면에 보여준다.
     """
     chunks, _sentences = sentence_grounding.build_tagged_chunks(paper_text, chunk_size, max_chunks)
     if not chunks:
         chunks = [""]
+    if on_progress:
+        on_progress(label, 1, len(chunks))
     summary = await _call_with_rate_limit_retry(
         lambda: call_single(client, chunks[0], template), label,
     )
     for chunk_num, chunk_text in enumerate(chunks[1:], start=2):
         if chunk_delay:
             await asyncio.sleep(chunk_delay)
+        if on_progress:
+            on_progress(label, chunk_num, len(chunks))
         try:
             addendum = await _call_with_rate_limit_retry(
                 lambda: call_addendum(client, chunk_text), f"{label}(청크{chunk_num})",
@@ -398,19 +410,25 @@ async def _summarize_chunked(
     return summary
 
 
-async def summarize(client: httpx.AsyncClient, paper_text: str, template: str) -> tuple[str, str]:
+async def summarize(
+    client: httpx.AsyncClient, paper_text: str, template: str, on_progress=None,
+) -> tuple[str, str]:
     """returns (summary_markdown, engine_name)
 
     Gemini·Groq 둘 다 청크로 전문을 읽는다(2026-08-06, "둘 다 되게 하자"
-    요청 반영) — 청크 크기·상한·간격만 다르다. Groq는 12,000 TPM 한도가
-    빠듯해서 청크 사이 간격을 60초로 크게 둔다 — 그만큼 느리다(최악의
-    경우 논문 1편에 30분 안팎). Gemini가 완전히 막혔을 때만 타는 경로라
-    감수할 만하다고 판단했다.
+    요청 반영) — 청크 크기·상한·간격만 다르다. Groq는 TPM 한도가 빠듯해서
+    청크 사이 간격을 60초로 크게 둔다 — 그만큼 느리다(최악의 경우 논문
+    1편에 30분 안팎). Gemini가 완전히 막혔을 때만 타는 경로라 감수할
+    만하다고 판단했다.
+
+    on_progress: 선택적 (engine_label, chunk_num, total_chunks) 콜백 —
+    _summarize_chunked 로 그대로 전달한다. 호출부(batch_summarize.py)가
+    이걸로 진행률 화면을 채운다.
     """
     try:
         summary = await _summarize_chunked(
             client, paper_text, template, call_gemini, call_gemini_addendum,
-            CHUNK_SIZE, MAX_CHUNKS, GEMINI_CHUNK_DELAY, "Gemini",
+            CHUNK_SIZE, MAX_CHUNKS, GEMINI_CHUNK_DELAY, "Gemini", on_progress,
         )
         return summary, "gemini"
     except Exception as e:  # noqa: BLE001
@@ -418,7 +436,7 @@ async def summarize(client: httpx.AsyncClient, paper_text: str, template: str) -
     try:
         summary = await _summarize_chunked(
             client, paper_text, template, call_groq, call_groq_addendum,
-            GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, GROQ_CHUNK_DELAY, "Groq",
+            GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, GROQ_CHUNK_DELAY, "Groq", on_progress,
         )
         return summary, "groq"
     except Exception as e:  # noqa: BLE001

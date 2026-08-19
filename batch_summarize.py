@@ -44,7 +44,7 @@ def _write_progress(path: str | None, **fields) -> None:
     Path(path).write_text(json.dumps(fields), encoding="utf-8")
 
 
-async def _process_paper(client: httpx.AsyncClient, arxiv_id: str) -> dict:
+async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None) -> dict:
     print(f"[{arxiv_id}] fetch_paper...")
     fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
     if "error" in fetch_result:
@@ -60,7 +60,7 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str) -> dict:
     template = engine.select_template(fetch_result.get("title", ""))
 
     print(f"[{arxiv_id}] 요약 생성 중...")
-    summary, used_engine = await engine.summarize(client, paper_text, template)
+    summary, used_engine = await engine.summarize(client, paper_text, template, on_progress=on_progress)
     print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자)")
 
     save_result = json.loads(
@@ -149,8 +149,21 @@ async def main() -> None:
 
             results = []
             for i, arxiv_id in enumerate(targets):
+                # 청크 하나 시도할 때마다 progress 파일에 "지금 몇 번째
+                # 청크"까지 얹어준다 — Groq 폴백은 청크 간격이 60초라 큰
+                # 논문은 한 편에 최대 31분까지 걸리는데, 이 콜백 없이는
+                # 그 시간 내내 progress 파일이 done 카운트 그대로라
+                # review_app.py 화면이 몇십 분씩 안 바뀌어 "멈춘 것처럼
+                # 보인다"는 지적을 그대로 반복했다(2026-08-19, "거의 10분째
+                # 이 상태야").
+                def _on_chunk_progress(engine_label, chunk_num, total_chunks):
+                    _write_progress(
+                        args.progress_file, total=len(targets), done=i,
+                        targets=targets, results=results,
+                        stage=f"{arxiv_id} 처리 중 — {engine_label} · 청크 {chunk_num}/{total_chunks}",
+                    )
                 try:
-                    results.append(await _process_paper(client, arxiv_id))
+                    results.append(await _process_paper(client, arxiv_id, on_progress=_on_chunk_progress))
                 except Exception as e:  # noqa: BLE001
                     print(f"[{arxiv_id}] 처리 실패: {e}", file=sys.stderr)
                     results.append({"arxiv_id": arxiv_id, "status": "error", "detail": str(e)})
@@ -158,7 +171,10 @@ async def main() -> None:
                 # review_app.py가 "몇 번째 시도까지 끝났나"만 알고 "그 시도가
                 # 성공했는지 실패했는지, 실패라면 왜인지"는 로그 파일에만
                 # 남고 화면엔 전혀 안 보였다("2개 처리 중인데 1개만 올라오고
-                # 왜 실패했는지 모르겠다" 지적, 2026-08-19).
+                # 왜 실패했는지 모르겠다" 지적, 2026-08-19). 여기선 stage를
+                # 안 넘겨서(이 논문은 끝났으니) 화면에서 자연히 사라진다 —
+                # _write_progress가 매번 전체를 새로 쓰지 부분 갱신이 아니라서
+                # 명시적으로 지울 필요 없이 그냥 안 넣으면 된다.
                 _write_progress(
                     args.progress_file, total=len(targets), done=i + 1,
                     targets=targets, results=results,
