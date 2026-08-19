@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -210,15 +213,17 @@ def _inject_custom_style() -> None:
             padding: 1.25rem 1.5rem;
         }
 
-        /* "시작" 버튼 — 오른쪽 정렬용 좁은 칸 안에서도 버튼 자체는 글자
-           크기만큼만 좁게 그려져 칸 왼쪽에 붙어 있었다("더 늘리고 더
+        /* "시작"·"취소" 버튼 — 오른쪽 정렬용 좁은 칸 안에서도 버튼 자체는
+           글자 크기만큼만 좁게 그려져 칸 왼쪽에 붙어 있었다("더 늘리고 더
            오른쪽으로" 지적, 2026-08-14 네 번째). CSS로 width:100%를 줘
            봤지만 버튼을 감싼 Streamlit 래퍼(stButton, element-container)
            자체가 fit-content라 퍼센트가 먹지 않았다 — 대신 st.button의
            네이티브 width="stretch" 인자를 써서 래퍼째로 칸을 채운다
-           (아래 button() 호출부, key="start_btn"/"hybrid_start_btn").
-           이 규칙은 세로 패딩만 키워 버튼을 살짝 더 크게 보이게 한다. */
-        .st-key-start_btn button, .st-key-hybrid_start_btn button {
+           (아래 button() 호출부, key="start_btn"/"hybrid_start_btn"/
+           "cancel_btn" — "취소" 버튼도 같은 크기여야 한다는 요청,
+           2026-08-19). 이 규칙은 세로 패딩만 키워 버튼을 살짝 더 크게
+           보이게 한다. */
+        .st-key-start_btn button, .st-key-hybrid_start_btn button, .st-key-cancel_btn button {
             padding-top: 0.6rem; padding-bottom: 0.6rem;
         }
 
@@ -553,75 +558,156 @@ def _render_image_gallery(arxiv_id: str) -> None:
 
 # ---------------------------------------------------------------- 탭 ①: 검색·요약
 
+# 키워드/ID/제목 검색은 batch_summarize.py를 별도 프로세스로 띄워 무인
+# 실행한다(2026-08-19) — ⑦ 코드 재현과 같은 이유. 예전엔 이 세 모드도
+# run_async()로 이 스크립트 실행 안에서 동기로 돌았는데, 그러면 "취소"
+# 버튼을 화면에 그려도 그 실행이 끝나기 전까진 클릭 자체가 서버에
+# 전달되지 않는다(Streamlit이 세션당 한 번에 한 스크립트만 처리해서) —
+# "취소가 실제로 눌려야 하잖아" 요청을 지키려면 이 작업이 Streamlit
+# 스크립트 실행 밖(별도 프로세스)에 있어야만 한다. PDF 업로드·오픈액세스
+# 모드는 배치 스크립트 CLI가 받는 인자(파일 바이트·DOI)가 없어 이 경로를
+# 못 타므로 기존 인라인 방식(_run_pdf_upload_and_summarize 등) 그대로 둔다.
+#
+# 진행 상황은 파일 두 개로 나눠 관리한다 — 쓰는 주체가 프로세스마다
+# 다르면 공유 파일 하나로는 경쟁 조건(review_app.py가 초기값을 쓰는
+# 도중에 batch_summarize.py가 이미 갱신값을 썼는데 덮어써버리는 등)이
+# 생긴다. 파일마다 쓰는 쪽을 하나로 고정하면 그 문제 자체가 없어진다:
+#   - META: review_app.py 만 쓴다(pid·입력값, 실행 시작할 때 한 번)
+#   - PROGRESS: batch_summarize.py 만 쓴다(--progress-file, 진행될 때마다)
+_SEARCH_JOB_META = server.DATA_DIR / "search_job.meta.json"
+_SEARCH_JOB_PROGRESS = server.DATA_DIR / "search_job.progress.json"
+_SEARCH_JOB_LOG = server.DATA_DIR / "search_job.log"
 
-async def _run_search_and_summarize(
-    mode: str, value: str, top_n: int, status_box, progress_slot=None
-) -> list[str]:
-    if mode == "id":
-        targets = [t.strip() for t in value.replace(",", " ").split() if t.strip()]
-    elif mode == "title":
-        status_box.write(f"'{value}' 제목으로 arXiv 검색 중...")
-        result = json.loads(
-            await server.arxiv_search_papers(server.ArxivSearchInput(query=value, max_results=1))
-        )
-        papers = result.get("papers", [])
-        if not papers:
-            status_box.write("검색 결과 없음")
-            return []
-        targets = [papers[0]["arxiv_id"]]
-        status_box.write(f"찾음: {papers[0]['title']}")
-    else:  # keyword
-        status_box.write(f"① '{value}' 키워드로 arXiv + Semantic Scholar 검색 중...")
-        arxiv_res = json.loads(
-            await server.arxiv_search_papers(
-                server.ArxivSearchInput(query=value, max_results=top_n * 3)
-            )
-        )
-        s2_res = json.loads(
-            await server.s2_search_papers(server.S2SearchInput(query=value, limit=top_n * 3))
-        )
-        combined = arxiv_res.get("papers", []) + s2_res.get("papers", [])
-        status_box.write(f"arXiv {len(arxiv_res.get('papers', []))}건, S2 {len(s2_res.get('papers', []))}건 발견")
-        if not combined:
-            status_box.write(f"검색 결과 없음 — 외부 API 한도 초과(429)일 수 있음: {arxiv_res} / {s2_res}")
-            return []
-        status_box.write("② 중복 제거·선별 중...")
-        ranked = json.loads(
-            await server.dedupe_and_rank_papers(
-                server.SelectPapersInput(papers=combined, top_k=top_n)
-            )
-        )
-        targets = [p["arxiv_id"] for p in ranked.get("papers", []) if p.get("arxiv_id")]
-        status_box.write(f"선별됨: {targets}")
 
-    if not targets:
-        return []
+def _pid_alive(pid: int) -> bool:
+    """실측(2026-08-19)으로 걸린 함정: 이 프로세스(Streamlit)가 자식으로
+    띄운 batch_summarize.py가 끝나도, 아무도 회수(reap)하지 않으면 좀비
+    (`Zs <defunct>`)로 남는다 — Streamlit이 매 상호작용마다 스크립트를
+    새로 실행할 뿐 그 사이에 이 자식 프로세스의 Popen 객체를 들고 있지
+    않아서(다음 재실행에서는 pid 숫자만 파일에서 읽어올 뿐 원래 Popen
+    객체가 없다) `.wait()`를 걸 대상이 없다. 문제는 `os.kill(pid, 0)`이
+    좀비도 "존재한다"고 착각한다는 것 — 그러면 이미 끝난 작업이 화면에
+    영원히 "진행 중"으로 남는다(실측으로 직접 재현·확인함). 그래서 먼저
+    `waitpid(WNOHANG)`로 우리 자식이면 회수를 시도하고(논블로킹 — 아직
+    안 끝났으면 즉시 (0,0)으로 돌아옴), 그다음에만 kill(pid,0)로 진짜
+    생존 여부를 확인한다."""
+    try:
+        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        if reaped_pid == pid:
+            return False  # 방금 회수됨 — 이미 끝나 있었다
+    except ChildProcessError:
+        pass  # 우리 자식이 아님(서버 재시작 등) — 존재 여부만 그대로 확인
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
-    done = []
-    total = len(targets)
-    async with httpx.AsyncClient() as client:
-        for i, arxiv_id in enumerate(targets, start=1):
-            if progress_slot is not None:
-                _render_sidebar_progress(progress_slot, i - 1, total, done=False)
-            status_box.write(f"③ [{arxiv_id}] 원문 수집 중...")
-            fetch_result = json.loads(
-                await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id))
-            )
-            if "error" in fetch_result:
-                status_box.write(f"❌ [{arxiv_id}] 수집 실패: {fetch_result}")
-                continue
-            status_box.write(
-                f"③ [{arxiv_id}] 완료 — {fetch_result.get('extract_method')}, "
-                f"{fetch_result.get('text_chars')}자"
-            )
-            if await _summarize_target(arxiv_id, client, status_box):
-                done.append(arxiv_id)
-            if progress_slot is not None:
-                _render_sidebar_progress(progress_slot, i, total, done=False)
 
-    if progress_slot is not None:
-        _render_sidebar_progress(progress_slot, len(done), total, done=True)
-    return done
+def _read_search_job() -> dict | None:
+    """지금 실행 중인 배경 작업 정보. 실행 중이 아니면 None.
+
+    "실행 중"의 기준은 META 파일의 존재가 아니라 그 안에 적힌 PID가
+    실제로 살아있는가다 — 파일 내용만 믿지 않고 OS에 직접 물어본다
+    ("서버는 판단하지 않는다"와 같은 결로, 사실 확인은 항상 실측 기준).
+    프로세스가 이미 죽었는데(정상 종료·크래시 둘 다) 파일이 안 지워진
+    경우를 여기서 잡아 정리한다."""
+    if not _SEARCH_JOB_META.exists():
+        return None
+    try:
+        job = json.loads(_SEARCH_JOB_META.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not _pid_alive(job.get("pid", -1)):
+        _SEARCH_JOB_META.unlink(missing_ok=True)
+        _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)
+        return None
+    if _SEARCH_JOB_PROGRESS.exists():
+        try:
+            job.update(json.loads(_SEARCH_JOB_PROGRESS.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass  # batch_summarize.py가 쓰는 도중일 수 있음 — 다음 폴링에 다시 읽음
+    return job
+
+
+def _launch_search_job(mode: str, value: str, top_n: int) -> None:
+    if mode == "keyword":
+        args = ["--keyword", value, "--top-n", str(top_n)]
+    elif mode == "id":
+        args = ["--ids", *value.replace(",", " ").split()]
+    else:  # title
+        args = ["--title", value]
+
+    server.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(_SEARCH_JOB_LOG, "w", encoding="utf-8") as f:
+        proc = subprocess.Popen(
+            [sys.executable, "batch_summarize.py", *args,
+             "--progress-file", str(_SEARCH_JOB_PROGRESS)],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=f, stderr=subprocess.STDOUT,
+            start_new_session=True,  # 이 요청 처리가 끝나도 안 죽고, killpg 대상 그룹도 됨
+        )
+    _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)  # 이전 작업의 잔여 파일 제거
+    _SEARCH_JOB_META.write_text(
+        json.dumps({
+            "pid": proc.pid, "mode": mode, "value": value, "top_n": top_n,
+            "started_at": server._now(),
+        }),
+        encoding="utf-8",
+    )
+
+
+def _cancel_search_job(job: dict) -> None:
+    """프로세스 그룹째로 죽이고 상태 파일을 정리한다. start_new_session=True로
+    띄웠으므로 pid가 곧 프로세스 그룹 ID다 — killpg로 batch_summarize.py
+    본체까지 한 번에 죽는다. SIGTERM으로 죽은 프로세스는 자기 finally
+    블록을 못 돌리므로(잡을 새 없이 즉시 종료) 파일 정리는 여기서 대신
+    한다. 그때까지 저장된 논문(save_summary가 매 편 끝날 때 커밋)은
+    취소해도 그대로 남는다 — 순차 루프 중간에 멈추는 것뿐이라 자연스럽게
+    그렇게 된다.
+
+    SIGTERM을 보낸 뒤 반드시 waitpid로 직접 회수한다 — 실측(2026-08-19)
+    으로 확인한 함정: 여기서 회수하지 않고 마커 파일만 지우면, 이 PID를
+    다시 들여다볼 일이 앞으로 없어서(마커가 없으니 _read_search_job이
+    아예 이 pid를 체크 안 함) 좀비(`Zs <defunct>`)가 영영 안 거둬진다.
+    batch_summarize.py는 SIGTERM 핸들러를 따로 안 두므로 기본 동작(즉시
+    종료)이 걸려 waitpid가 사실상 바로 반환된다 — 블로킹이어도 체감
+    지연은 없다."""
+    pid = job["pid"]
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        os.waitpid(pid, 0)
+    except (ProcessLookupError, ChildProcessError):
+        pass
+    _SEARCH_JOB_META.unlink(missing_ok=True)
+    _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)
+
+
+def _render_search_job_progress(card, job: dict) -> None:
+    """실행 중인 배경 작업의 진행률+취소 버튼을 그린다. 폴링(재실행)은
+    여기서 하지 않는다 — render_search_tab() 맨 끝(입력 폼까지 전부 그린
+    뒤)에서 한 번만 건다.
+
+    실측(2026-08-19)으로 발견한 Streamlit 함정: st.rerun()으로 스크립트
+    실행이 끊기면, "이번 실행에선 여기를 안 그린다"고 조건부로 건너뛴
+    위치는 그 이전(끊기지 않고 자연스럽게 끝까지 돈) 실행 때 그 자리에
+    있던 내용이 안 지워지고 그대로 남는다 — 취소해도 입력 폼이 예전
+    내용 그대로 옆에 계속 떠 있는 버그로 실제로 나타났다(격리된 재현
+    테스트로 원인 확정: 위젯 유무를 조건부로 바꾸는 자리는 st.rerun()이
+    낀 실행에서 정리가 안 됨, 매 실행 같은 자리에 같은 호출을 하고
+    "내용/활성화 여부"만 바꾸면 문제가 없어짐). 그래서 아래 입력 폼은
+    실행 중에도 항상 그리되 disabled=로만 잠근다 — 이 함수는 그 폼과
+    별개로 진행률 UI만 담당한다."""
+    total, done = job.get("total"), job.get("done", 0)
+    if total:
+        card.progress(done / total, text=f"④ 요약 생성 중 · {done}/{total}편")
+    else:
+        card.progress(0.0, text="① 검색·선별 중...")
+    _cancel_spacer, cancel_col = card.columns([4, 1])
+    if cancel_col.button("취소", key="cancel_btn", width="stretch"):
+        _cancel_search_job(job)
+        st.session_state["_search_job_cancelled_msg"] = True
+        st.rerun()
 
 
 async def _summarize_target(
@@ -733,13 +819,15 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     return [arxiv_id] if ok else []
 
 
-def render_search_tab(progress_slot=None):
+def render_search_tab():
     st.subheader("논문 검색 및 요약본 생성")
     # 회색 부제("키워드로 논문을 검색하고...")가 원래 카드 안 맨 위에
     # 있었는데, 참고 이미지는 이 문구가 카드 밖 제목 바로 아래에 있다
     # ("맨 위에 있던 회색 텍스트를 제목 아래로 옮기는 것" 요청,
     # 2026-08-14) — 그 위치로 옮겼다.
     st.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
+    if st.session_state.pop("_search_job_cancelled_msg", False):
+        st.info("검색·요약 작업을 취소했습니다. 그때까지 완료된 논문은 저장되어 있습니다.")
     # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
     # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
     # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수
@@ -748,6 +836,17 @@ def render_search_tab(progress_slot=None):
     # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
     # key="search_card"는 CSS에서 이 카드에만 그림자를 주기 위한 훅.
     card = st.container(border=True, key="search_card")
+    # 배경에서 이미 도는 작업이 있으면(취소가 실제로 눌리게 하려고
+    # 별도 프로세스로 띄운 것, 2026-08-19) 진행률+취소를 먼저 보여준다.
+    # 아래 입력 폼은 이때도 계속 그린다(disabled=running으로 잠그기만
+    # 함) — 조건부로 아예 안 그리면 Streamlit이 이전 실행 내용을 못
+    # 지우는 함정이 있다(_render_search_job_progress 문서 참고). 또한
+    # running 중 폼을 완전히 숨기면 같은 작업을 실수로 두 번 시작할
+    # 방법이 없어져야 하는데, 잠그는 쪽이 "왜 안 보이지"보다 안전하다.
+    job = _read_search_job()
+    running = job is not None
+    if job is not None:
+        _render_search_job_progress(card, job)
     # 참고 이미지(2026-08-14)의 장식 일러스트 — 순수 장식이라 클릭 동작은
     # 없다. 처음엔 카드 맨 위에 이 그림만 있는 별도 줄로 뒀는데, 그 줄에는
     # 그림 하나뿐이라 위쪽에 여백만 덩그러니 남았다("일러스트만 맨 위에
@@ -759,6 +858,7 @@ def render_search_tab(progress_slot=None):
         ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
          "PDF 업로드", "DOI/URL (오픈액세스)"],
         horizontal=True,
+        disabled=running,
     )
     illus_col.markdown(
         f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:52px;'
@@ -793,8 +893,11 @@ def render_search_tab(progress_slot=None):
             "이미 저장된 논문들 안에서 다시 찾는다(BM25+임베딩) — 새로 수집·요약하지 않음. "
             "한글 질의도 지원(임베딩이 다국어)."
         )
-        hybrid_query = card.text_input("검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI")
-        hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5)
+        hybrid_query = card.text_input(
+            "검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI",
+            disabled=running,
+        )
+        hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5, disabled=running)
         # "시작" 버튼이 왼쪽에 붙어 있던 걸 오른쪽 정렬로 바꿔 달라는
         # 요청(2026-08-14 세 번째) — 넓은 스페이서 칸 + 좁은 버튼 칸으로
         # 나눠 버튼만 오른쪽 끝에 오게 한다. 그런데 버튼 칸 안에서도 버튼
@@ -805,7 +908,7 @@ def render_search_tab(progress_slot=None):
         # 오른쪽 끝)까지 붙는다.
         _hybrid_btn_spacer, hybrid_btn_col = card.columns([5, 1])
         if hybrid_btn_col.button(
-            "시작", type="primary", disabled=not hybrid_query,
+            "시작", type="primary", disabled=running or not hybrid_query,
             key="hybrid_start_btn", width="stretch",
         ):
             result = json.loads(
@@ -831,56 +934,71 @@ def render_search_tab(progress_slot=None):
         uploaded_file = None
         pdf_title = ""
         if mode == "keyword":
-            value = card.text_input("검색 키워드", placeholder="예: LoRA fine-tuning summarization")
+            value = card.text_input(
+                "검색 키워드", placeholder="예: LoRA fine-tuning summarization", disabled=running,
+            )
             card.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
                          "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
-            top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3)
+            top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3, disabled=running)
         elif mode == "id":
-            value = card.text_input("arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793")
+            value = card.text_input(
+                "arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793",
+                disabled=running,
+            )
         elif mode == "title":
-            value = card.text_input("논문 제목", placeholder="예: TSPulse")
+            value = card.text_input("논문 제목", placeholder="예: TSPulse", disabled=running)
         elif mode == "pdf":
             card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
-            uploaded_file = card.file_uploader("PDF 파일", type="pdf")
+            uploaded_file = card.file_uploader("PDF 파일", type="pdf", disabled=running)
             # 제목을 직접 타이핑해야 하는 게 번거롭다는 지적(2026-08-12,
             # "PDF 제목 따라 입력하면 되잖아") — 필수 입력을 없애고 PDF
             # 메타데이터·본문에서 자동 추정하도록 바꿨다(server.
             # ingest_local_pdf 참고). 잘못 추정됐을 때 고칠 수 있게 입력창
             # 자체는 남겨 둔다.
-            pdf_title = card.text_input("제목 (선택 — 비우면 PDF에서 자동 추출)", placeholder="논문 제목")
+            pdf_title = card.text_input(
+                "제목 (선택 — 비우면 PDF에서 자동 추출)", placeholder="논문 제목", disabled=running,
+            )
             value = "ok" if uploaded_file else ""
         else:  # oa
             card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
-            value = card.text_input("DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x")
+            value = card.text_input(
+                "DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x", disabled=running,
+            )
             # DOI 경로면 Unpaywall 응답에 제목이 이미 들어 있어(2026-08-12)
             # 대부분 자동으로 채워진다 — 그래도 안 채워지면 PDF 폴백 체인이
             # 이어받는다.
-            pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)")
+            pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)", disabled=running)
 
         # 오른쪽 정렬 — 위 hybrid 분기와 같은 스페이서+버튼 칸 나누기.
+        # [5,1] → [4,1]로 살짝 넓혀 버튼을 조금 더 왼쪽으로("취소" 버튼도
+        # 같은 자리·같은 크기로 뜰 수 있게 여유를 준다, 2026-08-19 요청).
         # key="start_btn"로 CSS 훅을 걸어 버튼을 칸 폭만큼 늘린다(위
         # hybrid_start_btn과 같은 이유).
-        _start_btn_spacer, start_btn_col = card.columns([5, 1])
+        _start_btn_spacer, start_btn_col = card.columns([4, 1])
         if start_btn_col.button(
-            "시작", type="primary", disabled=not value,
+            "시작", type="primary", disabled=running or not value,
             key="start_btn", width="stretch",
         ):
-            status_box = card.status("진행 중...", expanded=True)
-            if mode == "pdf":
-                done = run_async(
-                    _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
-                )
-            elif mode == "oa":
-                done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
+            if mode in ("keyword", "id", "title"):
+                # 별도 프로세스로 띄우고 즉시 재실행 — 다음 실행부터는
+                # _render_search_job_progress가 진행률+취소를 같이 보여준다
+                # (위, running=True). PDF·오픈액세스는 CLI가 못 받는 인자
+                # (파일 바이트·DOI)라 기존 인라인 방식 그대로.
+                _launch_search_job(mode, value, top_n)
+                st.rerun()
             else:
-                done = run_async(
-                    _run_search_and_summarize(mode, value, top_n, status_box, progress_slot)
-                )
-            if done:
-                status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
-                card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
-            else:
-                status_box.update(label="처리된 논문 없음", state="error")
+                status_box = card.status("진행 중...", expanded=True)
+                if mode == "pdf":
+                    done = run_async(
+                        _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
+                    )
+                else:  # oa
+                    done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
+                if done:
+                    status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
+                    card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
+                else:
+                    status_box.update(label="처리된 논문 없음", state="error")
 
     # 검색 폼 아래가 빈 흰 공간으로 휑하다는 지적(2026-08-12) — 장식용
     # 채우기가 아니라 실제로 쓸모 있는 두 카드로 채운다: "최근 활동"은
@@ -936,6 +1054,15 @@ def render_search_tab(progress_slot=None):
     help_card.caption("**제목으로 검색** — 제목 일부만 알 때")
     help_card.caption("**PDF 업로드** — 접근 권한 있는 PDF를 직접 첨부")
     help_card.caption("**DOI/URL** — DOI로 오픈액세스 PDF를 자동으로 찾음")
+
+    # 폴링(2초 간격 재실행)은 여기, 함수 맨 끝에서만 건다 — 입력 폼과
+    # 아래 카드까지 전부 그린 뒤라 이 실행이 만든 화면 내용은 "끊기지
+    # 않고 자연스럽게 끝까지 돈 실행"과 똑같다(_render_search_job_progress
+    # 문서의 실측 결과 참고). st.rerun()이 여기서 실행을 끊어도 그 앞에서
+    # 이미 전부 그렸으므로 스테일 DOM이 생기지 않는다.
+    if running:
+        time.sleep(2)
+        st.rerun()
 
 
 # ---------------------------------------------------------------- ⑥→⑦ 연결
@@ -1336,22 +1463,6 @@ def render_review_tab():
                     st.rerun()
 
 
-# 사이드바 "진행 중" 표시(2026-08-14 요청) — 검색·요약 배치가 실제로
-# 도는 동안만 나타난다. Streamlit은 한 번의 상호작용을 한 번의 스크립트
-# 실행으로 처리하고 그 안에서 화면을 순서대로 그리기 때문에, 나중에
-# 실행되는 render_search_tab() 안의 루프가 이미 그려진 사이드바 영역을
-# 다시 갱신하려면 그 자리를 가리키는 st.empty() 플레이스홀더가 필요하다
-# — 그래서 sidebar 블록에서 만든 슬롯을 render_search_tab까지 그대로
-# 넘겨서 매 논문 처리마다 같은 자리를 덮어쓴다. 고정 숫자가 아니라
-# 실제 루프 진행 상황(i/total)을 그대로 반영한다.
-def _render_sidebar_progress(slot, current: int, total: int, done: bool) -> None:
-    with slot.container():
-        if done:
-            st.caption(f"✅ 완료 · {current}/{total}편 처리됨")
-            st.progress(1.0 if total else 0.0)
-        else:
-            st.caption(f"🔵 진행 중 · 요약 생성 중... {current}/{total}")
-            st.progress(current / total if total else 0.0)
 
 
 # ---------------------------------------------------------------- 메인
@@ -1503,13 +1614,24 @@ with st.sidebar:
     _render_sidebar_category("재현 성공", lists["repro_ok"], "🟢")
     _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
 
-    # 검색·요약이 실제로 도는 동안만 나타나는 진행 표시(2026-08-14 요청)
-    # — 자리만 미리 잡아 두고, render_search_tab() 안의 루프가 이 슬롯을
-    # 실제 진행률로 채운다(고정 숫자 아님). 검토 탭에 있을 땐 채워질 일이
-    # 없어 빈 채로 남는다 — 그것도 정직한 상태(지금 진행 중인 게 없다는 뜻).
-    progress_slot = st.empty()
+    # 검색·요약이 실제로 도는 동안만 나타나는 진행 표시(2026-08-14 요청,
+    # 2026-08-19 배경 프로세스 전환에 맞춰 다시 배선) — 예전엔 render_search_tab()
+    # 안의 루프가 st.empty() 슬롯을 직접 채우는 방식이었는데, ④가 "취소"를
+    # 지원하려고 별도 프로세스로 옮겨가면서 그 루프 자체가 이 스크립트
+    # 실행 안에 없다. 대신 _read_search_job()으로 상태 파일을 직접 읽는다
+    # — 검토 탭에 가 있어도, 새로고침해도 항상 최신 상태(파일 기반이라
+    # 이 스크립트의 한 번의 실행에 갇혀 있지 않음).
+    job = _read_search_job()
+    if job is not None:
+        total, done = job.get("total"), job.get("done", 0)
+        if total:
+            st.caption(f"🔵 진행 중 · 요약 생성 중... {done}/{total}")
+            st.progress(done / total)
+        else:
+            st.caption("🔵 진행 중 · ① 검색·선별 중...")
+            st.progress(0.0)
 
 if st.session_state.nav_page == "search":
-    render_search_tab(progress_slot)
+    render_search_tab()
 else:
     render_review_tab()
