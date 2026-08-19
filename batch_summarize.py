@@ -24,11 +24,24 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import httpx
 
 import server
 import summarize_engine as engine
+
+
+def _write_progress(path: str | None, **fields) -> None:
+    """review_app.py가 이 스크립트를 별도 프로세스로 띄우고("취소"가 실제로
+    눌리게 하려면 Streamlit의 한 스크립트 실행 안에 갇혀 있으면 안 된다,
+    2026-08-19) 진행률을 알아야 할 때만 쓰는 선택적 훅이다 — --progress-file
+    없이 터미널에서 직접 돌리는 기존 사용법은 전혀 안 바뀐다. 매번 전체
+    상태를 새로 써서(부분 갱신 아님) review_app.py가 읽는 도중에 절반만
+    쓰인 파일을 보는 일이 없게 한다(JSON 파싱 중간에 파일이 안 바뀜)."""
+    if not path:
+        return
+    Path(path).write_text(json.dumps(fields), encoding="utf-8")
 
 
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str) -> dict:
@@ -113,6 +126,11 @@ async def main() -> None:
     parser.add_argument("--title", help="논문 제목으로 검색해서 1편 처리")
     parser.add_argument("--keyword", help="키워드로 검색해서 상위 N편 처리")
     parser.add_argument("--top-n", type=int, default=3, help="--keyword 모드에서 선별할 편수")
+    parser.add_argument(
+        "--progress-file",
+        help="review_app.py 전용 — 진행률을 이 경로에 JSON으로 계속 써준다(선택, "
+             "터미널 직접 실행 시엔 안 줘도 됨)",
+    )
     args = parser.parse_args()
 
     if not (args.ids or args.title or args.keyword):
@@ -120,20 +138,31 @@ async def main() -> None:
     if not engine.ENV.get("GOOGLE_API_KEY") and not engine.ENV.get("GROQ_API_KEY"):
         parser.error(".env 에 GOOGLE_API_KEY 또는 GROQ_API_KEY 가 필요함")
 
-    async with httpx.AsyncClient() as client:
-        targets = await _resolve_targets(args)
-        if not targets:
-            print("처리할 논문이 없음")
-            return
-        print(f"대상 {len(targets)}편: {targets}")
+    try:
+        async with httpx.AsyncClient() as client:
+            targets = await _resolve_targets(args)
+            if not targets:
+                print("처리할 논문이 없음")
+                return
+            print(f"대상 {len(targets)}편: {targets}")
+            _write_progress(args.progress_file, total=len(targets), done=0, targets=targets)
 
-        results = []
-        for arxiv_id in targets:
-            try:
-                results.append(await _process_paper(client, arxiv_id))
-            except Exception as e:  # noqa: BLE001
-                print(f"[{arxiv_id}] 처리 실패: {e}", file=sys.stderr)
-                results.append({"arxiv_id": arxiv_id, "status": "error", "detail": str(e)})
+            results = []
+            for i, arxiv_id in enumerate(targets):
+                try:
+                    results.append(await _process_paper(client, arxiv_id))
+                except Exception as e:  # noqa: BLE001
+                    print(f"[{arxiv_id}] 처리 실패: {e}", file=sys.stderr)
+                    results.append({"arxiv_id": arxiv_id, "status": "error", "detail": str(e)})
+                _write_progress(args.progress_file, total=len(targets), done=i + 1, targets=targets)
+    finally:
+        # 정상 종료·예외 둘 다 여기로 온다 — review_app.py가 이 파일의
+        # 존재 여부로 "아직 진행 중"을 판단하므로(_read_search_job 참고)
+        # 끝났으면(취소가 아니라 스스로 끝났으면) 반드시 지운다. "취소"로
+        # 죽었을 때(SIGTERM)는 이 finally 자체가 못 돌기 때문에, 그 경우의
+        # 정리는 review_app.py의 _cancel_search_job이 직접 맡는다.
+        if args.progress_file:
+            Path(args.progress_file).unlink(missing_ok=True)
 
     print("\n=== 결과 요약 ===")
     for r in results:
