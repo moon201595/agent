@@ -756,6 +756,14 @@ def _render_search_job_progress(card, job: dict) -> None:
         card.progress(done / total, text=f"④ 요약 생성 중 · {done}/{total}편")
     else:
         card.progress(0.0, text="① 검색·선별 중...")
+    # 논문 단위 게이지만으로는 청크 하나가 60초씩(Groq 폴백) 걸리는 동안
+    # 화면이 몇 분·몇십 분씩 안 바뀐다 — batch_summarize.py가 청크마다
+    # 갱신해주는 stage 텍스트를 그대로 보여준다(2026-08-19, "거의 10분째
+    # 이 상태야" 지적 — summarize_engine._summarize_chunked의 on_progress
+    # 콜백 참고).
+    stage = job.get("stage")
+    if stage:
+        card.caption(f"🔄 {stage}")
     _cancel_spacer, cancel_col = card.columns([4, 1])
     if cancel_col.button("취소", key="cancel_btn", width="stretch"):
         _cancel_search_job(job)
