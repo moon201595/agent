@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -574,9 +575,28 @@ def _render_image_gallery(arxiv_id: str) -> None:
 # 생긴다. 파일마다 쓰는 쪽을 하나로 고정하면 그 문제 자체가 없어진다:
 #   - META: review_app.py 만 쓴다(pid·입력값, 실행 시작할 때 한 번)
 #   - PROGRESS: batch_summarize.py 만 쓴다(--progress-file, 진행될 때마다)
-_SEARCH_JOB_META = server.DATA_DIR / "search_job.meta.json"
-_SEARCH_JOB_PROGRESS = server.DATA_DIR / "search_job.progress.json"
-_SEARCH_JOB_LOG = server.DATA_DIR / "search_job.log"
+#
+# 처음엔 이 셋을 고정 경로 상수로 뒀는데, 실측(2026-08-19)으로 실제
+# 사고가 났다 — 사용자가 라이브(8501)에서 실제로 검색을 돌리는 동안
+# 개발 중 테스트(다른 포트 8591)에서 새 검색을 시작했더니, 고정 경로를
+# 공유해서 META 파일이 덮어써졌다. 그러자 사용자의 원래 작업은 UI
+# 추적에서 빠진 채(프로세스 자체는 백그라운드에서 계속 돎) 고아가
+# 됐고, 나중에 논문이 갑자기 "최근 활동"에 나타나거나 다른 하나는 영영
+# 안 뜨는 것처럼 보였다 — "2개 처리 중인데 1개만 올라오고 이유를 모르
+# 겠다"는 지적이 바로 이 충돌의 증상이었다(DB 확인 결과 데이터 자체는
+# 안전하게 저장돼 있었음 — 유실은 없었고 추적만 엉켰다). 브라우저 세션
+# 마다(다른 탭·다른 포트·다른 사용자 전부 포함) 완전히 분리된 파일을
+# 쓰도록 고친다 — session_state에 한 번만 만든 무작위 ID를 파일명에
+# 넣는다.
+def _search_job_paths() -> tuple[Path, Path, Path]:
+    if "_job_session_id" not in st.session_state:
+        st.session_state["_job_session_id"] = uuid.uuid4().hex[:12]
+    sid = st.session_state["_job_session_id"]
+    return (
+        server.DATA_DIR / f"search_job_{sid}.meta.json",
+        server.DATA_DIR / f"search_job_{sid}.progress.json",
+        server.DATA_DIR / f"search_job_{sid}.log",
+    )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -612,19 +632,33 @@ def _read_search_job() -> dict | None:
     ("서버는 판단하지 않는다"와 같은 결로, 사실 확인은 항상 실측 기준).
     프로세스가 이미 죽었는데(정상 종료·크래시 둘 다) 파일이 안 지워진
     경우를 여기서 잡아 정리한다."""
-    if not _SEARCH_JOB_META.exists():
+    meta_path, progress_path, _log_path = _search_job_paths()
+    if not meta_path.exists():
         return None
     try:
-        job = json.loads(_SEARCH_JOB_META.read_text(encoding="utf-8"))
+        job = json.loads(meta_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     if not _pid_alive(job.get("pid", -1)):
-        _SEARCH_JOB_META.unlink(missing_ok=True)
-        _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)
+        # 스스로 끝났다(취소가 아니다 — 취소는 _cancel_search_job이 파일을
+        # 직접 지우니 여기로 안 옴). 지우기 전에 마지막 결과를
+        # session_state에 남겨서 render_search_tab이 완료 요약으로 보여줄
+        # 수 있게 한다 — "2편 처리 중인데 1편만 올라오고 왜 실패했는지
+        # 모르겠다" 지적(2026-08-19): 실패해도 done 카운트는 그냥 올라가
+        # 게이지바는 "완료"로 보이지만, 그게 성공인지 실패인지·왜 실패
+        # 했는지는 이 결과 없이는 알 방법이 없었다.
+        if progress_path.exists():
+            try:
+                final = json.loads(progress_path.read_text(encoding="utf-8"))
+                st.session_state["_search_job_finished_results"] = final.get("results", [])
+            except (json.JSONDecodeError, OSError):
+                pass
+        meta_path.unlink(missing_ok=True)
+        progress_path.unlink(missing_ok=True)
         return None
-    if _SEARCH_JOB_PROGRESS.exists():
+    if progress_path.exists():
         try:
-            job.update(json.loads(_SEARCH_JOB_PROGRESS.read_text(encoding="utf-8")))
+            job.update(json.loads(progress_path.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
             pass  # batch_summarize.py가 쓰는 도중일 수 있음 — 다음 폴링에 다시 읽음
     return job
@@ -638,17 +672,18 @@ def _launch_search_job(mode: str, value: str, top_n: int) -> None:
     else:  # title
         args = ["--title", value]
 
+    meta_path, progress_path, log_path = _search_job_paths()
     server.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_SEARCH_JOB_LOG, "w", encoding="utf-8") as f:
+    with open(log_path, "w", encoding="utf-8") as f:
         proc = subprocess.Popen(
             [sys.executable, "batch_summarize.py", *args,
-             "--progress-file", str(_SEARCH_JOB_PROGRESS)],
+             "--progress-file", str(progress_path)],
             cwd=str(Path(__file__).resolve().parent),
             stdout=f, stderr=subprocess.STDOUT,
             start_new_session=True,  # 이 요청 처리가 끝나도 안 죽고, killpg 대상 그룹도 됨
         )
-    _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)  # 이전 작업의 잔여 파일 제거
-    _SEARCH_JOB_META.write_text(
+    progress_path.unlink(missing_ok=True)  # 이전 작업의 잔여 파일 제거
+    meta_path.write_text(
         json.dumps({
             "pid": proc.pid, "mode": mode, "value": value, "top_n": top_n,
             "started_at": server._now(),
@@ -679,8 +714,26 @@ def _cancel_search_job(job: dict) -> None:
         os.waitpid(pid, 0)
     except (ProcessLookupError, ChildProcessError):
         pass
-    _SEARCH_JOB_META.unlink(missing_ok=True)
-    _SEARCH_JOB_PROGRESS.unlink(missing_ok=True)
+    meta_path, progress_path, _log_path = _search_job_paths()
+    meta_path.unlink(missing_ok=True)
+    progress_path.unlink(missing_ok=True)
+
+
+def _format_job_result_line(r: dict) -> str:
+    """batch_summarize.py의 결과 딕셔너리 한 건을 사람이 읽을 한 줄로
+    바꾼다 — 성공/실패 여부와 실패라면 이유까지(2026-08-19, "왜 실패
+    했는지 사용자가 확인할 수 있어야 하지 않아" 지적)."""
+    arxiv_id = r.get("arxiv_id", "?")
+    status = r.get("status")
+    if status == "done":
+        ratio, matched, total_n = r.get("pass_ratio"), r.get("matched"), r.get("total_numbers")
+        return f"✅ `{arxiv_id}` — {r.get('engine', '?')}, 통과율 {ratio} ({matched}/{total_n})"
+    detail = r.get("detail")
+    if isinstance(detail, dict):
+        detail = detail.get("error") or detail
+    if status == "fetch_failed":
+        return f"❌ `{arxiv_id}` — 원문 수집 실패: {detail}"
+    return f"❌ `{arxiv_id}` — 처리 실패: {detail}"
 
 
 def _render_search_job_progress(card, job: dict) -> None:
@@ -708,6 +761,13 @@ def _render_search_job_progress(card, job: dict) -> None:
         _cancel_search_job(job)
         st.session_state["_search_job_cancelled_msg"] = True
         st.rerun()
+
+    # 시도한 논문마다(성공이든 실패든) 바로바로 한 줄씩 보여준다 — 게이지바
+    # 숫자만으로는 "몇 번째 시도까지 끝났나"만 보이고 그게 성공인지 실패
+    # 인지, 실패라면 왜인지 알 수 없었다(2026-08-19 지적: "2개 하고 있다는데
+    # 1개만 올라오고, 오류인지 왜인지 확인할 수 있게 해줘야 하지 않아").
+    for r in job.get("results", []):
+        card.caption(_format_job_result_line(r))
 
 
 async def _summarize_target(
@@ -828,6 +888,20 @@ def render_search_tab():
     st.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
     if st.session_state.pop("_search_job_cancelled_msg", False):
         st.info("검색·요약 작업을 취소했습니다. 그때까지 완료된 논문은 저장되어 있습니다.")
+    # 배경 작업이 스스로 끝났을 때(취소 아님)의 결과 요약 — _read_search_job이
+    # 끝난 걸 감지하며 session_state에 남겨둔 것을 여기서 한 번만 보여준다.
+    # "2편 처리 중인데 1편만 올라오고 왜인지 모르겠다" 지적(2026-08-19) —
+    # 이제 실패해도 조용히 사라지지 않고 이유까지 여기 남는다.
+    finished_results = st.session_state.pop("_search_job_finished_results", None)
+    if finished_results is not None:
+        ok = sum(1 for r in finished_results if r.get("status") == "done")
+        fail = len(finished_results) - ok
+        if fail:
+            st.warning(f"검색·요약 완료 — 성공 {ok}편, 실패 {fail}편")
+        else:
+            st.success(f"검색·요약 완료 — {ok}편 저장됨")
+        for r in finished_results:
+            st.caption(_format_job_result_line(r))
     # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
     # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
     # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수

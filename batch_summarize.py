@@ -154,7 +154,15 @@ async def main() -> None:
                 except Exception as e:  # noqa: BLE001
                     print(f"[{arxiv_id}] 처리 실패: {e}", file=sys.stderr)
                     results.append({"arxiv_id": arxiv_id, "status": "error", "detail": str(e)})
-                _write_progress(args.progress_file, total=len(targets), done=i + 1, targets=targets)
+                # results도 매번 같이 써준다 — 예전엔 done 카운트만 넘겨서
+                # review_app.py가 "몇 번째 시도까지 끝났나"만 알고 "그 시도가
+                # 성공했는지 실패했는지, 실패라면 왜인지"는 로그 파일에만
+                # 남고 화면엔 전혀 안 보였다("2개 처리 중인데 1개만 올라오고
+                # 왜 실패했는지 모르겠다" 지적, 2026-08-19).
+                _write_progress(
+                    args.progress_file, total=len(targets), done=i + 1,
+                    targets=targets, results=results,
+                )
     finally:
         # 정상 종료·예외 둘 다 여기로 온다 — review_app.py가 이 파일의
         # 존재 여부로 "아직 진행 중"을 판단하므로(_read_search_job 참고)
