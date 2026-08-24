@@ -36,7 +36,6 @@ from pathlib import Path
 import httpx
 import streamlit as st
 
-import digest
 import docker_runner
 import research_profile
 import run_profile_scan
@@ -1694,23 +1693,25 @@ def render_research_tab() -> None:
             st.error("핵심 키워드가 없어서 검색어를 만들 수 없음 — 프로필 수정에서 먼저 추가할 것")
         else:
             with st.spinner("arXiv에서 delta 검색 중... (흔한 키워드일수록 오래 걸릴 수 있음)"):
-                async def _scan() -> dict:
+                async def _scan() -> tuple[dict, str]:
                     async with httpx.AsyncClient() as client:
-                        return await run_profile_scan.scan_profile(db_path, selected, client, max_pages=10)
+                        return await run_profile_scan.scan_and_digest(db_path, selected, client, max_pages=10)
                 try:
-                    result = run_async(_scan())
+                    run_async(_scan())  # scan_and_digest가 DB에 저장까지 끝냄
                 except Exception as e:  # noqa: BLE001 — 실패도 화면에 명확히 보여준다
                     st.error(f"스캔 실패: {e}")
                 else:
-                    st.session_state[f"_research_last_digest_{selected}"] = digest.generate_digest(
-                        result, profile["name"],
-                    )
                     st.rerun()
 
-    last_digest = st.session_state.get(f"_research_last_digest_{selected}")
-    if last_digest:
-        st.markdown("#### 방금 생성된 다이제스트")
-        st.text(last_digest)
+    # 2026-08-24: st.session_state가 아니라 DB(research_profile.save_digest)
+    # 에서 읽는다 — cron이 새벽에 혼자 스캔을 돌려도 이 화면에서 보여야
+    # 한다("cron이 돌아도 결과가 화면 어디에도 안 남는다" 문제 해결).
+    # scan_and_digest가 이미 저장까지 끝내므로 여기는 조회만 한다.
+    latest = research_profile.get_latest_digest(db_path, selected)
+    if latest:
+        digest_text, generated_at = latest
+        st.markdown(f"#### 최신 다이제스트 ({_relative_time(generated_at)})")
+        st.text(digest_text)
 
 
 # ---------------------------------------------------------------- 메인

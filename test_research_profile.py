@@ -157,3 +157,37 @@ def test_list_runs_respects_limit(tmp_path):
                        started_at=f"2026-08-{i+1:02d}T00:00:00+00:00")
 
     assert len(rp.list_runs(db, "p", limit=3)) == 3
+
+
+def test_get_latest_digest_returns_none_when_never_saved(tmp_path):
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p", "이름", core_topics=["a"])
+    assert rp.get_latest_digest(db, "p") is None
+
+
+def test_save_and_get_latest_digest_roundtrip(tmp_path):
+    """cron이든 review_app.py "지금 스캔 실행" 버튼이든 누가 저장했는지와
+    무관하게 여기 하나만 본다는 게 핵심 — session_state가 아니라 DB에
+    남는다(2026-08-24, "cron이 새벽에 돌려도 화면에 안 남는다" 문제)."""
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p", "이름", core_topics=["a"])
+
+    rp.save_digest(db, "p", "첫 번째 다이제스트")
+    text, at = rp.get_latest_digest(db, "p")
+    assert text == "첫 번째 다이제스트"
+    assert at  # 타임스탬프가 채워져 있음
+
+    rp.save_digest(db, "p", "두 번째 다이제스트")  # 덮어쓰기 — 이력 아님
+    text2, _ = rp.get_latest_digest(db, "p")
+    assert text2 == "두 번째 다이제스트"
+
+
+def test_save_digest_scoped_per_profile(tmp_path):
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p1", "이름1", core_topics=["a"])
+    rp.create_profile(db, "p2", "이름2", core_topics=["b"])
+
+    rp.save_digest(db, "p1", "p1 다이제스트")
+
+    assert rp.get_latest_digest(db, "p1")[0] == "p1 다이제스트"
+    assert rp.get_latest_digest(db, "p2") is None

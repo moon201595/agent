@@ -93,3 +93,57 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
     # search_runs에 이번 실행이 기록됐는지 — done이었으니 다음 next_since는
     # 이번 실행의 until로 갱신돼야 한다(이전 since로 되돌아가면 안 됨)
     assert rp.next_since(db_path, "team_ai") == datetime.fromisoformat(result["until"])
+
+
+def _mock_empty_arxiv(monkeypatch):
+    """빈 결과만 주는 가장 단순한 mock — 다이제스트 저장 배선만 확인할 때 씀."""
+    async def fake_throttled(client, params):
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: [])
+
+
+def test_scan_and_digest_saves_digest_to_db_not_just_return_value(tmp_path, monkeypatch):
+    """2026-08-24: session_state가 아니라 DB에 남아야 cron이 만든 결과도
+    review_app.py가 보여줄 수 있다 — 이 배선이 핵심이라 별도로 검증한다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_empty_arxiv(monkeypatch)
+
+    assert rp.get_latest_digest(db_path, "team_ai") is None  # 저장 전엔 없음
+
+    async def main():
+        return await rps.scan_and_digest(db_path, "team_ai", None, max_pages=2)
+
+    result, digest_text = asyncio.run(main())
+
+    assert "우리팀" in digest_text
+    saved_text, saved_at = rp.get_latest_digest(db_path, "team_ai")
+    assert saved_text == digest_text
+    assert saved_at
+
+
+def test_scan_all_profiles_isolates_failure_of_one_profile(tmp_path, monkeypatch):
+    """프로필 하나가 실패해도(여기선 core_topics 없음) 나머지는 계속
+    처리돼야 한다 — cron이 한 프로필의 설정 실수 때문에 전체를 멈추면 안
+    된다는 게 scan_all_profiles의 핵심 설계."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)  # "team_ai" — 정상
+    rp.create_profile(db_path, "broken", "깨진 프로필", core_topics=[])  # core_topics 없음 → 실패
+    _mock_empty_arxiv(monkeypatch)
+
+    async def main():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2)
+
+    summary = asyncio.run(main())
+
+    assert summary["team_ai"]["status"] == "ok"
+    assert summary["broken"]["status"] == "error"
+    assert "core_topics" in summary["broken"]["detail"]
+    # 성공한 쪽은 다이제스트도 실제로 저장됐어야 함
+    assert rp.get_latest_digest(db_path, "team_ai") is not None
+    assert rp.get_latest_digest(db_path, "broken") is None
