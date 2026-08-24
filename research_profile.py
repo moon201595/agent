@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS search_runs (
 def init_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as con:
         con.executescript(_SCHEMA)
+        # 2026-08-24: 다이제스트를 st.session_state(브라우저 세션 전용)에만
+        # 두면 cron이 새벽에 혼자 스캔을 돌려도 그 결과가 review_app.py
+        # 화면 어디에도 안 남는다 — "이제 매일 아침 알아서 돌게 하자"
+        # 단계에서 나온 실제 요구사항. profiles 테이블에 컬럼 두 개만
+        # 얹는다(기존 DB를 지우지 않고 멱등하게, server.py의 ALTER TABLE
+        # 패턴과 동일) — 프로필당 다이제스트 이력 전체가 아니라 "가장
+        # 최근 것"만 필요해서 별도 테이블 대신 컬럼으로 충분하다.
+        existing = {row[1] for row in con.execute("PRAGMA table_info(profiles)")}
+        if "last_digest" not in existing:
+            con.execute("ALTER TABLE profiles ADD COLUMN last_digest TEXT")
+        if "last_digest_at" not in existing:
+            con.execute("ALTER TABLE profiles ADD COLUMN last_digest_at TEXT")
 
 
 def _now() -> str:
@@ -220,3 +232,29 @@ def record_run(
              status, retrieved_count, error_detail, started_at or _now(), _now()),
         )
     return run_id
+
+
+def save_digest(db_path: Path, profile_id: str, digest_text: str) -> None:
+    """가장 최근 다이제스트만 남긴다(이력 전체 아님) — cron이든 review_app.py
+    "지금 스캔 실행" 버튼이든, 누가 만들었는지와 무관하게 여기 하나만
+    본다(단일 진실 공급원). 매번 덮어쓴다 — batch_summarize.py의
+    _write_progress와 같은 이유로 "일부만 갱신"보다 "매번 전체 교체"가
+    상태를 헷갈리지 않게 한다."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE profiles SET last_digest=?, last_digest_at=? WHERE profile_id=?",
+            (digest_text, _now(), profile_id),
+        )
+
+
+def get_latest_digest(db_path: Path, profile_id: str) -> tuple[str, str] | None:
+    """returns (digest_text, generated_at) 또는 아직 없으면 None."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT last_digest, last_digest_at FROM profiles WHERE profile_id=?", (profile_id,)
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    return row[0], row[1]
