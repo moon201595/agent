@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import time
 import tomllib
 import uuid
@@ -393,9 +394,56 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
     return {"arxiv_id": arxiv_id, "success": False, "attempt": len(attempts_log), "log": attempts_log}
 
 
+def launch_background(arxiv_id: str) -> str:
+    """④⑤가 끝나는 즉시 ⑦을 별도 프로세스로 무인 실행한다 — 사람의 승인
+    클릭을 기다리지 않는다.
+
+    2026-08-24: 원래 이 트리거는 review_app.py의 "✅ 승인" 버튼 클릭
+    안에 있었다("⑥→⑦ 연결" 주석 참고). "코드 재현까지 다 끝난 상태로
+    자동으로 이메일을 보내야 하는데, 그 사이에 승인 버튼을 누가 언제
+    누르냐"는 지적을 받아 하네스 전체에서 승인/반려 게이트를 없앴다 —
+    이제 요약이 저장되면(④⑤ 완료) 예외 없이 곧바로 ⑦로 넘어간다("없으면
+    없는대로, 있으면 코드재현까지 다 한 상태로"). 이 함수를 docker_runner.py
+    (⑦을 소유한 모듈)로 옮긴 이유: review_app.py(수동 검색·PDF 업로드
+    흐름)와 batch_summarize.py(자동 delta 스캔 흐름) 둘 다 트리거해야
+    하는데, "언제·어떻게 실행할지"가 두 곳에 따로 있으면 한쪽만 고치고
+    다른 쪽을 놓치는 사고가 나기 쉽다 — 한 곳에만 있어야 한다.
+
+    reproduce()는 Docker clone+install+run을 최대 3회 재시도하는 무거운
+    작업이라(최악의 경우 후보당 install 15분+run 2분) 호출부를 막지 않고
+    별도 프로세스로 띄운다 — batch_summarize.py와 같은 "실행은 트리거하지만
+    그다음은 무인으로 돈다" 패턴. 이미 성공 기록이 있으면 다시 안 돌리고,
+    이미 실행 중이면(마커 파일) 중복 실행하지 않는다.
+    """
+    with server._db() as con:
+        rows = con.execute(
+            "SELECT success FROM repro_results WHERE arxiv_id=?", (arxiv_id,)
+        ).fetchall()
+    if any(r["success"] for r in rows):
+        return "이미 성공 기록이 있어 재실행하지 않음"
+
+    server.REPRO_DIR.mkdir(parents=True, exist_ok=True)
+    marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
+    if marker.exists():
+        return "이미 실행 중"
+    marker.write_text(server._now(), encoding="utf-8")
+    log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
+
+    # docker_runner.py 자체의 __main__은 마커 파일을 모르므로, 마커 정리까지
+    # 포함한 짧은 래퍼를 셸로 실행한다 — 이 파일의 다른 코드는 안 건드림.
+    wrapper = f'"{sys.executable}" docker_runner.py "{arxiv_id}"; rm -f "{marker}"'
+    with open(log_path, "w", encoding="utf-8") as f:
+        subprocess.Popen(
+            ["/bin/bash", "-c", wrapper],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=f, stderr=subprocess.STDOUT,
+            start_new_session=True,  # 호출한 프로세스(streamlit/batch_summarize.py)가 끝나도 안 죽게
+        )
+    return "코드 재현을 백그라운드에서 시작함"
+
+
 if __name__ == "__main__":
     import json
-    import sys
 
     for aid in sys.argv[1:]:
         print(json.dumps(reproduce(aid), ensure_ascii=False, indent=2, default=str))
