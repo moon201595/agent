@@ -35,7 +35,12 @@ def _build_query(
     query: str, category: str | None, since: datetime, until: datetime,
     use_server_side_range: bool,
 ) -> str:
-    q = f"all:{query}"
+    # query에 이미 필드 한정자(예: "all:agent OR all:\"digital twin\"")가 있으면
+    # 그대로 쓰고, 없으면("agent" 같은 맨 단어) 기본 all: 을 붙인다 — 프로필의
+    # core_topics를 OR로 조립한 완성된 쿼리를 그대로 넘길 수 있게 하기 위해서다
+    # (run_profile_scan.py 참고). 콜론 유무로만 판단하는 건 단순하지만, arXiv
+    # 필드 한정자가 전부 "이름:" 형태라 실용적으로 충분하다.
+    q = query if ":" in query else f"all:{query}"
     if category:
         q = f"cat:{category} AND ({q})"
     if use_server_side_range:
