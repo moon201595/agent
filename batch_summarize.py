@@ -1,14 +1,18 @@
 """batch_summarize.py — ④ 온디맨드 배치 요약 스크립트.
 
-사람이 실행은 시키지만, 그 다음은 검색→선별→파싱→요약→검증→저장까지 무인으로 돈다.
+사람이 실행은 시키지만, 그 다음은 검색→선별→파싱→요약→검증→저장→재현까지 무인으로 돈다.
 채팅으로 한 단계씩 승인받지 않는다 (docs/PROGRESS.md §8-2 방향).
 
 요약 엔진 호출부는 summarize_engine.py (review_app.py 와 공유).
 ④⑤ 구간은 단일 패스 + 검증 1회만 한다 — 검증 실패해도 자동 재시도하지 않는다.
 이건 이 하네스의 핵심 설계 원칙(검증기를 루프 판정자로 쓰지 않는다)을 그대로 지킨다.
 
-저장된 요약의 review_status 는 항상 'pending' 으로 시작한다 — ⑥ 사람 판단은
-review_app.py 에서 한다.
+2026-08-24: ⑥ 사람 승인 게이트를 하네스 전체에서 없앴다 — "코드 재현까지
+다 끝난 상태로 자동 이메일을 보내야 하는데 승인 버튼을 언제 누르냐"는
+지적을 받아들인 것. 그래서 ④⑤가 끝나면(요약 저장) 곧바로 ⑦(코드 재현)이
+자동으로 시작된다(docker_runner.launch_background) — 사람이 따로 승인할
+필요가 없다. review_status 컬럼 자체는 DB에 남아있지만(값은 항상
+'pending') 더 이상 어떤 흐름도 이 값으로 무언가를 막지 않는다.
 
 사용법:
     python batch_summarize.py --ids 2505.13033 2405.15793
@@ -28,6 +32,7 @@ from pathlib import Path
 
 import httpx
 
+import docker_runner
 import server
 import summarize_engine as engine
 
@@ -67,13 +72,20 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         await server.save_summary(server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=summary))
     )
     verification = save_result.get("verification", {})
+
+    # ⑥ 승인 게이트 없이 곧바로 ⑦로 넘어간다(2026-08-24, 모듈 docstring
+    # 참고) — Docker clone+install+run은 무거운 작업이라 여기서 기다리지
+    # 않고 별도 프로세스로 띄우기만 하고 바로 다음 논문으로 넘어간다.
+    repro_msg = docker_runner.launch_background(arxiv_id)
+
     print(
         f"[{arxiv_id}] 완료 — engine={used_engine} "
         f"pass_ratio={verification.get('pass_ratio')} "
         f"({verification.get('matched')}/{verification.get('total_numbers')}) "
-        "— review_status=pending, review_app.py 에서 검토할 것"
+        f"— ⑦ {repro_msg}"
     )
-    return {"arxiv_id": arxiv_id, "status": "done", "engine": used_engine, **verification}
+    return {"arxiv_id": arxiv_id, "status": "done", "engine": used_engine,
+            "repro": repro_msg, **verification}
 
 
 async def _resolve_targets(args: argparse.Namespace) -> list[str]:

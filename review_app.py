@@ -1,16 +1,22 @@
-"""review_app.py — ⑥ 사람 판단 UI (Streamlit).
+"""review_app.py — 요약·검증·재현 결과를 보는 화면 (Streamlit).
 
-키워드로 논문을 검색해 요약을 생성하고, 생성된 요약을 사람이 보고 승인·반려하는
-화면. server.py 는 판단하지 않는다는 원칙을 그대로 지킨다 — 승인/반려 버튼을
-누르는 게 "판단"이고, 이 파일은 그 결과를 server.set_review_status() 로 저장만
-시킨다.
+키워드로 논문을 검색해 요약을 생성하고, 검증·코드 재현까지 자동으로 끝난
+결과를 보여준다. server.py 는 판단하지 않는다는 원칙을 그대로 지킨다 —
+이 파일도 결과를 표시만 할 뿐 무엇을 승인·반려할지 판단하지 않는다.
+
+2026-08-24: ⑥ 사람 승인 게이트를 하네스 전체에서 없앴다("코드 재현까지
+다 끝난 상태로 자동 이메일을 보내야 하는데 승인을 언제 하냐" 지적) — ④⑤가
+끝나면(요약 저장) 곧바로 ⑦(코드 재현)이 자동으로 시작된다
+(docker_runner.launch_background). 이 화면은 그 결과(검증·재현)를 사람이
+읽어보는 자리로 남는다 — "판단해서 다음 단계로 넘길지 막을지"가 아니라
+"무슨 일이 있었는지 확인"이 이 화면의 역할이다.
 
 실행:
     streamlit run review_app.py
 
 검증 실패(수치 불일치)는 "오류 확정"이 아니라 "사람이 확인" 신호라는 게 이
-하네스의 원칙이다 (docs/PROGRESS.md §6). 그래서 반려 사유를 강제하지 않고,
-불일치 항목을 원문 대조하기 쉽게 문맥과 함께 보여주는 데 집중했다.
+하네스의 원칙이다 (docs/PROGRESS.md §6). 그래서 불일치 항목을 원문 대조하기
+쉽게 문맥과 함께 보여주는 데 집중했다.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ import httpx
 import streamlit as st
 
 import digest
+import docker_runner
 import research_profile
 import run_profile_scan
 import sentence_grounding
@@ -378,15 +385,18 @@ def _inject_custom_style() -> None:
         .recent-meta { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
         .recent-time { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
 
-        /* 상태 배지 — review_status 3종만 실제로 있어(작성/처리중 같은
-           중간 상태는 없음, 2026-08-14) 그 3개만 색을 준다. */
+        /* 상태 배지 — 2026-08-24: ⑥ 승인 게이트를 없애면서 이 배지가 가리키는
+           대상이 review_status(사람 판단)에서 ⑦ 재현 상태(_pipeline_status)로
+           바뀌었다. 다섯 상태만 실제로 있다(중간 상태를 지어내지 않음). */
         .status-pill {
             display: inline-block; font-size: 0.75rem; font-weight: 600;
             padding: 0.12rem 0.55rem; border-radius: 999px; white-space: nowrap;
         }
-        .status-pill.pending { background: #FEF3C7; color: #92400E; }
-        .status-pill.approved { background: #DCFCE7; color: #166534; }
-        .status-pill.rejected { background: #FEE2E2; color: #991B1B; }
+        .status-pill.repro_pending { background: #FEF3C7; color: #92400E; }
+        .status-pill.repro_running { background: #DBEAFE; color: #1E40AF; }
+        .status-pill.repro_ok { background: #DCFCE7; color: #166534; }
+        .status-pill.repro_failed { background: #FEE2E2; color: #991B1B; }
+        .status-pill.no_code { background: #FFEDD5; color: #9A3412; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -403,17 +413,15 @@ def run_async(coro):
 # ---------------------------------------------------------------- 공용 조회
 
 
-def _fetch_review_rows(show_all: bool) -> list[dict]:
+def _fetch_review_rows() -> list[dict]:
+    """⑥ 게이트가 없어져(2026-08-24) review_status로 거를 이유가 없다 —
+    저장된 요약은 전부 이미 ④⑤ 끝난 것이고 곧 ⑦도 자동으로 붙는다."""
     with server._db() as con:
-        query = """
-            SELECT s.arxiv_id, p.title, s.path, s.numbers_total, s.numbers_matched,
-                   s.review_status, s.review_note, s.created_at
-            FROM summaries s JOIN papers p ON s.arxiv_id = p.arxiv_id
-        """
-        if not show_all:
-            query += " WHERE s.review_status = 'pending' OR s.review_status IS NULL"
-        query += " ORDER BY s.created_at DESC"
-        rows = con.execute(query).fetchall()
+        rows = con.execute(
+            "SELECT s.arxiv_id, p.title, s.path, s.numbers_total, s.numbers_matched, "
+            "s.created_at FROM summaries s JOIN papers p ON s.arxiv_id = p.arxiv_id "
+            "ORDER BY s.created_at DESC"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -823,6 +831,11 @@ async def _summarize_target(
         f"({v.get('matched')}/{v.get('total_numbers')})"
     )
 
+    # ⑥ 승인 게이트 없이 저장 직후 곧바로 ⑦로 넘어간다(2026-08-24, batch_
+    # summarize.py의 같은 변경과 동일 이유) — 별도 프로세스라 여기서 안 막힘.
+    repro_msg = docker_runner.launch_background(arxiv_id)
+    status_box.write(f"⑦ [{arxiv_id}] {repro_msg}")
+
     if allow_title_backfill:
         extracted = server.extract_title_from_summary(summary)
         if extracted and extracted != title:
@@ -1105,7 +1118,7 @@ def render_search_tab():
     _CARD_HEIGHT = 300
     recent_card = col_recent.container(border=True, height=_CARD_HEIGHT, key="recent_card")
     recent_card.markdown("**🕓 최근 활동**")
-    recent_rows = _fetch_review_rows(True)[:6]
+    recent_rows = _fetch_review_rows()[:6]
     if not recent_rows:
         recent_card.caption("아직 저장된 논문 없음")
     else:
@@ -1120,16 +1133,14 @@ def render_search_tab():
         # 굵게 하니 상태 배지와 같이 있을 때 너무 튄다는 지적(2026-08-14
         # 네 번째) — 일반 글씨로 바꾼다.
         for r in recent_rows:
-            status = r["review_status"] or "pending"
-            dot = _STATUS_EMOJI.get(status, "🟡")
-            label = _STATUS_LABEL.get(status, "검토 대기")
+            status_key, dot, label = _pipeline_status(r["arxiv_id"])
             rel = _relative_time(r["created_at"] or "")
             recent_card.markdown(
                 f"<div class='recent-item'>"
                 f"<div class='recent-title-row'>"
                 f"<span class='recent-title'>{dot} {r['title'][:70]}</span>"
                 f"<span class='recent-meta'>"
-                f"<span class='status-pill {status}'>{label}</span>"
+                f"<span class='status-pill {status_key}'>{label}</span>"
                 f"<span class='recent-time'>{rel}</span>"
                 f"</span></div></div>",
                 unsafe_allow_html=True,
@@ -1154,20 +1165,12 @@ def render_search_tab():
         st.rerun()
 
 
-# ---------------------------------------------------------------- ⑥→⑦ 연결
-# "마무리" 슬라이드에 남은 유일한 우선순위로 적어 둔 항목: review_app.py에서
-# 승인(⑥)한 결과를 docker_runner.reproduce()(⑦)로 넘기는 연결부가 그동안
-# 수동(arxiv_id를 직접 CLI에 넣어 호출)이었다. 여기서 그 연결을 만든다.
-#
-# reproduce()는 Docker clone+install+run을 최대 3회 재시도하는 무거운 작업이라
-# (최악의 경우 후보당 install 15분+run 2분 — INSTALL_TIMEOUT/RUN_TIMEOUT,
-# docker_runner.py 참고) 승인 버튼 클릭 안에서 동기로 돌리면 화면이 그만큼
-# 멈춘다. batch_summarize.py와 같은 패턴 — "사람이 실행은 시키지만 그 다음은
-# 무인으로 돈다" — 그대로 따라, 승인 시 별도 프로세스로 무인 실행만 시키고
-# 화면은 즉시 돌아온다. 진행 상황은 결과가 쌓이는 repro_results 테이블로
-# 나중에 확인한다(server.save_repro_result — docker_runner.py가 이미 쓰고
-# 있음, 이 파일은 그 결과를 조회만 한다 — server.py는 판단하지 않는다는
-# 원칙과 동일하게 이 파일도 실행 여부만 트리거하고 성공 판정엔 관여 안 함).
+# ---------------------------------------------------------------- ⑦ 상태 조회 (읽기 전용)
+# 2026-08-24: 실행 트리거(docker_runner.launch_background)는 docker_runner.py로
+# 옮겼다 — review_app.py(수동 검색·PDF 업로드)와 batch_summarize.py(자동
+# delta 스캔) 둘 다 ④⑤ 저장 직후 그걸 호출해서 ⑦이 승인 없이 곧바로
+# 시작된다. 여기 남은 건 화면에 보여주기 위한 읽기 전용 조회뿐 — server.py가
+# 판단하지 않는다는 원칙과 같은 이유로, 이 파일도 실행하지 않고 결과만 본다.
 
 
 def _fetch_repro_rows(arxiv_id: str) -> list[dict]:
@@ -1182,40 +1185,38 @@ def _fetch_repro_rows(arxiv_id: str) -> list[dict]:
 
 
 def _reproduce_running(arxiv_id: str) -> bool:
-    """docker_runner.py가 이 arxiv_id로 이미 떠 있는지 확인 — 승인 버튼을
-    실수로 두 번 눌러도(재승인) 같은 재현을 중복 실행하지 않는다."""
+    """docker_runner.py가 이 arxiv_id로 이미 떠 있는지 — 화면 표시용."""
     marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
     return marker.exists()
 
 
-def _launch_reproduce_background(arxiv_id: str) -> str:
-    """⑦을 별도 프로세스로 무인 실행한다. 이미 성공 기록이 있으면(재현
-    완료됨) 다시 돌리지 않고, 이미 실행 중이면 중복 실행하지 않는다."""
+def _pipeline_status(arxiv_id: str) -> tuple[str, str, str]:
+    """returns (css_key, emoji, label). 2026-08-24, ⑥ 승인 게이트 제거 이후
+    화면에 보여줄 "지금 상태"는 review_status(사람 판단)가 아니라 ⑦ 재현
+    상태다 — ④⑤는 저장되는 순간 이미 끝나 있어서 더 볼 게 없고, ⑦만 시간이
+    걸리는 뒷단이라 진행 상태가 의미 있다.
+
+    repro_results에 성공 행이 있으면 성공, 행은 있는데 성공이 없으면 실패,
+    마커 파일이 있으면 진행 중, 로그가 "후보 없음"으로 끝났으면 코드 없음,
+    그 무엇도 아니면 방금 저장돼 곧 시작될 것(launch_background 호출과
+    첫 로그 기록 사이의 짧은 틈에만 보임) — 이 다섯 개가 실제로 있는
+    전부다(중간 상태를 지어내지 않는다, _render_repro_status와 같은 원칙)."""
+    if _reproduce_running(arxiv_id):
+        return "repro_running", "🔵", "재현 중"
     rows = _fetch_repro_rows(arxiv_id)
     if any(r["success"] for r in rows):
-        return "이미 성공 기록이 있어 재실행하지 않음"
-    if _reproduce_running(arxiv_id):
-        return "이미 실행 중"
-
-    server.REPRO_DIR.mkdir(parents=True, exist_ok=True)
-    marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
-    marker.write_text(server._now(), encoding="utf-8")
+        return "repro_ok", "🟢", "재현 성공"
+    if rows:
+        return "repro_failed", "🔴", "재현 실패"
     log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
-
-    # docker_runner.py 자체의 __main__은 마커 파일을 모르므로, 마커 정리까지
-    # 포함한 짧은 래퍼를 셸로 실행한다 — docker_runner.py 코드 자체는 안 건드림.
-    wrapper = (
-        f'"{sys.executable}" docker_runner.py "{arxiv_id}"; '
-        f'rm -f "{marker}"'
-    )
-    with open(log_path, "w", encoding="utf-8") as f:
-        subprocess.Popen(
-            ["/bin/bash", "-c", wrapper],
-            cwd=str(Path(__file__).resolve().parent),
-            stdout=f, stderr=subprocess.STDOUT,
-            start_new_session=True,  # 이 스트림릿 요청 처리가 끝나도 안 죽게
-        )
-    return "코드 재현을 백그라운드에서 시작함"
+    if log_path.exists() and log_path.read_text(encoding="utf-8").strip():
+        try:
+            outcome = json.loads(log_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            outcome = {}
+        if not outcome.get("success"):
+            return "no_code", "🟠", "코드 없음"
+    return "repro_pending", "🟡", "재현 대기"
 
 
 # 미리보기에 쓸 언어 힌트 — 있으면 문법 강조가 되고, 없으면 그냥 평문으로
@@ -1233,7 +1234,7 @@ _PREVIEW_SIZE_CAP = 200_000  # 200KB — 이보다 크면 브라우저가 버벅
 def _render_code_browser(arxiv_id: str, local_path: str) -> None:
     """성공한 재현의 clone 코드를 화면에서 직접 열어본다. docker_runner.py가
     성공 시 이 경로에 코드를 남겨 둔다(server.py의 local_path 컬럼) — 이 함수는
-    그걸 읽기만 한다, 실행하지 않는다(승인 화면에서 임의 코드를 또 돌리는 건
+    그걸 읽기만 한다, 실행하지 않는다(이 화면에서 임의 코드를 또 돌리는 건
     별개의 위험이라 스모크 테스트는 이미 끝난 결과만 보여준다)."""
     if not local_path:
         return
@@ -1296,10 +1297,14 @@ def _render_repro_status(arxiv_id: str) -> None:
             st.caption(f"코드 재현: 🟢 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
             _render_code_browser(arxiv_id, best["local_path"])
         else:
-            st.caption(
-                f"코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']}) "
-                "— 승인을 다시 누르면 재시도"
-            )
+            st.caption(f"코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']})")
+            # 2026-08-24: 예전엔 "승인 다시 누르면 재시도"였다 — 승인 버튼
+            # 자체가 없어졌으니 재시도 버튼을 직접 둔다. launch_background는
+            # 성공 기록이 없으면 다시 돌리므로 그대로 재사용.
+            if st.button("🔄 재현 다시 시도", key=f"retry_repro_{arxiv_id}"):
+                msg = docker_runner.launch_background(arxiv_id)
+                st.toast(f"⑦ {msg}")
+                st.rerun()
         return
     # repro_results에 행이 없는 경우 — docker_runner.reproduce()는 저장소 후보가
     # 아예 없으면(code_finder가 못 찾음) server.save_repro_result()를 한 번도
@@ -1309,6 +1314,18 @@ def _render_repro_status(arxiv_id: str) -> None:
     # docker_runner.py __main__이 찍는 JSON 로그에 그 이유가 남으니 거기서 읽는다.
     log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
     if not log_path.exists() or not log_path.read_text(encoding="utf-8").strip():
+        # 2026-08-24: ⑥ 게이트가 있던 시절엔 이 상태(전혀 시도 안 함)가
+        # "아직 승인 안 함"이라는 정상 상태였고, 여기서 조용히 아무것도 안
+        # 그려도 괜찮았다(승인 버튼이 다른 곳에 있었으니까). 게이트가
+        # 없어진 지금은 신규 저장 시 자동으로 시작되지만, 게이트가 있던
+        # 시절에 저장된 기존 논문들은 한 번도 트리거된 적이 없어 그대로
+        # 영영 "대기" 상태로 남는다 — 버튼이 없으면 시작할 방법 자체가
+        # 없는 진짜 빈틈이라 여기 직접 둔다.
+        st.caption("코드 재현: 🟡 아직 시도 안 함")
+        if st.button("🔍 코드 재현 시작", key=f"start_repro_{arxiv_id}"):
+            msg = docker_runner.launch_background(arxiv_id)
+            st.toast(f"⑦ {msg}")
+            st.rerun()
         return
     try:
         outcome = json.loads(log_path.read_text(encoding="utf-8"))
@@ -1326,18 +1343,6 @@ def _render_repro_status(arxiv_id: str) -> None:
             f"코드 재현: 🟠 검색 완료 · 후보 없음 — {reason} "
             "(이 논문엔 공개된 관련 코드 저장소가 없을 수 있음, 설치·실행은 시도 안 함)"
         )
-
-
-# 승인/반려/대기 상태를 색상 원으로 통일해 표시하는 데 검색 탭(최근 활동)과
-# 검토 탭 둘 다에서 쓴다 — 원래 render_review_tab 안에 지역 변수로만 있었는데
-# 검색 탭에도 같은 표시가 필요해져(2026-08-12) 모듈 상수로 뺐다.
-_STATUS_EMOJI = {"pending": "🟡", "approved": "🟢", "rejected": "🔴", None: "🟡"}
-# 참고 이미지(2026-08-14)의 "작성/처리중/검증완료/승인됨/분석중" 같은 세분화된
-# 상태 라벨은 실제 DB에 없는 중간 상태(예: "처리중")까지 지어내는 셈이라
-# 그대로 베끼지 않았다 — review_status가 실제로 갖는 값(pending/approved/
-# rejected) 그대로만 라벨을 붙인다. 저장된 시점엔 이미 요약·검증까지 끝난
-# 상태라 "검토 대기"가 정확한 표현이다.
-_STATUS_LABEL = {"pending": "검토 대기", "approved": "승인됨", "rejected": "반려됨", None: "검토 대기"}
 
 
 def _relative_time(iso_ts: str) -> str:
@@ -1368,48 +1373,36 @@ def _relative_time(iso_ts: str) -> str:
 
 def render_review_tab():
     st.subheader("요약본")
-    # 예전엔 체크박스로 "전체 보기"를 켜야 승인·반려된 것까지 보였다 —
-    # 매번 체크해야 하는 게 번거롭다는 지적(2026-08-12)을 받아 항상 전체를
-    # 보여주는 것으로 기본값을 바꿨다. _fetch_review_rows(show_all=False)
-    # 경로(대기중만 필터)는 다른 데서 안 쓰여서 죽은 코드가 아니라 그냥
-    # 이 화면에서 옵션 자체를 없앤 것 — 함수 시그니처는 그대로 둔다.
-    rows = _fetch_review_rows(True)
+    st.caption(
+        "④⑤(요약·검증)와 ⑦(코드 재현)이 저장 직후 자동으로 끝난 결과입니다 — "
+        "승인 없이 전부 자동으로 처리됩니다(2026-08-24)."
+    )
+    rows = _fetch_review_rows()
 
     if not rows:
         st.info("저장된 요약이 없습니다.")
         return
 
-    # 상단 검색·상태 필터(참고 이미지, 2026-08-14) — 장식이 아니라 실제로
-    # 목록을 걸러낸다. 상태 값은 _STATUS_LABEL에 실제로 있는 3개뿐(작성·
-    # 처리중 같은 중간 상태는 지어내지 않음).
-    col_q, col_status = st.columns([3, 1])
-    query = col_q.text_input(
+    # 상태 필터는 없앴다(2026-08-24) — ⑥ 게이트가 없어져 "검토 대기/승인됨/
+    # 반려됨" 구분 자체가 더 이상 없다. 검색만 남긴다.
+    query = st.text_input(
         "검색", placeholder="🔍 제목, arXiv ID로 검색", label_visibility="collapsed",
-    )
-    status_choice = col_status.selectbox(
-        "상태", ["전체 상태", "검토 대기", "승인됨", "반려됨"], label_visibility="collapsed",
     )
     if query:
         q = query.strip().lower()
         rows = [r for r in rows if q in r["title"].lower() or q in r["arxiv_id"].lower()]
-    if status_choice != "전체 상태":
-        label_to_status = {"검토 대기": "pending", "승인됨": "approved", "반려됨": "rejected"}
-        target = label_to_status[status_choice]
-        rows = [r for r in rows if (r["review_status"] or "pending") == target]
 
     if not rows:
-        st.caption("검색·필터 조건에 맞는 요약이 없습니다.")
+        st.caption("검색 조건에 맞는 요약이 없습니다.")
         return
 
     for row in rows:
         arxiv_id = row["arxiv_id"]
-        status = row["review_status"] or "pending"
-        emoji = _STATUS_EMOJI.get(status, "🟡")
-        # "최근 활동"처럼 여기도 제목 옆에 상태·상대시간을 보여 달라는
-        # 요청(2026-08-14 세 번째) — 단, st.expander의 label은 순수
-        # 텍스트만 받고 HTML을 못 넣어(색 있는 배지 불가) 그 카드에서 쓴
-        # status-pill 대신 이모지 + 일반 텍스트로 같은 정보를 붙인다.
-        label = _STATUS_LABEL.get(status, "검토 대기")
+        # "최근 활동"과 같은 상태 표시(_pipeline_status) — 이제 사람 판단이
+        # 아니라 ⑦ 재현 상태를 보여준다(2026-08-24). st.expander의 label은
+        # 순수 텍스트만 받아 색 있는 배지는 못 넣고, 이모지 + 일반 텍스트로
+        # 같은 정보를 붙인다.
+        _status_key, emoji, label = _pipeline_status(arxiv_id)
         rel = _relative_time(row["created_at"] or "")
         header = (
             f"{emoji} {row['title']} ({arxiv_id}) — "
@@ -1492,11 +1485,9 @@ def render_review_tab():
                     else:
                         st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
 
-            if row["review_note"]:
-                st.caption(f"이전 검토 메모: {row['review_note']}")
-
-            if status == "approved":
-                _render_repro_status(arxiv_id)
+            # ⑦은 이제 항상 자동으로 붙는다(2026-08-24) — "승인된 것만"
+            # 이라는 조건이 없어졌다, 저장된 모든 논문이 대상.
+            _render_repro_status(arxiv_id)
 
             if st.toggle("🖼️ 그림·표 이미지 보기", key=f"imgtoggle_{arxiv_id}"):
                 _render_image_gallery(arxiv_id)
@@ -1509,47 +1500,29 @@ def render_review_tab():
                 st.markdown(_prettify_summary_markdown(summary_text))
             st.markdown("---")
 
-            # 예전엔 반려 사유 입력창이 "반려" 버튼 칸(col2) 안에만 있어서
-            # 그 칸만 위로 한 줄 더 밀리고, 세 버튼이 승인/재생성은 위쪽 줄에
-            # 반려만 아래쪽 줄에 있는 것처럼 어긋나 보였다(2026-08-12, 사용자
-            # 스크린샷으로 지적: "위치가 중구난방"). 입력창을 버튼 행 위로
-            # 통째로 빼서 버튼 3개가 같은 줄에서 승인·반려·재생성 순서로
-            # 나란히 정렬되게 했다.
-            #
-            # st.columns(3)은 셋을 화면 전체 폭에 균등 배분해 버튼 사이가
-            # 화면 폭만큼 벌어져 보였다("서로 너무 떨어져있다" 지적, 2026-08-12
-            # 후속) — 버튼 폭만큼만 좁은 칸 3개를 만들고 남는 공간은 오른쪽
-            # 여백 칸 하나로 몰아, 버튼들이 왼쪽에 붙어 서로 가깝게 보이도록
-            # 바꿨다.
-            reason = st.text_input("반려 사유 (선택)", key=f"reason_{arxiv_id}")
-            col1, col2, col3, _spacer = st.columns([1, 1, 1, 5])
-            with col1:
-                if st.button("✅ 승인", key=f"approve_{arxiv_id}"):
-                    server.set_review_status(arxiv_id, "approved")
-                    msg = _launch_reproduce_background(arxiv_id)
-                    st.toast(f"⑥→⑦ {msg}")
-                    st.rerun()
-            with col2:
-                if st.button("❌ 반려", key=f"reject_{arxiv_id}"):
-                    server.set_review_status(arxiv_id, "rejected", note=reason)
-                    st.rerun()
-            with col3:
-                if st.button("🔄 재생성", key=f"regen_{arxiv_id}"):
-                    with st.spinner("재생성 중..."):
-                        template = engine.select_template(row["title"] or "")
-                        paper_text = server.read_full_text(arxiv_id)
+            # 승인/반려 버튼은 없앴다(2026-08-24, ⑥ 게이트 제거) — 남은
+            # 유일한 수동 액션은 "재생성"이고, 이건 ⑥과 무관한 별개의
+            # 액션이다("이 요약이 마음에 안 드니 다시 만들어라"). 재생성도
+            # 저장되는 순간 ⑦이 자동으로 다시 붙는다 — 다른 저장 경로와
+            # 동일한 규칙.
+            if st.button("🔄 재생성", key=f"regen_{arxiv_id}"):
+                with st.spinner("재생성 중..."):
+                    template = engine.select_template(row["title"] or "")
+                    paper_text = server.read_full_text(arxiv_id)
 
-                        async def _regen():
-                            async with httpx.AsyncClient() as client:
-                                return await engine.summarize(client, paper_text, template)
+                    async def _regen():
+                        async with httpx.AsyncClient() as client:
+                            return await engine.summarize(client, paper_text, template)
 
-                        new_summary, used_engine = run_async(_regen())
-                        run_async(
-                            server.save_summary(
-                                server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=new_summary)
-                            )
+                    new_summary, used_engine = run_async(_regen())
+                    run_async(
+                        server.save_summary(
+                            server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=new_summary)
                         )
-                    st.rerun()
+                    )
+                    repro_msg = docker_runner.launch_background(arxiv_id)
+                    st.toast(f"⑦ {repro_msg}")
+                st.rerun()
 
 
 # ---------------------------------------------------------------- 리서치 프로필 (오케스트레이터 관리자 화면)
@@ -1562,8 +1535,9 @@ def render_review_tab():
 #
 # 이 화면은 운영자(나) 전용이라고 봤다 — 최종 사용자는 다이제스트를
 # 메일(나중에)로만 받고, 이 화면에서 프로필을 만들고 "지금 상황"(실행
-# 이력·상태)을 보는 사람은 따로 있다는 전제. 그래서 승인/반려 같은 ⑥
-# 게이트는 여기 없다 — 그 게이트는 기존 요약 검토 탭의 몫 그대로다.
+# 이력·상태)을 보는 사람은 따로 있다는 전제. 승인/반려 게이트는 하네스
+# 전체에서 없앴으므로(2026-08-24) 여기도, 요약 검토 탭도 마찬가지로 없다 —
+# ④⑤⑦이 저장 직후 자동으로 끝나고, 사람은 결과를 읽기만 한다.
 
 
 def _profile_summary_line(p: dict) -> str:
@@ -1746,34 +1720,42 @@ def _fetch_sidebar_lists() -> dict:
     """사이드바 '현황' — 숫자만 있으면 어떤 논문인지 안 보인다는 지적을
     받아(2026-08-12), 카테고리별 실제 논문 목록을 반환한다. 카테고리는
     서로 배타적인 버킷이 아니라 "이 조건에 해당하는 논문이 뭐가 있나"를
-    보여주는 4개의 서로 다른 렌즈다 — 예를 들어 승인됨이면서 동시에
-    재현 성공인 논문은 두 목록에 다 뜬다(정상 — 강제로 하나만 고르게
-    나누면 오히려 정보를 잃는다)."""
+    보여주는 서로 다른 렌즈다.
+
+    2026-08-24: ⑥ 승인 게이트가 없어지면서 "저장된 논문(대기중)"/"승인됨"
+    구분이 사라졌다 — 모든 저장된 논문이 곧 ⑦까지 자동으로 붙으므로,
+    이제 의미 있는 축은 review_status가 아니라 ⑦ 재현 결과다. "코드 없음"
+    판정도 예전엔 "승인된 논문 중"으로 좁혔던 걸 "저장된 논문 전체"로
+    넓혔다 — 승인이라는 전제 자체가 없어졌으니 좁힐 이유가 없다."""
     with server._db() as con:
-        pending = con.execute(
+        all_papers = con.execute(
             "SELECT p.arxiv_id, p.title FROM papers p JOIN summaries s ON p.arxiv_id=s.arxiv_id "
-            "WHERE s.review_status='pending' OR s.review_status IS NULL ORDER BY p.title"
-        ).fetchall()
-        approved = con.execute(
-            "SELECT p.arxiv_id, p.title FROM papers p JOIN summaries s ON p.arxiv_id=s.arxiv_id "
-            "WHERE s.review_status='approved' ORDER BY p.title"
+            "ORDER BY p.title"
         ).fetchall()
         repro_ok = con.execute(
             "SELECT DISTINCT p.arxiv_id, p.title FROM papers p "
             "JOIN repro_results r ON p.arxiv_id=r.arxiv_id "
             "WHERE r.success=1 ORDER BY p.title"
         ).fetchall()
+        repro_failed_ids = {
+            r["arxiv_id"] for r in con.execute(
+                "SELECT DISTINCT arxiv_id FROM repro_results WHERE arxiv_id NOT IN "
+                "(SELECT arxiv_id FROM repro_results WHERE success=1)"
+            ).fetchall()
+        }
         repro_attempted = {
             r["arxiv_id"] for r in con.execute("SELECT DISTINCT arxiv_id FROM repro_results").fetchall()
         }
 
-    # "코드 없음" — repro_results에 행이 아예 없는 승인 논문 중 로그 파일이
+    repro_failed = [dict(r) for r in all_papers if r["arxiv_id"] in repro_failed_ids]
+
+    # "코드 없음" — repro_results에 행이 아예 없는 논문 중 로그 파일이
     # "저장소 후보 없음"으로 끝난 것만(_render_repro_status 폴백과 동일 이유
     # — code_finder가 후보를 하나도 못 찾으면 save_repro_result가 안 불린다).
     # 후보는 있었는데 설치·실행에 실패한 경우는 여기 안 넣는다 — 그건
-    # repro_results에 실패 행으로 남아 "코드가 없다"와는 다른 사실이라서다.
+    # repro_failed에 이미 잡힌다.
     no_code = []
-    for r in approved:
+    for r in all_papers:
         aid = r["arxiv_id"]
         if aid in repro_attempted:
             continue
@@ -1791,9 +1773,9 @@ def _fetch_sidebar_lists() -> dict:
             no_code.append(dict(r))
 
     return {
-        "pending": [dict(r) for r in pending],
-        "approved": [dict(r) for r in approved],
+        "all": [dict(r) for r in all_papers],
         "repro_ok": [dict(r) for r in repro_ok],
+        "repro_failed": repro_failed,
         "no_code": no_code,
     }
 
@@ -1889,9 +1871,9 @@ with st.sidebar:
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     st.caption("현황")
     lists = _fetch_sidebar_lists()
-    _render_sidebar_category("저장된 논문", lists["pending"], "🟡")
-    _render_sidebar_category("승인됨", lists["approved"], "🟢")
+    _render_sidebar_category("저장된 논문", lists["all"], "🟡")
     _render_sidebar_category("재현 성공", lists["repro_ok"], "🟢")
+    _render_sidebar_category("재현 실패", lists["repro_failed"], "🔴")
     _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
 
     # 검색·요약이 실제로 도는 동안만 나타나는 진행 표시(2026-08-14 요청,
