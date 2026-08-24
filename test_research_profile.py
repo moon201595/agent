@@ -119,3 +119,41 @@ def test_next_since_scoped_per_profile(tmp_path):
     # p1의 기록에 영향받지 않고 p2는 여전히 "이력 없음" 기본값을 씀
     expected = datetime.now(timezone.utc) - timedelta(days=7)
     assert abs((since_p2 - expected).total_seconds()) < 5
+
+
+def test_list_runs_returns_newest_first_scoped_per_profile(tmp_path):
+    db = tmp_path / "t.db"
+    rp.record_run(db, "p1", "arxiv", "old query",
+                   window_from=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                   window_to=datetime(2026, 8, 10, tzinfo=timezone.utc),
+                   status="done", retrieved_count=3,
+                   started_at="2026-08-10T00:00:00+00:00")
+    rp.record_run(db, "p1", "arxiv", "new query",
+                   window_from=datetime(2026, 8, 10, tzinfo=timezone.utc),
+                   window_to=datetime(2026, 8, 17, tzinfo=timezone.utc),
+                   status="partial", retrieved_count=50,
+                   started_at="2026-08-17T00:00:00+00:00")
+    rp.record_run(db, "p2", "arxiv", "other profile",
+                   window_from=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                   window_to=datetime(2026, 8, 17, tzinfo=timezone.utc),
+                   status="done", retrieved_count=1,
+                   started_at="2026-08-17T00:00:00+00:00")
+
+    runs = rp.list_runs(db, "p1")
+
+    assert len(runs) == 2
+    assert runs[0]["query"] == "new query"  # 최신이 먼저
+    assert runs[1]["query"] == "old query"
+    assert all(r["profile_id"] == "p1" for r in runs)
+
+
+def test_list_runs_respects_limit(tmp_path):
+    db = tmp_path / "t.db"
+    for i in range(5):
+        rp.record_run(db, "p", "arxiv", f"q{i}",
+                       window_from=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                       window_to=datetime(2026, 8, 2, tzinfo=timezone.utc),
+                       status="done", retrieved_count=1,
+                       started_at=f"2026-08-{i+1:02d}T00:00:00+00:00")
+
+    assert len(rp.list_runs(db, "p", limit=3)) == 3

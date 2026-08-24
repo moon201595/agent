@@ -164,6 +164,19 @@ def get_recipients(db_path: Path, profile_id: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def list_runs(db_path: Path, profile_id: str, limit: int = 10) -> list[dict]:
+    """review_app.py 리서치 프로필 탭이 "지금 상황"을 보여줄 때 쓴다 — 최신
+    실행이 먼저 오게 정렬."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT * FROM search_runs WHERE profile_id=? ORDER BY started_at DESC LIMIT ?",
+            (profile_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_profiles(db_path: Path) -> list[str]:
     init_db(db_path)
     with sqlite3.connect(db_path) as con:
