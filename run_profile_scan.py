@@ -79,10 +79,16 @@ async def scan_profile(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="프로필 하나로 delta 검색 + 스코어링을 한 번 돌린다")
+    import digest
+    import research_profile
+
+    parser = argparse.ArgumentParser(description="프로필 하나로 delta 검색 + 스코어링 + 다이제스트를 한 번 돌린다")
     parser.add_argument("profile_id")
     parser.add_argument("--db", default=None, help="대상 SQLite DB 경로 (기본: server.DB_PATH)")
     parser.add_argument("--max-pages", type=int, default=10)
+    parser.add_argument("--json", action="store_true", help="다이제스트 대신 원본 결과를 JSON으로 출력")
+    parser.add_argument("--send", action="store_true",
+                         help="다이제스트를 이메일로 발송 — SMTP 미설정 상태라 지금은 항상 실패함(의도됨)")
     args = parser.parse_args()
 
     db_path = Path(args.db) if args.db else server.DB_PATH
@@ -92,7 +98,20 @@ def main() -> None:
             return await scan_profile(db_path, args.profile_id, client, max_pages=args.max_pages)
 
     result = asyncio.run(_run())
-    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return
+
+    profile = research_profile.get_profile(db_path, args.profile_id)
+    digest_text = digest.generate_digest(result, profile["name"] if profile else args.profile_id)
+    print(digest_text)
+
+    if args.send:
+        import email_delivery
+        recipients = research_profile.get_recipients(db_path, args.profile_id)
+        subject = f"[HARNESS Daily] {profile['name'] if profile else args.profile_id}"
+        email_delivery.send_digest_email(digest_text, subject, recipients)  # 지금은 항상 NotImplementedError
 
 
 if __name__ == "__main__":
