@@ -11,14 +11,40 @@ import find_new_papers
 import server
 
 
-def test_build_query_default_has_no_range_clause():
-    """use_server_side_range 기본 False — 아직 라이브로 검증 못 한 가설이라
-    검증 전엔 안 켠다(모듈 docstring 참고)."""
+def test_build_query_with_range_disabled_has_no_range_clause():
+    """명시적으로 끄면(use_server_side_range=False) 절이 안 붙어야 한다 —
+    라이브 검증 전 방어적으로 꺼둘 수 있는 경로는 남겨둔다."""
     since = datetime(2026, 8, 1, tzinfo=timezone.utc)
     until = datetime(2026, 8, 20, tzinfo=timezone.utc)
     q = find_new_papers._build_query("agent", None, since, until, use_server_side_range=False)
     assert q == "all:agent"
     assert "submittedDate" not in q
+
+
+def test_find_new_papers_since_defaults_to_server_side_range(monkeypatch):
+    """2026-08-24 라이브 확인 완료(모듈 docstring 참고: 같은 조건에서 범위
+    절 없이는 6페이지에도 status=partial, 켜면 3페이지에 status=done) —
+    기본값이 True로 바뀐 걸 회귀 테스트로 고정해둔다."""
+    async def fake_throttled(client, params):
+        assert "submittedDate" in params["search_query"]  # 기본값으로 범위 절이 붙어야 함
+
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    def fake_parse(_xml_text):
+        return []
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+
+    async def main():
+        since = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        return await find_new_papers.find_new_papers_since(None, "agent", since)  # 기본값 그대로 호출
+
+    result = asyncio.run(main())
+    assert "submittedDate" in result["query"]
 
 
 def test_build_query_passes_through_already_field_qualified_query_unchanged():
@@ -37,7 +63,20 @@ def test_build_query_with_category_and_server_side_range():
     since = datetime(2026, 8, 1, tzinfo=timezone.utc)
     until = datetime(2026, 8, 20, tzinfo=timezone.utc)
     q = find_new_papers._build_query("agent", "cs.AI", since, until, use_server_side_range=True)
-    assert q == "cat:cs.AI AND (all:agent) AND submittedDate:[202608010000 TO 202608200000]"
+    assert q == "(cat:cs.AI AND (all:agent)) AND submittedDate:[202608010000 TO 202608200000]"
+
+
+def test_build_query_wraps_or_expression_before_anding_range_clause():
+    """2026-08-24 실측으로 발견한 버그의 회귀 테스트: q에 OR이 있으면 괄호로
+    감싸지 않고 그냥 "AND submittedDate:[...]"를 이어붙이면 arXiv 파서가
+    OR의 앞쪽 항엔 날짜 제약을 안 건다(실측: 2026년 1월로 좁혀 요청했는데
+    8월 논문이 나옴). 괄호로 감싸면 전체에 걸린다는 것까지 같은 방식으로
+    재확인함."""
+    since = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    or_query = 'all:agent OR all:"digital twin"'
+    q = find_new_papers._build_query(or_query, None, since, until, use_server_side_range=True)
+    assert q == '(all:agent OR all:"digital twin") AND submittedDate:[202608010000 TO 202608200000]'
 
 
 def test_find_new_papers_since_wires_collect_since_to_real_arxiv_helpers(monkeypatch):
