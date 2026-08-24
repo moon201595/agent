@@ -21,6 +21,18 @@ def test_build_query_default_has_no_range_clause():
     assert "submittedDate" not in q
 
 
+def test_build_query_passes_through_already_field_qualified_query_unchanged():
+    """run_profile_scan.py가 프로필 core_topics를 "all:agent OR all:\"digital
+    twin\""처럼 이미 필드 한정자 붙여서 넘긴다 — 여기서 또 all:을 덧씌우면
+    "all:all:agent"가 돼버리므로, 콜론이 있으면 그대로 통과시켜야 한다."""
+    since = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    already_qualified = 'all:agent OR all:"digital twin"'
+    q = find_new_papers._build_query(already_qualified, None, since, until,
+                                      use_server_side_range=False)
+    assert q == already_qualified
+
+
 def test_build_query_with_category_and_server_side_range():
     since = datetime(2026, 8, 1, tzinfo=timezone.utc)
     until = datetime(2026, 8, 20, tzinfo=timezone.utc)
