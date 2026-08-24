@@ -144,6 +144,26 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
     }
 
 
+def add_recipient(db_path: Path, profile_id: str, email: str, active: bool = True) -> None:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO profile_recipients (profile_id, email, active) VALUES (?,?,?) "
+            "ON CONFLICT(profile_id, email) DO UPDATE SET active=excluded.active",
+            (profile_id, email, 1 if active else 0),
+        )
+
+
+def get_recipients(db_path: Path, profile_id: str) -> list[str]:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT email FROM profile_recipients WHERE profile_id=? AND active=1 ORDER BY email",
+            (profile_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def list_profiles(db_path: Path) -> list[str]:
     init_db(db_path)
     with sqlite3.connect(db_path) as con:

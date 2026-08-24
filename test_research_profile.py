@@ -45,6 +45,28 @@ def test_create_profile_upsert_replaces_keywords_entirely(tmp_path):
     assert profile["core_topics"] == ["c"]  # a, b는 완전히 사라짐
 
 
+def test_add_and_get_recipients_only_returns_active(tmp_path):
+    db = tmp_path / "t.db"
+    rp.add_recipient(db, "p", "a@x.com")
+    rp.add_recipient(db, "p", "b@x.com")
+    rp.add_recipient(db, "p", "c@x.com", active=False)
+
+    assert rp.get_recipients(db, "p") == ["a@x.com", "b@x.com"]
+
+
+def test_add_recipient_upsert_toggles_active():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        rp.add_recipient(db, "p", "a@x.com", active=True)
+        assert rp.get_recipients(db, "p") == ["a@x.com"]
+
+        rp.add_recipient(db, "p", "a@x.com", active=False)
+        assert rp.get_recipients(db, "p") == []
+
+
 def test_list_profiles_returns_sorted_ids(tmp_path):
     db = tmp_path / "t.db"
     rp.create_profile(db, "z_profile", "z", core_topics=["x"])
