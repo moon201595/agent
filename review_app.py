@@ -30,6 +30,9 @@ from pathlib import Path
 import httpx
 import streamlit as st
 
+import digest
+import research_profile
+import run_profile_scan
 import sentence_grounding
 import server
 import summarize_engine as engine
@@ -315,12 +318,13 @@ def _inject_custom_style() -> None:
         [data-testid="stSidebar"] [data-testid="stButton"] button {
             justify-content: flex-start; text-align: left; font-weight: 500;
         }
-        .st-key-nav_search button, .st-key-nav_review button {
+        .st-key-nav_search button, .st-key-nav_review button, .st-key-nav_research button {
             padding-left: 2.4rem; background-repeat: no-repeat;
             background-size: 18px 18px; background-position: 14px center;
             transition: background-color 0.12s ease;
         }
-        .st-key-nav_search button:hover, .st-key-nav_review button:hover {
+        .st-key-nav_search button:hover, .st-key-nav_review button:hover,
+        .st-key-nav_research button:hover {
             background-color: var(--sky-light); border-color: var(--sky);
         }
         .st-key-nav_search button {
@@ -328,6 +332,9 @@ def _inject_custom_style() -> None:
         }
         .st-key-nav_review button {
             background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+");
+        }
+        .st-key-nav_research button {
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjMDI4NEM3Ii8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==");
         }
         /* 현황을 숫자만 보여주다가 "어떤 논문인지 안 보인다"는 지적을 받아
            (2026-08-12) 카테고리별 토글 + 실제 논문 목록으로 바꿨다. 사이드
@@ -1545,6 +1552,191 @@ def render_review_tab():
                     st.rerun()
 
 
+# ---------------------------------------------------------------- 리서치 프로필 (오케스트레이터 관리자 화면)
+#
+# review_app.py의 다른 탭(검색·검토)은 "논문 하나"를 다루지만, 이 탭은
+# "프로필(=관심 분야 설정) 하나"를 다룬다 — 2026-08-24, delta 검색·
+# 스코어링·다이제스트(find_new_papers.py/profile_scoring.py/digest.py)를
+# 실제 arXiv로 라이브 검증까지 끝낸 뒤, "다이제스트가 터미널/파일로만
+# 나오고 화면 어디에도 안 보인다"는 지적을 반영해 붙인다.
+#
+# 이 화면은 운영자(나) 전용이라고 봤다 — 최종 사용자는 다이제스트를
+# 메일(나중에)로만 받고, 이 화면에서 프로필을 만들고 "지금 상황"(실행
+# 이력·상태)을 보는 사람은 따로 있다는 전제. 그래서 승인/반려 같은 ⑥
+# 게이트는 여기 없다 — 그 게이트는 기존 요약 검토 탭의 몫 그대로다.
+
+
+def _profile_summary_line(p: dict) -> str:
+    parts = [f"핵심 {len(p['core_topics'])}개"]
+    if p["target_domain"]:
+        parts.append(f"도메인 {len(p['target_domain'])}개")
+    if p["exclude"]:
+        parts.append(f"제외 {len(p['exclude'])}개")
+    return f"{p['name']} — " + ", ".join(parts)
+
+
+def _format_run_row(row: dict) -> str:
+    emoji = {"done": "✅", "partial": "🟡", "failed": "❌"}.get(row["status"], "⚪")
+    when = _relative_time(row["started_at"]) if row.get("started_at") else "?"
+    window = f"{row['window_from'][:10]} ~ {row['window_to'][:10]}"
+    line = f"{emoji} {row['status']} · {row['retrieved_count']}건 · {window} · {when}"
+    if row["status"] == "failed" and row.get("error_detail"):
+        line += f"\n   사유: {row['error_detail']}"
+    return line
+
+
+def _render_profile_form(db_path, existing: dict | None) -> None:
+    """existing이 None이면 새 프로필 생성 폼, 아니면 그 프로필의 현재 값을
+    채워 넣은 수정 폼 — research_profile.create_profile이 항상 전체
+    덮어쓰기라(모듈 docstring 참고) 생성·수정이 같은 코드 경로로 충분하다.
+    키워드는 콤마로 구분한 텍스트로 입력받는다 — 프로필 하나에 키워드가
+    수십 개씩 붙는 상황은 아직 없어서, 행 단위 UI(추가·삭제 버튼)보다
+    지금은 이 편이 빠르고 실수도 적다."""
+    is_new = existing is None
+    key_prefix = "new_profile" if is_new else f"edit_{existing['profile_id']}"
+
+    profile_id = st.text_input(
+        "프로필 ID (영문·숫자·언더스코어, 한 번 정하면 안 바꾸는 게 좋음)",
+        value="" if is_new else existing["profile_id"],
+        disabled=not is_new,  # ID는 여러 테이블의 키라 수정 중엔 못 바꾸게 막는다
+        key=f"{key_prefix}_id",
+    )
+    name = st.text_input("표시 이름", value="" if is_new else existing["name"], key=f"{key_prefix}_name")
+    core_topics = st.text_input(
+        "핵심 키워드 (콤마로 구분, OR 조건 — 하나만 걸려도 후보)",
+        value=", ".join(existing["core_topics"]) if existing else "",
+        key=f"{key_prefix}_core",
+    )
+    target_domain = st.text_input(
+        "관심 도메인 (콤마로 구분, 있으면 가점만 — 필수 아님)",
+        value=", ".join(existing["target_domain"]) if existing else "",
+        key=f"{key_prefix}_domain",
+    )
+    exclude = st.text_input(
+        "제외 키워드 (콤마로 구분, 하나라도 걸리면 무조건 제외)",
+        value=", ".join(existing["exclude"]) if existing else "",
+        key=f"{key_prefix}_exclude",
+    )
+    venues = st.text_input(
+        "관심 venue (콤마로 구분, 선택 — S2가 venue 데이터를 아직 안 줘서 지금은 거의 안 씀)",
+        value=", ".join(existing["venues"]) if existing else "",
+        key=f"{key_prefix}_venues",
+    )
+    max_items = st.number_input(
+        "다이제스트에 담을 최대 편수", min_value=1, max_value=50,
+        value=existing["max_items"] if existing else 8, key=f"{key_prefix}_max",
+    )
+
+    label = "프로필 만들기" if is_new else "수정 저장"
+    if st.button(label, key=f"{key_prefix}_submit", type="primary"):
+        pid = profile_id.strip()
+        if not pid or not name.strip():
+            st.warning("프로필 ID와 이름은 비워둘 수 없음")
+        else:
+            research_profile.create_profile(
+                db_path, pid, name.strip(),
+                core_topics=[k.strip() for k in core_topics.split(",") if k.strip()],
+                target_domain=[k.strip() for k in target_domain.split(",") if k.strip()],
+                exclude=[k.strip() for k in exclude.split(",") if k.strip()],
+                venues=[k.strip() for k in venues.split(",") if k.strip()],
+                max_items=int(max_items),
+            )
+            st.session_state["_research_selected_profile"] = pid
+            st.success(f"'{pid}' 저장됨")
+            st.rerun()
+
+
+def _render_recipients(db_path, profile_id: str) -> None:
+    recipients = research_profile.get_recipients(db_path, profile_id)
+    if recipients:
+        for email in recipients:
+            r_col, x_col = st.columns([5, 1])
+            r_col.caption(f"📧 {email}")
+            if x_col.button("해제", key=f"unsub_{profile_id}_{email}"):
+                research_profile.add_recipient(db_path, profile_id, email, active=False)
+                st.rerun()
+    else:
+        st.caption("등록된 수신자 없음 (메일 발송은 아직 SMTP 미설정이라 어차피 안 나감)")
+    new_email = st.text_input("수신자 추가", key=f"add_recipient_{profile_id}", placeholder="a@example.com")
+    if st.button("추가", key=f"add_recipient_btn_{profile_id}") and new_email.strip():
+        research_profile.add_recipient(db_path, profile_id, new_email.strip())
+        st.rerun()
+
+
+def render_research_tab() -> None:
+    st.subheader("리서치 프로필 (운영자 화면)")
+    st.caption(
+        "관심 분야(프로필)를 만들고, 지금 상황(실행 이력·다이제스트)을 확인합니다. "
+        "이 화면은 운영자용입니다 — 최종 사용자는 다이제스트만 받습니다(메일은 아직 미연결)."
+    )
+
+    db_path = server.DB_PATH
+    profile_ids = research_profile.list_profiles(db_path)
+
+    with st.expander("➕ 새 프로필 만들기"):
+        _render_profile_form(db_path, existing=None)
+
+    if not profile_ids:
+        st.info("아직 프로필이 없습니다 — 위에서 하나 만들어보세요.")
+        return
+
+    if "_research_selected_profile" not in st.session_state or \
+            st.session_state["_research_selected_profile"] not in profile_ids:
+        st.session_state["_research_selected_profile"] = profile_ids[0]
+
+    selected = st.selectbox(
+        "프로필 선택", profile_ids, key="_research_selected_profile",
+    )
+    profile = research_profile.get_profile(db_path, selected)
+
+    card = st.container(border=True, key="research_profile_card")
+    card.markdown(f"**{profile['name']}**  ·  `{profile['profile_id']}`")
+    info_col, run_col = card.columns([3, 2])
+    info_col.caption(f"핵심 키워드: {', '.join(profile['core_topics']) or '(없음)'}")
+    info_col.caption(f"관심 도메인: {', '.join(profile['target_domain']) or '(없음)'}")
+    info_col.caption(f"제외 키워드: {', '.join(profile['exclude']) or '(없음)'}")
+    info_col.caption(f"관심 venue: {', '.join(profile['venues']) or '(없음)'}")
+    info_col.caption(f"다이제스트 상한: {profile['max_items']}편")
+
+    run_col.markdown("**수신자**")
+    with run_col:
+        _render_recipients(db_path, selected)
+
+    with card.expander("✏️ 프로필 수정"):
+        _render_profile_form(db_path, existing=profile)
+
+    st.markdown("#### 지금 상황")
+    runs = research_profile.list_runs(db_path, selected, limit=5)
+    if runs:
+        next_since = research_profile.next_since(db_path, selected)
+        st.caption(f"다음 실행은 {next_since.strftime('%Y-%m-%d %H:%M UTC')} 이후를 봅니다")
+        for row in runs:
+            st.text(_format_run_row(row))
+    else:
+        st.caption("아직 실행 이력 없음 — 아래에서 지금 바로 스캔해볼 수 있습니다")
+
+    if st.button("🔍 지금 스캔 실행", key=f"scan_now_{selected}", type="primary"):
+        if not profile["core_topics"]:
+            st.error("핵심 키워드가 없어서 검색어를 만들 수 없음 — 프로필 수정에서 먼저 추가할 것")
+        else:
+            with st.spinner("arXiv에서 delta 검색 중... (흔한 키워드일수록 오래 걸릴 수 있음)"):
+                async def _scan() -> dict:
+                    async with httpx.AsyncClient() as client:
+                        return await run_profile_scan.scan_profile(db_path, selected, client, max_pages=10)
+                try:
+                    result = run_async(_scan())
+                except Exception as e:  # noqa: BLE001 — 실패도 화면에 명확히 보여준다
+                    st.error(f"스캔 실패: {e}")
+                else:
+                    st.session_state[f"_research_last_digest_{selected}"] = digest.generate_digest(
+                        result, profile["name"],
+                    )
+                    st.rerun()
+
+    last_digest = st.session_state.get(f"_research_last_digest_{selected}")
+    if last_digest:
+        st.markdown("#### 방금 생성된 다이제스트")
+        st.text(last_digest)
 
 
 # ---------------------------------------------------------------- 메인
@@ -1687,6 +1879,12 @@ with st.sidebar:
     ):
         st.session_state.nav_page = "review"
         st.rerun()
+    if st.button(
+        "리서치 프로필", key="nav_research", use_container_width=True,
+        type="primary" if st.session_state.nav_page == "research" else "secondary",
+    ):
+        st.session_state.nav_page = "research"
+        st.rerun()
 
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     st.caption("현황")
@@ -1715,5 +1913,7 @@ with st.sidebar:
 
 if st.session_state.nav_page == "search":
     render_search_tab()
+elif st.session_state.nav_page == "research":
+    render_research_tab()
 else:
     render_review_tab()
