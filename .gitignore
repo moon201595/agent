@@ -8,3 +8,6 @@ __pycache__/
 # arXiv 전문은 제3자 재배포 권한이 없으므로 커밋하지 않는다.
 data/
 .env
+
+# run_daily_scan.sh(cron)가 계속 이어붙이는 로그 — 계속 커지는 파일이라 커밋 안 함.
+logs/
