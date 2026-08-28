@@ -73,3 +73,75 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     assert calls["login"] == ("me@gmail.com", "app-password")
     assert calls["sent_from"] == "me@gmail.com"
     assert calls["sent_to"] == "a@x.com, b@x.com"
+
+
+# ---------------------------------------------------------------- M3: multipart/alternative
+
+
+def test_build_message_stays_single_part_without_html():
+    """하위 호환 — digest_html을 안 주면 기존과 똑같은 단일 파트 메일이다."""
+    msg = build_message("본문 내용", "제목", "from@example.com", ["a@x.com"])
+    assert not msg.is_multipart()
+    assert msg.get_content_type() == "text/plain"
+    assert msg.get_content().strip() == "본문 내용"
+
+
+def test_build_message_creates_multipart_alternative_with_html():
+    """(d) plain·html 두 파트가 multipart/alternative로 묶인다."""
+    msg = build_message("텍스트 본문", "제목", "from@example.com", ["a@x.com"],
+                         digest_html="<div>HTML 본문</div>")
+
+    assert msg.is_multipart()
+    assert msg.get_content_type() == "multipart/alternative"
+    subtypes = [p.get_content_type() for p in msg.iter_parts()]
+    assert subtypes == ["text/plain", "text/html"]
+
+
+def test_multipart_plain_part_keeps_original_text():
+    """(d-2) plain 파트에 기존 텍스트 다이제스트가 그대로 들어간다 — HTML을
+    못 읽거나 차단하는 환경에서 이게 유일한 내용이 된다."""
+    text = "[HARNESS Daily] 2026-08-28\n\n1. [★★★] 어떤 논문\n   [검증 43/43 통과]"
+    msg = build_message(text, "제목", "from@example.com", ["a@x.com"],
+                         digest_html="<div>무관한 HTML</div>")
+
+    plain = [p for p in msg.iter_parts() if p.get_content_type() == "text/plain"][0]
+    assert "[검증 43/43 통과]" in plain.get_content()
+    assert "<div>" not in plain.get_content()
+
+
+def test_multipart_html_part_carries_html():
+    msg = build_message("텍스트", "제목", "from@example.com", ["a@x.com"],
+                         digest_html="<details open><summary>제목</summary></details>")
+    html = [p for p in msg.iter_parts() if p.get_content_type() == "text/html"][0]
+    assert "<details open>" in html.get_content()
+
+
+def test_html_part_comes_last_so_clients_prefer_it():
+    """MIME 규약상 multipart/alternative는 뒤에 온 파트가 우선이다 — HTML이
+    마지막이어야 HTML 읽는 클라이언트가 HTML을 고른다."""
+    msg = build_message("텍스트", "제목", "from@example.com", ["a@x.com"],
+                         digest_html="<div>h</div>")
+    assert list(msg.iter_parts())[-1].get_content_type() == "text/html"
+
+
+def test_send_strips_spaces_from_app_password(monkeypatch):
+    """Google 앱 비밀번호는 "abcd efgh ijkl mnop"으로 표시돼 그대로 복사하면
+    공백이 섞인다(실측: .env 값이 19자·공백 포함) — 로그인 전에 지운다."""
+    monkeypatch.setattr(engine, "ENV", {
+        "SMTP_USER": "me@gmail.com", "SMTP_PASSWORD": "abcd efgh ijkl mnop",
+    })
+    seen = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port): pass
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def starttls(self): pass
+        def login(self, user, password): seen["password"] = password
+        def send_message(self, msg): seen["multipart"] = msg.is_multipart()
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    send_digest_email("본문", "제목", ["a@x.com"], digest_html="<div>h</div>")
+
+    assert seen["password"] == "abcdefghijklmnop"  # 공백 제거됨
+    assert seen["multipart"] is True               # HTML을 넘기면 multipart로 나간다

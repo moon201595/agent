@@ -220,3 +220,96 @@ def test_digest_generation_survives_missing_db(monkeypatch, tmp_path):
     text = _digest_for(_scored_paper("p1", "DB 없는 논문", 1.0))
     assert "[검증 데이터 없음]" in text
     assert "[재현 –]" in text
+
+
+# ---------------------------------------------------------------- M3: HTML 다이제스트
+
+
+def _html_for(papers, **kw):
+    from digest import generate_digest_html
+    result = {"papers": papers, "candidates_found": kw.get("candidates", len(papers)),
+              "excluded_count": kw.get("excluded", 0), "unmatched_count": kw.get("unmatched", 0)}
+    return generate_digest_html(result, "우리팀")
+
+
+def test_html_opens_details_for_flagged_paper(isolated_db):
+    """(a) ⑤ flag가 있는 항목은 <details open>으로 펼쳐 보낸다."""
+    _seed_verification(isolated_db["db"], "p1", total=31, matched=28)
+    html = _html_for([_scored_paper("p1", "flag 논문", 1.0)])
+    assert "<details open" in html
+
+
+def test_html_opens_details_for_failed_repro(isolated_db):
+    """재현 실패도 주의 대상이라 펼친다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/b", success=False)
+    html = _html_for([_scored_paper("p1", "재현 실패 논문", 1.0)])
+    assert "<details open" in html
+
+
+def test_html_leaves_clean_paper_collapsed(isolated_db):
+    """(a-2) 정상 항목에는 open 속성이 없다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/b", success=True)
+    html = _html_for([_scored_paper("p1", "정상 논문", 1.0)])
+    assert "<details open" not in html
+    assert "<details " in html
+
+
+def test_html_has_no_external_resources(isolated_db):
+    """(b) 외부 이미지·웹폰트·JS 없음 — 이메일 클라이언트가 차단하거나
+    프라이버시 경고를 띄운다. arXiv 링크(<a href>)는 사용자가 누르는
+    것이라 허용이고, 자동 로딩되는 리소스만 금지한다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    html = _html_for([_scored_paper("p1", "논문", 1.0, abstract="초록")])
+    for banned in ("<img", "<script", "<iframe", "@import", "background-image",
+                    "url(http", "<link"):
+        assert banned not in html, f"외부 리소스 발견: {banned}"
+
+
+def test_html_stays_under_gmail_clipping_limit(isolated_db):
+    """(c) Gmail은 HTML이 약 102KB를 넘으면 잘라낸다. 논문 8편(max_items
+    기본값) 기준으로 상한 안에 들어와야 한다."""
+    papers = []
+    for i in range(8):
+        aid = f"p{i}"
+        _seed_verification(isolated_db["db"], aid, total=31, matched=28)  # 최악: 전부 flag
+        papers.append(_scored_paper(aid, f"제법 긴 논문 제목 {i} " * 5, 1.5,
+                                     core_hits=["agent"], domain_hits=["robot"],
+                                     abstract="x" * 2000))
+    html = _html_for(papers)
+    assert len(html.encode("utf-8")) < 102_400
+
+
+def test_html_escapes_special_characters(isolated_db):
+    """제목·초록에 &, <, >가 실제로 들어온다(예: "R&D", "A < B") — 이스케이프
+    안 하면 레이아웃이 깨지고 태그 주입도 가능해진다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    html = _html_for([_scored_paper("p1", "A <b>bold</b> & R&D", 1.0)])
+    assert "&lt;b&gt;bold&lt;/b&gt;" in html
+    assert "&amp;" in html
+    assert "<b>bold</b>" not in html
+
+
+def test_html_reserves_retraction_slot_for_m5(isolated_db):
+    """M5(철회 체크)가 채울 최상단 슬롯을 비워둔다."""
+    html = _html_for([_scored_paper("p1", "논문", 1.0)])
+    assert "<!-- retraction-warnings -->" in html
+
+
+def test_html_and_text_versions_coexist(isolated_db):
+    """(중요) 기존 텍스트판은 그대로 동작해야 한다 — multipart의 plain
+    part로 계속 쓰이므로 삭제·변경하면 안 된다."""
+    _seed_verification(isolated_db["db"], "p1", total=43, matched=43)
+    paper = _scored_paper("p1", "논문", 1.0)
+    text = _digest_for(paper)
+    html = _html_for([paper])
+    assert "[검증 43/43 통과]" in text      # 텍스트판은 대괄호 라벨 유지
+    assert "검증 43/43 통과" in html        # HTML판은 chip 안에 들어감
+    assert "<details" not in text           # 텍스트판에 태그가 새면 안 됨
+
+
+def test_html_empty_papers_case(isolated_db):
+    html = _html_for([], candidates=12)
+    assert "새로 걸린 논문이 없습니다" in html
+    assert "<details" not in html

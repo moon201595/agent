@@ -175,3 +175,164 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         lines.append(f"■ 이번 실행에서 걸러진 것: 제외 규칙 {excluded}건, 조건 불일치 {unmatched}건")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------- HTML 다이제스트 (M3)
+#
+# 텍스트판(generate_digest)은 그대로 둔다 — multipart/alternative 의 plain
+# part 로 계속 쓴다. HTML 을 못 읽거나 차단하는 환경에서도 내용이 그대로
+# 읽혀야 하기 때문이다.
+#
+# 이메일 HTML 은 웹 HTML 과 제약이 다르다. 아래는 caniemail 기준으로 확인된
+# 사실이고, 설계를 여기에 맞췄다:
+#
+# 1. <details>/<summary> 는 Gmail 전 플랫폼과 Outlook Windows(Word 엔진)에서
+#    동작하지 않는다. Gmail 은 태그를 <u></u> 로 치환해 **항상 펼쳐진 상태**로
+#    보인다. Apple Mail 만 토글이 실제로 접힌다. 따라서 접기는 있으면 좋은
+#    장식이지 기능이 아니다 — "접힌 상태에서만 보이는 정보"를 두지 않는다.
+#    우리 요구(flag 있는 항목은 펼침)는 이 fallback 과 방향이 같아서 오히려
+#    잘 맞는다.
+# 2. Gmail 은 HTML 이 약 102KB 를 넘으면 메시지를 잘라낸다(클리핑). 논문당
+#    발췌 길이로 총량을 제어하고 회귀 테스트로 상한을 잠근다.
+# 3. <style> 블록은 Gmail 에서 제한적이라 **인라인 CSS 만** 쓴다.
+# 4. 외부 이미지·웹폰트·JS 는 차단되거나 프라이버시 경고를 띄운다 — 안 쓴다.
+# 5. 다크모드에서 클라이언트가 색을 뒤집을 수 있다. 배경색과 전경색을
+#    항상 **함께** 인라인으로 명시해 대비를 확보한다(색을 안 준 요소를
+#    남기지 않는다).
+
+_NAVY = "#12266B"
+_INK = "#111111"
+_MUTED = "#555555"
+_LINE = "#DDDDDD"
+_PAPER_BG = "#FFFFFF"
+_FLAG_BG = "#FFF4E5"
+_FLAG_INK = "#8A4B00"
+
+_HTML_EXCERPT_CHARS = 400  # 텍스트판(220)보다 넉넉하되 102KB 상한을 지키는 선
+
+
+def _esc(text: str) -> str:
+    """HTML 이스케이프. 논문 제목·초록에는 &, <, > 가 실제로 들어온다
+    (예: "A < B", "R&D") — 그대로 넣으면 레이아웃이 깨진다."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _html_excerpt(paper: dict) -> str:
+    abstract = (paper.get("abstract") or "").strip()
+    if not abstract:
+        return "(초록 없음)"
+    if len(abstract) <= _HTML_EXCERPT_CHARS:
+        return abstract
+    return abstract[:_HTML_EXCERPT_CHARS] + "…"
+
+
+def _status_chip(label: str, flagged: bool) -> str:
+    bg, ink = (_FLAG_BG, _FLAG_INK) if flagged else ("#EEF1F8", _NAVY)
+    return (
+        f'<span style="display:inline-block;background-color:{bg};color:{ink};'
+        f'font-size:12px;padding:2px 8px;border-radius:10px;'
+        f'margin-right:6px;">{_esc(label)}</span>'
+    )
+
+
+def _paper_entry_html(idx: int, paper: dict) -> str:
+    score = paper.get("_score", {})
+    arxiv_id = str(paper.get("arxiv_id", "?"))
+    title = paper.get("title") or "(제목 없음)"
+    deep_status = str(paper.get("deep_status") or "")
+
+    if deep_status.startswith("failed"):
+        reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
+        chips = _status_chip("미검증 · 초록 기반", flagged=True)
+        detail = f'<div style="color:{_FLAG_INK};font-size:13px;">처리 실패: {_esc(reason)}</div>'
+        needs_attention = True
+    else:
+        v_label = verification_label(arxiv_id)
+        r_label = repro_label(arxiv_id)
+        # flag 가 있거나 재현이 실패한 항목은 펼쳐서 보낸다. Gmail·Outlook 은
+        # 어차피 항상 펼쳐 보여주므로 이 속성이 실제로 의미를 갖는 건
+        # Apple Mail 뿐이다(위 주석 1번).
+        needs_attention = ("flag" in v_label) or ("✗" in r_label)
+        chips = _status_chip(v_label.strip("[]"), flagged="flag" in v_label)
+        chips += _status_chip(r_label.strip("[]"), flagged="✗" in r_label)
+        detail = ""
+
+    open_attr = " open" if needs_attention else ""
+    return (
+        f'<details{open_attr} style="background-color:{_PAPER_BG};color:{_INK};'
+        f'border:1px solid {_LINE};border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
+        f'<summary style="color:{_INK};font-size:15px;font-weight:600;cursor:pointer;">'
+        f'{idx}. [{_stars(score.get("priority", 0.0))}] {_esc(title)}</summary>'
+        f'<div style="margin-top:8px;">{chips}</div>'
+        f'{detail}'
+        f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'
+        f'왜 걸렸나 : {_esc(_why_matched(score))}</div>'
+        f'<div style="color:{_INK};font-size:13px;margin-top:6px;line-height:1.5;">'
+        f'{_esc(_html_excerpt(paper))}</div>'
+        f'<div style="margin-top:8px;font-size:13px;">'
+        f'<a href="https://arxiv.org/abs/{_esc(arxiv_id)}" '
+        f'style="color:{_NAVY};">arxiv.org/abs/{_esc(arxiv_id)}</a></div>'
+        f"</details>"
+    )
+
+
+def generate_digest_html(scan_result: dict, profile_name: str) -> str:
+    """텍스트판과 같은 입력으로 HTML 본문을 만든다. generate_digest()는
+    그대로 두고(plain part 로 계속 쓴다) 이건 html part 전용이다.
+
+    맨 위에 철회 경고용 슬롯을 비워둔다 — M5(retraction 체크)가 채울 자리다.
+    """
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    papers = scan_result.get("papers", [])
+    candidates = scan_result.get("candidates_found", 0)
+
+    head = (
+        f'<div style="background-color:{_NAVY};color:#FFFFFF;'
+        f'padding:14px 16px;border-radius:6px;">'
+        f'<div style="font-size:17px;font-weight:700;color:#FFFFFF;">HARNESS Daily</div>'
+        f'<div style="font-size:13px;color:#DCE3F5;margin-top:2px;">'
+        f'{_esc(date_str)} · {_esc(profile_name)}</div></div>'
+    )
+
+    # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
+    retraction_slot = "<!-- retraction-warnings -->"
+
+    if not papers:
+        body = (
+            f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;">'
+            f'오늘은 새로 걸린 논문이 없습니다 '
+            f'(후보 {candidates}건 중 프로필 조건에 맞는 것 없음).</p>'
+        )
+    else:
+        entries = "".join(
+            _paper_entry_html(i, p) for i, p in enumerate(papers, start=1)
+        )
+        body = (
+            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
+            f'margin:14px 0 10px;">오늘의 신규 논문 {len(papers)}편 '
+            f'(전체 후보 {candidates}건 중)</p>{entries}'
+        )
+
+    excluded = scan_result.get("excluded_count", 0)
+    unmatched = scan_result.get("unmatched_count", 0)
+    footer = ""
+    if excluded or unmatched:
+        footer = (
+            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'border-top:1px solid {_LINE};padding-top:10px;">'
+            f'이번 실행에서 걸러진 것: 제외 규칙 {excluded}건, '
+            f'조건 불일치 {unmatched}건</p>'
+        )
+
+    return (
+        f'<div style="background-color:#FFFFFF;color:{_INK};'
+        f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+        f'max-width:680px;padding:8px;">'
+        f"{head}{retraction_slot}{body}{footer}</div>"
+    )

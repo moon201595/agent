@@ -212,7 +212,12 @@ def main() -> None:
         profile = research_profile.get_profile(db_path, args.profile_id)
         recipients = research_profile.get_recipients(db_path, args.profile_id)
         subject = f"[HARNESS Daily] {profile['name'] if profile else args.profile_id}"
-        email_delivery.send_digest_email(digest_text, subject, recipients)  # 지금은 항상 NotImplementedError
+        # 텍스트·HTML 두 판을 함께 넘긴다(M3) — 같은 scan_result 로 만들므로
+        # 내용이 어긋날 수 없다.
+        digest_html = digest.generate_digest_html(
+            result, profile["name"] if profile else args.profile_id,
+        )
+        email_delivery.send_digest_email(digest_text, subject, recipients, digest_html)
 
 
 if __name__ == "__main__":
