@@ -27,6 +27,8 @@ import json
 import logging
 import re
 import subprocess
+import threading
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,25 @@ import server
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# GitHub 검색 엔드포인트 스로틀(M6, 2026-08-28). 실측: 인증 상태에서 분당
+# 30회(미인증은 10회) — 코어 API 5,000/시간과는 별개의 낮은 한도다. 분당 30회면
+# 2초 간격이 정확히 상한이라, 여유를 두고 2.5초로 잡는다. 한도를 코드에
+# 하드코딩하지 않는다는 원칙(CLAUDE.md 3)과 안 부딪힌다 — 이건 "한도 값"이
+# 아니라 우리가 스스로 지키는 호출 간격이다.
+GITHUB_SEARCH_MIN_INTERVAL = 2.5
+_gh_search_lock = threading.Lock()
+_last_gh_search = 0.0
+
+
+def _throttle_github_search() -> None:
+    global _last_gh_search
+    with _gh_search_lock:
+        wait = GITHUB_SEARCH_MIN_INTERVAL - (time.monotonic() - _last_gh_search)
+        if wait > 0:
+            time.sleep(wait)
+        _last_gh_search = time.monotonic()
+
 
 # 알려진 코드/모델 호스팅 도메인 — 이 안에 있으면 "저장소 링크"로 확신한다.
 _KNOWN_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "huggingface.co")
@@ -141,7 +162,14 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
     """gh CLI(이미 인증됨)로 GitHub 검색. 별점 내림차순 — 부가어 없이 핵심
     키워드만 넣는 게 정확도가 훨씬 높다 (실측: "SWE-agent princeton" 검색은
     무관한 포크만 나왔지만 "SWE-agent" 단독 검색은 공식 저장소가 1위로 나왔다).
+
+    검색 엔드포인트는 코어 API(5,000/시간)와 **별개의 낮은 한도**를 쓴다 —
+    실측(2026-08-28) 기준 인증 상태에서 분당 30회다. 논문을 연속으로 처리하면
+    여기 먼저 걸리므로 호출 간 최소 간격을 강제한다(server._throttled_s2_get
+    과 같은 발상). code_finder 는 동기 코드라 asyncio.Lock 대신 threading.Lock
+    을 쓴다.
     """
+    _throttle_github_search()
     try:
         # 공백 포함 검색어를 인코딩 없이 URL에 그대로 붙이면 gh api 가 걸린 채
         # 30초 타임아웃까지 간다 (실측: "SWE-agent"처럼 한 단어일 때만 성공하고

@@ -378,3 +378,50 @@ def test_html_no_retraction_chip_when_null(isolated_db):
     _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
     html = _html_for([_scored_paper("p1", "미조회 논문", 1.0)])
     assert "철회" not in html
+
+
+# ---------------------------------------------------------------- M6: S2 TLDR 발췌
+
+
+def test_s2_tldr_replaces_abstract_for_failed_paper(isolated_db):
+    """Deep 처리가 실패한 논문은 우리 요약이 없다 — S2 한줄요약이 있으면
+    초록 발췌 대신 쓴다."""
+    paper = _scored_paper("p1", "실패 논문", 1.0, abstract="긴 초록 " * 50,
+                           deep_status="failed: Gemini·Groq 둘 다 실패")
+    paper["s2_tldr"] = "A unified roadmap toward executable AI agent systems."
+    text = _digest_for(paper)
+
+    assert "S2 한줄요약 : A unified roadmap" in text
+    assert "초록 발췌" not in text
+
+
+def test_s2_tldr_label_distinguishes_from_verified_summary(isolated_db):
+    """라벨을 정직하게 — S2 모델의 미검증 요약이지 우리 ⑤를 통과한 게 아니다."""
+    paper = _scored_paper("p1", "실패 논문", 1.0, deep_status="failed: 오류")
+    paper["s2_tldr"] = "one line summary"
+    text = _digest_for(paper)
+
+    assert "[미검증 · S2 TLDR]" in text
+    assert "[검증" not in text
+
+
+def test_falls_back_to_abstract_when_no_tldr(isolated_db):
+    """S2에 없는 논문은 기존 초록 발췌 그대로."""
+    paper = _scored_paper("p1", "실패 논문", 1.0, abstract="초록 내용",
+                           deep_status="failed: 오류")
+    text = _digest_for(paper)
+
+    assert "초록 발췌 : 초록 내용" in text
+    assert "[미검증 · 초록 기반]" in text
+
+
+def test_tldr_not_used_for_successfully_processed_paper(isolated_db):
+    """Deep 처리에 성공한 논문에는 tldr을 쓰지 않는다 — 검증된 우리 요약이
+    있으므로 미검증 S2 요약으로 덮으면 안 된다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    paper = _scored_paper("p1", "성공 논문", 1.0, abstract="초록", deep_status="ok")
+    paper["s2_tldr"] = "S2가 만든 요약"
+    text = _digest_for(paper)
+
+    assert "S2가 만든 요약" not in text
+    assert "[검증 10/10 통과]" in text
