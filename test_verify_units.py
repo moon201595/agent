@@ -242,3 +242,130 @@ def test_same_value_same_citation_deduplicated():
     report = verify_numbers(summary, source)
     assert report.total == 1
     assert report.matched == 1
+
+
+# ---------------------------------------------------------------- M4: 태그 커버리지(recall)
+
+
+def test_untagged_number_is_flagged_when_grounding_expected():
+    """(a) 숫자가 있는데 [S번호] 태그가 없으면 flag — 신규 요약에서 LLM이
+    근거를 빠뜨린 경우다. 원문 전체 대조는 그대로 하므로 matched는 유지되고
+    recall 신호만 추가된다."""
+    summary = "- 정확도 92.4%(제안 기법) — 본문"
+    source = "The proposed method reaches 92.4% accuracy."
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert len(report.untagged) == 1
+    assert report.untagged[0].token == "92.4"
+    assert report.matched == 1        # 원문에 있으므로 통과는 통과다
+    assert report.pass_ratio == 1.0   # pass_ratio 정의는 안 바뀐다
+    assert report.unmatched == []     # unmatched와 섞이지 않는다
+
+
+def test_properly_tagged_number_is_not_flagged():
+    """(b) 태그가 있고 그 문장에서 숫자가 확인되면 기존 동작 그대로 —
+    untagged에 안 들어간다."""
+    source = "First sentence here. The proposed method reaches 92.4% accuracy. Third one."
+    summary = "- 92.4%(제안 기법) — 본문 [S0002] ★★★"
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert report.untagged == []
+    assert report.grounded == 1
+    assert report.matched == 1
+
+
+def test_location_reference_number_is_not_flagged_as_untagged():
+    """(c) "Table 3"·"6.1절" 같은 출처 표기 숫자는 애초에 검증 대상이 아니라
+    untagged에도 안 들어간다 — 기존 제외 규칙을 그대로 탄다(새 규칙 없음)."""
+    summary = "- 자세한 내용은 Table 3과 본문 6.1절 참고"
+    source = "irrelevant source text"
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert report.untagged == []
+    assert report.total == 0
+
+
+def test_untagged_flag_off_by_default_keeps_old_fallback():
+    """(d) expect_grounded=False(기본값)에서는 (a)와 같은 입력이 예전처럼
+    조용히 원문 전체 대조로 통과한다 — 구형 요약 재검증·화면 표시·eval이
+    이 경로다."""
+    summary = "- 정확도 92.4%(제안 기법) — 본문"
+    source = "The proposed method reaches 92.4% accuracy."
+
+    report = verify_numbers(summary, source)
+
+    assert report.untagged == []
+    assert report.matched == 1
+
+
+def test_single_digit_is_not_flagged_as_untagged():
+    """(e) 한 자리 정수는 어떤 텍스트에도 있어 검증 의미가 없다 — 기존
+    제외 규칙대로 total에도 untagged에도 안 들어간다."""
+    summary = "- 실험은 3회 반복했다"
+    source = "irrelevant"
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert report.untagged == []
+    assert report.total == 0
+
+
+def test_tag_without_star_is_not_flagged_but_also_not_grounded():
+    """★를 빠뜨린 태그는 두 검사에서 다르게 취급된다 — precision(grounded)은
+    안 되지만 recall(untagged)은 만족한다. 근거 표시가 있긴 하니 "근거 없음"
+    으로 몰면 안 되고, R2/R3 형식이 아니라 문장 대조는 못 하니 grounded도
+    아니다. 두 검사가 다른 층위라는 걸 이 케이스가 보여준다."""
+    source = "First. The method reaches 92.4% accuracy. Third."
+    summary = "- 92.4%(제안 기법) — 본문 [S0002]"  # ★ 없음
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert report.untagged == []   # 문장에 태그가 있으므로 recall 은 통과
+    assert report.grounded == 0    # ★가 없어 문장 단위 대조는 안 함
+
+
+def test_one_tag_covers_all_numbers_in_same_sentence():
+    """실측 기반 회귀(2026-08-28): 한 문장에 수치를 여러 개 넣고 끝에 태그를
+    하나 다는 게 실제 요약의 지배적 형태다. 숫자 단위로 판정하면 그 문장의
+    수치 대부분이 "태그 없음"으로 잡혀 오탐이 70%까지 갔다 — 문장에 태그가
+    하나라도 있으면 그 문장의 수치는 flag하지 않는다."""
+    source = "The baseline uses 2.78M params and 9.3 GFLOPs with 71.4% precision."
+    summary = ("- 베이스라인: 파라미터 2.78M 및 연산량 9.3 GFLOPs 조건으로 "
+               "정밀도 71.4%를 기록했다(표 III [S0200] ★★).")
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert report.untagged == []   # 셋 다 flag 아님
+    assert report.total == 3
+
+
+def test_sentence_without_any_tag_flags_every_number_in_it():
+    """반대 방향: 태그가 하나도 없는 문장이면 그 안의 수치를 전부 잡는다."""
+    source = "The baseline uses 2.78M params and 9.3 GFLOPs."
+    summary = "- 베이스라인: 파라미터 2.78M 및 연산량 9.3 GFLOPs를 썼다."
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert len(report.untagged) == 2
+
+
+def test_untagged_appears_in_to_dict():
+    """저장·표시 경로(save_summary → JSON)가 이 신호를 실제로 볼 수 있어야 한다."""
+    report = verify_numbers("- 92.4% 달성", "reaches 92.4% accuracy", expect_grounded=True)
+    d = report.to_dict()
+    assert "untagged" in d
+    assert d["untagged"][0]["token"] == "92.4"
+    assert "context" in d["untagged"][0]
+
+
+def test_untagged_counts_numbers_not_sentences():
+    """문서화된 세는 단위: 한 문장에 태그 없는 숫자가 둘이면 2건이다."""
+    summary = "- 92.4%에서 95.1%로 올랐다"
+    source = "improved from 92.4% to 95.1%"
+
+    report = verify_numbers(summary, source, expect_grounded=True)
+
+    assert len(report.untagged) == 2

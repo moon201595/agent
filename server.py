@@ -1326,7 +1326,13 @@ async def save_summary(params: SaveSummaryInput) -> str:
     if not row:
         return _error(f"'{arxiv_id}'는 아직 저장되지 않음", "fetch_paper를 먼저 호출할 것.")
     source = Path(row["text_path"]).read_text(encoding="utf-8")
-    report = verify_numbers(params.markdown, source)
+    # expect_grounded=True — 여기로 오는 요약은 전부 방금 생성된 것이고,
+    # 프롬프트가 모든 수치에 [S번호]를 달라고 지시한 뒤 만들어진 것이다(M4,
+    # 2026-08-28). 그래서 태그 없는 수치는 "구형 요약이라 어쩔 수 없음"이
+    # 아니라 "LLM이 근거를 빠뜨림"으로 봐야 한다. 신/구를 호출부가 확실히
+    # 아는 지점이 여기라, 신규 저장 경로 전부(batch_summarize 배치·review_app
+    # 재생성·PDF 업로드)가 이 함수 하나를 지나므로 여기 한 곳만 True 로 준다.
+    report = verify_numbers(params.markdown, source, expect_grounded=True)
 
     out_path = SUMMARY_DIR / f"{arxiv_id.replace('/', '_')}.md"
     out_path.write_text(params.markdown, encoding="utf-8")

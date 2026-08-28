@@ -12,6 +12,23 @@ LLM 에 전달한 문장 번호)가 있으면 그 문장(과 인접 1문장, 세
 안에서만 숫자를 찾는다 — grounded=True. 태그가 없는 요약(이 기능 도입 전에 생성된
 것)은 기존 "원문 전체 대조" 방식으로 폴백한다 — grounded=False, 하위 호환.
 
+2026-08-28(M4): precision 만 있던 검증에 recall 을 더했다. 지금까지는 "태그가
+붙은 숫자가 그 문장에 실제로 있는가"(precision)만 봤고, **태그가 아예 없는
+수치는 조용히 원문 전체 대조로 완화돼 대부분 통과**했다 — 신규 요약에서 LLM 이
+근거를 빠뜨려도 검증기가 아무 말을 안 하는 구멍이었다. expect_grounded=True 로
+부르면(신규 요약 저장 경로) 태그 없는 수치를 untagged 로 따로 모아 보고한다.
+
+개념 정의는 ALCE(arXiv:2305.14627)를 따른다 — citation recall 은 "모든 진술이
+인용으로 지지되는가", precision 은 "각 인용이 실제로 그 진술을 지지하는가".
+다만 ALCE 의 NLI 모델 판정은 도입하지 않는다 — 이 검증기는 문자열·정규식
+판정만 한다는 원칙(파이프라인 판정 경로에 LLM 판사를 넣지 않는다)을 지킨다.
+
+untagged 를 unmatched 에 섞지 않는 이유: 둘은 다른 실패다. unmatched 는 "이
+숫자가 원문에 없다"(지어냈을 수 있음)이고 untagged 는 "원문엔 있는데 어느
+문장에서 왔는지 확인 불가"다. 섞으면 pass_ratio 가 두 가지를 뭉뚱그려 나중에
+통과율 변동의 원인을 못 가려낸다. 그래서 pass_ratio(=precision) 정의는 그대로
+두고 recall 신호를 별도 필드로 더했다.
+
 한계(문서화된 설계 결정):
 - 한 자리 정수(0~9)는 어떤 텍스트에도 존재해 검증 의미가 없어 제외한다.
 - 단위 환산(예: 원문 0.5m ↔ 요약 50cm)은 탐지하지 못한다.
@@ -20,6 +37,20 @@ LLM 에 전달한 문장 번호)가 있으면 그 문장(과 인접 1문장, 세
 - 문장 그라운딩(grounded=True)도 sentence_grounding 의 세그멘테이션이 완벽하지
   않아(§6 참고 수준의 한계) 인접 1문장까지 봐주는 여유를 둔다 — 그래도 "원문
   전체"보다는 훨씬 좁으므로 검증 의미는 크게 강화된다.
+- **untagged 판정의 남은 오탐(M4)**: 세그멘테이션이 문장을 실제보다 잘게 끊으면
+  태그가 옆 조각으로 밀려 "태그 없는 문장"이 만들어질 수 있다(특히 PDF 표가
+  뭉개져 낀 줄). 이 오탐을 없애려고 검사를 느슨하게 하지 않는다 — untagged 도
+  unmatched 와 똑같이 "오류 확정"이 아니라 "사람이 볼 것" 신호이기 때문이다.
+  오탐이 잦아지면 완화가 아니라 프롬프트(R2/R3 형식 준수)나 세그멘테이션 쪽을
+  고치는 게 맞는 방향이다.
+- untagged 판정은 **문장 단위**다(그 문장에 태그가 하나도 없을 때만 flag). 숫자
+  단위로 판정했다가 실측에서 오탐 70.2%가 나와 바꿨다 — 자세한 근거는
+  verify_numbers 안의 주석 참고. 다만 **보고는 숫자 단위**라, 태그가 전혀 없는
+  문장에 숫자가 셋이면 3건으로 나오고 context 에 같은 문장이 세 번 보인다.
+- 문장 하나에 태그가 하나만 있으면 그 문장의 모든 수치를 "근거 있음"으로 본다.
+  태그가 실제로 어느 수치를 가리키는지까지는 구분하지 못한다 — 그 정밀도는
+  grounded 판정(태그 바로 앞 수치)이 담당하고, 여기 recall 검사는 "이 문장에
+  근거 표시가 아예 없다"만 잡는다. 둘은 다른 층위의 검사다.
 """
 
 from __future__ import annotations
@@ -67,9 +98,15 @@ class VerificationReport:
     grounded: int = 0  # 이번 검증에서 문장 단위까지 확인한 개수 (참고용)
     unmatched: list[NumberCheck] = field(default_factory=list)
     checks: list[NumberCheck] = field(default_factory=list)
+    # M4: 근거 태그가 없는 수치 — expect_grounded=True 로 부를 때만 채워진다.
+    # unmatched 와 별개다(모듈 docstring 참고): unmatched 는 "원문에 없다",
+    # untagged 는 "원문엔 있는데 출처 문장을 확인할 수 없다".
+    untagged: list[NumberCheck] = field(default_factory=list)
 
     @property
     def pass_ratio(self) -> float:
+        """숫자 대조 통과율(=precision). M4의 untagged 는 여기 안 들어간다 —
+        정의를 바꾸면 기존 기준선(39편 0.982)과 비교 자체가 불가능해진다."""
         return 1.0 if self.total == 0 else self.matched / self.total
 
     def to_dict(self) -> dict:
@@ -86,6 +123,9 @@ class VerificationReport:
                     **({"cited_text": c.cited_text} if c.cited_text else {}),
                 }
                 for c in self.unmatched
+            ],
+            "untagged": [
+                {"token": c.token, "context": c.context} for c in self.untagged
             ],
         }
 
@@ -217,12 +257,20 @@ def _verify_grounded(norm: str, source_text: str, sentence_id: int) -> tuple[boo
     return found, window_text
 
 
-def verify_numbers(summary_text: str, source_text: str) -> VerificationReport:
+def verify_numbers(
+    summary_text: str, source_text: str, expect_grounded: bool = False,
+) -> VerificationReport:
     """요약문의 모든 숫자가 원문에 존재하는지 검사한다.
 
     [S번호] 태그가 있으면(2026-08-06 도입) 그 문장 안에서만 확인한다(grounded=True) —
     "원문 어딘가에 있다"가 아니라 "인용한 그 문장에 있다"까지 본다. 태그가 없으면
     (이 기능 도입 전 요약) 기존처럼 원문 전체에서 찾는다(grounded=False) — 하위 호환.
+
+    expect_grounded: 이 요약이 "모든 수치에 [S번호]를 달도록 지시받고 생성된
+    것"인가(M4, 2026-08-28). True 면 태그 없는 수치를 report.untagged 에 모은다
+    — 원문 전체 대조 폴백은 **그대로 수행**하므로 matched/pass_ratio 는 안 바뀌고,
+    recall 신호만 추가된다. 기본값 False 라 기존 호출부(구형 요약 재검증, 화면
+    표시, eval)는 동작이 전혀 안 바뀐다.
     """
     report = VerificationReport()
     normalized_source = source_text.replace(",", "")
@@ -246,6 +294,22 @@ def verify_numbers(summary_text: str, source_text: str) -> VerificationReport:
         report.total += 1
         if grounded:
             report.grounded += 1
+        else:
+            # 태그 커버리지 검사(M4). _extract_numbers 를 이미 통과한 숫자만
+            # 여기 오므로 한 자리 정수·출처 표기("Table 3", "6.1절")는 애초에
+            # 대상이 아니다 — 새 규칙을 만들지 않고 기존 제외 규칙을 그대로 탄다.
+            #
+            # **문장 단위로 판정한다.** 숫자 단위로 하면 오탐이 압도적이다 —
+            # 실측(2026-08-28, 52편): 한 문장에 수치를 여러 개 넣고 끝에 태그를
+            # 하나 다는 게 실제 요약의 지배적 형태라(예: "...파라미터 2.78M 및
+            # 연산량 9.3 GFLOPs 조건으로 정밀도 71.4%, 재현율 65.7% ... (표 III
+            # [S0200] ★★)") 숫자 단위로 세면 그 문장의 숫자 10개 중 9개가
+            # "태그 없음"으로 잡혔다(전체의 70.2%). 그건 "LLM이 근거를
+            # 빠뜨렸다"가 아니라 "태그가 문장 끝에 하나 있다"는 뜻이므로
+            # flag 로 보고하면 안 된다. 그래서 그 숫자가 속한 문장(context,
+            # _sentence_span 이 뽑은 것)에 태그가 **하나도** 없을 때만 flag 한다.
+            if expect_grounded and not _TAG_SEARCH_RE.search(context):
+                report.untagged.append(check)
         if found:
             report.matched += 1
         else:
