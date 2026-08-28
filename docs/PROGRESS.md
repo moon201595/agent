@@ -522,6 +522,50 @@ BM25(어휘 일치)와 임베딩 코사인 유사도(의미 일치, `gemini-embe
 
 **429 재시도 개선(범위 내 최소 수정)**: `summarize_engine._retry_wait_seconds()` 신설 — 서버가 `Retry-After` 헤더를 주면 고정 백오프(20/40초) 대신 그 값을 존중하고, 지터(0~3초)를 더해 여러 호출이 같은 순간 재시도로 다시 겹치는 것을 막는다(`server._with_retry`의 지터와 같은 이유). 헤더가 HTTP-date 형식이면 파싱하지 않고 고정 백오프로 폴백한다 — 잘못 파싱해 0초 대기로 또 429를 맞는 것보다 보수적으로 기다리는 쪽이 안전하다.
 
+### [확인됨] M2 — 다이제스트에 ⑤ 검증·⑦ 재현 상태 주입 (2026-08-28)
+
+M1이 Deep Layer를 붙이면서 논문마다 실제 검증·재현 결과가 DB에 생겼다. 그 상태를 다이제스트 항목마다 라벨로 붙여 `[미검증 · 초록 기반]`만 있던 알림을 "검증·재현 상태가 달린 다이제스트"로 바꿨다 — 3자 결합(푸시 다이제스트 + `[S번호]` 검증 + 자동 재현)의 구현 완료 지점이다. `digest.py`는 여전히 LLM을 안 쓴다(DB SELECT + 마커 파일 존재 확인뿐, 쓰기 없음).
+
+**착수 전 확인 결과**: ⑤ 결과는 `summaries.numbers_total`/`numbers_matched`에 있고 flag 건수는 `total - matched`로 나온다 — **스키마 변경이 필요 없었다**. `verify.py`의 `grounded`는 DB에 저장되지 않는 참고용 값이라 쓰지 않았다.
+
+**SQLite 동시성**: `journal_mode`가 `delete`였다 — 다이제스트(reader)와 ⑦ 재현 결과 기록(writer)이 동시에 붙는 구조라 **WAL로 전환**했다. WAL은 로컬 디스크 전용이라 쓰기 전에 DB 위치를 실측했다: `/home/mjh/paper-harness/data`는 `/dev/sdd ext4`(WSL 네이티브, `/mnt/c` 아님) — 안전. `busy_timeout`은 이미 5,000ms였고(Python sqlite3 기본 connect timeout 5초), 쓰기 경로 `save_repro_result`가 단일 `INSERT OR REPLACE`라 read-then-write 업그레이드 교착이 없어 `BEGIN IMMEDIATE`는 넣지 않았다.
+
+**정직성 — "데이터 없음"을 "통과"로 만들지 않기**: `VerificationReport.pass_ratio`는 `total == 0`일 때 1.0을 돌려준다. 그대로 쓰면 "검증할 숫자가 하나도 없었다"가 "완벽 통과"로 둔갑한다 — 실제로 저장된 요약 52편 중 1편(`2605.18747`)이 이 경우라 가상의 위험이 아니었다. 세 상태를 각각 다르게 표기한다: `[검증 n/m 통과]` / `[검증할 수치 없음]` / `[검증 데이터 없음]`. ⑦도 `[재현 –]`(기록 없음)과 `[재현 ✗]`(시도했고 실패)를 구분한다.
+
+**T+1 지연 보고(설계 결정)**: 다이제스트는 생성 시점의 DB 상태를 그대로 보여준다. ⑦은 방금 트리거된 참이라 오늘은 대부분 `[재현 ⏳ 실행중]`으로 나가고 내일 성공/실패로 바뀐다. 재현 완료를 기다리는 폴링은 넣지 않았다 — 새벽 배치가 Docker 빌드를 기다리며 몇 시간 늘어지는 것보다 하루 늦게 정확히 보고하는 쪽이 낫다.
+
+**실제 DB로 생성한 다이제스트(라벨 4종 전부 등장)**:
+
+```text
+[HARNESS Daily] 2026-08-28 · 우리팀 — 비전·에이전트·온센서
+
+■ 오늘의 신규 논문 4편 (전체 후보 100건 중)
+
+1. [★★★] Attention Is All You Need
+   왜 걸렸나 : 핵심 키워드: agent
+   초록 발췌 : ...
+   [검증 28/31 통과]  ⚠ flag 3건   [재현 –]
+   https://arxiv.org/abs/1706.03762
+
+2. [★★] Code as Agent Harness
+   [검증할 수치 없음]   [재현 –]
+   https://arxiv.org/abs/2605.18747
+
+3. [★] LLMs in Digital EDA: A perspective on shifting roles ...
+   [검증 43/43 통과]   [재현 ✗]
+   https://arxiv.org/abs/2608.27184
+
+4. [★★] 처리 실패한 가상 논문
+   [미검증 · 초록 기반] 처리 실패: Gemini·Groq 둘 다 실패: 413 Payload Too Large
+   https://arxiv.org/abs/2504.99999
+
+■ 이번 실행에서 걸러진 것: 제외 규칙 0건, 조건 불일치 25건
+```
+
+**이 출력에서 실제 값과 지어낸 값의 구분**(CLAUDE.md 8): 검증 수치(28/31, 0/0, 43/43)와 재현 상태는 전부 프로덕션 DB의 진짜 값이다 — 3번은 M1 종단 실측에서 처리한 그 논문이고 `[재현 ✗]`도 실제 재현 실패(후보 2개: `no_target`, `run`)다. 반면 **초록 본문·우선순위 점수·4번 논문 전체는 라벨 4종을 한 화면에 보이려고 만든 것**이다(새 arXiv 스캔을 25분 다시 돌리지 않으려고). 이 블록을 발표에 쓸 때 그대로 인용하지 말 것.
+
+**남은 흠(고치지 않음)**: `test_run_profile_scan.py`는 `scan_and_digest` 경유로 `generate_digest`를 부르므로 이제 프로덕션 DB를 읽는다. 쓰는 arxiv_id가 `p1`/`p2`/`p3` 합성값이고 다이제스트 내용을 단언하지 않아 현재는 통과하지만, 테스트 결과가 머신 상태에 의존하는 구조인 건 맞다. `test_digest.py`는 autouse 픽스처로 임시 DB에 격리했다(격리 전에는 실제로 `1706.03762`의 진짜 검증 결과 28/31이 테스트에 새어 들어왔다).
+
 ### [확인됨] 단위 테스트 94개 (네트워크 불필요)
 
 `verify.py` 경계 규칙 24종(2026-08-06 문장 그라운딩 규칙 7종 추가) + `selection.py` 규칙 8종 + `sentence_grounding.py` 세그멘테이션·청킹 규칙 24종 + `summarize_engine.py` 청킹 제어 흐름 5종(모킹) + `hybrid_search.py` BM25/RRF/융합 랭킹 18종 + `summary_parser.py` 구조화 JSON 파싱 10종 + `test_prompt_templates.py` 템플릿 예시 오염 방지 3종(신설). 전부 "한 번 틀렸거나 틀릴 뻔한" 케이스다.
