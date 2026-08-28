@@ -147,3 +147,160 @@ def test_scan_all_profiles_isolates_failure_of_one_profile(tmp_path, monkeypatch
     # 성공한 쪽은 다이제스트도 실제로 저장됐어야 함
     assert rp.get_latest_digest(db_path, "team_ai") is not None
     assert rp.get_latest_digest(db_path, "broken") is None
+
+
+# ---------------------------------------------------------------- M1: Deep Layer 연결
+
+
+def _mock_arxiv_three_agent_papers(monkeypatch):
+    """스코어링을 통과하는 논문 3편(전부 "agent" 포함, 최신순) — Deep Layer
+    직렬 처리 검증용. recency를 하루씩 다르게 줘서 우선순위 정렬이
+    p1→p2→p3 순으로 확정되게 한다(동점이면 순서가 불안정할 수 있어서)."""
+    now = datetime.now(timezone.utc)
+
+    def _days_ago(n):
+        return (now - timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    papers = [
+        {"arxiv_id": "p1", "title": "agent paper one", "abstract": "", "published": _days_ago(1)},
+        {"arxiv_id": "p2", "title": "agent paper two", "abstract": "", "published": _days_ago(2)},
+        {"arxiv_id": "p3", "title": "agent paper three", "abstract": "", "published": _days_ago(3)},
+    ]
+
+    async def fake_throttled(client, params):
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: papers)
+
+
+def _run_scan_and_digest(db_path):
+    async def main():
+        return await rps.scan_and_digest(db_path, "team_ai", None, max_pages=2)
+
+    return asyncio.run(main())
+
+
+def test_deep_layer_processes_each_scored_paper_serially(tmp_path, monkeypatch):
+    """(a) _process_paper 호출 횟수 == 스코어링 결과 논문 수(≤ max_items)."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+
+    calls = []
+
+    async def fake_process(client, arxiv_id, on_progress=None):
+        calls.append(arxiv_id)
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    result, _digest_text = _run_scan_and_digest(db_path)
+
+    assert calls == ["p1", "p2", "p3"]  # 직렬 + 우선순위 순서 그대로
+    assert result["scored_count"] == 3
+    assert all(p["deep_status"] == "ok" for p in result["papers"])
+
+
+def test_deep_layer_isolates_failure_of_one_paper(tmp_path, monkeypatch):
+    """(b) 두 번째 논문이 예외를 던져도 세 번째가 처리되고, 실패 논문의
+    deep_status에 실패 사유가 기록된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+
+    calls = []
+
+    async def fake_process(client, arxiv_id, on_progress=None):
+        calls.append(arxiv_id)
+        if arxiv_id == "p2":
+            raise RuntimeError("Gemini·Groq 둘 다 실패: 테스트 예외")
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    result, _digest_text = _run_scan_and_digest(db_path)
+
+    assert calls == ["p1", "p2", "p3"]  # p2 실패에도 p3가 처리됨
+    statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
+    assert statuses["p1"] == "ok"
+    assert statuses["p2"].startswith("failed:")
+    assert "테스트 예외" in statuses["p2"]
+    assert statuses["p3"] == "ok"
+
+
+def test_deep_layer_never_calls_launch_background_directly(tmp_path, monkeypatch):
+    """(c) ⑦ 트리거는 _process_paper 내부가 소유한다(CLAUDE.md 5) — 스캔
+    경로가 launch_background를 직접 부르지 않음을 감시한다(_process_paper를
+    mock한 상태이므로 호출이 있다면 스캔 경로 자신의 위반이다)."""
+    import docker_runner
+
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+
+    lb_calls = []
+    monkeypatch.setattr(docker_runner, "launch_background",
+                         lambda aid: lb_calls.append(aid) or "mocked")
+
+    async def fake_process(client, arxiv_id, on_progress=None):
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    _run_scan_and_digest(db_path)
+
+    assert lb_calls == []
+
+
+def test_deep_layer_skips_already_summarized_paper(tmp_path, monkeypatch):
+    """(d) 이미 요약 저장된 논문은 _process_paper를 아예 안 부른다 —
+    재호출하면 요약 단계가 무조건 재실행이라(실측 확인) 무료 API 한도를
+    그대로 태우는 낭비다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda aid: aid == "p2")
+
+    calls = []
+
+    async def fake_process(client, arxiv_id, on_progress=None):
+        calls.append(arxiv_id)
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    result, _digest_text = _run_scan_and_digest(db_path)
+
+    assert calls == ["p1", "p3"]  # p2는 스킵
+    statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
+    assert statuses["p2"].startswith("skipped:")
+
+
+def test_deep_layer_records_fetch_failed_dict_as_failure(tmp_path, monkeypatch):
+    """fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(실측
+    확인) — 이 경로도 failed로 기록돼야 한다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+
+    async def fake_process(client, arxiv_id, on_progress=None):
+        if arxiv_id == "p1":
+            return {"arxiv_id": arxiv_id, "status": "fetch_failed",
+                    "detail": {"error": "HTML도 PDF도 없음"}}
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    result, _digest_text = _run_scan_and_digest(db_path)
+
+    statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
+    assert statuses["p1"].startswith("failed:")
+    assert statuses["p2"] == "ok"

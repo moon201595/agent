@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -335,6 +336,25 @@ async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
     return await _post_groq(client, prompt)
 
 
+def _retry_wait_seconds(e: Exception, attempt: int) -> float:
+    """429 재시도 대기시간. 서버가 Retry-After 헤더로 알려주면 그 값을
+    존중한다(M1, 2026-08-28) — 서버가 "언제 풀리는지"를 직접 아는데 고정
+    백오프로 짐작하는 건 더 오래 기다리거나 또 429를 맞는 낭비다. 헤더가
+    없거나 숫자가 아니면(HTTP-date 형식 등) 기존 고정 백오프로 폴백.
+    지터(0~3초 무작위)를 더해 여러 청크·프로필 처리가 같은 순간 재시도로
+    다시 겹치는 것을 막는다 — server._with_retry의 지터와 같은 이유다.
+    """
+    wait = RATE_LIMIT_BACKOFF[attempt]
+    if isinstance(e, httpx.HTTPStatusError):
+        header = e.response.headers.get("retry-after")
+        if header:
+            try:
+                wait = float(header)
+            except ValueError:
+                pass  # HTTP-date 형식 — 파싱하지 않고 고정 백오프 유지
+    return wait + random.uniform(0, 3.0)
+
+
 async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
     """429 만 상한(RATE_LIMIT_RETRIES)까지 재시도한다. 429 가 아닌 실패(키 없음,
     5xx 등)는 즉시 올려서 호출부가 바로 다른 엔진으로 넘어가게 한다 —
@@ -351,7 +371,7 @@ async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
         except Exception as e:  # noqa: BLE001
             if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
                 raise
-            wait = RATE_LIMIT_BACKOFF[attempt]
+            wait = _retry_wait_seconds(e, attempt)
             print(f"  [경고] {label} 429 — {wait:.0f}초 대기 후 재시도 "
                   f"({attempt + 1}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
             last = e

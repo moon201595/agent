@@ -151,3 +151,41 @@ def test_sentence_ids_are_globally_continuous_across_chunks(monkeypatch):
     assert chunk1_ids and chunk2_ids
     assert max(chunk1_ids) < min(chunk2_ids)  # 겹치지 않고 이어짐
     assert min(chunk2_ids) == max(chunk1_ids) + 1  # 정확히 다음 번호부터 시작
+
+
+# ---------------------------------------------------------------- M1: 429 재시도 대기시간
+
+
+def _make_429(headers=None):
+    request = __import__("httpx").Request("POST", "http://api.example/v1")
+    response = __import__("httpx").Response(429, headers=headers or {}, request=request)
+    return __import__("httpx").HTTPStatusError("429", request=request, response=response)
+
+
+def test_retry_wait_respects_retry_after_header():
+    """서버가 Retry-After: 7 을 주면 고정 백오프(20초) 대신 그 값을 쓴다 —
+    지터(0~3초)만 더해진 범위여야 한다(M1, 2026-08-28)."""
+    wait = engine._retry_wait_seconds(_make_429({"retry-after": "7"}), attempt=0)
+    assert 7.0 <= wait <= 10.0
+
+
+def test_retry_wait_falls_back_to_fixed_backoff_without_header():
+    wait = engine._retry_wait_seconds(_make_429(), attempt=0)
+    assert engine.RATE_LIMIT_BACKOFF[0] <= wait <= engine.RATE_LIMIT_BACKOFF[0] + 3.0
+
+
+def test_retry_wait_ignores_unparseable_http_date_header():
+    """Retry-After가 HTTP-date 형식이면(숫자 아님) 파싱을 시도하지 않고
+    고정 백오프로 폴백한다 — 잘못 파싱해 0초 대기로 또 429를 맞는 것보다
+    보수적으로 기다리는 쪽이 안전하다."""
+    wait = engine._retry_wait_seconds(
+        _make_429({"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}), attempt=1,
+    )
+    assert engine.RATE_LIMIT_BACKOFF[1] <= wait <= engine.RATE_LIMIT_BACKOFF[1] + 3.0
+
+
+def test_retry_wait_adds_jitter_not_constant():
+    """지터가 실제로 들어간다 — 같은 입력 20회에서 값이 전부 같으면 지터가
+    없는 것이다(무작위라 이론상 전부 같을 확률은 사실상 0)."""
+    waits = {engine._retry_wait_seconds(_make_429(), attempt=0) for _ in range(20)}
+    assert len(waits) > 1
