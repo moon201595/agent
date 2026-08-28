@@ -125,6 +125,21 @@ def _init_storage() -> None:
     for d in (PDF_DIR, TEXT_DIR, SUMMARY_DIR, IMAGE_DIR, REPRO_DIR):
         d.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
+        # WAL — 다이제스트 생성(reader)과 ⑦ 재현 결과 기록(writer)이 동시에
+        # 붙는 구조라서 켠다(M2, 2026-08-28). 기본 journal_mode=delete 에서는
+        # writer 가 reader 를 막는다. WAL 은 DB 파일에 한 번 기록되면 이후
+        # 연결에도 계속 적용되는 영구 설정이라 여기서 한 번만 실행하면 된다.
+        #
+        # WAL 은 로컬 디스크 전용이라(네트워크/공유 FS 에서 깨진다) 쓰기 전에
+        # DB 위치를 실측했다: /home/mjh/paper-harness/data 는 /dev/sdd ext4,
+        # 즉 WSL 네이티브 파일시스템이다(/mnt/c 가 아님) — 안전.
+        #
+        # busy_timeout 은 별도로 안 건다: Python sqlite3 의 기본 connect
+        # timeout 이 5초이고 실측으로 PRAGMA busy_timeout=5000 이 이미
+        # 걸려 있는 걸 확인했다. 쓰기 경로(save_repro_result)도 단일
+        # INSERT OR REPLACE 라 read-then-write 업그레이드 교착이 없어서
+        # BEGIN IMMEDIATE 까지는 필요 없다.
+        con.execute("PRAGMA journal_mode=WAL")
         con.execute(
             """CREATE TABLE IF NOT EXISTS papers (
                 arxiv_id TEXT PRIMARY KEY,
