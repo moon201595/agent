@@ -38,7 +38,7 @@ def test_send_digest_email_fails_loudly_without_smtp_config(monkeypatch):
 def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     """설정이 있으면 실제로 smtplib.SMTP를 올바른 인자로 부른다 — 진짜
     네트워크는 절대 안 나가게 SMTP 클래스 자체를 가짜로 바꾼다."""
-    monkeypatch.setattr(engine, "ENV", {"SMTP_USER": "me@outlook.com", "SMTP_PASSWORD": "app-password"})
+    monkeypatch.setattr(engine, "ENV", {"SMTP_USER": "me@gmail.com", "SMTP_PASSWORD": "app-password"})
 
     calls = {}
 
@@ -70,6 +70,6 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     assert calls["host"] == email_delivery.SMTP_HOST
     assert calls["port"] == email_delivery.SMTP_PORT
     assert calls["starttls"] is True
-    assert calls["login"] == ("me@outlook.com", "app-password")
-    assert calls["sent_from"] == "me@outlook.com"
+    assert calls["login"] == ("me@gmail.com", "app-password")
+    assert calls["sent_from"] == "me@gmail.com"
     assert calls["sent_to"] == "a@x.com, b@x.com"
