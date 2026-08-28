@@ -37,9 +37,20 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
 
-def build_message(digest_text: str, subject: str, sender: str, recipients: list[str]) -> EmailMessage:
+def build_message(
+    digest_text: str, subject: str, sender: str, recipients: list[str],
+    digest_html: str | None = None,
+) -> EmailMessage:
     """실제 발송과 메시지 조립을 분리 — 이 함수는 네트워크가 전혀 없어서
-    SMTP 정보 없이도 지금 바로 테스트할 수 있다."""
+    SMTP 정보 없이도 지금 바로 테스트할 수 있다.
+
+    digest_html 을 주면 multipart/alternative 로 만든다(M3, 2026-08-28).
+    set_content 로 plain 을 먼저 넣고 add_alternative 로 html 을 붙이는
+    순서가 중요하다 — MIME 규약상 **뒤에 온 파트가 우선**이므로 이 순서라야
+    HTML 을 읽는 클라이언트는 HTML 을, 못 읽거나 차단하는 환경은 텍스트를
+    본다. 안 주면 기존과 완전히 동일한 단일 파트 메일이라 하위 호환이
+    깨지지 않는다.
+    """
     if not recipients:
         raise ValueError("수신자가 없음 — research_profile.add_recipient로 최소 1명 등록 필요")
     msg = EmailMessage()
@@ -47,10 +58,15 @@ def build_message(digest_text: str, subject: str, sender: str, recipients: list[
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg.set_content(digest_text)
+    if digest_html:
+        msg.add_alternative(digest_html, subtype="html")
     return msg
 
 
-def send_digest_email(digest_text: str, subject: str, recipients: list[str]) -> None:
+def send_digest_email(
+    digest_text: str, subject: str, recipients: list[str],
+    digest_html: str | None = None,
+) -> None:
     """.env에 SMTP_USER/SMTP_PASSWORD가 아직 없으면 바로, 명확하게 실패한다
     — 조용히 아무 일도 안 하고 넘어가면 "왜 메일이 안 왔지"를 아무도
     알아챌 방법이 없다(이 프로젝트 전체의 "조용히 넘어가지 않는다" 원칙과
@@ -64,7 +80,12 @@ def send_digest_email(digest_text: str, subject: str, recipients: list[str]) -> 
             "앱 비밀번호(일반 로그인 비밀번호 아님, 계정 보안 설정에서 별도 발급)를 "
             ".env에 추가할 것(email_delivery.py 모듈 docstring 참고)."
         )
-    msg = build_message(digest_text, subject, sender, recipients)
+    # 앱 비밀번호 공백 제거 — Google이 "abcd efgh ijkl mnop" 형태로 보여줘서
+    # 그대로 복사하면 공백이 섞여 들어온다(실측: .env 값이 19자·공백 포함이었다).
+    # 공백은 앱 비밀번호에 유효한 문자가 아니라 표시용 구분자일 뿐이라 지워도
+    # 안전하다.
+    password = password.replace(" ", "")
+    msg = build_message(digest_text, subject, sender, recipients, digest_html)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(sender, password)
