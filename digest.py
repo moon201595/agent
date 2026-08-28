@@ -167,7 +167,15 @@ def _paper_entry(idx: int, paper: dict) -> str:
     deep_status = str(paper.get("deep_status") or "")
     if deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
-        lines.append(f"   [미검증 · 초록 기반] 처리 실패: {reason}")
+        # S2 tldr 이 있으면 초록 발췌 대신 그걸 쓴다(M6) — 다만 S2 모델이 만든
+        # 요약이지 우리 ⑤를 통과한 게 아니라 라벨을 다르게 단다. 검증된 요약과
+        # 절대 같은 라벨을 쓰지 않는다(CLAUDE.md 8).
+        tldr = paper.get("s2_tldr")
+        if tldr:
+            lines[-1] = f"   S2 한줄요약 : {tldr}"
+            lines.append(f"   [미검증 · S2 TLDR] 처리 실패: {reason}")
+        else:
+            lines.append(f"   [미검증 · 초록 기반] 처리 실패: {reason}")
     else:
         lines.append(f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}")
 

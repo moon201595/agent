@@ -1420,6 +1420,59 @@ def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:
         )
 
 
+S2_BATCH_API = "https://api.semanticscholar.org/graph/v1/paper/batch"
+
+
+async def fetch_s2_tldrs(client: httpx.AsyncClient, arxiv_ids: list[str]) -> dict[str, str]:
+    """arXiv ID 목록 → {arxiv_id: tldr 한 줄}. 없는 논문은 키가 아예 안 들어간다.
+
+    M6(2026-08-28): 이미 쓰는 Semantic Scholar Graph API 의 tldr 필드다 —
+    신규 API 가 아니라 기존 API 의 필드 추가이고, /paper/batch 로 **논문 여러
+    편을 한 번의 호출**로 받는다(실측: 3편을 1회에). 프로필 하나당 최대
+    max_items(기본 8)편이므로 스캔당 S2 호출이 1회 늘어날 뿐이다.
+
+    이 요약은 S2 모델이 만든 것이고 우리 ⑤ 검증을 통과한 게 아니다 —
+    호출부(digest.py)가 반드시 그렇게 표기해야 한다.
+
+    실패하면 빈 dict 를 돌려준다. tldr 은 있으면 좋은 부가 정보이지
+    파이프라인 게이트가 아니다.
+    """
+    ids = [a for a in arxiv_ids if a and not a.startswith("pdf-")]
+    if not ids:
+        return {}
+    headers = {}
+    if os.environ.get("S2_API_KEY"):
+        headers["x-api-key"] = os.environ["S2_API_KEY"]
+    try:
+        # 배치는 POST 라 _throttled_s2_get(GET 전용)을 그대로 못 쓴다. 다만
+        # "초당 1회, 전체 엔드포인트 합산"이라는 S2 한도는 같이 적용되므로
+        # 같은 락·같은 간격을 쓴다 — 엔드포인트마다 따로 세면 한도를 우회하게 된다.
+        global _last_s2_call
+        async with _s2_lock:
+            wait = S2_MIN_INTERVAL - (time.monotonic() - _last_s2_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            resp = await client.post(
+                S2_BATCH_API, params={"fields": "tldr"},
+                json={"ids": [f"ARXIV:{a}" for a in ids]},
+                headers=headers, timeout=40,
+            )
+            _last_s2_call = time.monotonic()
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:  # noqa: BLE001 — 부가 정보라 실패해도 파이프라인은 계속된다
+        return {}
+
+    out: dict[str, str] = {}
+    for arxiv_id, item in zip(ids, data if isinstance(data, list) else []):
+        if not item:
+            continue  # S2 에 없는 논문은 null 로 온다
+        text = (item.get("tldr") or {}).get("text")
+        if text:
+            out[arxiv_id] = text
+    return out
+
+
 async def refresh_retraction_status(arxiv_id: str) -> int | None:
     """⑧ 철회 여부를 조회해 papers.is_retracted 에 저장한다(M5, 2026-08-28).
     MCP 도구가 아니다 — retraction.py 가 판정까지 끝낸 뒤 결과만 저장한다

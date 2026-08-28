@@ -655,6 +655,40 @@ DB 저장 경로도 실제로 확인했다(`2605.18747`: NULL → 0).
 
 **크레딧 사용량**: 위 실측 전후로 `x-ratelimit-remaining` 이 **10000 → 10000 으로 안 줄었다**. 싱글턴 DOI 조회가 무료이거나 카운터가 이 경로를 세지 않는 것으로 보이는데, **어느 쪽인지는 확인하지 못했다(미실측)**. 어느 쪽이든 하루 16편 규모에서 예산 문제는 없다. 리스트·PDF content·vector search 엔드포인트는 호출하는 코드를 아예 작성하지 않았다(단가 10~1,000배).
 
+### [확인됨/일부 폐기] M6 — API 확장 세 작업 (2026-08-28)
+
+#### 작업 1 — GitHub: 토큰 발급이 아니라 스로틀이 문제였다
+
+계획서는 "미인증 60 req/hr → PAT 인증 5,000"을 전제로 `GITHUB_TOKEN` 발급을 지시했다. 그런데 코드를 열어보니 `code_finder.github_search()` 는 httpx 가 아니라 **`gh` CLI 를 호출**하고 있었고(`gh api search/repositories`), 이 머신의 `gh` 는 **이미 인증돼 있었다**. 실측:
+
+```text
+core   : 5000/5000   (미인증이면 60)
+search :   30/30     (미인증이면 10)
+```
+
+즉 계획서가 달성하려던 목표는 **이미 충족된 상태**였고 새 PAT 를 만들어도 `gh` 가 그걸 쓸 이유가 없다 — **토큰을 발급하지 않았다.** 대신 진짜 빠져 있던 것을 채웠다: 검색 엔드포인트는 코어 API 와 **별개의 낮은 한도**(분당 30회)를 쓰는데 `github_search()` 에 호출 간격 제한이 전혀 없었다. 논문을 연속 처리하면 여기 먼저 걸린다. `_throttled_s2_get` 과 같은 발상으로 최소 간격 2.5초를 강제했다(분당 24회, 한도 대비 여유). `code_finder` 는 동기 코드라 `asyncio.Lock` 대신 `threading.Lock` 을 썼다. 실측: 연속 3회 호출이 0.00s → 2.50s → 5.00s.
+
+#### 작업 2 — Cerebras: **폐기**(결제 요구)
+
+키 발급 자체는 카드 없이 됐고 `/v1/models` 도 200 을 준다(`gemma-4-31b`, `gpt-oss-120b`). 그런데 실제 추론 호출이 **HTTP 402 Payment Required** 로 거부됐다:
+
+```json
+{"message":"Payment required to access this resource. Visit your billing tab.",
+ "type":"payment_required_error","code":"payment_required"}
+```
+
+CLAUDE.md 1(유료 티어 전환·결제수단 등록 절대 금지)에 정면으로 걸리므로 **3차 폴백 도입을 중단했다.** 코드는 한 줄도 안 넣었다. 계획서의 "결제수단 등록을 요구받으면 중단·보고" 지시 그대로다. `.env` 의 `CEREBRAS_API_KEY` 는 아무 코드도 읽지 않으므로 남아 있어도 무해하다.
+
+이 폐기가 §8 미해결 14번(Gemini 막힌 날 Groq 폴백이 25분 걸림)의 대응 후보 하나를 없앤다 — 남은 후보는 "Deep 대상 편수를 max_items 와 분리" 또는 "그날은 상위 N편만 처리하고 이월"이다.
+
+#### 작업 3 — S2 tldr 발췌 보강
+
+이미 쓰는 Semantic Scholar Graph API 의 `tldr` 필드다(신규 API 가 아니라 필드 추가). `/paper/batch` 로 **여러 편을 1회 호출**로 받는다(실측: 3편 1회). 프로필당 최대 `max_items`(기본 8)편이라 스캔당 S2 호출이 1회 늘어날 뿐이다.
+
+**Deep 처리가 실패한 논문에만** 쓴다 — 성공한 논문에는 우리 ⑤를 통과한 요약이 있으므로 미검증 S2 요약으로 덮으면 안 된다. 라벨도 `[미검증 · S2 TLDR]` 로 따로 달아 `[검증 n/m 통과]` 와 절대 섞이지 않게 했다.
+
+**네트워크는 스캔 단계에서만 탄다** — `run_profile_scan` 이 tldr 을 받아 논문 dict 에 붙이고 `digest.py` 는 그걸 읽기만 한다. 다이제스트 생성이 메일 발송 직전에 네트워크를 기다리는 구조를 만들지 않기 위해서다(digest.py 의 "DB 읽기 전용" 성질도 그대로 유지).
+
 ### [확인됨] 단위 테스트 94개 (네트워크 불필요)
 
 `verify.py` 경계 규칙 24종(2026-08-06 문장 그라운딩 규칙 7종 추가) + `selection.py` 규칙 8종 + `sentence_grounding.py` 세그멘테이션·청킹 규칙 24종 + `summarize_engine.py` 청킹 제어 흐름 5종(모킹) + `hybrid_search.py` BM25/RRF/융합 랭킹 18종 + `summary_parser.py` 구조화 JSON 파싱 10종 + `test_prompt_templates.py` 템플릿 예시 오염 방지 3종(신설). 전부 "한 번 틀렸거나 틀릴 뻔한" 케이스다.

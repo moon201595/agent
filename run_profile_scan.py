@@ -140,6 +140,18 @@ async def scan_and_digest(
         else:
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
 
+    # S2 tldr(M6) — Deep 처리가 실패한 논문은 우리 요약이 없어 초록 발췌만
+    # 남는데, S2 의 한 줄 요약이 그보다 읽기 낫다. 배치 1회라 호출 비용이
+    # 사실상 없다. 네트워크는 여기서만 타고 digest.py 는 순수하게 유지한다
+    # (다이제스트 생성이 메일 발송 직전에 네트워크를 기다리면 안 된다).
+    failed = [p for p in result["papers"] if str(p.get("deep_status", "")).startswith("failed")]
+    if failed:
+        tldrs = await server.fetch_s2_tldrs(client, [p.get("arxiv_id") for p in failed])
+        for paper in failed:
+            text = tldrs.get(paper.get("arxiv_id"))
+            if text:
+                paper["s2_tldr"] = text
+
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
