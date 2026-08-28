@@ -73,6 +73,10 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
     )
     verification = save_result.get("verification", {})
 
+    # ⑧ 철회 여부 조회(M5, 2026-08-28) — OpenAlex 싱글턴 1회 + 필요 시
+    # Crossref 교차확인. 실패해도 None 으로 떨어지고 파이프라인은 계속된다.
+    retracted = await server.refresh_retraction_status(arxiv_id)
+
     # ⑥ 승인 게이트 없이 곧바로 ⑦로 넘어간다(2026-08-24, 모듈 docstring
     # 참고) — Docker clone+install+run은 무거운 작업이라 여기서 기다리지
     # 않고 별도 프로세스로 띄우기만 하고 바로 다음 논문으로 넘어간다.
@@ -85,7 +89,7 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         f"— ⑦ {repro_msg}"
     )
     return {"arxiv_id": arxiv_id, "status": "done", "engine": used_engine,
-            "repro": repro_msg, **verification}
+            "repro": repro_msg, "is_retracted": retracted, **verification}
 
 
 async def _resolve_targets(args: argparse.Namespace) -> list[str]:

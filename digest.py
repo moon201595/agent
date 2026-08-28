@@ -125,11 +125,37 @@ def repro_label(arxiv_id: str) -> str:
     return "[재현 ✗]"
 
 
+def retraction_label(arxiv_id: str) -> str:
+    """⑧ 철회 상태 라벨(M5). 0(정상)·NULL(미조회)은 **아무것도 표시하지
+    않는다** — "철회 아님"이라고 쓰면 조회조차 못 한 논문을 검증된 정상으로
+    보이게 만든다(CLAUDE.md 8). 위험을 알릴 때만 말한다."""
+    try:
+        with server._db() as con:
+            row = con.execute(
+                "SELECT is_retracted FROM papers WHERE arxiv_id=?", (arxiv_id,)
+            ).fetchone()
+    except sqlite3.Error:
+        return ""
+    if row is None or row["is_retracted"] is None:
+        return ""
+    if row["is_retracted"] == 1:
+        return "[⚠ 철회된 논문]"
+    if row["is_retracted"] == 2:
+        return "[주의: 정정/우려 표명 이력]"
+    return ""
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
     lines = [
         f"{idx}. [{_stars(score.get('priority', 0.0))}] {paper.get('title') or '(제목 없음)'}",
+    ]
+    # 철회 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5).
+    retraction = retraction_label(arxiv_id)
+    if retraction:
+        lines.append(f"   {retraction}")
+    lines += [
         f"   왜 걸렸나 : {_why_matched(score)}",
         f"   초록 발췌 : {_abstract_excerpt(paper)}",
     ]
@@ -262,6 +288,13 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         chips = _status_chip(v_label.strip("[]"), flagged="flag" in v_label)
         chips += _status_chip(r_label.strip("[]"), flagged="✗" in r_label)
         detail = ""
+
+    # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —
+    # 이 항목에서 가장 중요한 정보다.
+    retraction = retraction_label(arxiv_id)
+    if retraction:
+        chips = _status_chip(retraction.strip("[]"), flagged=True) + chips
+        needs_attention = True
 
     open_attr = " open" if needs_attention else ""
     return (
