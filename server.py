@@ -45,6 +45,8 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
 import hybrid_search
+import retraction
+import summarize_engine
 import summary_parser
 from selection import dedupe_and_rank
 from verify import verify_numbers
@@ -167,6 +169,12 @@ def _init_storage() -> None:
         # | 'open-access: <URL>'. 기존 arXiv 행은 NULL로 남고 fetch_paper 는 안 건드림.
         if "source" not in existing:
             con.execute("ALTER TABLE papers ADD COLUMN source TEXT")
+        # ⑧ 철회 여부(M5, 2026-08-28). NULL = 미조회/판정 불가, 0 = 정상,
+        # 1 = 철회 확정(OpenAlex + Crossref 교차확인), 2 = 요주의(OpenAlex 는
+        # 철회라는데 교차확인이 안 됨). 기존 행은 NULL 로 남는다 — "조회 안
+        # 했다"와 "정상이다"를 절대 같은 값으로 두지 않는다(retraction.py 참고).
+        if "is_retracted" not in existing:
+            con.execute("ALTER TABLE papers ADD COLUMN is_retracted INTEGER")
 
         # ⑥ 사람 판단 상태. review_app.py 가 쓴다 — 이 서버는 판단하지 않고
         # 값을 저장·조회만 한다. 기본값 'pending' — 저장된 요약은 검토 전이 기본.
@@ -1410,6 +1418,48 @@ def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:
             "UPDATE summaries SET review_status=?, review_note=?, reviewed_at=? WHERE arxiv_id=?",
             (status, note or None, _now(), arxiv_id),
         )
+
+
+async def refresh_retraction_status(arxiv_id: str) -> int | None:
+    """⑧ 철회 여부를 조회해 papers.is_retracted 에 저장한다(M5, 2026-08-28).
+    MCP 도구가 아니다 — retraction.py 가 판정까지 끝낸 뒤 결과만 저장한다
+    (save_repro_result·set_review_status 와 동일 패턴).
+
+    이미 판정값이 있으면 다시 조회하지 않는다 — 철회는 되돌아가지 않는
+    상태이고, 매 재요약마다 크레딧을 다시 쓸 이유가 없다. NULL(미조회)인
+    행만 다시 본다: NULL 자체가 재시도 큐 역할을 한다(크레딧 소진·API 장애로
+    실패한 논문은 다음 저장 때 자연히 다시 시도된다).
+
+    어떤 실패에도 예외를 올리지 않는다 — 철회 조회가 요약 저장을 막으면 안 된다.
+    """
+    arxiv_id = _clean_arxiv_id(arxiv_id)
+    with _db() as con:
+        row = con.execute(
+            "SELECT is_retracted FROM papers WHERE arxiv_id=?", (arxiv_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    if row["is_retracted"] is not None:
+        return row["is_retracted"]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            status = await retraction.check(
+                client, arxiv_id,
+                api_key=summarize_engine.ENV.get("OPENALEX_API_KEY"),
+                # Crossref polite pool 용 이메일은 명시적으로 설정한 경우에만
+                # 보낸다 — 개인 주소를 외부 서비스에 자동으로 흘리지 않는다.
+                mailto=summarize_engine.ENV.get("CROSSREF_MAILTO"),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    if status is None:
+        return None
+    with _db() as con:
+        con.execute(
+            "UPDATE papers SET is_retracted=? WHERE arxiv_id=?", (status, arxiv_id)
+        )
+    return status
 
 
 def save_repro_result(

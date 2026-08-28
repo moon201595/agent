@@ -27,6 +27,8 @@ def isolated_db(tmp_path, monkeypatch):
                     "numbers_total INTEGER, numbers_matched INTEGER)")
         con.execute("CREATE TABLE repro_results (arxiv_id TEXT, repo_url TEXT, "
                     "success INTEGER, PRIMARY KEY (arxiv_id, repo_url))")
+        # M5: 철회 상태는 papers 에 산다.
+        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
     monkeypatch.setattr(server, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
     return {"db": db, "repro": repro}
@@ -313,3 +315,66 @@ def test_html_empty_papers_case(isolated_db):
     html = _html_for([], candidates=12)
     assert "새로 걸린 논문이 없습니다" in html
     assert "<details" not in html
+
+
+# ---------------------------------------------------------------- M5: 철회 경고 표기
+
+
+def _seed_retraction(db, arxiv_id, value):
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT OR REPLACE INTO papers (arxiv_id, is_retracted) VALUES (?,?)",
+                    (arxiv_id, value))
+
+
+def test_retraction_warning_shown_for_confirmed(isolated_db):
+    """(c) is_retracted=1 → 최상단에 철회 경고."""
+    _seed_retraction(isolated_db["db"], "p1", 1)
+    text = _digest_for(_scored_paper("p1", "철회 논문", 1.0))
+    assert "[⚠ 철회된 논문]" in text
+
+
+def test_suspect_warning_shown_for_unconfirmed(isolated_db):
+    """(c-2) is_retracted=2 → 확정과 다른 문구로 구분한다."""
+    _seed_retraction(isolated_db["db"], "p1", 2)
+    text = _digest_for(_scored_paper("p1", "요주의 논문", 1.0))
+    assert "[주의: 정정/우려 표명 이력]" in text
+    assert "[⚠ 철회된 논문]" not in text
+
+
+def test_no_marking_for_normal_paper(isolated_db):
+    """(c-3) is_retracted=0은 아무 표기도 하지 않는다."""
+    _seed_retraction(isolated_db["db"], "p1", 0)
+    text = _digest_for(_scored_paper("p1", "정상 논문", 1.0))
+    assert "철회" not in text
+
+
+def test_no_marking_when_never_checked(isolated_db):
+    """(c-4) NULL(미조회)에 "철회 아님"이라고 쓰면 조회조차 못 한 논문을
+    검증된 정상으로 보이게 만든다 — 아무 말도 하지 않는다(CLAUDE.md 8)."""
+    _seed_retraction(isolated_db["db"], "p1", None)
+    text = _digest_for(_scored_paper("p1", "미조회 논문", 1.0))
+    assert "철회" not in text
+    assert "주의" not in text
+
+
+def test_retraction_warning_appears_before_other_info(isolated_db):
+    """경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 나와야 한다."""
+    _seed_retraction(isolated_db["db"], "p1", 1)
+    text = _digest_for(_scored_paper("p1", "철회 논문", 1.0))
+    assert text.index("[⚠ 철회된 논문]") < text.index("왜 걸렸나")
+
+
+def test_html_retraction_chip_forces_open(isolated_db):
+    """HTML판: 철회 항목은 무조건 펼쳐 보낸다 — 이 항목에서 가장 중요한 정보다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/b", success=True)
+    _seed_retraction(isolated_db["db"], "p1", 1)
+    html = _html_for([_scored_paper("p1", "철회 논문", 1.0)])
+    assert "<details open" in html          # 검증·재현이 깨끗해도 펼친다
+    assert "철회된 논문" in html
+
+
+def test_html_no_retraction_chip_when_null(isolated_db):
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    html = _html_for([_scored_paper("p1", "미조회 논문", 1.0)])
+    assert "철회" not in html

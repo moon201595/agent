@@ -614,6 +614,47 @@ M1이 Deep Layer를 붙이면서 논문마다 실제 검증·재현 결과가 DB
 
 **선택 과제(미착수, 제안만)**: MiniCheck(arXiv:2404.10774)의 소형 모델을 **오프라인 배치 eval 전용**으로 도입하면 golden-set 회귀를 NLI 관점에서 교차검증할 수 있다. 무료(HF 로컬)이고 파이프라인 판정 경로엔 안 넣으므로 원칙 위반이 아니다. WSL2 메모리 적합성 실측이 선행 조건이다.
 
+### [확인됨] M5 — 철회(retraction) 체크 (2026-08-28)
+
+⑧ 축적 시점에 논문의 철회 여부를 무료 API로 조회해 DB에 저장하고 다이제스트에 경고를 표기한다. LLM 호출 0회, 이진 기계 판정 — "기계가 위조 불가능하게 판정할 수 있는 것만 자동화한다"는 원칙에 정확히 맞는다. `retraction.py`(순수 조회·분류, DB 모름) + `server.refresh_retraction_status`(저장) 로 나눴다 — selection.py·verify.py 와 같은 경계.
+
+**착수 전 실측 4건**(계획서가 "통과 못 하면 작업하지 말고 멈춰서 보고"로 못 박은 관문):
+
+| 항목 | 실측 결과 |
+| --- | --- |
+| OpenAlex `is_retracted` | 철회 2건(Wakefield MMR `10.1016/S0140-6736(97)11096-0`, Surgisphere HCQ `10.1016/S0140-6736(20)31180-6`) → 둘 다 `True`, 제목도 `RETRACTED:` 접두 |
+| arXiv DOI 경로 (OpenAlex) | 저장소 논문 6건 중 **5건 적중** |
+| Crossref 스키마 | 필드는 `updated-by[]`, `type` ∈ {`retraction`, `correction`, `expression_of_concern`, `erratum`} |
+| arXiv DOI (Crossref) | **404** — arXiv 는 DataCite 등록이라 Crossref 에 없다 |
+| 크레딧 확인 수단 | 응답 헤더 `x-ratelimit-limit: 10000`, `-remaining`, `-limit-usd: 1`, `-reset` |
+
+**실측이 잡아낸 함정 — 필드 존재가 아니라 `type` 을 봐야 한다**: 대조군으로 넣은 정상 Lancet 논문(`10.1016/S0140-6736(20)30183-5`)도 `updated-by` 를 갖고 있었다(`erratum`). `updated-by` 유무로 판정했으면 정상 논문을 철회로 찍었을 것이다.
+
+**커버리지 갭의 두 가지 모양**(둘 다 404 → NULL):
+
+1. **아직 색인 전** — 전날 올라온 `2608.27184` 가 404였다.
+2. **정식 출판되며 출판사 DOI 로 색인** — `1706.03762`(Attention Is All You Need)도 404였다. arXiv DOI 를 안 갖고 있기 때문이다.
+
+**판정 코드**: `NULL`=미조회/판정 불가, `0`=정상, `1`=철회 확정(OpenAlex true + Crossref 가 `retraction` 으로 교차확인), `2`=요주의. **`2` 의 범위를 계획서보다 넓게 잡았다** — 계획서는 "OpenAlex true 인데 Crossref 가 Correction" 만 지목했지만, 실측에서 **arXiv 논문은 Crossref 레코드 자체가 없어 교차확인이 원천 불가**한 것이 드러났다. 그 경우까지 `1`(확정)로 올리면 "철회됨"이라는 가장 무거운 딱지를 검증 없이 붙이게 되므로, `2`(요주의)로 낮춰 사람이 보게 한다.
+
+**정직성**: `0`(정상)과 `NULL`(미조회)은 다이제스트에 **아무 표기도 하지 않는다**. "철회 아님"이라고 쓰면 조회조차 못 한 논문이 검증된 정상으로 보인다 — 위험을 알릴 때만 말한다.
+
+**개인정보**: Crossref 의 `mailto`(polite pool 예의 파라미터)는 **선택**으로 두고 기본은 안 보낸다. 환경변수 `CROSSREF_MAILTO` 를 명시적으로 설정했을 때만 실린다 — 개인 이메일을 외부 서비스에 자동으로 흘리지 않기 위해서다.
+
+**재조회 정책**: 이미 판정값이 있으면 다시 안 본다(철회는 되돌아가지 않는 상태다). `NULL` 인 행만 다시 조회한다 — **NULL 자체가 재시도 큐 역할**을 하므로 별도 큐 자료구조를 만들지 않았다. 실측: 같은 논문 재호출이 1ms(네트워크 왕복 없음).
+
+**완료 확인 — 실호출 3건**:
+
+```text
+철회 논문(Wakefield)     : OpenAlex=True, Crossref=['correction','retraction'] → 판정 1
+정상 arXiv(2605.18747)   : 판정 0
+최신 프리프린트(2608.27184): 판정 None (색인 전)
+```
+
+DB 저장 경로도 실제로 확인했다(`2605.18747`: NULL → 0).
+
+**크레딧 사용량**: 위 실측 전후로 `x-ratelimit-remaining` 이 **10000 → 10000 으로 안 줄었다**. 싱글턴 DOI 조회가 무료이거나 카운터가 이 경로를 세지 않는 것으로 보이는데, **어느 쪽인지는 확인하지 못했다(미실측)**. 어느 쪽이든 하루 16편 규모에서 예산 문제는 없다. 리스트·PDF content·vector search 엔드포인트는 호출하는 코드를 아예 작성하지 않았다(단가 10~1,000배).
+
 ### [확인됨] 단위 테스트 94개 (네트워크 불필요)
 
 `verify.py` 경계 규칙 24종(2026-08-06 문장 그라운딩 규칙 7종 추가) + `selection.py` 규칙 8종 + `sentence_grounding.py` 세그멘테이션·청킹 규칙 24종 + `summarize_engine.py` 청킹 제어 흐름 5종(모킹) + `hybrid_search.py` BM25/RRF/융합 랭킹 18종 + `summary_parser.py` 구조화 JSON 파싱 10종 + `test_prompt_templates.py` 템플릿 예시 오염 방지 3종(신설). 전부 "한 번 틀렸거나 틀릴 뻔한" 케이스다.
