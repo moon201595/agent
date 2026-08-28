@@ -26,6 +26,7 @@ from pathlib import Path
 
 import httpx
 
+import batch_summarize
 import digest
 import find_new_papers
 import profile_scoring
@@ -83,16 +84,62 @@ async def scan_profile(
     }
 
 
+def _summary_exists(arxiv_id: str) -> bool:
+    """이미 ④⑤가 끝나 저장된 논문인지 — Deep Layer 재처리(=중복 LLM API
+    호출, 무료 한도를 그대로 태우는 낭비)를 막는 스킵 체크(M1, 2026-08-28).
+    fetch_paper는 멱등이지만 _process_paper의 요약 단계는 무조건 재실행
+    이라(재확인함) 호출 전에 여기서 걸러야 한다. summaries는 profiles
+    db_path가 아니라 server.DB_PATH에 산다 — _process_paper가 server 경유로
+    저장하는 곳이 거기라서(운영에선 둘이 같은 파일이지만 테스트에선 다름)."""
+    with server._db() as con:
+        row = con.execute(
+            "SELECT 1 FROM summaries WHERE arxiv_id=?", (arxiv_id,)
+        ).fetchone()
+    return row is not None
+
+
 async def scan_and_digest(
     db_path: Path, profile_id: str, client: httpx.AsyncClient,
     page_size: int = 50, max_pages: int = 10,
 ) -> tuple[dict, str]:
-    """scan_profile() + digest 생성 + DB 저장까지 한 번에. review_app.py의
-    "지금 스캔 실행" 버튼과 cron 둘 다 이 함수 하나만 부른다 — 다이제스트를
-    "만드는 곳"과 "저장하는 곳"이 갈라져 있으면 한쪽 경로에서만 저장을
-    까먹는 사고가 나기 쉽다(⑥→⑦ 트리거를 docker_runner.py 한 곳에 모은
-    것과 같은 이유)."""
+    """scan_profile() + Deep Layer(④⑤⑦) + digest 생성 + DB 저장까지 한 번에.
+    review_app.py의 "지금 스캔 실행" 버튼과 cron 둘 다 이 함수 하나만
+    부른다 — 다이제스트를 "만드는 곳"과 "저장하는 곳"이 갈라져 있으면
+    한쪽 경로에서만 저장을 까먹는 사고가 나기 쉽다(⑥→⑦ 트리거를
+    docker_runner.py 한 곳에 모은 것과 같은 이유).
+
+    M1(2026-08-28): 스코어링 상위 논문 각각에 batch_summarize._process_paper
+    를 **직렬로** 적용해 ④요약→⑤검증→⑦재현 트리거까지 잇는다. 직렬인
+    이유: 무료 API 분당 한도(RPM/TPM)에 병렬은 자살행위고, S2 1req/s
+    스로틀과 같은 철학이다. ⑦ 트리거는 _process_paper 내부가 소유하므로
+    여기서 launch_background를 직접 부르지 않는다(CLAUDE.md 5). 한 편의
+    실패가 나머지를 막지 않는다 — scan_all_profiles의 프로필 간 실패
+    격리와 동일한 원칙. 결과는 논문 항목의 deep_status에 남는다:
+    "ok" | "skipped: ..." | "failed: <사유 1줄>".
+    """
     result = await scan_profile(db_path, profile_id, client, page_size, max_pages)
+
+    # Deep Layer — result["papers"]는 score_and_rank가 이미 top_k=max_items로
+    # 잘라놓은 목록이라 별도 상한을 두지 않는다.
+    for paper in result["papers"]:
+        arxiv_id = paper.get("arxiv_id")
+        if not arxiv_id:
+            paper["deep_status"] = "failed: arxiv_id 없음"
+            continue
+        if _summary_exists(arxiv_id):
+            paper["deep_status"] = "skipped: 이미 요약 저장됨"
+            continue
+        try:
+            outcome = await batch_summarize._process_paper(client, arxiv_id)
+        except Exception as e:  # noqa: BLE001 — 한 편의 실패가 나머지를 막으면 안 됨
+            paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
+            continue
+        # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
+        if outcome.get("status") == "done":
+            paper["deep_status"] = "ok"
+        else:
+            paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
+
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
