@@ -158,25 +158,62 @@ async def scan_and_digest(
     return result, digest_text
 
 
+def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> str:
+    """다이제스트를 그 프로필의 수신자에게 보낸다. returns 사람이 읽을 상태 한 줄.
+
+    **논문이 0편이어도 보낸다**(M8, 2026-08-28). 매일 오는 메일 자체가
+    "파이프라인이 살아 있다"는 증거라서다 — healthchecks.io 같은 외부
+    dead-man's switch 를 안 붙인 지금, 이게 그 역할을 대신한다. 메일이 안 온
+    날은 "새 논문이 없었다"가 아니라 "무언가 고장났다"로 읽어야 한다
+    (docs/TRIAL_CHECKLIST.md 의 (a) 항목이 이 전제 위에 서 있다).
+
+    발송 실패를 예외로 올리지 않는다 — 한 프로필의 SMTP 실패가 나머지
+    프로필의 스캔·발송을 막으면 안 된다.
+    """
+    import email_delivery
+
+    recipients = research_profile.get_recipients(db_path, profile_id)
+    if not recipients:
+        return "수신자 없음 — 발송 안 함"
+    profile = research_profile.get_profile(db_path, profile_id)
+    name = profile["name"] if profile else profile_id
+    try:
+        digest_html = digest.generate_digest_html(result, name)
+        email_delivery.send_digest_email(
+            digest_text, f"[HARNESS Daily] {name}", recipients, digest_html,
+        )
+    except Exception as e:  # noqa: BLE001
+        return f"발송 실패: {str(e).splitlines()[0][:200]}"
+    return f"발송 완료 → {len(recipients)}명"
+
+
 async def scan_all_profiles(
     db_path: Path, client: httpx.AsyncClient, max_pages: int = 10,
+    send: bool = False,
 ) -> dict[str, dict]:
     """활성 프로필 전체를 순서대로 스캔한다 — cron이 부르는 진입점(설계
     문서 §2 "Scheduler"). 프로필 하나가 실패해도(예: 그 프로필만 core_topics
     없음, 혹은 그 시점 arXiv 장애) 나머지 프로필은 계속 처리한다 — 프로필
     간에 실패가 전파되면 안 된다는 게 이 함수의 핵심 설계 결정.
 
+    send=True 면 프로필마다 그 프로필의 수신자에게 다이제스트를 보낸다
+    (M8). 발송 결과도 summary 에 남는다 — cron 로그만 보고 "메일이 나갔나"를
+    알 수 있어야 한다.
+
     returns {profile_id: {"status": "ok"|"error", ...}} — cron 로그에서
     무슨 일이 있었는지 한눈에 보이는 형태."""
     summary: dict[str, dict] = {}
     for profile_id in research_profile.list_profiles(db_path):
         try:
-            result, _digest_text = await scan_and_digest(db_path, profile_id, client, max_pages=max_pages)
-            summary[profile_id] = {
+            result, digest_text = await scan_and_digest(db_path, profile_id, client, max_pages=max_pages)
+            entry = {
                 "status": "ok", "run_status": result["run_status"],
                 "candidates_found": result["candidates_found"],
                 "scored_count": result["scored_count"],
             }
+            if send:
+                entry["delivery"] = _deliver(db_path, profile_id, result, digest_text)
+            summary[profile_id] = entry
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
     return summary
@@ -190,7 +227,7 @@ def main() -> None:
     parser.add_argument("--max-pages", type=int, default=10)
     parser.add_argument("--json", action="store_true", help="다이제스트 대신 원본 결과를 JSON으로 출력")
     parser.add_argument("--send", action="store_true",
-                         help="다이제스트를 이메일로 발송 — SMTP 미설정 상태라 지금은 항상 실패함(의도됨)")
+                         help="다이제스트를 프로필 수신자에게 이메일로 발송(--all 과도 함께 쓸 수 있다)")
     args = parser.parse_args()
     if not args.all and not args.profile_id:
         parser.error("profile_id를 주거나 --all을 지정할 것")
@@ -200,7 +237,9 @@ def main() -> None:
     if args.all:
         async def _run_all() -> dict:
             async with httpx.AsyncClient() as client:
-                return await scan_all_profiles(db_path, client, max_pages=args.max_pages)
+                return await scan_all_profiles(
+                    db_path, client, max_pages=args.max_pages, send=args.send,
+                )
 
         summary = asyncio.run(_run_all())
         # cron 로그(crontab 리다이렉트)에 그대로 남는 출력 — 사람이 나중에
@@ -220,16 +259,10 @@ def main() -> None:
         print(digest_text)
 
     if args.send:
-        import email_delivery
-        profile = research_profile.get_profile(db_path, args.profile_id)
-        recipients = research_profile.get_recipients(db_path, args.profile_id)
-        subject = f"[HARNESS Daily] {profile['name'] if profile else args.profile_id}"
-        # 텍스트·HTML 두 판을 함께 넘긴다(M3) — 같은 scan_result 로 만들므로
-        # 내용이 어긋날 수 없다.
-        digest_html = digest.generate_digest_html(
-            result, profile["name"] if profile else args.profile_id,
-        )
-        email_delivery.send_digest_email(digest_text, subject, recipients, digest_html)
+        # --all 경로와 **같은 함수**를 쓴다(M8) — 발송 로직이 두 벌이면 한쪽만
+        # 고치고 다른 쪽을 놓치는 사고가 난다(⑦ 트리거를 docker_runner.py 한
+        # 곳에 모은 것과 같은 이유).
+        print(_deliver(db_path, args.profile_id, result, digest_text))
 
 
 if __name__ == "__main__":

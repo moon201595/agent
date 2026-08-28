@@ -304,3 +304,103 @@ def test_deep_layer_records_fetch_failed_dict_as_failure(tmp_path, monkeypatch):
     statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
     assert statuses["p1"].startswith("failed:")
     assert statuses["p2"] == "ok"
+
+
+# ---------------------------------------------------------------- M8: --all 경로 메일 발송
+
+
+def test_scan_all_does_not_send_by_default(tmp_path, monkeypatch):
+    """send=False(기본)면 메일 관련 코드를 아예 안 탄다 — 실수로 메일이
+    나가는 사고를 막는다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+    _mock_empty_arxiv(monkeypatch)
+
+    calls = []
+    monkeypatch.setattr(rps, "_deliver", lambda *a: calls.append(a) or "sent")
+
+    async def main():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2)
+
+    summary = asyncio.run(main())
+    assert calls == []
+    assert "delivery" not in summary["team_ai"]
+
+
+def test_scan_all_sends_when_requested(tmp_path, monkeypatch):
+    """cron이 쓰는 경로 — send=True면 프로필마다 발송하고 결과를 summary에
+    남긴다(cron 로그만 보고 "메일이 나갔나"를 알 수 있어야 한다)."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_empty_arxiv(monkeypatch)
+    monkeypatch.setattr(rps, "_deliver", lambda *a: "발송 완료 → 1명")
+
+    async def main():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2, send=True)
+
+    summary = asyncio.run(main())
+    assert summary["team_ai"]["delivery"] == "발송 완료 → 1명"
+
+
+def test_delivery_failure_does_not_stop_other_profiles(tmp_path, monkeypatch):
+    """한 프로필의 SMTP 실패가 나머지 프로필의 스캔·발송을 막으면 안 된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.create_profile(db_path, "second", "두 번째", core_topics=["agent"])
+    _mock_empty_arxiv(monkeypatch)
+
+    def flaky(db, pid, result, text):
+        if pid == "second":
+            return "발송 완료 → 1명"
+        raise RuntimeError("SMTP 죽음")
+
+    monkeypatch.setattr(rps, "_deliver", flaky)
+
+    async def main():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2, send=True)
+
+    summary = asyncio.run(main())
+    # 첫 프로필은 error로 기록되지만 두 번째는 정상 처리돼야 한다
+    assert summary["second"]["delivery"] == "발송 완료 → 1명"
+
+
+def test_deliver_skips_when_no_recipients(tmp_path, monkeypatch):
+    """수신자가 없으면 조용히 넘어가는 게 아니라 그 사실을 문자열로 남긴다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    msg = rps._deliver(db_path, "team_ai", {"papers": []}, "본문")
+    assert "수신자 없음" in msg
+
+
+def test_deliver_reports_smtp_failure_without_raising(tmp_path, monkeypatch):
+    """발송 실패를 예외로 올리면 나머지 프로필 처리가 멈춘다 — 문자열로 보고."""
+    import email_delivery
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+
+    def boom(*a, **kw):
+        raise RuntimeError("SMTP 인증 실패")
+
+    monkeypatch.setattr(email_delivery, "send_digest_email", boom)
+    msg = rps._deliver(db_path, "team_ai", {"papers": []}, "본문")
+    assert msg.startswith("발송 실패")
+    assert "SMTP 인증 실패" in msg
+
+
+def test_deliver_sends_even_with_zero_papers(tmp_path, monkeypatch):
+    """논문 0편이어도 보낸다 — 매일 오는 메일 자체가 파이프라인이 살아 있다는
+    증거이고, dead-man's switch를 안 붙인 지금 그 역할을 대신한다."""
+    import email_delivery
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+
+    sent = {}
+    monkeypatch.setattr(email_delivery, "send_digest_email",
+                         lambda t, s, r, h=None: sent.update(text=t, to=r))
+    msg = rps._deliver(db_path, "team_ai", {"papers": [], "candidates_found": 0}, "빈 다이제스트")
+
+    assert msg == "발송 완료 → 1명"
+    assert sent["to"] == ["a@example.com"]

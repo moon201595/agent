@@ -5,9 +5,11 @@
 # 다이제스트를 DB에 저장한다(research_profile.save_digest — review_app.py
 # "리서치 프로필" 탭이 그 값을 그대로 읽어 보여준다).
 #
-# 메일 발송은 아직 이 경로에 없다 — run_profile_scan.py 의 --send 는 프로필
-# 하나를 지정했을 때만 동작하고 --all 경로에는 안 붙어 있다(M8 착수 시
-# 결정할 항목). SMTP 자격증명 자체는 이미 동작이 확인됐다(M3 실발송).
+# --send 로 프로필마다 그 프로필의 수신자에게 다이제스트를 보낸다(M8,
+# 2026-08-28). 논문이 0편인 날도 보낸다 — 매일 오는 메일 자체가 "파이프라인이
+# 살아 있다"는 증거라서, 외부 dead-man's switch 를 안 붙인 지금 그 역할을
+# 대신한다. 메일이 안 온 날은 "새 논문이 없었다"가 아니라 "무언가 고장났다"로
+# 읽어야 한다(docs/TRIAL_CHECKLIST.md 의 (a) 항목이 이 전제 위에 서 있다).
 #
 # 로그는 logs/daily_scan.log 에 계속 이어붙인다 — crontab 자체 로그(보통
 # 안 보이게 묻힘)와 별개로, 사람이 tail -f 로 바로 확인할 수 있게. 프로필
@@ -37,7 +39,7 @@ LOCKFILE="logs/daily_scan.lock"
     fi
 
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 시작 (pid $$) ==="
-    .venv/bin/python run_profile_scan.py --all
+    .venv/bin/python run_profile_scan.py --all --send
     status=$?
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 종료 (exit $status) ==="
 } >> logs/daily_scan.log 2>&1
