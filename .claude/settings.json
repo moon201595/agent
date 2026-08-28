@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)"
+    ],
+    "ask": [
+      "Bash(rm -rf *)",
+      "Bash(docker run *)",
+      "Bash(docker rm *)",
+      "Bash(docker rmi *)"
+    ]
+  }
+}
