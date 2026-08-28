@@ -145,16 +145,34 @@ def retraction_label(arxiv_id: str) -> str:
     return ""
 
 
+def injection_label(arxiv_id: str) -> str:
+    """③ 인젝션 사전 스캔 결과(M7). 걸린 게 없으면 빈 문자열.
+
+    오탐이 구조적으로 존재한다는 걸 라벨 문구에 담는다 — 인젝션을 연구하는
+    논문은 본문에 공격 문구를 그대로 인용하므로 정직하게 걸린다. "위험"이
+    아니라 "확인 필요"로 쓴다(injection_scan.py 참고)."""
+    try:
+        with server._db() as con:
+            row = con.execute(
+                "SELECT injection_suspect FROM papers WHERE arxiv_id=?", (arxiv_id,)
+            ).fetchone()
+    except sqlite3.Error:
+        return ""
+    if row is None or not row["injection_suspect"]:
+        return ""
+    return "[⚠ 본문에 모델 대상 지시로 보이는 패턴 — 확인 필요]"
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
     lines = [
         f"{idx}. [{_stars(score.get('priority', 0.0))}] {paper.get('title') or '(제목 없음)'}",
     ]
-    # 철회 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5).
-    retraction = retraction_label(arxiv_id)
-    if retraction:
-        lines.append(f"   {retraction}")
+    # 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5 철회 / M7 인젝션).
+    for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
+        if warning:
+            lines.append(f"   {warning}")
     lines += [
         f"   왜 걸렸나 : {_why_matched(score)}",
         f"   초록 발췌 : {_abstract_excerpt(paper)}",
@@ -299,10 +317,10 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
 
     # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —
     # 이 항목에서 가장 중요한 정보다.
-    retraction = retraction_label(arxiv_id)
-    if retraction:
-        chips = _status_chip(retraction.strip("[]"), flagged=True) + chips
-        needs_attention = True
+    for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
+        if warning:
+            chips = _status_chip(warning.strip("[]"), flagged=True) + chips
+            needs_attention = True
 
     open_attr = " open" if needs_attention else ""
     return (

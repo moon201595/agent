@@ -210,17 +210,44 @@ def _build_image(repo_dir: Path, dockerfile: Path, tag: str,
     return ok, (proc.stdout[-4000:] + proc.stderr[-4000:])
 
 
+# 실행 컨테이너 격리 플래그(M7, 2026-08-28). ⑦은 검증 안 된 남의 코드를
+# 자동 실행하므로 악성 setup.py·마이닝·호스트 접근이 현실적 위협이다.
+# 단계적으로 넣으면서 매 단계 기존 성공 사례(LF-YOLO)로 회귀를 돌려 확인했다.
+_SECURITY_FLAGS = [
+    "--cap-drop", "ALL",                    # 모든 리눅스 capability 제거
+    "--security-opt", "no-new-privileges",  # setuid 로 권한 상승 차단
+    "--pids-limit", "256",                  # fork 폭탄 차단
+    "--read-only",                          # 루트 파일시스템 쓰기 금지
+    "--tmpfs", "/tmp:rw,size=512m,exec",    # 쓰기가 필요한 곳은 여기로 한정
+    "--user", "65534:65534",                # nobody — root 로 안 돌린다
+]
+# read-only + 비root 조합에서 파이썬이 쓰기를 시도하는 지점들을 tmpfs 로 돌린다.
+# 이게 없으면 __pycache__·~/.cache 쓰기 실패로 정상 repo 도 깨진다.
+_SECURITY_ENV = [
+    "-e", "PYTHONDONTWRITEBYTECODE=1",
+    "-e", "HOME=/tmp",
+    "-e", "TMPDIR=/tmp",
+    "-e", "XDG_CACHE_HOME=/tmp/.cache",
+]
+
+
 def _run_container(tag: str, run_cmd: str, timeout: int, network: bool,
-                    mem_limit: str = MEM_LIMIT, cpus: str = CPUS) -> RunResult:
+                    mem_limit: str = MEM_LIMIT, cpus: str = CPUS,
+                    security_flags: list[str] | None = None) -> RunResult:
     """설계 결론 4: `docker run` 을 셸 timeout 으로 감싸지 않는다. 컨테이너를
     이름으로 띄워두고(-d), `docker wait` 자체에 타임아웃을 걸어 넘으면
     컨테이너 이름을 직접 지정해 `docker stop` 한다. 클라이언트 프로세스가
     죽어도 컨테이너는 살아남는다는 것을 TSPulse 시행착오로 실측했기 때문이다.
+
+    security_flags 를 명시하면 그걸 쓰고, 안 주면 _SECURITY_FLAGS 를 쓴다 —
+    회귀 실험에서 플래그를 하나씩 켜보려고 뚫어둔 구멍이지 평상시엔 기본값을 쓴다.
     """
     name = f"repro-{uuid.uuid4().hex[:8]}"
+    flags = _SECURITY_FLAGS if security_flags is None else security_flags
     start_cmd = [
         "docker", "run", "-d", "--name", name,
         "--memory", mem_limit, "--memory-swap", mem_limit, "--cpus", cpus,
+        *flags, *_SECURITY_ENV,
     ]
     if not network:
         start_cmd += ["--network", "none"]
@@ -281,19 +308,40 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
             return {"success": False, "stage": "build", "plan": asdict(plan),
                     "log": build_log, "attempts": []}
 
+        # 실행 단계는 네트워크 없음으로 **고정**한다(M7, 2026-08-28).
+        #
+        # 예전엔 "출력에 네트워크 에러 문자열이 보이면 네트워크를 열고 1회
+        # 재시도"였다. 그 게이트의 입력(컨테이너 stdout/stderr)은 **임의 코드가
+        # 실행된 뒤 그 코드가 만들어내는 값**이라 공격자가 마음대로 조작할 수
+        # 있었다 — 악성 repo 는 그 문자열을 출력하기만 하면 네트워크 실행을
+        # 얻어냈다. "1회로 제한"은 공격자에게 제약이 아니라 정직한 repo 에만
+        # 제약이었다.
+        #
+        # 제거해도 잃는 게 없다는 것을 데이터로 확인했다: repro_results 13건
+        # 전부 network_used=0 이고, 성공한 2건(SWE-agent·LF-YOLO)도 네트워크
+        # 없이 성공했다 — 이 재시도 경로는 한 번도 발동한 적이 없다. 구조적
+        # 이유도 명확하다: 의존성 설치는 `docker build` 에서 끝나고 build 는
+        # 원래 네트워크가 열려 있어서, 실행 단계에서 네트워크가 필요할 일이
+        # 애초에 드물다.
+        #
+        # 실행 단계 네트워크가 정말 필요한 repo 가 나타나면 그때 egress
+        # allowlist(프록시로 pypi·github·huggingface 만 허용)를 붙인다 —
+        # "1회 무제한 인터넷"과 "완전 차단" 사이의 실제 중간항이다. §8 참고.
         result = _run_container(tag, cmd, RUN_TIMEOUT, network=False)
-        attempts = [result]
 
-        # 설계 결론 3: 네트워크 관련 에러로 보이면 네트워크를 열고 1회만 재시도.
-        combined = result.stdout + result.stderr
-        if not result.success and not result.timed_out and _NETWORK_ERROR_RE.search(combined):
-            result2 = _run_container(tag, cmd, RUN_TIMEOUT, network=True)
-            attempts.append(result2)
-            result = result2
+        # _NETWORK_ERROR_RE 는 남긴다 — 다만 **판정이 아니라 주석 전용**이다.
+        # "네트워크가 필요했을 실패"가 얼마나 나오는지 세어야 위 egress
+        # allowlist 판단의 근거가 쌓인다. 이 값으로 아무것도 허가하지 않으므로
+        # 컨테이너가 조작해도 얻는 게 없다(통계만 부풀 뿐).
+        network_suspected = bool(
+            not result.success and not result.timed_out
+            and _NETWORK_ERROR_RE.search(result.stdout + result.stderr)
+        )
 
         return {
             "success": result.success, "stage": "run", "plan": asdict(plan),
-            "attempts": [asdict(r) for r in attempts],
+            "network_suspected": network_suspected,
+            "attempts": [asdict(result)],
         }
     finally:
         dockerfile.unlink(missing_ok=True)

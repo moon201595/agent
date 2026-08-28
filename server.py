@@ -45,6 +45,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
 import hybrid_search
+import injection_scan
 import retraction
 import summarize_engine
 import summary_parser
@@ -175,6 +176,11 @@ def _init_storage() -> None:
         # 했다"와 "정상이다"를 절대 같은 값으로 두지 않는다(retraction.py 참고).
         if "is_retracted" not in existing:
             con.execute("ALTER TABLE papers ADD COLUMN is_retracted INTEGER")
+        # ③ 프롬프트 인젝션 사전 스캔 결과(M7, 2026-08-28). NULL·빈 문자열 =
+        # 걸린 것 없음, 그 외에는 사람이 읽을 사유 문자열. 요약을 막지 않고
+        # 표시만 한다 — injection_scan.py 참고.
+        if "injection_suspect" not in existing:
+            con.execute("ALTER TABLE papers ADD COLUMN injection_suspect TEXT")
 
         # ⑥ 사람 판단 상태. review_app.py 가 쓴다 — 이 서버는 판단하지 않고
         # 값을 저장·조회만 한다. 기본값 'pending' — 저장된 요약은 검토 전이 기본.
@@ -1005,11 +1011,14 @@ async def fetch_paper(params: FetchPaperInput) -> str:
         con.execute(
             """INSERT OR REPLACE INTO papers
                (arxiv_id, title, authors, published, categories, abstract,
-                pdf_path, text_path, text_chars, fetched_at, extract_method)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                pdf_path, text_path, text_chars, fetched_at, extract_method,
+                injection_suspect)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (arxiv_id, meta["title"], json.dumps(meta["authors"], ensure_ascii=False),
              meta["published"], json.dumps(meta["categories"]), meta["abstract"],
-             str(pdf_path) if pdf_path else None, str(text_path), len(text), _now(), method),
+             str(pdf_path) if pdf_path else None, str(text_path), len(text), _now(), method,
+             # ③ 인젝션 사전 스캔(M7) — 요약을 막지 않고 표시만 한다.
+             "; ".join(injection_scan.scan(text)) or None),
         )
     return json.dumps(
         {"arxiv_id": arxiv_id, "title": meta["title"], "text_chars": len(text),
@@ -1216,11 +1225,13 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str = "", source_note: str = "manu
         con.execute(
             """INSERT OR REPLACE INTO papers
                (arxiv_id, title, authors, published, categories, abstract,
-                pdf_path, text_path, text_chars, fetched_at, extract_method, source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pdf_path, text_path, text_chars, fetched_at, extract_method, source,
+                injection_suspect)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (synth_id, title, json.dumps([], ensure_ascii=False), None,
              json.dumps([], ensure_ascii=False), None, str(pdf_path), str(text_path),
-             len(text), _now(), "pdf", source_note),
+             len(text), _now(), "pdf", source_note,
+             "; ".join(injection_scan.scan(text)) or None),
         )
     return {"arxiv_id": synth_id, "title": title, "title_auto": title_auto, "text_chars": len(text),
             "pdf_path": str(pdf_path), "text_path": str(text_path), "preview": text[:400]}
