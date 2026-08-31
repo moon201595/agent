@@ -193,3 +193,24 @@ def test_trend_line_in_html(db_with_summary_path):
         _result([_paper("p1")], core_hit_counts={"on-sensor computing": 4}), "우리팀")
     assert "이번 창의 동향 신호" in html
     assert "on-sensor computing 4" in html
+
+
+def test_results_section_written_as_paragraph_is_captured(db_with_summary_path):
+    """실측(2026-08-31): "④ 결과 :" 뒤에 불릿 없이 문단으로 쓴 요약이 있다.
+    불릿만 보던 파서는 그 논문의 결과를 통째로 빠뜨렸다 — 메일에서 제일
+    중요한 줄이 사라지는 셈이라 두 형식을 다 받아야 한다."""
+    md = SUMMARY_MD.replace(
+        "④ 결과 :\n- 산업 데이터셋에서 0.990의 ROC-AUC를 달성했다 [S0153].\n"
+        "- 공개 데이터셋에서 1.000의 ROC-AUC를 기록했다 [S0168].",
+        "④ 결과 : 고정 위치 베이스라인 대비 118.5%의 총 전송률 향상을 보였다.")
+    _seed(db_with_summary_path, "p1", markdown=md)
+    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    assert "핵심 결과 :" in text
+    assert "118.5%의 총 전송률 향상" in text
+
+
+def test_bullet_form_results_still_work(db_with_summary_path):
+    _seed(db_with_summary_path, "p1")
+    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    assert "0.990의 ROC-AUC" in text
+    assert "1.000의 ROC-AUC" in text

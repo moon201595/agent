@@ -248,3 +248,21 @@ def test_score_and_rank_reports_core_hit_counts_over_all_candidates():
     result = score_and_rank(papers, profile, top_k=1)
     assert result["scored_count"] == 1              # 잘린 결과
     assert result["core_hit_counts"] == {"agent": 2, "autofocus": 1}   # 자르기 전 집계
+
+
+def test_polysemy_guard_is_not_satisfied_by_generic_words():
+    """실측 회귀(2026-08-31): 가드어를 부분문자열로 헐겁게 잡았더니 CSymPlan 이
+    "modeling inaccuracies" 의 "model" 하나로 통과했다. 제어·로보틱스 논문에
+    흔한 범용어가 가드를 열어주면 가드가 없는 것과 같다."""
+    profile = {"core_topics": ["quantization"], "target_domain": [], "exclude": []}
+    control = _paper_with(
+        "refines the symbolic policy through a quantization--lookup--torque pipeline, "
+        "treating modeling inaccuracies and measurement uncertainty as bounded disturbances")
+    assert score_paper(control, profile)["core_hits"] == []
+
+
+def test_guard_substring_does_not_leak_through_unrelated_word():
+    """가드어를 단어 경계로 보지 않으면 "arbitrary" 안의 "bit" 같은 게 통과한다."""
+    profile = {"core_topics": ["quantization"], "target_domain": [], "exclude": []}
+    paper = _paper_with("arbitrary quantization of the abstract state space")
+    assert score_paper(paper, profile)["core_hits"] == []
