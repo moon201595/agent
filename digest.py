@@ -165,8 +165,18 @@ def summary_sections(arxiv_id: str) -> dict:
 
     overview = [_clip(b, _OVERVIEW_CHARS)
                 for b in _bullets(sec.get("연구 개요", ""))[:_OVERVIEW_BULLETS]]
-    results = [_clip(b, _RESULT_CHARS)
-               for b in _bullets(conclusion, after="결과")[:_RESULT_BULLETS]]
+    # "④ 결과" 는 불릿일 때도 있고 문단일 때도 있다(둘 다 실제 저장물에서
+    # 관측됨 — 2026-08-31). 불릿만 보면 문단 형식 논문의 결과가 통째로
+    # 빠지는데, 그게 메일에서 제일 중요한 줄이다.
+    results: list[str] = []
+    conclusion_lines = conclusion.splitlines()
+    for i, line in enumerate(conclusion_lines):
+        if "결과" not in line or ":" not in line:
+            continue
+        inline = line.split(":", 1)[1].strip()
+        results = [inline] if inline else _bullets("\n".join(conclusion_lines[i + 1:]))
+        break
+    results = [_clip(b, _RESULT_CHARS) for b in results[:_RESULT_BULLETS]]
 
     limits = ""
     for line in sec.get("논문의 한계점", "").splitlines():

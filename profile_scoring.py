@@ -119,21 +119,32 @@ DOMAIN_HITS_CAP = 2
 # 키워드 "quantization"으로 걸렸는데, 실제로는 모델 경량화가 아니라 제어
 # 상태공간의 이산화를 가리키는 말이었다. 짐작만으로 가드를 늘리면 조용히
 # 놓치는 논문이 생기므로, 실제로 오탐이 관측된 낱말에만 건다.
+# 동반어는 **단어 경계 정규식**으로 본다. 처음에 부분문자열로 짰더니 너무
+# 헐거웠다 — 실측: CSymPlan 이 "modeling inaccuracies" 의 "model" 하나로
+# 가드를 통과했다. "bit" 를 넣었다면 "arbitrary" 에도 걸렸을 것이다.
+# 그래서 제어·로보틱스 논문에서는 안 나오고 ML 경량화 논문에서만 나오는
+# 표현으로 좁혔다(단독 "model"/"network"/"precision" 같은 범용어 제거).
 _POLYSEMY_GUARDS: dict[str, tuple[str, ...]] = {
     "quantization": (
-        "neural", "network", "model", "weight", "activation", "bit-width",
-        "int8", "int4", "low-precision", "precision", "llm", "transformer",
-        "post-training", "quantization-aware", "compression", "inference",
+        r"bits?", r"int8", r"int4", r"\d+-bit", r"bit-?width",
+        r"low-precision", r"mixed-precision", r"post-training",
+        r"quantization-aware", r"quantized", r"model compression",
+        r"weight quantization", r"activation quantization",
     ),
 }
+
+_GUARD_RE_CACHE: dict[str, re.Pattern] = {}
 
 
 def _passes_polysemy_guard(keyword: str, text: str) -> bool:
     guards = _POLYSEMY_GUARDS.get(keyword.lower())
     if not guards:
         return True
-    lowered = text.lower()
-    return any(g in lowered for g in guards)
+    pat = _GUARD_RE_CACHE.get(keyword)
+    if pat is None:
+        pat = re.compile(r"\b(?:" + "|".join(guards) + r")\b", re.IGNORECASE)
+        _GUARD_RE_CACHE[keyword] = pat
+    return bool(pat.search(text))
 
 
 @dataclass
