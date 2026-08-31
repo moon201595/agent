@@ -26,6 +26,8 @@ from pathlib import Path
 
 import httpx
 
+import api_usage
+
 import batch_summarize
 import digest
 import find_new_papers
@@ -120,7 +122,14 @@ async def scan_and_digest(
     격리와 동일한 원칙. 결과는 논문 항목의 deep_status에 남는다:
     "ok" | "skipped: ..." | "failed: <사유 1줄>".
     """
+    # §8-15: 실행 전체와 논문 한 편의 외부 API 호출 수를 실제로 센다.
+    # 역산이 아니라 호출 지점에서 세는 값이다(api_usage 모듈 docstring 참고).
+    run_scope = api_usage.Scope()
+    run_scope.__enter__()
+
     result = await scan_profile(db_path, profile_id, client, page_size, max_pages)
+    search_calls = run_scope.total()
+    print(f"  [계측] ③ 검색 단계: {run_scope.format_summary()}")
 
     # Deep Layer — result["papers"]는 score_and_rank가 이미 top_k=max_items로
     # 잘라놓은 목록이라 별도 상한을 두지 않는다.
@@ -132,16 +141,22 @@ async def scan_and_digest(
         if _summary_exists(arxiv_id):
             paper["deep_status"] = "skipped: 이미 요약 저장됨"
             continue
+        paper_scope = api_usage.Scope()
         try:
-            outcome = await batch_summarize._process_paper(client, arxiv_id)
+            with paper_scope:
+                outcome = await batch_summarize._process_paper(client, arxiv_id)
         except Exception as e:  # noqa: BLE001 — 한 편의 실패가 나머지를 막으면 안 됨
             paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
+            paper["api_calls"] = paper_scope.snapshot()
+            print(f"  [계측] {arxiv_id} (실패): {paper_scope.format_summary()}")
             continue
         # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
         if outcome.get("status") == "done":
             paper["deep_status"] = "ok"
         else:
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
+        paper["api_calls"] = paper_scope.snapshot()
+        print(f"  [계측] {arxiv_id}: {paper_scope.format_summary()}")
 
     # S2 tldr(M6) — Deep 처리가 실패한 논문은 우리 요약이 없어 초록 발췌만
     # 남는데, S2 의 한 줄 요약이 그보다 읽기 낫다. 배치 1회라 호출 비용이
@@ -158,6 +173,14 @@ async def scan_and_digest(
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
+
+    run_scope.__exit__(None, None, None)
+    result["api_calls"] = run_scope.snapshot()
+    result["api_calls_total"] = run_scope.total()
+    deep_calls = run_scope.total() - search_calls
+    print(f"  [계측] 실행 합계: {run_scope.format_summary()}")
+    print(f"  [계측]   └ ③ 검색 {search_calls}회 + Deep Layer {deep_calls}회 "
+          f"(⑦ 재현은 별도 프로세스라 여기 안 잡힌다 — 재현 로그를 따로 볼 것)")
     return result, digest_text
 
 

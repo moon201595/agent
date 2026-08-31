@@ -45,6 +45,7 @@ import re
 import time
 
 import httpx
+import api_usage
 
 # 판정 코드 — server.papers.is_retracted 컬럼에 그대로 들어간다.
 NOT_RETRACTED = 0
@@ -90,6 +91,8 @@ async def _throttled_get(
             await asyncio.sleep(wait)
         resp = await client.get(url, params=params, headers=headers, timeout=_TIMEOUT)
         globals_[last_holder] = time.monotonic()
+    provider = "openalex" if "openalex" in url else "crossref"
+    api_usage.record(provider, "ok" if resp.status_code == 200 else str(resp.status_code))
     return resp
 
 

@@ -36,6 +36,8 @@ from urllib.parse import quote
 
 import httpx
 
+import api_usage
+
 import server
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -240,8 +242,10 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
             capture_output=True, text=True, timeout=30, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        api_usage.record("github", "error")
         print(f"  [경고] GitHub 검색 실패: {e}")
         return []
+    api_usage.record("github", "ok")
     data = json.loads(result.stdout)
     out = []
     for item in data.get("items", [])[:limit]:
@@ -278,6 +282,7 @@ def _resolve_hf_repo_link(hf_url: str) -> str | None:
         resp = httpx.get(
             f"https://huggingface.co/{m.group(1)}/raw/main/README.md", timeout=10
         )
+        api_usage.record("huggingface", "ok" if resp.status_code == 200 else str(resp.status_code))
         resp.raise_for_status()
     except httpx.HTTPError:
         return None
@@ -438,6 +443,12 @@ def find_repo_candidates(arxiv_id: str) -> dict:
                               if not corroborates_paper(c, row["title"], query, row["authors"])]
     gh_dicts = [c for c in gh_dicts
                 if corroborates_paper(c, row["title"], query, row["authors"])]
+
+    # ⑦ 은 launch_background 가 띄운 **별도 프로세스**라 스캔 쪽 계수기에
+    # 안 잡힌다(§8-15). 여기서 따로 찍어 재현 로그에 남긴다.
+    summary = api_usage.format_summary()
+    if summary:
+        print(f"  [계측] ⑦ 저장소 탐색: {summary}")
 
     for url in dropped_non_code:
         print(f"  [후보 제외] 코드가 아닌 소개 페이지: {url}")
