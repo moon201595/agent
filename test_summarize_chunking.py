@@ -270,3 +270,50 @@ def test_non_retryable_error_still_raises_immediately(monkeypatch):
     with pytest.raises(Exception):
         asyncio.run(engine._call_with_rate_limit_retry(bad_request, "Gemini"))
     assert len(calls) == 1
+
+
+def test_addendum_gives_up_on_long_wait_instead_of_stalling(monkeypatch):
+    """실측 사고 회귀(2026-08-28): Groq 일일 한도가 소진돼 서버가 청크마다
+    20분 대기를 요구했고, 부록을 붙이자고 논문 한 편에 3시간을 태웠다.
+    청크 1이 이미 진짜 요약을 만들었으므로 보충 청크는 손절하는 게 맞다."""
+    import httpx
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    req = httpx.Request("POST", "http://api.example/v1")
+    resp = httpx.Response(429, headers={"retry-after": "1200"}, request=req)
+    calls = []
+
+    async def rate_limited():
+        calls.append(1)
+        raise httpx.HTTPStatusError("429", request=req, response=resp)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(engine._call_with_rate_limit_retry(
+            rate_limited, "Groq(청크9)", max_wait=engine.ADDENDUM_MAX_WAIT))
+    assert len(calls) == 1  # 20분을 기다리지 않고 즉시 포기
+
+
+def test_short_wait_is_still_honored_for_addendum(monkeypatch):
+    """짧은 대기는 그대로 기다린다 — 손절은 "오늘 한도가 끝났다" 수준일 때만."""
+    import httpx
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    req = httpx.Request("POST", "http://api.example/v1")
+    resp = httpx.Response(429, headers={"retry-after": "5"}, request=req)
+    calls = []
+
+    async def once_then_ok():
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.HTTPStatusError("429", request=req, response=resp)
+        return "성공"
+
+    out = asyncio.run(engine._call_with_rate_limit_retry(
+        once_then_ok, "Groq(청크9)", max_wait=engine.ADDENDUM_MAX_WAIT))
+    assert out == "성공"
+
+
+def test_first_chunk_has_no_wait_cap(monkeypatch):
+    """청크 1은 진짜 요약이라 기다릴 가치가 있다 — max_wait 없이 부른다."""
+    import inspect
+    src = inspect.getsource(engine._summarize_chunked)
+    first_call = src.split("for chunk_num")[0]
+    assert "max_wait" not in first_call

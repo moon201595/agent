@@ -143,6 +143,10 @@ def _is_transient_overload(e: Exception) -> bool:
 OVERLOAD_RETRIES = 3
 OVERLOAD_BACKOFF = 3.0
 
+# 보충 청크(청크 2 이후)에서 감수할 최대 429 대기(초). 이보다 긴 대기를 요구받으면
+# 그 청크를 포기하고 지금까지 만든 요약으로 마무리한다 — 아래 _summarize_chunked 참고.
+ADDENDUM_MAX_WAIT = 120.0
+
 
 def load_env() -> dict:
     env = dict(os.environ)
@@ -381,7 +385,7 @@ def _retry_wait_seconds(e: Exception, attempt: int) -> float:
     return wait + random.uniform(0, 3.0)
 
 
-async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
+async def _call_with_rate_limit_retry(coro_fn, label: str, max_wait: float | None = None) -> str:
     """429 만 상한(RATE_LIMIT_RETRIES)까지 재시도한다. 429 가 아닌 실패(키 없음,
     5xx 등)는 즉시 올려서 호출부가 바로 다른 엔진으로 넘어가게 한다 —
     429 만 "잠깐 기다리면 풀릴 수 있는" 실패이기 때문이다.
@@ -411,6 +415,12 @@ async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
             if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
                 raise
             wait = _retry_wait_seconds(e, attempt)
+            # max_wait 를 넘는 대기 요구는 "오늘 한도가 끝났다"는 신호다.
+            # 보충 청크처럼 없어도 되는 호출에서는 기다리지 않고 포기한다.
+            if max_wait is not None and wait > max_wait:
+                print(f"  [경고] {label} 429 — 서버가 {wait:.0f}초 대기를 요구해 "
+                      f"(상한 {max_wait:.0f}초) 이 호출은 포기한다", file=sys.stderr)
+                raise
             print(f"  [경고] {label} 429 — {wait:.0f}초 대기 후 재시도 "
                   f"({attempt + 1}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
             last = e
@@ -458,8 +468,16 @@ async def _summarize_chunked(
         if on_progress:
             on_progress(label, chunk_num, len(chunks))
         try:
+            # 보충 청크는 max_wait 를 건다(2026-08-31). 청크 1이 이미 템플릿
+            # 전체를 채운 **진짜 요약**을 만들었고, 여기부터는 "추가 결과·추가
+            # 한계점"을 덧붙이는 것뿐이다. 실측(2026-08-28): Groq 일일 한도가
+            # 소진된 상태에서 서버가 청크마다 20분 대기를 요구해, 부록을 붙이자고
+            # 논문 한 편에 3시간을 태웠다. 짧은 대기는 그대로 두고 "오늘은 끝났다"
+            # 수준의 요구가 오면 지금까지 만든 요약으로 마무리한다 — §8 미해결
+            # 14번의 (b)안("그날은 할 수 있는 만큼만 하고 넘어간다")의 최소 구현.
             addendum = await _call_with_rate_limit_retry(
                 lambda: call_addendum(client, chunk_text), f"{label}(청크{chunk_num})",
+                max_wait=ADDENDUM_MAX_WAIT,
             )
         except Exception as e:  # noqa: BLE001
             print(f"  [경고] {label} 청크 {chunk_num} 처리 실패({e}) — 이 이후 구간은 건너뜀",
