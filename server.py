@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import api_usage
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -294,6 +295,7 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
             # 2회까지 재시도하므로 최악 대기는 여전히 유한하다).
             resp = await client.get(ARXIV_API, params=params, timeout=60)
             _last_arxiv_call = time.monotonic()
+        api_usage.record("arxiv", "ok" if resp.status_code == 200 else str(resp.status_code))
         resp.raise_for_status()
         return resp
 
@@ -321,6 +323,7 @@ async def _throttled_s2_get(
                 await asyncio.sleep(wait)
             resp = await client.get(url, params=params, headers=headers, timeout=30)
             _last_s2_call = time.monotonic()
+        api_usage.record("s2", "ok" if resp.status_code == 200 else str(resp.status_code))
         resp.raise_for_status()
         return resp
 

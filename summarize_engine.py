@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import httpx
+import api_usage
 
 import sentence_grounding
 
@@ -206,12 +207,17 @@ async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
     if not key:
         raise RuntimeError("GOOGLE_API_KEY 없음")
     # URL 쿼리 파라미터로 키를 보내면 로그·프록시 기록에 그대로 남는다 — 헤더로 보낸다.
-    resp = await client.post(
-        _GEMINI_URL,
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        headers={"x-goog-api-key": key},
-        timeout=180,
-    )
+    try:
+        resp = await client.post(
+            _GEMINI_URL,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            headers={"x-goog-api-key": key},
+            timeout=180,
+        )
+    except Exception:
+        api_usage.record("gemini", "error")
+        raise
+    api_usage.record("gemini", "ok" if resp.status_code == 200 else str(resp.status_code))
     resp.raise_for_status()
     data = resp.json()
     parts = data["candidates"][0]["content"]["parts"]
@@ -325,16 +331,21 @@ async def _post_groq(client: httpx.AsyncClient, prompt: str) -> str:
         "max_tokens": 2000,
         "temperature": 0.3,
     }
-    resp = await client.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        json=body,
-        headers={
-            "Authorization": f"Bearer {key}",
-            # Cloudflare가 기본 UA를 봇으로 오인해 1010으로 차단한 사례가 있어 명시한다.
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) paper-harness/1.0",
-        },
-        timeout=180,
-    )
+    try:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                # Cloudflare가 기본 UA를 봇으로 오인해 1010으로 차단한 사례가 있어 명시한다.
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) paper-harness/1.0",
+            },
+            timeout=180,
+        )
+    except Exception:
+        api_usage.record("groq", "error")
+        raise
+    api_usage.record("groq", "ok" if resp.status_code == 200 else str(resp.status_code))
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
