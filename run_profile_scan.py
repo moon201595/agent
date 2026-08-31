@@ -54,7 +54,10 @@ async def scan_profile(
     if not profile["core_topics"]:
         raise ValueError(f"프로필 '{profile_id}'에 core_topics가 없음 — 검색어를 만들 수 없음")
 
-    since = research_profile.next_since(db_path, profile_id)
+    # 키워드가 바뀌었으면 델타 커서를 이어받으면 안 된다(§8-21) — 지문을
+    # 넘겨서 next_since 가 스스로 판단하게 한다.
+    signature = research_profile.topic_signature(profile["core_topics"])
+    since = research_profile.next_since(db_path, profile_id, signature=signature)
     query = _arxiv_query_from_core_topics(profile["core_topics"])
 
     try:
@@ -64,14 +67,14 @@ async def scan_profile(
     except Exception as e:  # noqa: BLE001 — 실패도 search_runs에 남기고 다시 올린다
         research_profile.record_run(
             db_path, profile_id, "arxiv", query, since, datetime.now(timezone.utc),
-            "failed", 0, error_detail=str(e),
+            "failed", 0, error_detail=str(e), signature=signature,
         )
         raise
 
     until = datetime.fromisoformat(result["until"])
     research_profile.record_run(
         db_path, profile_id, "arxiv", result["query"], since, until,
-        result["status"], len(result["papers"]),
+        result["status"], len(result["papers"]), signature=signature,
     )
 
     scored = profile_scoring.score_and_rank(

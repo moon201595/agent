@@ -82,6 +82,10 @@ _DENY_REPOS = (
     "huggingface/transformers", "huggingface/diffusers", "huggingface/accelerate",
     "huggingface/peft", "ultralytics/ultralytics", "open-mmlab/",
     "opencv/opencv", "scikit-learn/scikit-learn", "numpy/numpy",
+    # 2026-08-31 실측: 참고문헌 항목에 적힌 Label Studio 인용이 저자 저장소로
+    # 잡혀 두 번째 시도를 통째로 낭비했다. 데이터 라벨링 도구라 위 기준
+    # ("저자가 자기 논문 코드를 여기 올릴 일이 사실상 없는 것")에 그대로 맞는다.
+    "humansignal/label-studio", "heartexlabs/label-studio",
 )
 
 
@@ -106,6 +110,12 @@ class RepoCandidate:
     confidence: str  # "author-stated" | "unconfirmed"
     context: str = ""
     stars: int | None = None
+    # GitHub 검색 결과에만 채워진다 — 이름 충돌을 걸러내려면 저장소가
+    # 무엇에 관한 것인지 알아야 하는데, 지금까지는 URL 과 별점만 받아와서
+    # 판별할 근거 자체가 없었다(2026-08-31 실측: GRAFT 논문에 무관한 저장소
+    # 세 개가 연달아 클론됐다).
+    full_name: str | None = None
+    description: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +124,8 @@ class RepoCandidate:
             "confidence": self.confidence,
             "context": self.context,
             "stars": self.stars,
+            "full_name": self.full_name,
+            "description": self.description,
         }
 
 
@@ -239,6 +251,8 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
                 source="github_search",
                 confidence="unconfirmed — 저자 공식 아닐 수 있음, 커뮤니티 재구현체 가능성",
                 stars=item.get("stargazers_count"),
+                full_name=item.get("full_name"),
+                description=item.get("description"),
             )
         )
     return out
@@ -274,6 +288,99 @@ def _resolve_hf_repo_link(hf_url: str) -> str | None:
     return f"https://github.com/{owner}/{repo}"
 
 
+# ---------------------------------------------------------------- 후보 검증 (2026-08-31)
+#
+# github_search 결과는 정의상 "저자 공식인지 확인 안 됨"이다. 그런데 지금까지
+# 확인 없이 별점 순으로 클론했고, 실측에서 그 대가가 드러났다 — GRAFT 논문
+# (본문에 URL 이 하나도 없다)에 대해 이름만 같은 무관한 저장소 세 개
+# (trailhq/Graft = 코딩 에이전트 도구, hmgle/graftcp = TCP 프록시,
+# orbitinghail/graft = 스토리지 엔진)를 연달아 클론하고 Docker 까지 돌렸다.
+#
+# 그래서 "이 저장소가 이 논문의 것이라는 독립적 근거"를 요구한다. 검색어
+# 자체는 근거가 될 수 없다 — 이름이 같아서 검색된 것이므로 순환논증이다.
+#
+# 근거 세 가지 중 하나면 채택한다. 실측 14건(성공 2건 포함) 전부에 대해
+# 맞는 답을 내는 걸 확인하고 고른 조합이다:
+#
+#   (A) 검색어에 **없는** 논문 제목 낱말이 저장소 이름·설명에 나타난다.
+#       LF-YOLO 가 이 경우다("Lighter and Faster YOLO ... defect ... weld").
+#   (B) 소유자 이름이 논문 이름의 첫 낱말을 담고 있다. SWE-agent 가 이
+#       경우다 — 설명에 "software engineering"이 없어서 (A)로는 못 잡지만
+#       조직명 자체가 SWE-agent 다. 반대로 orbitinghail·trailhq·hmgle 은
+#       "graft"를 담지 않는다.
+#   (C) 저자 성이 소유자 이름과 일치한다.
+#
+# 근거가 없으면 후보에서 뺀다. 그 결과 "저장소 후보 없음"이 나오는 편이
+# 엉뚱한 저장소를 재현하고 [재현 ✗] 를 붙이는 것보다 정직하다(CLAUDE.md 8)
+# — 후자는 "저자 코드가 안 돈다"는 **틀린 사실**을 보고하는 것이다.
+
+_CORROBORATION_STOPWORDS = frozenset("""
+the and for with via using from that this are its our new novel towards toward
+based into learning model models deep neural network networks efficient effective
+robust fast framework approach method methods system systems data paper study
+analysis evaluation benchmark scale large small real time end
+""".split())
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# 코드가 아니라 소개 페이지인 저장소 — ⑦ 이 답해야 할 질문("설치해서 도는가")에
+# 애초에 답할 수 없는 대상이다. 실측: Riemann-1.0-Website.
+_NON_CODE_REPO_RE = re.compile(
+    r"(?:[-_.](?:website|homepage|page|pages|docs|doc|site|blog))$"
+    r"|^(?:website|homepage|docs|doc|site|blog)$"
+    r"|\.github\.io$",
+    re.IGNORECASE,
+)
+
+
+def _tokens(text: str) -> set[str]:
+    return set(_TOKEN_RE.findall((text or "").lower()))
+
+
+def is_non_code_repo(url: str) -> bool:
+    name = url.rstrip("/").rsplit("/", 1)[-1]
+    return bool(_NON_CODE_REPO_RE.search(name))
+
+
+def _author_surnames(authors_json: str | None) -> set[str]:
+    """papers.authors 는 JSON 리스트다. 성만 뽑되 4글자 미만은 버린다 —
+    "Ye", "Xu", "Sun" 같은 짧은 성은 아무 문자열에나 우연히 걸린다."""
+    try:
+        names = json.loads(authors_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return set()
+    out = set()
+    for n in names:
+        parts = _TOKEN_RE.findall(str(n).lower())
+        if parts and len(parts[-1]) >= 4:
+            out.add(parts[-1])
+    return out
+
+
+def corroborates_paper(candidate: dict, title: str, query: str,
+                       authors_json: str | None = None) -> bool:
+    """이 저장소가 이 논문의 것이라는 독립적 근거가 있는가 (위 (A)(B)(C))."""
+    full_name = candidate.get("full_name") or ""
+    haystack = _tokens(f"{full_name} {candidate.get('description') or ''}")
+
+    # (A) 검색어 밖의 제목 낱말
+    distinctive = {tok for tok in _tokens(title) - _tokens(query) - _CORROBORATION_STOPWORDS
+                   if len(tok) >= 4}
+    if distinctive & haystack:
+        return True
+
+    owner = full_name.split("/")[0] if "/" in full_name else ""
+    owner_flat = "".join(_TOKEN_RE.findall(owner.lower()))
+
+    # (B) 소유자 이름이 논문 이름의 첫 낱말을 담는가
+    lead = next((tok for tok in _TOKEN_RE.findall(query.lower()) if len(tok) >= 3), "")
+    if lead and owner_flat and lead in owner_flat:
+        return True
+
+    # (C) 저자 성
+    return bool(_author_surnames(authors_json) & _tokens(owner))
+
+
 def find_repo_candidates(arxiv_id: str) -> dict:
     """이 arxiv_id 논문의 코드 저장소 후보를 찾는다.
 
@@ -283,7 +390,7 @@ def find_repo_candidates(arxiv_id: str) -> dict:
     arxiv_id = server._clean_arxiv_id(arxiv_id)
     with server._db() as con:
         row = con.execute(
-            "SELECT title, text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)
+            "SELECT title, text_path, authors FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()
     if not row:
         raise ValueError(f"'{arxiv_id}'는 아직 저장되지 않음 — fetch_paper 먼저 호출할 것")
@@ -314,11 +421,36 @@ def find_repo_candidates(arxiv_id: str) -> dict:
     query = re.sub(r"[^\w\s-]", " ", query).strip()
     gh_results = github_search(query)
 
+    in_text_dicts = [c.to_dict() for c in in_text]
+    gh_dicts = [c.to_dict() for c in gh_results]
+
+    # 소개 페이지 저장소는 양쪽에서 뺀다 — 클론은 되지만 ⑦ 의 질문
+    # ("설치해서 도는가")에 답할 수 없어서 [재현 ✗] 만 만들어낸다.
+    dropped_non_code = [c["url"] for c in in_text_dicts + gh_dicts
+                        if is_non_code_repo(c["url"])]
+    in_text_dicts = [c for c in in_text_dicts if not is_non_code_repo(c["url"])]
+    gh_dicts = [c for c in gh_dicts if not is_non_code_repo(c["url"])]
+
+    # 검색 결과는 근거가 있어야 남긴다. in_text 는 저자가 직접 적은 링크라
+    # 이 검사를 걸지 않는다 — 저장소 이름이 논문과 안 닮은 진짜 저자
+    # 저장소가 흔하고, 그걸 버리면 지금 고치려는 것보다 나쁜 손실이 된다.
+    dropped_uncorroborated = [c["url"] for c in gh_dicts
+                              if not corroborates_paper(c, row["title"], query, row["authors"])]
+    gh_dicts = [c for c in gh_dicts
+                if corroborates_paper(c, row["title"], query, row["authors"])]
+
+    for url in dropped_non_code:
+        print(f"  [후보 제외] 코드가 아닌 소개 페이지: {url}")
+    for url in dropped_uncorroborated:
+        print(f"  [후보 제외] 이 논문의 저장소라는 근거 없음(이름만 일치): {url}")
+
     return {
         "arxiv_id": arxiv_id,
         "title": row["title"],
-        "in_text": [c.to_dict() for c in in_text],
-        "github_search": [c.to_dict() for c in gh_results],
+        "in_text": in_text_dicts,
+        "github_search": gh_dicts,
+        "dropped": {"non_code": dropped_non_code,
+                    "uncorroborated": dropped_uncorroborated},
     }
 
 

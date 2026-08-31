@@ -19,6 +19,7 @@ done이면 그 실행의 window_to부터, partial/failed면 그 실행의 window
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -68,6 +69,20 @@ CREATE TABLE IF NOT EXISTS search_runs (
 """
 
 
+def topic_signature(core_topics: list[str]) -> str:
+    """핵심 키워드 집합의 지문. 순서·대소문자·앞뒤 공백은 무시한다 —
+    같은 키워드를 순서만 바꿔 다시 저장한 걸 "바뀌었다"로 보면 안 된다.
+
+    왜 필요한가(2026-08-31): next_since 는 마지막 실행의 창을 이어받는데,
+    이건 "같은 쿼리로 계속 검색한다"를 전제로 한다. 키워드를 바꾸면 새
+    키워드로는 과거 창을 검색한 적이 없으므로, 커서를 그대로 두면 **새
+    키워드가 과거를 영영 못 본다**. 실제로 키워드를 12→27 개로 넓힌 날
+    커서가 90분 전을 가리키고 있어서 손으로 되돌려야 했다.
+    """
+    normalized = sorted({kw.strip().lower() for kw in core_topics if kw and kw.strip()})
+    return hashlib.sha256("\u0000".join(normalized).encode("utf-8")).hexdigest()[:16]
+
+
 def init_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as con:
         con.executescript(_SCHEMA)
@@ -83,6 +98,12 @@ def init_db(db_path: Path) -> None:
             con.execute("ALTER TABLE profiles ADD COLUMN last_digest TEXT")
         if "last_digest_at" not in existing:
             con.execute("ALTER TABLE profiles ADD COLUMN last_digest_at TEXT")
+        # 2026-08-31: 실행마다 그때의 핵심 키워드 지문을 같이 남긴다.
+        # next_since 가 "지금 키워드가 지난 실행과 같은가"를 확인해야
+        # 커서를 이어받을지 되돌릴지 판단할 수 있다.
+        run_cols = {row[1] for row in con.execute("PRAGMA table_info(search_runs)")}
+        if "topic_signature" not in run_cols:
+            con.execute("ALTER TABLE search_runs ADD COLUMN topic_signature TEXT")
 
 
 def _now() -> str:
@@ -212,20 +233,30 @@ def list_profiles(db_path: Path) -> list[str]:
 
 
 def next_since(db_path: Path, profile_id: str, source: str = "arxiv",
-               default_lookback_days: int = 7) -> datetime:
+               default_lookback_days: int = 7, signature: str | None = None) -> datetime:
     """다음 검색이 봐야 할 시작 시각. 프로필의 첫 실행이면 과거 N일부터
     (설계 문서 §3 기준, 이전 실행 이력이 없어 delta의 출발점을 정할 방법이
     없다 — 무한정 과거로 갈 수 없으니 상한을 둔다, 이 프로젝트의 "상한 있는
-    예외 처리" 원칙과 같은 결)."""
+    예외 처리" 원칙과 같은 결).
+
+    signature 를 주면 지난 실행의 키워드 지문과 대조한다. 다르면 커서를
+    이어받지 않고 첫 실행처럼 과거 N일부터 다시 본다 — 새 키워드로는 과거
+    창을 검색한 적이 없기 때문이다(2026-08-31, §8-21). 지문이 없는 구형
+    행이나 signature 를 안 준 호출은 종전과 똑같이 동작한다: "모르는 것"을
+    "바뀌었다"로 단정해 매번 과거를 다시 훑으면 그것대로 낭비다.
+    """
     init_db(db_path)
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
-            "SELECT status, window_from, window_to FROM search_runs "
+            "SELECT status, window_from, window_to, topic_signature FROM search_runs "
             "WHERE profile_id=? AND source=? ORDER BY started_at DESC LIMIT 1",
             (profile_id, source),
         ).fetchone()
     if not row:
+        return datetime.now(timezone.utc) - timedelta(days=default_lookback_days)
+    previous = row["topic_signature"]
+    if signature and previous and signature != previous:
         return datetime.now(timezone.utc) - timedelta(days=default_lookback_days)
     field = "window_to" if row["status"] == "done" else "window_from"
     return datetime.fromisoformat(row[field])
@@ -235,17 +266,17 @@ def record_run(
     db_path: Path, profile_id: str, source: str, query: str,
     window_from: datetime, window_to: datetime, status: str,
     retrieved_count: int, error_detail: str | None = None,
-    started_at: str | None = None,
+    started_at: str | None = None, signature: str | None = None,
 ) -> str:
     init_db(db_path)
     run_id = uuid.uuid4().hex[:12]
     with sqlite3.connect(db_path) as con:
         con.execute(
             "INSERT INTO search_runs (run_id, profile_id, source, query, window_from, "
-            "window_to, status, retrieved_count, error_detail, started_at, finished_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "window_to, status, retrieved_count, error_detail, started_at, finished_at, "
+            "topic_signature) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, profile_id, source, query, window_from.isoformat(), window_to.isoformat(),
-             status, retrieved_count, error_detail, started_at or _now(), _now()),
+             status, retrieved_count, error_detail, started_at or _now(), _now(), signature),
         )
     return run_id
 
