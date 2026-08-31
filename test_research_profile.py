@@ -191,3 +191,84 @@ def test_save_digest_scoped_per_profile(tmp_path):
 
     assert rp.get_latest_digest(db, "p1")[0] == "p1 다이제스트"
     assert rp.get_latest_digest(db, "p2") is None
+
+
+# ------------------------------------------- 키워드가 바뀌면 델타 커서 무효화 (§8-21)
+
+
+def _record(db, profile_id, *, status, window_from, window_to, signature=None):
+    rp.record_run(db, profile_id, "arxiv", "q", window_from, window_to,
+                  status, 10, signature=signature)
+
+
+def test_topic_signature_ignores_order_case_and_whitespace():
+    """같은 키워드를 순서만 바꿔 저장한 걸 "바뀌었다"로 보면, 프로필을 손댈
+    때마다 과거 열흘을 다시 훑게 된다."""
+    a = rp.topic_signature(["defect detection", "NPU", " sim-to-real "])
+    b = rp.topic_signature(["npu", "sim-to-real", "Defect Detection"])
+    assert a == b
+
+
+def test_topic_signature_changes_when_a_keyword_is_added():
+    base = rp.topic_signature(["a", "b"])
+    assert rp.topic_signature(["a", "b", "c"]) != base
+
+
+def test_cursor_is_inherited_when_keywords_are_unchanged(tmp_path):
+    db = tmp_path / "t.db"
+    sig = rp.topic_signature(["agent"])
+    now = datetime.now(timezone.utc)
+    _record(db, "p", status="done", window_from=now - timedelta(days=10),
+            window_to=now - timedelta(hours=1), signature=sig)
+
+    since = rp.next_since(db, "p", signature=sig)
+    assert since == now - timedelta(hours=1)
+
+
+def test_cursor_is_reset_when_keywords_changed(tmp_path):
+    """실측(2026-08-31): 키워드를 12→27 개로 넓힌 날 커서가 90분 전을 가리켜
+    새 키워드가 과거를 못 볼 뻔했다. 손으로 되돌려야 했던 그 상황이다."""
+    db = tmp_path / "t.db"
+    now = datetime.now(timezone.utc)
+    _record(db, "p", status="done", window_from=now - timedelta(days=10),
+            window_to=now - timedelta(hours=1),
+            signature=rp.topic_signature(["agent"]))
+
+    since = rp.next_since(db, "p", default_lookback_days=7,
+                          signature=rp.topic_signature(["agent", "physical AI"]))
+
+    assert since < now - timedelta(days=6)   # 커서를 안 이어받고 과거로 되돌아갔다
+    assert since > now - timedelta(days=8)
+
+
+def test_old_rows_without_signature_behave_as_before(tmp_path):
+    """구형 DB 행에는 지문이 없다. "모르는 것"을 "바뀌었다"로 단정해 매번
+    과거를 다시 훑으면 그것대로 낭비다."""
+    db = tmp_path / "t.db"
+    now = datetime.now(timezone.utc)
+    _record(db, "p", status="done", window_from=now - timedelta(days=10),
+            window_to=now - timedelta(hours=1), signature=None)
+
+    since = rp.next_since(db, "p", signature=rp.topic_signature(["무엇이든"]))
+    assert since == now - timedelta(hours=1)
+
+
+def test_call_without_signature_is_unchanged_behaviour(tmp_path):
+    db = tmp_path / "t.db"
+    now = datetime.now(timezone.utc)
+    _record(db, "p", status="done", window_from=now - timedelta(days=10),
+            window_to=now - timedelta(hours=1),
+            signature=rp.topic_signature(["agent"]))
+    assert rp.next_since(db, "p") == now - timedelta(hours=1)
+
+
+def test_partial_run_still_wins_over_signature_match(tmp_path):
+    """키워드가 그대로여도 지난 실행이 partial 이면 창을 다 못 본 것이므로
+    window_from 을 그대로 다시 본다 — 기존 규칙이 깨지면 안 된다."""
+    db = tmp_path / "t.db"
+    sig = rp.topic_signature(["agent"])
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=10)
+    _record(db, "p", status="partial", window_from=start,
+            window_to=now - timedelta(hours=1), signature=sig)
+    assert rp.next_since(db, "p", signature=sig) == start
