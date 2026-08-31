@@ -94,11 +94,19 @@ def create_profile(
     core_topics: list[str], target_domain: list[str] | None = None,
     exclude: list[str] | None = None, venues: list[str] | None = None,
     max_items: int = 8, schedule_frequency: str = "daily", schedule_time: str = "05:00",
+    core_weights: dict[str, float] | None = None,
 ) -> None:
     """기존 프로필이면 통째로 덮어쓴다(키워드도 전부 지우고 다시 씀) —
     "일부만 바뀐 것"과 "이전 키워드가 실수로 안 지워진 것"을 구분 못 하게
     두느니, 매번 전체 상태를 새로 쓰는 쪽을 택했다(batch_summarize.py의
-    _write_progress와 같은 이유)."""
+    _write_progress와 같은 이유).
+
+    core_weights 는 핵심 키워드별 가중치다(기본 1.0). 키워드마다 "걸렸을 때
+    얼마나 우리 팀 얘기인가"가 다르기 때문에 필요하다 — "defect detection"이
+    걸리면 거의 확실히 우리 주제지만, "quantization"은 제어·통신 논문에서
+    전혀 다른 뜻으로 쓰인다(2026-08-31 실측: CSymPlan 이 상태공간 양자화로
+    걸렸다). 이 값은 profile_keywords.weight 컬럼에 저장된다 — 컬럼 자체는
+    처음부터 있었지만 아무도 읽지 않던 것을 여기서 실제로 쓰기 시작한다."""
     init_db(db_path)
     now = _now()
     with sqlite3.connect(db_path) as con:
@@ -118,7 +126,9 @@ def create_profile(
                 con.execute(
                     "INSERT INTO profile_keywords (profile_id, keyword, kind, weight, added_at) "
                     "VALUES (?,?,?,?,?)",
-                    (profile_id, kw, kind, 1.0, now),
+                    (profile_id, kw, kind,
+                     float((core_weights or {}).get(kw, 1.0)) if kind == "core" else 1.0,
+                     now),
                 )
         for v in (venues or []):
             con.execute(
@@ -138,21 +148,27 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
         if not row:
             return None
         kw_rows = con.execute(
-            "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,)
+            "SELECT keyword, kind, weight FROM profile_keywords WHERE profile_id=?",
+            (profile_id,),
         ).fetchall()
         venue_rows = con.execute(
             "SELECT venue FROM profile_venues WHERE profile_id=?", (profile_id,)
         ).fetchall()
 
     by_kind: dict[str, list[str]] = {"core": [], "target": [], "exclude": []}
+    core_weights: dict[str, float] = {}
     for r in kw_rows:
         by_kind.setdefault(r["kind"], []).append(r["keyword"])
+        if r["kind"] == "core":
+            # weight 가 NULL 인 구형 행은 1.0 으로 본다 — 하위 호환.
+            core_weights[r["keyword"]] = 1.0 if r["weight"] is None else float(r["weight"])
 
     return {
         "profile_id": row["profile_id"], "name": row["name"],
         "max_items": row["max_items"],
         "core_topics": by_kind["core"], "target_domain": by_kind["target"],
         "exclude": by_kind["exclude"], "venues": [v["venue"] for v in venue_rows],
+        "core_weights": core_weights,
     }
 
 

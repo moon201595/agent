@@ -30,15 +30,20 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 import server
 
 _ABSTRACT_EXCERPT_CHARS = 220
 
-# profile_scoring.Weights 기본값(core_topic=1.0, domain_hit=0.3, venue_hit=0.3,
-# recency=0.4) 기준으로 대략 잡은 구간이다 — 실측 데이터가 쌓이기 전 시작점일
-# 뿐이라, 실제 분포를 보고 재조정해야 한다(설계 문서 §9 미확정과 같은 성격).
-_STAR_THRESHOLDS = ((1.2, "★★★"), (0.7, "★★"))
+# 2026-08-31 랭킹 개편에 맞춰 ★★★ 문턱을 1.2 에서 1.0 으로 내렸다. 개편으로
+# 최신성 가중치가 0.4→0.15, 도메인 가점이 0.3→0.2(2건 상한)로 줄어 도달
+# 가능한 최댓값 자체가 내려갔기 때문이다 — 문턱을 그대로 두면 ★★★이 사실상
+# 안 나온다. 기준을 낮춘 게 아니라 같은 의미("핵심 적합도 만점에 준함")를
+# 새 눈금으로 옮긴 것이다.
+# ★★ 문턱 0.7 은 그대로 둔다 — "표적 키워드 1개 + 도메인 일치"(≈0.83)가
+# 여기 걸리고, 범용 키워드 1개만 스친 논문(≈0.64)은 안 걸린다.
+_STAR_THRESHOLDS = ((1.0, "★★★"), (0.7, "★★"))
 
 
 def _stars(priority: float) -> str:
@@ -66,6 +71,113 @@ def _abstract_excerpt(paper: dict) -> str:
     if len(abstract) <= _ABSTRACT_EXCERPT_CHARS:
         return abstract
     return abstract[:_ABSTRACT_EXCERPT_CHARS] + "…"
+
+
+# ---------------------------------------------------------------- 요약정리 발췌
+#
+# 여기서도 LLM을 부르지 않는다. ④가 이미 만들어 ⑤ 검증까지 통과한 요약
+# 파일(data/summaries/<arxiv_id>.md)을 **읽기만** 한다 — 다이제스트가
+# 무엇을 보여주든 그 근거는 이미 검증된 저장물이어야 한다는 원칙(CLAUDE.md 7)
+# 이 그대로 유지된다. 메일에서 새로 생성되는 문장은 하나도 없다.
+#
+# 왜 필요했나: 2026-08-31 이전 다이제스트는 제목 + 초록 발췌만 보냈다.
+# 논문마다 검증된 요약이 DB에 멀쩡히 있는데도 메일에는 안 실려서, 받는
+# 사람이 결국 arXiv를 다시 열어야 했다.
+
+_SECTION_RE = None  # 아래에서 정의(모듈 상단 import 순서 유지)
+
+_ONE_LINER_CHARS = 300
+_OVERVIEW_BULLETS, _OVERVIEW_CHARS = 3, 350
+_RESULT_BULLETS, _RESULT_CHARS = 4, 350
+_LIMIT_CHARS = 350
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def _split_sections(markdown: str) -> dict[str, str]:
+    """'### 제목' 단위로 쪼갠다. 템플릿 v2 형식이 전제지만, 없는 절은 그냥
+    빠질 뿐이라 형식이 달라져도 다이제스트가 깨지지 않는다."""
+    sections: dict[str, str] = {}
+    current, buf = None, []
+    for line in markdown.splitlines():
+        if line.startswith("### "):
+            if current:
+                sections[current] = "\n".join(buf).strip()
+            current, buf = line[4:].strip(), []
+        elif current:
+            buf.append(line)
+    if current:
+        sections[current] = "\n".join(buf).strip()
+    return sections
+
+
+def _bullets(body: str, after: str | None = None) -> list[str]:
+    lines = body.splitlines()
+    if after is not None:
+        for i, line in enumerate(lines):
+            if after in line:
+                lines = lines[i + 1:]
+                break
+        else:
+            return []
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            out.append(stripped[2:].strip())
+        elif out and not stripped:
+            break
+    return out
+
+
+def summary_sections(arxiv_id: str) -> dict:
+    """저장된 요약에서 메일에 실을 부분만 뽑는다.
+
+    returns {} 이면 호출부는 예전처럼 초록 발췌로 떨어진다 — 요약이 아직
+    없거나(Deep Layer 실패) 파일이 사라진 경우다. "요약이 없다"를 조용히
+    빈 요약으로 보여주지 않는다.
+    """
+    try:
+        with server._db() as con:
+            row = con.execute(
+                "SELECT path FROM summaries WHERE arxiv_id=?", (arxiv_id,)
+            ).fetchone()
+    except sqlite3.Error:
+        return {}
+    if row is None or not row["path"]:
+        return {}
+    try:
+        markdown = Path(row["path"]).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    sec = _split_sections(markdown)
+    conclusion = sec.get("결론", "")
+
+    one_liner = ""
+    for line in conclusion.splitlines():
+        if "한 줄 요약" in line and ":" in line:
+            one_liner = _clip(line.split(":", 1)[1], _ONE_LINER_CHARS)
+            break
+
+    overview = [_clip(b, _OVERVIEW_CHARS)
+                for b in _bullets(sec.get("연구 개요", ""))[:_OVERVIEW_BULLETS]]
+    results = [_clip(b, _RESULT_CHARS)
+               for b in _bullets(conclusion, after="결과")[:_RESULT_BULLETS]]
+
+    limits = ""
+    for line in sec.get("논문의 한계점", "").splitlines():
+        if "요약자가 판단한 한계" in line and ":" in line:
+            limits = _clip(line.split(":", 1)[1], _LIMIT_CHARS)
+            break
+
+    if not (one_liner or overview or results):
+        return {}
+    return {"one_liner": one_liner, "overview": overview,
+            "results": results, "limits": limits}
 
 
 def verification_label(arxiv_id: str) -> str:
@@ -173,10 +285,7 @@ def _paper_entry(idx: int, paper: dict) -> str:
     for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
         if warning:
             lines.append(f"   {warning}")
-    lines += [
-        f"   왜 걸렸나 : {_why_matched(score)}",
-        f"   초록 발췌 : {_abstract_excerpt(paper)}",
-    ]
+    lines.append(f"   왜 걸렸나 : {_why_matched(score)}")
 
     # Deep Layer(M1)가 실패한 논문만 예전의 "미검증 · 초록 기반"으로 남는다
     # — 나머지는 DB 에 실제 검증·재현 결과가 있으므로 그걸 그대로 보여준다.
@@ -190,15 +299,49 @@ def _paper_entry(idx: int, paper: dict) -> str:
         # 절대 같은 라벨을 쓰지 않는다(CLAUDE.md 8).
         tldr = paper.get("s2_tldr")
         if tldr:
-            lines[-1] = f"   S2 한줄요약 : {tldr}"
+            lines.append(f"   S2 한줄요약 : {tldr}")
             lines.append(f"   [미검증 · S2 TLDR] 처리 실패: {reason}")
         else:
+            lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
             lines.append(f"   [미검증 · 초록 기반] 처리 실패: {reason}")
     else:
+        # 검증된 요약이 있으면 그걸 싣는다. 없으면(요약 파일 유실 등) 예전처럼
+        # 초록 발췌로 떨어진다 — "요약 없음"을 빈 요약으로 보여주지 않는다.
+        sections = summary_sections(arxiv_id)
+        if sections:
+            if sections["one_liner"]:
+                lines.append(f"   한 줄 요약 : {sections['one_liner']}")
+            if sections["overview"]:
+                lines.append("   무엇을·어떻게 :")
+                lines += [f"     - {b}" for b in sections["overview"]]
+            if sections["results"]:
+                lines.append("   핵심 결과 :")
+                lines += [f"     - {b}" for b in sections["results"]]
+            if sections["limits"]:
+                lines.append(f"   한계 : {sections['limits']}")
+        else:
+            lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
         lines.append(f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}")
 
     lines.append(f"   https://arxiv.org/abs/{arxiv_id}")
     return "\n".join(lines)
+
+
+_TREND_KEYWORDS_SHOWN = 12
+
+
+def _trend_line(scan_result: dict) -> str:
+    """상위 몇 편이 아니라 **후보 전체**에서 어떤 주제가 몇 편이었는지.
+
+    "이번 주 무엇이 늘었나"는 상위 5편만 봐서는 알 수 없는데, 그 질문에는
+    LLM 없이 셈만으로 답할 수 있다(CLAUDE.md 7). 실제로 이 값은
+    profile_scoring.score_and_rank 가 top_k 로 자르기 전에 세어 둔 것이다.
+    """
+    counts = scan_result.get("core_hit_counts") or {}
+    if not counts:
+        return ""
+    top = list(counts.items())[:_TREND_KEYWORDS_SHOWN]
+    return " · ".join(f"{kw} {n}" for kw, n in top)
 
 
 def generate_digest(scan_result: dict, profile_name: str) -> str:
@@ -220,6 +363,11 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     for i, paper in enumerate(papers, start=1):
         lines.append(_paper_entry(i, paper))
         lines.append("")
+
+    trend = _trend_line(scan_result)
+    if trend:
+        lines += [f"■ 이번 창의 동향 신호 (후보 {candidates}건에서 핵심 키워드별 적중 편수)",
+                  f"   {trend}", ""]
 
     excluded = scan_result.get("excluded_count", 0)
     unmatched = scan_result.get("unmatched_count", 0)
@@ -293,6 +441,47 @@ def _status_chip(label: str, flagged: bool) -> str:
     )
 
 
+def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
+    """검증된 요약을 HTML 로. 없으면 예전처럼 초록 발췌로 떨어진다.
+
+    텍스트판(_paper_entry)과 같은 판단을 쓴다 — 두 판이 다른 내용을 보여주면
+    "HTML 을 차단한 사람만 다른 메일을 받는" 상황이 되므로, 분기 조건을
+    한 곳(summary_sections 의 반환값 유무)으로 맞춰 둔다.
+    """
+    def para(text: str, *, muted: bool = False, top: int = 6) -> str:
+        color = _MUTED if muted else _INK
+        return (f'<div style="color:{color};font-size:13px;margin-top:{top}px;'
+                f'line-height:1.5;">{_esc(text)}</div>')
+
+    def bullets(label: str, items: list[str]) -> str:
+        lis = "".join(
+            f'<li style="color:{_INK};font-size:13px;line-height:1.5;'
+            f'margin-bottom:3px;">{_esc(b)}</li>' for b in items
+        )
+        return (f'<div style="color:{_MUTED};font-size:12px;font-weight:600;'
+                f'margin-top:8px;">{_esc(label)}</div>'
+                f'<ul style="margin:4px 0 0;padding-left:18px;">{lis}</ul>')
+
+    if deep_status.startswith("failed"):
+        tldr = paper.get("s2_tldr")
+        return para(tldr) if tldr else para(_html_excerpt(paper))
+
+    sections = summary_sections(arxiv_id)
+    if not sections:
+        return para(_html_excerpt(paper))
+
+    out = ""
+    if sections["one_liner"]:
+        out += para(sections["one_liner"], top=8)
+    if sections["overview"]:
+        out += bullets("무엇을·어떻게", sections["overview"])
+    if sections["results"]:
+        out += bullets("핵심 결과", sections["results"])
+    if sections["limits"]:
+        out += para("한계 : " + sections["limits"], muted=True, top=8)
+    return out
+
+
 def _paper_entry_html(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = str(paper.get("arxiv_id", "?"))
@@ -332,8 +521,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         f'{detail}'
         f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'
         f'왜 걸렸나 : {_esc(_why_matched(score))}</div>'
-        f'<div style="color:{_INK};font-size:13px;margin-top:6px;line-height:1.5;">'
-        f'{_esc(_html_excerpt(paper))}</div>'
+        f'{_summary_block_html(arxiv_id, paper, deep_status)}'
         f'<div style="margin-top:8px;font-size:13px;">'
         f'<a href="https://arxiv.org/abs/{_esc(arxiv_id)}" '
         f'style="color:{_NAVY};">arxiv.org/abs/{_esc(arxiv_id)}</a></div>'
@@ -376,6 +564,15 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
             f'margin:14px 0 10px;">오늘의 신규 논문 {len(papers)}편 '
             f'(전체 후보 {candidates}건 중)</p>{entries}'
+        )
+
+    trend = _trend_line(scan_result)
+    if trend:
+        body += (
+            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'border-top:1px solid {_LINE};padding-top:10px;margin-top:14px;">'
+            f'<span style="color:{_INK};font-weight:600;">이번 창의 동향 신호</span> '
+            f'(후보 {candidates}건에서 핵심 키워드별 적중 편수)<br>{_esc(trend)}</p>'
         )
 
     excluded = scan_result.get("excluded_count", 0)

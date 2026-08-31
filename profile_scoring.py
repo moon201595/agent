@@ -44,10 +44,15 @@ _WORD_RE_CACHE: dict[str, re.Pattern] = {}
 def _keyword_pattern(keyword: str) -> re.Pattern:
     """다단어 키워드("digital twin")도 통째로 단어 경계 매칭한다. 순수
     substring 매칭을 안 쓰는 이유: "AI"가 "domain" 안에 우연히 들어있는
-    것 같은 거짓 양성을 막기 위해서다."""
+    것 같은 거짓 양성을 막기 위해서다.
+
+    마지막 낱말의 복수형(-s/-es)은 같은 키워드로 본다. 이게 없으면 논문이
+    "event cameras", "robot manipulators", "wearable biosensors"처럼 복수로
+    쓸 때 통째로 놓친다 — 초록은 대부분 복수형으로 쓰기 때문에 이 누락이
+    드물지 않다. 단어 경계는 그대로 유지되므로 오탐은 늘지 않는다."""
     pat = _WORD_RE_CACHE.get(keyword)
     if pat is None:
-        pat = re.compile(r"\b" + re.escape(keyword) + r"\b", re.IGNORECASE)
+        pat = re.compile(r"\b" + re.escape(keyword) + r"(?:es|s)?\b", re.IGNORECASE)
         _WORD_RE_CACHE[keyword] = pat
     return pat
 
@@ -90,19 +95,73 @@ def venue_hit(paper: dict, profile_venues: list[str]) -> bool | None:
     return any(v.lower() in venue_lower for v in profile_venues)
 
 
-# 핵심 키워드를 몇 개 맞히면 relevance 만점(1.0)으로 볼 것인가. 3개로 둔 이유:
-# 실측된 논문들이 보통 1~3개를 건드리고(4개 이상은 드물다), 그 이상을 요구하면
-# 사실상 아무도 만점을 못 받아 relevance 가 다시 무의미해진다.
-CORE_HITS_FOR_FULL_SCORE = 3
+# 핵심 키워드의 **가중치 합**이 이 값에 닿으면 relevance 만점(1.0)으로 본다.
+#
+# 2026-08-31 이전에는 "적중 개수 / 3"이었다. 키워드를 12개로 좁힌 뒤 실측하니
+# 채점 대상 120편이 **전부 정확히 1개만 적중**했다(예외 0건). 좁고 서로 배타적인
+# 키워드에서는 한 논문이 2개 이상을 건드릴 일이 구조적으로 없기 때문이다. 그
+# 결과 relevance 가 모든 후보에서 0.333 상수가 되어 순위 정보를 전혀 못 주고,
+# 최신성과 도메인 가점만으로 순위가 정해졌다 — 무관한 무선통신 논문이 표적인
+# PCB 검사 논문을 눌렀다.
+#
+# 그래서 "몇 개 맞혔나"가 아니라 "얼마나 무거운 걸 맞혔나"로 바꿨다. 적중 1개가
+# 기본값이 되는 세계에서는 **어떤 1개인지**가 유일하게 남은 정보다.
+CORE_WEIGHT_FOR_FULL_SCORE = 2.0
+
+# 도메인 가점은 몇 건까지만 센다. 상한이 없으면 도메인 낱말을 여럿 스치는 논문이
+# 핵심 적중 없이도 위로 올라온다(핵심 상한과 같은 이유).
+DOMAIN_HITS_CAP = 2
+
+# 다의어 가드 — 그 낱말이 **우리가 뜻하는 의미로** 쓰였는지 확인할 동반어.
+# 하나도 없으면 적중으로 치지 않는다.
+#
+# 근거를 실측한 것만 넣는다(2026-08-31): CSymPlan(arXiv 2608.22983)이 핵심
+# 키워드 "quantization"으로 걸렸는데, 실제로는 모델 경량화가 아니라 제어
+# 상태공간의 이산화를 가리키는 말이었다. 짐작만으로 가드를 늘리면 조용히
+# 놓치는 논문이 생기므로, 실제로 오탐이 관측된 낱말에만 건다.
+_POLYSEMY_GUARDS: dict[str, tuple[str, ...]] = {
+    "quantization": (
+        "neural", "network", "model", "weight", "activation", "bit-width",
+        "int8", "int4", "low-precision", "precision", "llm", "transformer",
+        "post-training", "quantization-aware", "compression", "inference",
+    ),
+}
+
+
+def _passes_polysemy_guard(keyword: str, text: str) -> bool:
+    guards = _POLYSEMY_GUARDS.get(keyword.lower())
+    if not guards:
+        return True
+    lowered = text.lower()
+    return any(g in lowered for g in guards)
 
 
 @dataclass
 class Weights:
-    core_topic: float = 1.0     # core_hits 비율에 곱함
-    domain_hit: float = 0.3     # target_domain 매칭 1건당
+    core_topic: float = 1.0     # relevance(0~1)에 곱함
+    domain_hit: float = 0.2     # target_domain 매칭 1건당 (DOMAIN_HITS_CAP 까지)
     venue_hit: float = 0.3      # venue 매칭 시 고정 가점
-    recency: float = 0.4        # recency_score(0~1)에 곱함
+    recency: float = 0.15       # recency_score(0~1)에 곱함
     recency_half_life_days: float = 30.0
+
+
+def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float]:
+    """핵심 키워드 적중 목록과 그 가중치 합. 다의어 가드에 걸린 적중은 빠진다.
+
+    점수 계산과 분리해 둔 이유: 다이제스트의 동향 집계(어떤 키워드가 이번
+    창에서 몇 편 걸렸나)가 순위와 무관하게 같은 판정을 써야 하기 때문이다.
+    """
+    text = _paper_text(paper)
+    weights = profile.get("core_weights") or {}
+    hits, total = [], 0.0
+    for kw in profile.get("core_topics", []):
+        if not _keyword_pattern(kw).search(text):
+            continue
+        if not _passes_polysemy_guard(kw, text):
+            continue
+        hits.append(kw)
+        total += float(weights.get(kw, 1.0))
+    return hits, total
 
 
 def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dict:
@@ -116,45 +175,43 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     exclude_hits = _find_hits(text, profile.get("exclude", []))
     if exclude_hits:
         return {"priority": 0.0, "excluded": True, "exclude_hits": exclude_hits,
-                "core_hits": [], "domain_hits": [], "venue_hit": None, "recency": None}
+                "core_hits": [], "core_weight": 0.0, "domain_hits": [],
+                "venue_hit": None, "recency": None}
 
     core_topics = profile.get("core_topics", [])
-    core_hits = _find_hits(text, core_topics)
+    core_hits, core_weight = core_hits_with_weight(paper, profile)
     if core_topics and not core_hits:
         # core_topics는 OR 조건 — 프로필 설명(설계 문서 §1)과 같다. 하나도
         # 안 걸리면 이 프로필과 무관한 논문으로 보고 0점 처리(제외는 아님 —
         # exclude와 구분해서, 호출부가 "그냥 순위가 낮다"와 "명시적으로
         # 걸러졌다"를 구분할 수 있게 excluded=False로 둔다).
         return {"priority": 0.0, "excluded": False, "exclude_hits": [],
-                "core_hits": [], "domain_hits": [], "venue_hit": None, "recency": None}
+                "core_hits": [], "core_weight": 0.0, "domain_hits": [],
+                "venue_hit": None, "recency": None}
 
     domain_hits = _find_hits(text, profile.get("target_domain", []))
     v_hit = venue_hit(paper, profile.get("venues", []))
     recency = recency_score(paper.get("published"), weights.recency_half_life_days)
 
-    # 적중 **개수**로 본다 — 키워드 목록 길이로 나누지 않는다(2026-08-31 수정).
-    #
-    # 예전엔 len(core_hits)/len(core_topics)였는데, 키워드를 많이 등록할수록
-    # 개당 기여가 쪼그라드는 구조였다. 실측: 핵심 21개를 등록하니 1개 적중이
-    # 0.048점이 되어, 최신성 한 항목(최대 0.4)이 핵심 8개 적중과 맞먹었다.
-    # 그 결과 "가장 최신 논문이 이긴다"가 되어, 핵심 1개만 걸린 무관한 논문이
-    # 핵심 2개가 걸린 논문을 눌렀다(안테나 논문이 1위로 올라온 실측 사례).
-    #
-    # "키워드를 더 자세히 적었더니 랭킹이 더 나빠진다"는 건 명백한 결함이다.
-    # 목록 길이와 무관하게 "핵심을 몇 개나 건드렸나"로 세되, 상한을 둬서
-    # 한 논문이 키워드를 쓸어담아 다른 신호를 압도하지 못하게 한다.
-    hits = min(len(core_hits), CORE_HITS_FOR_FULL_SCORE)
-    relevance = hits / CORE_HITS_FOR_FULL_SCORE if core_topics else 0.0
+    relevance = (min(core_weight, CORE_WEIGHT_FOR_FULL_SCORE) / CORE_WEIGHT_FOR_FULL_SCORE
+                 if core_topics else 0.0)
     priority = relevance * weights.core_topic
-    priority += len(domain_hits) * weights.domain_hit
+    priority += min(len(domain_hits), DOMAIN_HITS_CAP) * weights.domain_hit
     if v_hit:
         priority += weights.venue_hit
     if recency is not None:
+        # 최신성 가중치를 0.4 에서 0.15 로 낮췄다(2026-08-31). 검색은 이미
+        # 델타 창(최근 7~10일)으로 잘려 들어오므로 후보는 **전부** 최신이다.
+        # 그 위에 최신성을 다시 크게 매기면 같은 정보를 두 번 세는 셈이고,
+        # 실제로 사흘 차이가 주제 적합도를 뒤집는 일이 벌어졌다. 최신성은
+        # 이제 동점을 가르는 역할만 한다 — "최신 동향 반영"은 창과 키워드가
+        # 담당하지, 사흘의 나이 차가 담당하는 게 아니다.
         priority += recency * weights.recency
 
     return {
         "priority": round(priority, 4), "excluded": False,
-        "exclude_hits": [], "core_hits": core_hits, "domain_hits": domain_hits,
+        "exclude_hits": [], "core_hits": core_hits,
+        "core_weight": round(core_weight, 4), "domain_hits": domain_hits,
         "venue_hit": v_hit, "recency": recency,
     }
 
@@ -163,10 +220,17 @@ def score_and_rank(
     papers: list[dict], profile: dict, weights: Weights = Weights(), top_k: int | None = None,
 ) -> dict:
     """selection.dedupe_and_rank()와 같은 모양의 출력 — 각 단계 건수를 같이
-    돌려줘서 무엇이 걸러졌는지 보이게 한다(같은 설계 원칙)."""
+    돌려줘서 무엇이 걸러졌는지 보이게 한다(같은 설계 원칙).
+
+    core_hit_counts 는 **top_k 로 자르기 전** 후보 전체에서 각 핵심 키워드가
+    몇 편에 걸렸는지다. 다이제스트의 동향 집계가 이걸 쓴다 — 상위 5편만 보면
+    "이번 주에 어느 주제가 많았나"를 알 수 없고, 그 질문에는 LLM 없이 셈만으로
+    답할 수 있다(CLAUDE.md 7: 기계가 위조 불가능하게 판정할 수 있는 것).
+    """
     scored = []
     excluded_count = 0
     unmatched_count = 0
+    core_hit_counts: dict[str, int] = {}
     for p in papers:
         result = score_paper(p, profile, weights)
         if result["excluded"]:
@@ -175,6 +239,8 @@ def score_and_rank(
         if result["priority"] == 0.0 and not result["core_hits"]:
             unmatched_count += 1
             continue
+        for kw in result["core_hits"]:
+            core_hit_counts[kw] = core_hit_counts.get(kw, 0) + 1
         scored.append({**p, "_score": result})
 
     scored.sort(key=lambda p: p["_score"]["priority"], reverse=True)
@@ -186,5 +252,7 @@ def score_and_rank(
         "excluded_count": excluded_count,
         "unmatched_count": unmatched_count,
         "scored_count": len(scored),
+        "core_hit_counts": dict(sorted(core_hit_counts.items(),
+                                       key=lambda kv: (-kv[1], kv[0]))),
         "papers": scored,
     }

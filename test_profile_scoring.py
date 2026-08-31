@@ -157,10 +157,14 @@ def test_relevance_does_not_shrink_when_more_keywords_registered():
 def test_more_core_hits_beats_fewer_even_with_domain_bonus():
     """실측 사례 회귀: 핵심 1개 + 도메인 1개짜리 무관한 논문이 핵심 2개짜리를
     이겼다. 핵심 적중이 도메인 가점 하나에 밀리면 안 된다."""
-    profile = {"core_topics": ["agent", "vision", "quantization"] + [f"kw{i}" for i in range(18)],
+    # 픽스처에서 "quantization"을 뺐다(2026-08-31) — 이 낱말에 다의어 가드가
+    # 붙어서 ML 문맥이 없으면 적중으로 안 세게 됐기 때문이다. 이 테스트가 보려는
+    # 것은 가드가 아니라 "핵심 적중이 많은 쪽이 도메인 가점 하나를 이긴다"라서,
+    # 가드 없는 낱말로 바꿔 주장은 그대로 두었다. 가드 자체는 아래 별도 테스트가 본다.
+    profile = {"core_topics": ["agent", "vision", "pruning"] + [f"kw{i}" for i in range(18)],
                "target_domain": ["digital twin"], "exclude": []}
     one_core_one_domain = _paper_with("an agent for digital twin systems")
-    two_core = _paper_with("vision and quantization study")
+    two_core = _paper_with("vision and pruning study")
 
     assert score_paper(two_core, profile)["priority"] > \
            score_paper(one_core_one_domain, profile)["priority"]
@@ -173,3 +177,74 @@ def test_core_hits_saturate_so_one_paper_cannot_dominate():
     many = _paper_with("kw0 kw1 kw2 kw3 kw4 kw5 study")
 
     assert score_paper(three, profile)["priority"] == score_paper(many, profile)["priority"]
+
+
+# ---------------------------------------------------------------- 2026-08-31 랭킹 개편
+
+def test_heavier_core_keyword_outranks_lighter_one():
+    """키워드를 좁히면 대부분의 논문이 핵심 1개만 맞힌다(실측 120/120). 그
+    세계에서 유일하게 남은 정보는 "어떤 1개인지"이므로 가중치가 순위를 갈라야 한다."""
+    profile = {"core_topics": ["defect detection", "sim-to-real"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "sim-to-real": 0.6}}
+    bullseye = _paper_with("a defect detection method")
+    generic = _paper_with("a sim-to-real transfer method")
+    assert score_paper(bullseye, profile)["priority"] > score_paper(generic, profile)["priority"]
+
+
+def test_recency_no_longer_flips_topical_fit():
+    """실측 회귀(2026-08-31): 무선통신 논문(sim-to-real + digital twin, 3일 최신)이
+    PCB 핀 검사 논문(defect detection + PCB)을 1.0076 대 0.9757 로 눌렀다.
+    최신성이 주제 적합도를 뒤집으면 안 된다."""
+    profile = {"core_topics": ["defect detection", "sim-to-real"],
+               "target_domain": ["PCB", "digital twin"], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "sim-to-real": 0.6}}
+    off_topic_newer = _paper_with("sim-to-real for a digital twin of a radio network",
+                                  published_days_ago=3)
+    on_topic_older = _paper_with("defect detection on a PCB assembly line",
+                                 published_days_ago=7)
+    assert score_paper(on_topic_older, profile)["priority"] > \
+           score_paper(off_topic_newer, profile)["priority"]
+
+
+def test_polysemy_guard_rejects_quantization_without_ml_context():
+    """실측 사례(CSymPlan, arXiv 2608.22983): 제어 상태공간 이산화를 뜻하는
+    "quantization"이 모델 경량화 키워드로 걸렸다."""
+    profile = {"core_topics": ["quantization"], "target_domain": [], "exclude": []}
+    control = _paper_with("certified symbolic planning with state space quantization")
+    assert score_paper(control, profile)["core_hits"] == []
+    assert score_paper(control, profile)["priority"] == 0.0
+
+
+def test_polysemy_guard_accepts_quantization_with_ml_context():
+    """가드가 진짜 경량화 논문까지 막으면 그건 조용한 누락이다."""
+    profile = {"core_topics": ["quantization"], "target_domain": [], "exclude": []}
+    ml = _paper_with("post-training quantization of transformer weights to int8")
+    assert score_paper(ml, profile)["core_hits"] == ["quantization"]
+
+
+def test_plural_form_of_keyword_matches():
+    """초록은 대부분 복수형으로 쓴다 — "event cameras"를 놓치면 통째로 못 본다."""
+    profile = {"core_topics": ["event camera", "wearable biosensor"],
+               "target_domain": [], "exclude": []}
+    paper = _paper(abstract="We evaluate event cameras and wearable biosensors.")
+    assert set(score_paper(paper, profile)["core_hits"]) == {"event camera", "wearable biosensor"}
+
+
+def test_domain_bonus_is_capped():
+    """도메인 낱말을 여럿 스치는 논문이 핵심 적합도를 압도하면 안 된다."""
+    profile = {"core_topics": ["agent"],
+               "target_domain": ["robot hand", "manipulator", "PCB", "wafer"], "exclude": []}
+    two = _paper_with("agent for robot hand and manipulator")
+    four = _paper_with("agent for robot hand and manipulator on PCB and wafer")
+    assert score_paper(two, profile)["priority"] == score_paper(four, profile)["priority"]
+
+
+def test_score_and_rank_reports_core_hit_counts_over_all_candidates():
+    """동향 집계는 top_k 로 자르기 **전** 후보 전체를 세야 한다."""
+    profile = {"core_topics": ["agent", "autofocus"], "target_domain": [], "exclude": []}
+    papers = [_paper_with("agent one"), _paper_with("agent two"),
+              _paper_with("autofocus study"), _paper_with("unrelated database paper")]
+    result = score_and_rank(papers, profile, top_k=1)
+    assert result["scored_count"] == 1              # 잘린 결과
+    assert result["core_hit_counts"] == {"agent": 2, "autofocus": 1}   # 자르기 전 집계

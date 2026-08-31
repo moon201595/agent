@@ -69,6 +69,26 @@ _KNOWN_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "huggingface.co")
 _DENY_HOSTS = ("arxiv.org", "semanticscholar.org", "doi.org", "gnu.org",
                "wikipedia.org", "rapidapi.com")
 
+# 논문이 **도구로 인용한** 저장소 — 저자 코드가 아니다. 실측(2026-08-31):
+# CSymPlan(2608.22983)에서 본문이 시뮬레이터로 언급한 isaac-sim/IsaacSim 이
+# 저자 저장소로 잡혀 재현이 stage=no_target 으로 실패했다. 이런 건 클론해봐야
+# 그 논문을 재현하는 게 아니므로 후보에서 뺀다.
+#
+# 목록은 좁게 유지한다 — "저자가 자기 논문 코드를 여기 올릴 일이 사실상 없는"
+# 대형 프레임워크·시뮬레이터만 넣는다. 넓히면 진짜 저자 저장소를 조용히
+# 버리게 되고, 그건 지금 고치려는 문제보다 나쁘다.
+_DENY_REPOS = (
+    "isaac-sim/", "nvidia-omniverse/", "pytorch/pytorch", "tensorflow/tensorflow",
+    "huggingface/transformers", "huggingface/diffusers", "huggingface/accelerate",
+    "huggingface/peft", "ultralytics/ultralytics", "open-mmlab/",
+    "opencv/opencv", "scikit-learn/scikit-learn", "numpy/numpy",
+)
+
+
+def _is_tool_repo(url: str) -> bool:
+    lowered = url.lower()
+    return any(f"/{owner_repo}" in lowered for owner_repo in _DENY_REPOS)
+
 # 임의의 URL을 다 잡으면 참고문헌·인용 링크까지 섞인다. "이 근처에 코드 관련
 # 표현이 있어야 후보로 친다"는 문맥 단서.
 _CUE_RE = re.compile(r"(code|repo|implementation|release[sd]?|available|reproduc\w*|github|source)", re.I)
@@ -97,8 +117,35 @@ class RepoCandidate:
         }
 
 
+# 줄바꿈을 지우면 URL 바로 뒤 문장이 그대로 붙는다. 뒤 문장은 대개 마침표
+# 다음에 대문자로 시작하므로("...DSSG." + "Index terms—") 경로 안의 ".대문자"
+# 를 절단점으로 본다. 호스트에는 적용하지 않는다(github.com 이 잘리면 안 된다).
+_PATH_SENTENCE_RE = re.compile(r"\.(?=[A-Z])")
+_SPLIT_HOST_RE = re.compile(r"(https?://[^/]+)(/.*)?$")
+
+
 def _clean_url(url: str) -> str:
-    return url.rstrip(".,;:)")
+    """URL 끝에 섞여 들어온 본문 조각을 잘라낸다.
+
+    실측 사례(2026-08-31): 원문의 줄바꿈을 지우는 과정에서
+    `github.com/mrmenand/DSSG` 뒤에 "Index terms" 가, `github.com/yanfeisu/COM_MATD3`
+    뒤에 "TABLE I" 가 붙어 각각 `.../DSSG.Index`, `.../COM_MATD3.TABLE` 로
+    잡혔고 둘 다 clone 단계에서 죽었다. 기존 방어(_drop_prefix_duplicates)는
+    **짧은 정상 URL 이 본문 어딘가에 또 나왔을 때만** 동작해서, 한 번만 등장한
+    이 두 건을 못 잡았다.
+
+    소문자로 이어지는 진짜 저장소 이름(socket.io, next.js)은 그대로 둔다 —
+    절단은 마침표 뒤가 대문자일 때로 한정한다.
+    """
+    url = url.rstrip(".,;:)")
+    m = _SPLIT_HOST_RE.match(url)
+    if not m or not m.group(2):
+        return url
+    host, path = m.group(1), m.group(2)
+    cut = _PATH_SENTENCE_RE.search(path)
+    if cut:
+        path = path[: cut.start()]
+    return (host + path).rstrip(".,;:)/")
 
 
 def _drop_prefix_duplicates(candidates: list[RepoCandidate]) -> list[RepoCandidate]:
@@ -144,6 +191,8 @@ def find_links_in_text(text: str) -> list[RepoCandidate]:
         if not _CUE_RE.search(ctx):
             continue
         if any(host in url for host in _DENY_HOSTS):
+            continue
+        if _is_tool_repo(url):
             continue
         seen.add(url)
         is_known_host = any(host in url for host in _KNOWN_HOSTS)

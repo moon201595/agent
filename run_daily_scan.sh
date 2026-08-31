@@ -39,7 +39,12 @@ LOCKFILE="logs/daily_scan.lock"
     fi
 
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 시작 (pid $$) ==="
-    .venv/bin/python run_profile_scan.py --all --send
+    # --max-pages 를 기본 10(=후보 500편 상한)에서 30 으로 올린다. 상한에
+    # 닿으면 run_status 가 'partial' 로 남고, next_since 가 'done' 일 때만
+    # 커서를 전진시키므로 **창이 영원히 안 넘어간다**. 2026-08-31 핵심
+    # 키워드를 12→26 개로 넓히면서 후보 수가 상한을 넘길 여지가 생겨
+    # 여유를 뒀다(후보가 적으면 페이지를 다 안 받으므로 비용은 그대로다).
+    .venv/bin/python run_profile_scan.py --all --send --max-pages 30
     status=$?
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 종료 (exit $status) ==="
 } >> logs/daily_scan.log 2>&1
