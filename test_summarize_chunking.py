@@ -8,7 +8,14 @@ sentence_grounding 은 실제로 돌려서 통합까지 확인한다.
 
 import asyncio
 
+import pytest
+
 import summarize_engine as engine
+
+
+async def _no_sleep(_s):
+    """재시도 대기를 건너뛴다 — 테스트가 실제로 몇 초씩 자면 안 된다."""
+    return None
 
 
 def _make_paper(num_sentences: int) -> str:
@@ -189,3 +196,77 @@ def test_retry_wait_adds_jitter_not_constant():
     없는 것이다(무작위라 이론상 전부 같을 확률은 사실상 0)."""
     waits = {engine._retry_wait_seconds(_make_429(), attempt=0) for _ in range(20)}
     assert len(waits) > 1
+
+
+# ---------------------------------------------------------------- 503 일시적 혼잡 재시도
+
+
+def _http_error(status):
+    import httpx
+    req = httpx.Request("POST", "http://api.example/v1")
+    return httpx.HTTPStatusError(str(status), request=req,
+                                  response=httpx.Response(status, request=req))
+
+
+def test_503_is_retried_and_succeeds(monkeypatch):
+    """실측(2026-08-28): 503을 받은 바로 그 키가 2초 뒤 200을 줬다. 재시도하면
+    풀리는 신호인데 예전엔 즉시 Groq로 넘어가 3시간을 태웠다."""
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _http_error(503)
+        return "성공"
+
+    result = asyncio.run(engine._call_with_rate_limit_retry(flaky, "Gemini"))
+    assert result == "성공"
+    assert len(calls) == 3
+
+
+def test_503_gives_up_after_limit(monkeypatch):
+    """무한 재시도가 아니라 상한 있는 예외 처리 — 상한을 넘으면 올려서
+    호출부가 Groq로 넘어가게 한다."""
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    calls = []
+
+    async def always_503():
+        calls.append(1)
+        raise _http_error(503)
+
+    with pytest.raises(Exception):
+        asyncio.run(engine._call_with_rate_limit_retry(always_503, "Gemini"))
+    assert len(calls) == engine.OVERLOAD_RETRIES + 1
+
+
+def test_503_and_429_have_separate_budgets(monkeypatch):
+    """둘을 한 카운터로 묶으면 하나가 다른 하나의 재시도 예산을 먹는다.
+    503 세 번을 쓴 뒤에도 429 재시도가 온전히 남아 있어야 한다."""
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    seq = [503, 503, 503, 429, 429]
+    calls = []
+
+    async def mixed():
+        calls.append(1)
+        if len(calls) <= len(seq):
+            raise _http_error(seq[len(calls) - 1])
+        return "성공"
+
+    result = asyncio.run(engine._call_with_rate_limit_retry(mixed, "Gemini"))
+    assert result == "성공"
+    assert len(calls) == 6  # 503 3회 + 429 2회 전부 재시도한 뒤 성공
+
+
+def test_non_retryable_error_still_raises_immediately(monkeypatch):
+    """400·401 같은 건 다시 불러도 같은 답이라 즉시 올린다(기존 동작 불변)."""
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    calls = []
+
+    async def bad_request():
+        calls.append(1)
+        raise _http_error(400)
+
+    with pytest.raises(Exception):
+        asyncio.run(engine._call_with_rate_limit_retry(bad_request, "Gemini"))
+    assert len(calls) == 1

@@ -127,3 +127,49 @@ def test_custom_weights_are_applied():
     low = score_paper(paper, PROFILE, Weights(domain_hit=0.1))["priority"]
     high = score_paper(paper, PROFILE, Weights(domain_hit=1.0))["priority"]
     assert high > low
+
+
+# ---------------------------------------------------------------- 키워드 개수 희석 방지
+
+
+def _paper_with(title, published_days_ago=1):
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(days=published_days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _paper(title=title, published=ts)
+
+
+def test_relevance_does_not_shrink_when_more_keywords_registered():
+    """실측으로 잡은 결함(2026-08-31): 예전엔 relevance = 적중/전체키워드라
+    키워드를 자세히 적을수록 개당 기여가 쪼그라들었다. 키워드 21개를 넣으니
+    1개 적중이 0.048점이 되어 최신성(최대 0.4)이 핵심 8개 적중과 맞먹었다.
+    "더 자세히 적었더니 랭킹이 나빠진다"는 명백한 결함이라 개수 기준으로 바꿨다."""
+    small = {"core_topics": ["agent", "vision"], "target_domain": [], "exclude": []}
+    large = {"core_topics": ["agent", "vision"] + [f"kw{i}" for i in range(19)],
+             "target_domain": [], "exclude": []}
+    paper = _paper_with("an agent paper")
+
+    s_small = score_paper(paper, small)["priority"]
+    s_large = score_paper(paper, large)["priority"]
+
+    assert s_small == s_large  # 키워드 목록 길이가 점수를 바꾸면 안 된다
+
+
+def test_more_core_hits_beats_fewer_even_with_domain_bonus():
+    """실측 사례 회귀: 핵심 1개 + 도메인 1개짜리 무관한 논문이 핵심 2개짜리를
+    이겼다. 핵심 적중이 도메인 가점 하나에 밀리면 안 된다."""
+    profile = {"core_topics": ["agent", "vision", "quantization"] + [f"kw{i}" for i in range(18)],
+               "target_domain": ["digital twin"], "exclude": []}
+    one_core_one_domain = _paper_with("an agent for digital twin systems")
+    two_core = _paper_with("vision and quantization study")
+
+    assert score_paper(two_core, profile)["priority"] > \
+           score_paper(one_core_one_domain, profile)["priority"]
+
+
+def test_core_hits_saturate_so_one_paper_cannot_dominate():
+    """상한이 없으면 키워드를 쓸어담은 논문 하나가 다른 신호를 다 눌러버린다."""
+    profile = {"core_topics": [f"kw{i}" for i in range(10)], "target_domain": [], "exclude": []}
+    three = _paper_with("kw0 kw1 kw2 study")
+    many = _paper_with("kw0 kw1 kw2 kw3 kw4 kw5 study")
+
+    assert score_paper(three, profile)["priority"] == score_paper(many, profile)["priority"]

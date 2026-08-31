@@ -286,7 +286,13 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
             wait = ARXIV_MIN_INTERVAL - (time.monotonic() - _last_arxiv_call)
             if wait > 0:
                 await asyncio.sleep(wait)
-            resp = await client.get(ARXIV_API, params=params, timeout=30)
+            # 2026-08-31 실측: arXiv 응답 시간이 크게 흔들린다 — 같은 시각에
+            # 키워드 3개짜리 짧은 쿼리가 45초 타임아웃이 나고 21개짜리 긴
+            # 쿼리는 15초에 왔다. 쿼리 복잡도가 아니라 서버 쪽 변동이다.
+            # 정상 응답이 43초 걸린 사례를 실제로 측정해서, 30초로는 멀쩡한
+            # 응답을 실패로 버리게 된다 — 60초로 올린다(_with_retry 가 상한
+            # 2회까지 재시도하므로 최악 대기는 여전히 유한하다).
+            resp = await client.get(ARXIV_API, params=params, timeout=60)
             _last_arxiv_call = time.monotonic()
         resp.raise_for_status()
         return resp
