@@ -124,6 +124,26 @@ def _is_rate_limited(e: Exception) -> bool:
     return isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
 
 
+# 503 은 "모델이 지금 붐빈다"는 일시적 신호다 — 몇 초 뒤 같은 키로 다시 부르면
+# 대개 성공한다(2026-08-28 실측: 503 을 받은 바로 그 키가 2초 뒤 200 을 줬고,
+# 서로 다른 계정의 키 두 개가 동시에 503 을 받은 것으로 보아 키별 한도가 아니라
+# 모델 전체 혼잡이다).
+#
+# 이걸 재시도하지 않던 것이 실제 사고를 냈다: 2026-08-28 새벽 배치에서 Gemini 가
+# 503 한 번을 뱉자 곧바로 Groq 폴백으로 넘어갔고, 마침 Groq 일일 한도가 소진돼
+# 청크마다 20분씩 대기하며 3시간을 태웠다. 재시도 몇 초면 Gemini 로 끝났을 일이다.
+# translate_ko 는 이미 503 을 재시도하고 있었는데(_TRANSLATE_RETRIES) 요약 경로만
+# 빠져 있었다 — 같은 교훈을 한쪽에만 적용해둔 상태였다.
+def _is_transient_overload(e: Exception) -> bool:
+    return isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 503
+
+
+# 503 재시도는 429 와 대기 성격이 다르다 — 429 는 "한도가 찰 때까지" 기다려야 해서
+# 수십 초~수십 분이지만, 503 은 혼잡이 지나가면 되므로 짧게 여러 번이 맞다.
+OVERLOAD_RETRIES = 3
+OVERLOAD_BACKOFF = 3.0
+
+
 def load_env() -> dict:
     env = dict(os.environ)
     if ENV_PATH.exists():
@@ -371,16 +391,30 @@ async def _call_with_rate_limit_retry(coro_fn, label: str) -> str:
     호출이든 보충 청크 호출이든 시그니처 상관없이 그대로 감쌀 수 있다.
     """
     last: Exception | None = None
-    for attempt in range(RATE_LIMIT_RETRIES + 1):
+    overload_attempts = 0
+    attempt = 0
+    while True:
         try:
             return await coro_fn()
         except Exception as e:  # noqa: BLE001
+            # 503(일시적 혼잡)은 429 와 따로 센다 — 성격도 대기 시간도 달라서
+            # 한 카운터로 묶으면 둘 중 하나가 다른 하나의 재시도 예산을 먹는다.
+            if _is_transient_overload(e):
+                if overload_attempts >= OVERLOAD_RETRIES:
+                    raise
+                overload_attempts += 1
+                print(f"  [경고] {label} 503(일시적 혼잡) — {OVERLOAD_BACKOFF:.0f}초 후 재시도 "
+                      f"({overload_attempts}/{OVERLOAD_RETRIES})", file=sys.stderr)
+                last = e
+                await asyncio.sleep(OVERLOAD_BACKOFF)
+                continue
             if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
                 raise
             wait = _retry_wait_seconds(e, attempt)
             print(f"  [경고] {label} 429 — {wait:.0f}초 대기 후 재시도 "
                   f"({attempt + 1}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
             last = e
+            attempt += 1
             await asyncio.sleep(wait)
     raise last  # pragma: no cover — 루프가 항상 return 또는 raise 로 빠짐
 

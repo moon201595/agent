@@ -90,6 +90,12 @@ def venue_hit(paper: dict, profile_venues: list[str]) -> bool | None:
     return any(v.lower() in venue_lower for v in profile_venues)
 
 
+# 핵심 키워드를 몇 개 맞히면 relevance 만점(1.0)으로 볼 것인가. 3개로 둔 이유:
+# 실측된 논문들이 보통 1~3개를 건드리고(4개 이상은 드물다), 그 이상을 요구하면
+# 사실상 아무도 만점을 못 받아 relevance 가 다시 무의미해진다.
+CORE_HITS_FOR_FULL_SCORE = 3
+
+
 @dataclass
 class Weights:
     core_topic: float = 1.0     # core_hits 비율에 곱함
@@ -126,7 +132,19 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     v_hit = venue_hit(paper, profile.get("venues", []))
     recency = recency_score(paper.get("published"), weights.recency_half_life_days)
 
-    relevance = (len(core_hits) / len(core_topics)) if core_topics else 0.0
+    # 적중 **개수**로 본다 — 키워드 목록 길이로 나누지 않는다(2026-08-31 수정).
+    #
+    # 예전엔 len(core_hits)/len(core_topics)였는데, 키워드를 많이 등록할수록
+    # 개당 기여가 쪼그라드는 구조였다. 실측: 핵심 21개를 등록하니 1개 적중이
+    # 0.048점이 되어, 최신성 한 항목(최대 0.4)이 핵심 8개 적중과 맞먹었다.
+    # 그 결과 "가장 최신 논문이 이긴다"가 되어, 핵심 1개만 걸린 무관한 논문이
+    # 핵심 2개가 걸린 논문을 눌렀다(안테나 논문이 1위로 올라온 실측 사례).
+    #
+    # "키워드를 더 자세히 적었더니 랭킹이 더 나빠진다"는 건 명백한 결함이다.
+    # 목록 길이와 무관하게 "핵심을 몇 개나 건드렸나"로 세되, 상한을 둬서
+    # 한 논문이 키워드를 쓸어담아 다른 신호를 압도하지 못하게 한다.
+    hits = min(len(core_hits), CORE_HITS_FOR_FULL_SCORE)
+    relevance = hits / CORE_HITS_FOR_FULL_SCORE if core_topics else 0.0
     priority = relevance * weights.core_topic
     priority += len(domain_hits) * weights.domain_hit
     if v_hit:
