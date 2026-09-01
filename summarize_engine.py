@@ -222,10 +222,31 @@ _GEMINI_URL = (
 )
 
 
-async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
-    key = ENV.get("GOOGLE_API_KEY")
-    if not key:
-        raise RuntimeError("GOOGLE_API_KEY 없음")
+# 여러 개의 무료 키를 쓴다. 이름 규칙: GOOGLE_API_KEY, GOOGLE_API_KEY2,
+# GOOGLE_API_KEY_3 ... (숫자 앞 밑줄은 있어도 없어도 된다).
+_GEMINI_KEY_NAME_RE = re.compile(r"^GOOGLE_API_KEY(?:_?(\d+))?$")
+
+# 다음 호출이 시작할 키 위치. 429 로 죽은 키를 매번 먼저 찔러 한 번씩 버리지
+# 않도록, 마지막으로 성공한 키에서 이어서 시작한다.
+_gemini_key_cursor = 0
+
+
+def gemini_key_names() -> list[str]:
+    """설정된 Gemini 키의 **변수 이름** 목록(값이 아니라 이름이다).
+    숫자 없는 기본 키가 먼저 오고, 그 뒤는 숫자 순이다.
+
+    값을 다루는 자리에서도 로그·예외에는 이름만 남긴다 — 키 문자열이
+    스택트레이스나 로그로 새면 그걸로 끝이다(CLAUDE.md 10 과 같은 결).
+    """
+    found = []
+    for name, value in ENV.items():
+        m = _GEMINI_KEY_NAME_RE.match(name)
+        if m and (value or "").strip():
+            found.append((0 if m.group(1) is None else 1, int(m.group(1) or 0), name))
+    return [name for _base, _n, name in sorted(found)]
+
+
+async def _post_gemini_once(client: httpx.AsyncClient, prompt: str, key: str) -> str:
     # URL 쿼리 파라미터로 키를 보내면 로그·프록시 기록에 그대로 남는다 — 헤더로 보낸다.
     try:
         resp = await client.post(
@@ -242,6 +263,52 @@ async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
     data = resp.json()
     parts = data["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts)
+
+
+async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
+    """키가 여러 개면 429 를 만났을 때 **기다리지 않고 다음 키로 넘어간다**.
+
+    왜(2026-09-01 실측): 복구 실행의 계측이 `gemini 20(429:18, 503:2)` 이었다.
+    Gemini 실패의 대부분이 "모델이 혼잡"(503)이 아니라 "이 키의 하루치가
+    끝났다"(429)였고, 그 결과 6편 전부가 Groq 로 떨어져 호출 74회에 2시간
+    49분이 걸렸다. Gemini 로 갔으면 편당 1회였다(§8-15).
+
+    429 에서만 회전한다. 503 은 모델 전체 혼잡이라 어느 키로 가도 같은 답이
+    오므로, 회전하면 요청만 키 개수만큼 낭비하고 그 요청들이 다시 할당량을
+    깎는다 — 오늘 두 실패가 물려 돌아간 경로가 정확히 그것이다.
+
+    키를 전부 소진하면 마지막 429 를 그대로 올린다. 그러면 기존 백오프와
+    Groq 폴백 경로가 지금까지와 똑같이 동작한다 — 이 함수는 "성공할 확률을
+    높이는" 층이지 실패 처리 방식을 바꾸는 층이 아니다.
+
+    한도 수치는 어디에도 안 적는다. 429 응답만 보고 판단한다(CLAUDE.md 3).
+    """
+    global _gemini_key_cursor
+    names = gemini_key_names()
+    if not names:
+        raise RuntimeError("GOOGLE_API_KEY 없음")
+
+    last_rate_limited: Exception | None = None
+    for offset in range(len(names)):
+        index = (_gemini_key_cursor + offset) % len(names)
+        name = names[index]
+        try:
+            result = await _post_gemini_once(client, prompt, ENV[name])
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 429:
+                raise
+            last_rate_limited = e
+            if offset + 1 < len(names):
+                print(f"  [경고] Gemini {name} 429(한도 소진) — 다음 키로 전환",
+                      file=sys.stderr)
+            continue
+        _gemini_key_cursor = index
+        return result
+
+    print(f"  [경고] Gemini 키 {len(names)}개 모두 429 — 대기·폴백 경로로 넘어감",
+          file=sys.stderr)
+    _gemini_key_cursor = (_gemini_key_cursor + 1) % len(names)
+    raise last_rate_limited
 
 
 async def call_gemini(client: httpx.AsyncClient, chunk_text: str, template: str) -> str:
