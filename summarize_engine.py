@@ -141,8 +141,28 @@ def _is_transient_overload(e: Exception) -> bool:
 
 # 503 재시도는 429 와 대기 성격이 다르다 — 429 는 "한도가 찰 때까지" 기다려야 해서
 # 수십 초~수십 분이지만, 503 은 혼잡이 지나가면 되므로 짧게 여러 번이 맞다.
-OVERLOAD_RETRIES = 3
+#
+# 2026-09-01: 예산을 3회 고정 3초(총 9초)에서 6회 지수 백오프(총 약 2분)로
+# 늘렸다. 근거는 실패했을 때의 대가를 실측한 것이다(§8-15, §8-25):
+#
+#   Gemini 성공 → LLM 호출 1회, 원문 전체(30만자까지) 커버
+#   Groq 폴백  → LLM 호출 중앙값 24회, 긴 논문은 원문의 48~85%만 커버
+#
+# 즉 "9초 더 기다리기"와 "호출 24배 + 커버리지 절반짜리 요약"을 맞바꾸고
+# 있었다. 비대칭이 이 정도면 훨씬 오래 기다리는 쪽이 명백히 낫다. 그날
+# 실제로 9초 만에 예산이 소진돼 복구 실행이 통째로 Groq 로 넘어갔다.
+#
+# 상한은 둔다 — 무한정 기다리면 새벽 배치가 안 끝난다(§8-14). 2분이면
+# Groq 경로 한 편(약 25분)의 10분의 1도 안 된다.
+OVERLOAD_RETRIES = 6
 OVERLOAD_BACKOFF = 3.0
+OVERLOAD_BACKOFF_MAX = 60.0
+
+
+def _overload_wait_seconds(attempt: int) -> float:
+    """지수 백오프. 혼잡은 몇 초 만에 풀리기도 하고 몇 분 가기도 해서,
+    앞쪽은 짧게 자주 찔러보고 뒤로 갈수록 간격을 벌린다."""
+    return min(OVERLOAD_BACKOFF * (2 ** attempt), OVERLOAD_BACKOFF_MAX)
 
 # 보충 청크(청크 2 이후)에서 감수할 최대 429 대기(초). 이보다 긴 대기를 요구받으면
 # 그 청크를 포기하고 지금까지 만든 요약으로 마무리한다 — 아래 _summarize_chunked 참고.
@@ -417,11 +437,12 @@ async def _call_with_rate_limit_retry(coro_fn, label: str, max_wait: float | Non
             if _is_transient_overload(e):
                 if overload_attempts >= OVERLOAD_RETRIES:
                     raise
+                wait = _overload_wait_seconds(overload_attempts)
                 overload_attempts += 1
-                print(f"  [경고] {label} 503(일시적 혼잡) — {OVERLOAD_BACKOFF:.0f}초 후 재시도 "
+                print(f"  [경고] {label} 503(일시적 혼잡) — {wait:.0f}초 후 재시도 "
                       f"({overload_attempts}/{OVERLOAD_RETRIES})", file=sys.stderr)
                 last = e
-                await asyncio.sleep(OVERLOAD_BACKOFF)
+                await asyncio.sleep(wait)
                 continue
             if not _is_rate_limited(e) or attempt >= RATE_LIMIT_RETRIES:
                 raise
