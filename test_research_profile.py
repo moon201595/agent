@@ -215,6 +215,24 @@ def test_topic_signature_changes_when_a_keyword_is_added():
 
 
 def test_cursor_is_inherited_when_keywords_are_unchanged(tmp_path):
+    """색인 여유(REINDEX_SAFETY_DAYS)보다 오래된 커서는 그대로 이어받는다 —
+    여유 안쪽 커서는 별도 테스트가 본다."""
+    db = tmp_path / "t.db"
+    sig = rp.topic_signature(["agent"])
+    now = datetime.now(timezone.utc)
+    inherited = now - timedelta(days=rp.REINDEX_SAFETY_DAYS + 5)
+    _record(db, "p", status="done", window_from=now - timedelta(days=30),
+            window_to=inherited, signature=sig)
+
+    since = rp.next_since(db, "p", default_lookback_days=30, signature=sig)
+    assert since == inherited
+
+
+def test_cursor_never_advances_past_the_reindex_safety_window(tmp_path):
+    """실측(2026-09-01): arXiv 검색 색인이 며칠 뒤처진다. 그날 정기 실행이
+    "16시간 창을 다 봤다"고 기록하며 커서를 전진시켰는데, 그 구간은 조회
+    시점에 통째로 색인 전이었다(cs.CV 전체가 0편). 나중에 색인되면 이미
+    커서 뒤쪽이라 영영 안 걸린다 — 그래서 최근 며칠은 무조건 다시 본다."""
     db = tmp_path / "t.db"
     sig = rp.topic_signature(["agent"])
     now = datetime.now(timezone.utc)
@@ -222,7 +240,9 @@ def test_cursor_is_inherited_when_keywords_are_unchanged(tmp_path):
             window_to=now - timedelta(hours=1), signature=sig)
 
     since = rp.next_since(db, "p", signature=sig)
-    assert since == now - timedelta(hours=1)
+
+    assert since < now - timedelta(days=rp.REINDEX_SAFETY_DAYS - 0.1)
+    assert since > now - timedelta(days=rp.REINDEX_SAFETY_DAYS + 0.1)
 
 
 def test_cursor_is_reset_when_keywords_changed(tmp_path):
@@ -246,20 +266,22 @@ def test_old_rows_without_signature_behave_as_before(tmp_path):
     과거를 다시 훑으면 그것대로 낭비다."""
     db = tmp_path / "t.db"
     now = datetime.now(timezone.utc)
-    _record(db, "p", status="done", window_from=now - timedelta(days=10),
-            window_to=now - timedelta(hours=1), signature=None)
+    inherited = now - timedelta(days=rp.REINDEX_SAFETY_DAYS + 5)
+    _record(db, "p", status="done", window_from=now - timedelta(days=30),
+            window_to=inherited, signature=None)
 
-    since = rp.next_since(db, "p", signature=rp.topic_signature(["무엇이든"]))
-    assert since == now - timedelta(hours=1)
+    since = rp.next_since(db, "p", default_lookback_days=30,
+                          signature=rp.topic_signature(["무엇이든"]))
+    assert since == inherited
 
 
 def test_call_without_signature_is_unchanged_behaviour(tmp_path):
     db = tmp_path / "t.db"
     now = datetime.now(timezone.utc)
-    _record(db, "p", status="done", window_from=now - timedelta(days=10),
-            window_to=now - timedelta(hours=1),
-            signature=rp.topic_signature(["agent"]))
-    assert rp.next_since(db, "p") == now - timedelta(hours=1)
+    inherited = now - timedelta(days=rp.REINDEX_SAFETY_DAYS + 5)
+    _record(db, "p", status="done", window_from=now - timedelta(days=30),
+            window_to=inherited, signature=rp.topic_signature(["agent"]))
+    assert rp.next_since(db, "p", default_lookback_days=30) == inherited
 
 
 def test_partial_run_still_wins_over_signature_match(tmp_path):

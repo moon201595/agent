@@ -90,9 +90,21 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
     assert result["candidates_found"] == 4
     assert result["run_status"] == "done"
 
-    # search_runs에 이번 실행이 기록됐는지 — done이었으니 다음 next_since는
-    # 이번 실행의 until로 갱신돼야 한다(이전 since로 되돌아가면 안 됨)
-    assert rp.next_since(db_path, "team_ai") == datetime.fromisoformat(result["until"])
+    # search_runs에 이번 실행이 기록됐는지 — done이었으니 커서가 전진해야 하고
+    # 이전 since로 되돌아가면 안 된다.
+    #
+    # 2026-09-01: 기대값을 "정확히 until"에서 "until 과 (지금-색인여유) 중 이른
+    # 쪽"으로 옮겼다. 규칙이 바뀌었기 때문이다 — arXiv 색인이 며칠 뒤처져서,
+    # until 까지 다 봤다고 기록해도 그 구간은 조회 시점에 아직 색인 전일 수
+    # 있다. 그대로 전진하면 나중에 색인된 논문을 영영 못 본다(§8-26, 실측:
+    # 2026-09-01 정기 실행이 사흘치를 지나쳤다). 주장 자체("되돌아가지 않는다")는
+    # 그대로 두고 새 눈금으로 옮긴 것이다.
+    now = datetime.now(timezone.utc)
+    expected = min(datetime.fromisoformat(result["until"]),
+                   now - timedelta(days=rp.REINDEX_SAFETY_DAYS))
+    actual = rp.next_since(db_path, "team_ai")
+    assert abs((actual - expected).total_seconds()) < 5
+    assert actual > datetime.fromisoformat(result["since"])
 
 
 def _mock_empty_arxiv(monkeypatch):
@@ -404,3 +416,92 @@ def test_deliver_sends_even_with_zero_papers(tmp_path, monkeypatch):
 
     assert msg == "발송 완료 → 1명"
     assert sent["to"] == ["a@example.com"]
+
+
+# ------------------------------------------- 이미 보낸 논문 제외 (§8-26)
+
+
+def _seed_summary(monkeypatch, tmp_path, arxiv_ids):
+    """server.DB_PATH 쪽 summaries 테이블에 '이미 요약됨'을 심는다.
+    scan_profile 은 프로필 DB 가 아니라 server.DB_PATH 를 본다(_summary_exists
+    와 같은 이유 — 운영에선 같은 파일이지만 테스트에선 다르다)."""
+    import sqlite3
+    sdb = tmp_path / "server.db"
+    with sqlite3.connect(sdb) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS summaries ("
+                    "arxiv_id TEXT PRIMARY KEY, path TEXT, "
+                    "numbers_total INTEGER, numbers_matched INTEGER)")
+        for aid in arxiv_ids:
+            con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)",
+                        (aid, "", 1, 1))
+    monkeypatch.setattr(server, "DB_PATH", sdb)
+
+
+def _mock_arxiv_pages(monkeypatch, papers):
+    starts_seen = []
+
+    async def fake_throttled(client, params):
+        starts_seen.append(params["start"])
+
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    def fake_parse(_xml):
+        return papers if starts_seen[-1] == 0 else []
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+
+
+def _agent_paper(aid, days_ago):
+    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"arxiv_id": aid, "title": f"An agent paper {aid}", "abstract": "", "published": ts}
+
+
+def test_already_summarized_papers_are_dropped_before_ranking(tmp_path, monkeypatch):
+    """실측 배경(2026-09-01): 색인 지연 때문에 매 실행이 최근 며칠을 다시
+    조회하게 됐다(REINDEX_SAFETY_DAYS). 이미 요약한 논문을 안 빼면 어제
+    메일에 나간 논문이 오늘 또 나간다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, ["p1", "p3"])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in (1, 2, 3, 4)])
+
+    async def main():
+        return await rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=2)
+
+    result = asyncio.run(main())
+
+    assert [p["arxiv_id"] for p in result["papers"]] == ["p2", "p4"]
+    assert result["already_seen_count"] == 2
+    assert result["retrieved_count"] == 4      # arXiv 가 준 원본 건수
+    assert result["candidates_found"] == 2     # 걸러진 뒤 실제 후보
+
+
+def test_unsummarized_backlog_still_competes(tmp_path, monkeypatch):
+    """아직 요약 안 된 논문은 그대로 둔다 — 어제 7위가 오늘 3위가 되는 건
+    정상이고, 상위권이 빠지면서 밀린 후보가 며칠에 걸쳐 소진되는 구조다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])          # 아무것도 요약 안 됨
+    _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in (1, 2)])
+
+    async def main():
+        return await rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=2)
+
+    result = asyncio.run(main())
+    assert {p["arxiv_id"] for p in result["papers"]} == {"p1", "p2"}
+    assert result["already_seen_count"] == 0
+
+
+def test_digest_reports_already_seen_count(tmp_path, monkeypatch):
+    """후보 수가 왜 줄었는지 메일에서 설명이 돼야 한다."""
+    import digest
+    text = digest.generate_digest(
+        {"papers": [], "candidates_found": 0, "already_seen_count": 7,
+         "excluded_count": 1, "unmatched_count": 3}, "우리팀")
+    assert "이미 보낸 논문 7건" in text
+    assert "제외 규칙 1건" in text
+    assert "조건 불일치 3건" in text
