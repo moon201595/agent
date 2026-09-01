@@ -224,15 +224,82 @@ def verification_label(arxiv_id: str) -> str:
     return label
 
 
+# 파이프라인이 어디까지 갔는지의 순서. 여러 후보를 시도했으면 **가장 멀리 간**
+# 시도가 그 논문에 대해 제일 많은 것을 말해준다 — clone 도 못 한 후보 두 개보다
+# 실제로 실행까지 간 후보 하나가 정보량이 크다.
+_STAGE_DEPTH = {"clone": 0, "no_target": 1, "build": 2, "run": 3}
+
+# (stage, fail_detail) → 라벨. ✗ 와 – 의 구분이 이 표의 핵심이다:
+#   ✗ = 코드를 실제로 돌렸는데 실패했다        → 저자 코드에 대한 판정
+#   – = 돌려보지도 못했다                      → 저자 코드에 대한 판정이 아님
+# 2026-09-01 이전에는 둘 다 [재현 ✗] 였고, 그래서 "저자가 코드를 안 올렸다(404)"가
+# "저자 코드가 안 돈다"로 읽혔다(실측: 2608.25176).
+_REPRO_LABELS = {
+    ("run", "run_network_suspected"): "[재현 ✗ 네트워크 차단 의심]",
+    ("run", "run_timeout"): "[재현 ✗ 시간 초과]",
+    ("run", "run_nonzero_exit"): "[재현 ✗ 실행 실패]",
+    ("build", "build_failed"): "[재현 ✗ 설치 실패]",
+    ("no_target", "no_install_target"): "[재현 – 실행 대상 없음]",
+    ("clone", "repo_not_found"): "[재현 – 저장소 없음(404)]",
+    ("clone", "clone_timeout"): "[재현 – 클론 시간 초과]",
+    ("clone", "clone_failed"): "[재현 – 클론 실패]",
+    ("clone", "unsupported_host"): "[재현 – 클론 불가 호스트]",
+}
+
+# fail_detail 이 없는 구형 행(2026-09-01 이전 29건)은 stage 만으로 판정한다.
+# 데이터가 없는 것을 아는 척하지 않되, 그렇다고 전부 [재현 ✗] 로 되돌리지도
+# 않는다 — stage 만으로도 "돌려봤는가"는 알 수 있기 때문이다.
+_REPRO_LABELS_BY_STAGE = {
+    "run": "[재현 ✗ 실행 실패]",
+    "build": "[재현 ✗ 설치 실패]",
+    "no_target": "[재현 – 실행 대상 없음]",
+    "clone": "[재현 – 클론 실패]",
+}
+
+
 def repro_label(arxiv_id: str) -> str:
-    """⑦ 재현 상태 라벨. 네 가지뿐이다 — 실행중/성공/실패/기록없음.
+    """⑦ 재현 상태 라벨.
+
     "실행중"은 docker_runner.launch_background 가 만드는 .running 마커로
     판정한다(같은 규칙: arxiv_id 의 '/'를 '_'로 치환). 마커를 먼저 보는
     이유는, 재현이 도는 중에는 repro_results 에 아직 행이 없어서 DB만
-    보면 "기록없음"과 구분이 안 되기 때문이다."""
+    보면 "기록없음"과 구분이 안 되기 때문이다.
+
+    실패했을 때는 사유까지 말한다(2026-09-01). 예전에는 서로 완전히 다른
+    네 가지 사실이 [재현 ✗] 하나로 뭉개졌다 — 저장소가 404 인 것, 클론은
+    됐는데 실행 대상이 없는 것, 설치가 실패한 것, 실행이 네트워크 차단으로
+    죽었을 수 있는 것. 앞의 둘은 저자 코드에 대한 판정이 아예 아닌데도
+    "저자 코드가 안 돈다"로 읽혔다.
+    """
     marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
     if marker.exists():
         return "[재현 ⏳ 실행중]"
+    try:
+        with server._db() as con:
+            rows = con.execute(
+                "SELECT success, stage, fail_detail FROM repro_results WHERE arxiv_id=? "
+                "ORDER BY attempt",
+                (arxiv_id,),
+            ).fetchall()
+    except sqlite3.Error:
+        # 구형 스키마(fail_detail 컬럼 없음)에서도 다이제스트는 계속 나가야 한다.
+        return _repro_label_legacy(arxiv_id)
+    if not rows:
+        return "[재현 –]"
+    if any(r["success"] for r in rows):
+        return "[재현 ✓]"
+
+    deepest = max(rows, key=lambda r: _STAGE_DEPTH.get(r["stage"], -1))
+    stage, detail = deepest["stage"], deepest["fail_detail"]
+    if detail:
+        label = _REPRO_LABELS.get((stage, detail))
+        if label:
+            return label
+    return _REPRO_LABELS_BY_STAGE.get(stage, "[재현 ✗]")
+
+
+def _repro_label_legacy(arxiv_id: str) -> str:
+    """fail_detail 컬럼이 아직 없는 DB용 폴백 — 예전 동작 그대로."""
     try:
         with server._db() as con:
             rows = con.execute(

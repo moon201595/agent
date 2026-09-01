@@ -296,6 +296,7 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
     # 하므로, 아예 시도하지 않고 명시적으로 "판정 불가"로 남긴다.
     if run_cmd is None and not plan.entry_point and not plan.package_name:
         return {"success": False, "stage": "no_target", "plan": asdict(plan),
+                "fail_detail": "no_install_target",
                 "log": "설치 대상(pyproject/setup.py/requirements.txt)도 임포트 가능한 "
                        "패키지도 못 찾음 — 이 저장소는 설치+실행 스모크 테스트를 구성할 "
                        "수 없다(코드가 아니라 가중치·문서 전용 저장소일 수 있음).",
@@ -306,6 +307,7 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
         build_ok, build_log = _build_image(repo_dir, dockerfile, tag)
         if not build_ok:
             return {"success": False, "stage": "build", "plan": asdict(plan),
+                    "fail_detail": "build_failed",
                     "log": build_log, "attempts": []}
 
         # 실행 단계는 네트워크 없음으로 **고정**한다(M7, 2026-08-28).
@@ -341,6 +343,8 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
         return {
             "success": result.success, "stage": "run", "plan": asdict(plan),
             "network_suspected": network_suspected,
+            "fail_detail": _run_fail_detail(result.success, result.timed_out,
+                                            network_suspected),
             "attempts": [asdict(result)],
         }
     finally:
@@ -366,9 +370,52 @@ def _rank_candidates(found: dict) -> list[dict]:
     return [c for c in ordered if c["url"].startswith(_CLONABLE_HOSTS)]
 
 
-def _clone(url: str, dest_parent: Path) -> Path | None:
+# git 이 "그런 저장소 없다"를 말하는 방식들. 비공개 저장소도 GitHub 은 404 로
+# 답하면서 인증을 요구하므로 같은 부류로 묶는다 — 둘 다 "우리가 볼 수 있는
+# 저자 코드가 없다"는 같은 사실이다.
+_REPO_MISSING_RE = re.compile(
+    r"not found|repository not found|could not read username|"
+    r"authentication failed|does not appear to be a git repository",
+    re.IGNORECASE,
+)
+
+
+def _run_fail_detail(success: bool, timed_out: bool, network_suspected: bool) -> str:
+    """실행 단계 실패를 한 단계 더 나눈 코드.
+
+    새 판정을 만들지 않는다 — 이미 있는 세 신호(exit code 기반 success,
+    docker wait 타임아웃, 네트워크 오류 문자열)에서 그대로 파생한다.
+    타임아웃을 네트워크 의심보다 먼저 보는 이유: 시간이 다 되어 죽은 실행의
+    출력에도 네트워크 오류가 섞여 있을 수 있는데, 그때 원인은 타임아웃이다.
+
+    이 값이 있어야 다이제스트가 "네트워크 차단 때문일 수 있다"를 매 건 말할
+    수 있고, 그 말을 하는 순간 §8-16(egress allowlist 가 필요한가)의 근거가
+    저절로 쌓인다 — 따로 통계를 모을 필요가 없다.
+    """
+    if success:
+        return ""
+    if timed_out:
+        return "run_timeout"
+    if network_suspected:
+        return "run_network_suspected"
+    return "run_nonzero_exit"
+
+
+def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
+    """returns (클론된 경로 | None, 실패 사유 코드). 성공이면 사유는 빈 문자열.
+
+    사유를 같이 돌려주는 이유(2026-09-01): 실패를 전부 하나로 뭉개면
+    다이제스트가 "저자가 코드를 안 올렸다(404)"와 "저자 코드가 안 돈다"를
+    같은 `[재현 ✗]` 로 보고한다. 실측(2608.25176)에서 1순위 후보가 저자가
+    논문에 적은 저장소였는데 404 였고, 그 사실이 메일에서 사라졌다.
+
+    분류에 쓰는 문자열은 **git 자신의 stderr** 다 — 컨테이너에서 실행된 임의
+    코드의 출력이 아니다(M7 에서 폐기한 "컨테이너 출력으로 재시도를 결정하던"
+    게이트와 성격이 다르다). 게다가 이 값은 아무것도 허가하지 않는 주석
+    전용이라, 조작돼도 얻을 게 없다.
+    """
     if not url.startswith(_CLONABLE_HOSTS):
-        return None
+        return None, "unsupported_host"
     name = re.sub(r"[^\w.-]", "_", url.rstrip("/").rsplit("/", 1)[-1]) or uuid.uuid4().hex[:8]
     dest = dest_parent / f"{name}-{uuid.uuid4().hex[:6]}"
     try:
@@ -376,9 +423,14 @@ def _clone(url: str, dest_parent: Path) -> Path | None:
             ["git", "clone", "--depth", "1", url, str(dest)],
             capture_output=True, text=True, timeout=120, check=True,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
-    return dest
+    except subprocess.TimeoutExpired:
+        return None, "clone_timeout"
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr or ""
+        if _REPO_MISSING_RE.search(stderr):
+            return None, "repo_not_found"
+        return None, "clone_failed"
+    return dest, ""
 
 
 def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
@@ -400,12 +452,14 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
 
     attempts_log = []
     for i, cand in enumerate(ordered[:max_attempts], start=1):
-        repo_dir = _clone(cand["url"], workdir)
+        repo_dir, clone_detail = _clone(cand["url"], workdir)
         if repo_dir is None:
-            attempts_log.append({"candidate": cand, "success": False, "stage": "clone"})
+            attempts_log.append({"candidate": cand, "success": False, "stage": "clone",
+                                 "fail_detail": clone_detail})
             server.save_repro_result(
                 arxiv_id, cand["url"], cand["source"], cand["confidence"],
                 False, None, "clone", i, False, 0.0, "",
+                fail_detail=clone_detail,
             )
             continue
 
@@ -433,6 +487,7 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
             outcome["success"], (last_attempt or {}).get("exit_code"),
             outcome["stage"], i, (last_attempt or {}).get("network_enabled", False),
             (last_attempt or {}).get("duration_s", 0.0), "", local_path,
+            fail_detail=outcome.get("fail_detail", ""),
         )
 
         if outcome["success"]:
