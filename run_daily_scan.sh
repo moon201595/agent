@@ -48,3 +48,9 @@ LOCKFILE="logs/daily_scan.lock"
     status=$?
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 종료 (exit $status) ==="
 } >> logs/daily_scan.log 2>&1
+
+# 실행 직후에 스스로 보고서를 남긴다 — 보고가 "그때 누가 붙어 있었는가"에
+# 의존하면 안 된다. logs/morning_report.txt 는 몇 시간 뒤에 열어봐도 그대로다.
+# 로그 블록 **밖**에서 부른다: 위 블록이 닫히면서 종료 표시까지 다 기록된
+# 뒤라야 보고서가 그 실행을 완결된 것으로 읽는다.
+.venv/bin/python scripts/morning_report.py > /dev/null 2>&1 || true
