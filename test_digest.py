@@ -25,8 +25,14 @@ def isolated_db(tmp_path, monkeypatch):
     with sqlite3.connect(db) as con:
         con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, "
                     "numbers_total INTEGER, numbers_matched INTEGER)")
+        # stage·attempt·fail_detail 은 실제 스키마에 있는데 예전 픽스처엔
+        # 없었다(2026-09-01 추가). 그 탓에 repro_label 이 여기서는 늘
+        # 구형 폴백 경로로만 돌아, 사유별 라벨이 테스트를 통과해도 실제로는
+        # 한 줄도 안 밟히는 상태였다 — test_digest_summary.py 를 따로 만든
+        # 것과 같은 종류의 함정이다.
         con.execute("CREATE TABLE repro_results (arxiv_id TEXT, repo_url TEXT, "
-                    "success INTEGER, PRIMARY KEY (arxiv_id, repo_url))")
+                    "success INTEGER, stage TEXT, attempt INTEGER, "
+                    "fail_detail TEXT, PRIMARY KEY (arxiv_id, repo_url))")
         # M5: 철회 상태는 papers 에 산다.
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
     monkeypatch.setattr(server, "DB_PATH", db)
@@ -40,10 +46,12 @@ def _seed_verification(db, arxiv_id, total, matched):
                     (arxiv_id, total, matched))
 
 
-def _seed_repro(db, arxiv_id, repo_url, success):
+def _seed_repro(db, arxiv_id, repo_url, success, stage=None, attempt=1, fail_detail=None):
+    """stage/fail_detail 을 안 주면 구형 행(2026-09-01 이전 29건)을 흉내낸다 —
+    하위 호환 경로도 계속 테스트된다."""
     with sqlite3.connect(db) as con:
-        con.execute("INSERT OR REPLACE INTO repro_results VALUES (?,?,?)",
-                    (arxiv_id, repo_url, int(success)))
+        con.execute("INSERT OR REPLACE INTO repro_results VALUES (?,?,?,?,?,?)",
+                    (arxiv_id, repo_url, int(success), stage, attempt, fail_detail))
 
 
 def _scored_paper(arxiv_id, title, priority, core_hits=None, domain_hits=None,
@@ -425,3 +433,92 @@ def test_tldr_not_used_for_successfully_processed_paper(isolated_db):
 
     assert "S2가 만든 요약" not in text
     assert "[검증 10/10 통과]" in text
+
+
+# ---------------------------------------------------------------- 재현 실패 사유 (2026-09-01)
+#
+# 예전엔 서로 완전히 다른 네 가지 사실이 [재현 ✗] 하나로 뭉개졌다. 아래 표의
+# 핵심은 ✗ 와 – 의 구분이다 — ✗ 는 "코드를 돌렸는데 실패", – 는 "돌려보지도
+# 못함"이라 후자는 저자 코드에 대한 판정이 아니다.
+
+
+@pytest.mark.parametrize("stage,detail,expected", [
+    ("run", "run_network_suspected", "[재현 ✗ 네트워크 차단 의심]"),
+    ("run", "run_timeout", "[재현 ✗ 시간 초과]"),
+    ("run", "run_nonzero_exit", "[재현 ✗ 실행 실패]"),
+    ("build", "build_failed", "[재현 ✗ 설치 실패]"),
+    ("no_target", "no_install_target", "[재현 – 실행 대상 없음]"),
+    ("clone", "repo_not_found", "[재현 – 저장소 없음(404)]"),
+    ("clone", "clone_timeout", "[재현 – 클론 시간 초과]"),
+    ("clone", "clone_failed", "[재현 – 클론 실패]"),
+])
+def test_repro_label_reports_the_actual_reason(isolated_db, stage, detail, expected):
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage=stage, fail_detail=detail)
+    assert expected in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_missing_repo_is_not_reported_as_code_failure(isolated_db):
+    """실측(2608.25176 / YOLOEZA): 저자가 논문에 적은 저장소가 404 였다.
+    이건 "저자 코드가 안 돈다"가 아니라 "볼 수 있는 코드가 없다"이므로
+    ✗ 를 붙이면 안 된다 — 이 변경이 겨냥한 바로 그 사례다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/gone", success=False,
+                stage="clone", fail_detail="repo_not_found")
+    text = _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 – 저장소 없음(404)]" in text
+    assert "✗" not in text
+
+
+def test_deepest_attempt_decides_the_label(isolated_db):
+    """후보를 여러 개 시도하면 **가장 멀리 간** 시도가 정보량이 크다 —
+    clone 도 못 한 후보보다 실제로 실행까지 간 후보가 그 논문을 더 말해준다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/one", success=False,
+                stage="clone", attempt=1, fail_detail="repo_not_found")
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
+                stage="run", attempt=2, fail_detail="run_nonzero_exit")
+    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_success_still_wins_over_any_failure_detail(isolated_db):
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/one", success=False,
+                stage="run", attempt=1, fail_detail="run_network_suspected")
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=True,
+                stage="run", attempt=2, fail_detail="")
+    assert "[재현 ✓]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_old_rows_without_fail_detail_still_render(isolated_db):
+    """2026-09-01 이전 29건은 fail_detail 이 NULL 이다. stage 만으로도
+    "돌려봤는가"는 알 수 있으므로 그만큼은 말해준다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage="run", fail_detail=None)
+    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_old_rows_with_no_stage_fall_back_to_plain_failure(isolated_db):
+    """stage 도 없는 아주 오래된 행은 예전처럼 [재현 ✗] — 데이터가 없는 것을
+    아는 척하지 않는다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage=None, fail_detail=None)
+    assert "[재현 ✗]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_network_suspected_label_is_flagged_in_html(isolated_db):
+    """네트워크 차단 의심은 ✗ 라 HTML 에서 펼쳐진 채로 나가야 한다
+    (기존 needs_attention 규칙이 유지되는지 확인)."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage="run", fail_detail="run_network_suspected")
+    html = _html_for([_scored_paper("p1", "논문", 1.0)])
+    assert "네트워크 차단 의심" in html
+    assert "<details open" in html
+
+
+def test_not_run_labels_do_not_force_attention_in_html(isolated_db):
+    """저장소가 404 인 건 저자 주장에 대한 경고가 아니다 — 펼칠 이유가 없다."""
+    _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage="clone", fail_detail="repo_not_found")
+    html = _html_for([_scored_paper("p1", "논문", 1.0)])
+    assert "저장소 없음(404)" in html
+    assert "<details open" not in html

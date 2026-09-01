@@ -215,6 +215,16 @@ def _init_storage() -> None:
         if "local_path" not in existing_r:
             con.execute("ALTER TABLE repro_results ADD COLUMN local_path TEXT")
 
+        # 실패 사유를 stage 안에서 한 단계 더 나눈 코드(2026-09-01).
+        # stage 만으로는 "저자 저장소가 404" 와 "클론이 다른 이유로 실패"가,
+        # "실행이 네트워크 없이 죽었다" 와 "그냥 exit 1" 이 구분되지 않는다.
+        # 다이제스트가 [재현 ✗] 하나로 서로 다른 사실을 뭉개고 있었고, 그
+        # 뭉갬이 §8-16(egress allowlist 가 필요한가)의 근거까지 같이 삼켰다 —
+        # network_suspected 가 계산만 되고 저장되지 않아 29건이 쌓이는 동안
+        # 아무것도 안 모였다. 판정에는 쓰지 않는 주석 전용 값이다.
+        if "fail_detail" not in existing_r:
+            con.execute("ALTER TABLE repro_results ADD COLUMN fail_detail TEXT")
+
         # ① 하이브리드 검색(2026-08-06)용 임베딩 캐시. 논문 텍스트(제목+초록)가
         # 바뀌지 않는 한 임베딩도 안 바뀌므로, 검색할 때마다 다시 계산하지
         # 않고 여기 저장해 재사용한다 — hybrid_search.py 는 이 캐시를 모른다
@@ -1539,23 +1549,32 @@ def save_repro_result(
     arxiv_id: str, repo_url: str, source: str, confidence: str,
     success: bool, exit_code: int | None, stage: str, attempt: int,
     network_used: bool, duration_s: float, log_path: str,
-    local_path: str = "",
+    local_path: str = "", fail_detail: str = "",
 ) -> None:
     """⑦ Docker 격리 실행 결과를 축적한다. MCP 도구가 아니다 — docker_runner.py
     가 판단(성공/실패)까지 끝낸 뒤 결과만 저장한다(set_review_status 와 동일 패턴).
 
     local_path: 성공한 시도만 docker_runner.py가 clone을 지우지 않고 여기 남긴다
     (review_app.py가 "재현된 코드 보기"에서 읽는다) — 실패한 시도는 빈 문자열.
+
+    fail_detail: 실패 사유를 stage 안에서 한 단계 더 나눈 코드(2026-09-01).
+    docker_runner.py 가 결정론적으로 만든다 — repo_not_found / clone_timeout /
+    clone_failed / no_install_target / build_failed / run_network_suspected /
+    run_timeout / run_nonzero_exit. 다이제스트 라벨과 §8-16 근거 집계가 이걸
+    쓴다. 판정(성공/실패)에는 쓰지 않는 주석 전용 값이라, 이 값이 틀려도
+    "성공했다"가 뒤집히지 않는다.
     """
     arxiv_id = _clean_arxiv_id(arxiv_id)
     with _db() as con:
         con.execute(
             """INSERT OR REPLACE INTO repro_results
                (arxiv_id, repo_url, source, confidence, success, exit_code,
-                stage, attempt, network_used, duration_s, log_path, created_at, local_path)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                stage, attempt, network_used, duration_s, log_path, created_at,
+                local_path, fail_detail)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (arxiv_id, repo_url, source, confidence, int(success), exit_code,
-             stage, attempt, int(network_used), duration_s, log_path, _now(), local_path),
+             stage, attempt, int(network_used), duration_s, log_path, _now(),
+             local_path, fail_detail),
         )
 
 
