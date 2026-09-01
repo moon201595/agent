@@ -79,14 +79,50 @@ async def scan_profile(
         result["status"], len(result["papers"]), signature=signature,
     )
 
+    # 이미 요약된 논문은 후보에서 뺀다(§8-26) — 창이 겹치므로 안 빼면 어제
+    # 메일에 나간 논문이 오늘 또 나간다. 이 필터가 겹침의 비용을 0 으로 만든다.
+    seen = _already_summarized([p.get("arxiv_id") for p in result["papers"]])
+    fresh = [p for p in result["papers"] if p.get("arxiv_id") not in seen]
+
     scored = profile_scoring.score_and_rank(
-        result["papers"], profile, top_k=profile["max_items"],
+        fresh, profile, top_k=profile["max_items"],
     )
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
-        "run_status": result["status"], "candidates_found": len(result["papers"]),
+        "run_status": result["status"], "candidates_found": len(fresh),
+        "retrieved_count": len(result["papers"]), "already_seen_count": len(seen),
         **scored,
     }
+
+
+def _already_summarized(arxiv_ids: list[str]) -> set[str]:
+    """이미 ④⑤가 끝나 저장된 논문 id 들. 한 번의 질의로 받는다.
+
+    왜 랭킹 **전에** 걸러야 하나(§8-26): 색인 지연 때문에 매 실행이 최근
+    며칠을 다시 조회하게 됐는데(REINDEX_SAFETY_DAYS), 이미 요약한 논문을
+    그대로 두면 어제 메일에 나간 논문이 오늘도 또 나간다. _summary_exists
+    가 Deep Layer 재처리는 막지만, 그 논문은 result["papers"] 에 남아
+    다이제스트에 실린다(deep_status="skipped: ...") — 중복 발송을 막으려면
+    후보 목록에서 아예 빼야 한다.
+
+    아직 요약 안 된 논문은 그대로 둔다 — 어제 7위였던 논문이 오늘 3위가
+    되는 것은 정상이다. 상위권이 요약되어 빠지면서 뒤가 올라오는 구조라
+    밀린 후보가 며칠에 걸쳐 소진된다.
+    """
+    ids = [a for a in arxiv_ids if a]
+    if not ids:
+        return set()
+    found: set[str] = set()
+    with server._db() as con:
+        # SQLite 변수 상한(999)을 넘지 않게 나눠 묻는다.
+        for i in range(0, len(ids), 500):
+            batch = ids[i:i + 500]
+            placeholders = ",".join("?" * len(batch))
+            rows = con.execute(
+                f"SELECT arxiv_id FROM summaries WHERE arxiv_id IN ({placeholders})", batch
+            ).fetchall()
+            found.update(r["arxiv_id"] for r in rows)
+    return found
 
 
 def _summary_exists(arxiv_id: str) -> bool:

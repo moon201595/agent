@@ -354,6 +354,23 @@ def _trend_line(scan_result: dict) -> str:
     return " · ".join(f"{kw} {n}" for kw, n in top)
 
 
+def _filtered_line(scan_result: dict) -> str:
+    """이번 실행에서 무엇이 걸러졌는지. 겹치는 창을 다시 조회하게 되면서
+    (§8-26) "이미 보낸 논문"이 새로운 항목으로 생겼다 — 조용히 빼면 후보
+    수가 왜 줄었는지 설명이 안 된다."""
+    parts = []
+    seen = scan_result.get("already_seen_count", 0)
+    if seen:
+        parts.append(f"이미 보낸 논문 {seen}건")
+    excluded = scan_result.get("excluded_count", 0)
+    if excluded:
+        parts.append(f"제외 규칙 {excluded}건")
+    unmatched = scan_result.get("unmatched_count", 0)
+    if unmatched:
+        parts.append(f"조건 불일치 {unmatched}건")
+    return ", ".join(parts)
+
+
 def generate_digest(scan_result: dict, profile_name: str) -> str:
     """scan_result: run_profile_scan.scan_profile()의 반환값 그대로 받는다.
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
@@ -364,10 +381,17 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     candidates = scan_result.get("candidates_found", 0)
 
     if not papers:
-        return (
-            f"{header}\n\n오늘은 새로 걸린 논문이 없습니다"
-            f"(후보 {candidates}건 중 프로필 조건에 맞는 것 없음).\n"
-        )
+        # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
+        # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
+        # 그 답이 메일 안에 없었다. 걸러진 내역을 여기에도 붙인다.
+        reason = _filtered_line(scan_result)
+        body = f"오늘은 새로 걸린 논문이 없습니다(후보 {candidates}건)."
+        if reason:
+            body += f"\n걸러진 것: {reason}"
+        if candidates == 0 and not reason:
+            body += ("\n검색 자체가 0건이었습니다 — arXiv 색인이 며칠 뒤처지므로 "
+                     "최근 며칠은 다음 실행에서 다시 조회합니다.")
+        return f"{header}\n\n{body}\n"
 
     lines = [header, "", f"■ 오늘의 신규 논문 {len(papers)}편 (전체 후보 {candidates}건 중)", ""]
     for i, paper in enumerate(papers, start=1):
@@ -379,10 +403,9 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         lines += [f"■ 이번 창의 동향 신호 (후보 {candidates}건에서 핵심 키워드별 적중 편수)",
                   f"   {trend}", ""]
 
-    excluded = scan_result.get("excluded_count", 0)
-    unmatched = scan_result.get("unmatched_count", 0)
-    if excluded or unmatched:
-        lines.append(f"■ 이번 실행에서 걸러진 것: 제외 규칙 {excluded}건, 조건 불일치 {unmatched}건")
+    filtered = _filtered_line(scan_result)
+    if filtered:
+        lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -561,10 +584,16 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     retraction_slot = "<!-- retraction-warnings -->"
 
     if not papers:
+        reason = _filtered_line(scan_result)
+        extra = ""
+        if reason:
+            extra = f'<br>걸러진 것: {_esc(reason)}'
+        elif candidates == 0:
+            extra = ('<br>검색 자체가 0건이었습니다 — arXiv 색인이 며칠 뒤처지므로 '
+                     '최근 며칠은 다음 실행에서 다시 조회합니다.')
         body = (
             f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;">'
-            f'오늘은 새로 걸린 논문이 없습니다 '
-            f'(후보 {candidates}건 중 프로필 조건에 맞는 것 없음).</p>'
+            f'오늘은 새로 걸린 논문이 없습니다 (후보 {candidates}건).{extra}</p>'
         )
     else:
         entries = "".join(
@@ -585,15 +614,13 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'(후보 {candidates}건에서 핵심 키워드별 적중 편수)<br>{_esc(trend)}</p>'
         )
 
-    excluded = scan_result.get("excluded_count", 0)
-    unmatched = scan_result.get("unmatched_count", 0)
+    filtered = _filtered_line(scan_result)
     footer = ""
-    if excluded or unmatched:
+    if filtered:
         footer = (
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'border-top:1px solid {_LINE};padding-top:10px;">'
-            f'이번 실행에서 걸러진 것: 제외 규칙 {excluded}건, '
-            f'조건 불일치 {unmatched}건</p>'
+            f'이번 실행에서 걸러진 것: {_esc(filtered)}</p>'
         )
 
     return (

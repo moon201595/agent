@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS search_runs (
 """
 
 
+# arXiv 검색 색인이 현재 시각보다 뒤처지는 만큼 매 실행이 되돌아볼 일수.
+#
+# 2026-09-01 실측: 그날 09:52 KST 기준으로 arXiv 에서 검색되는 가장 최신
+# 논문이 8/28(금)이었다. 8/29(토)·8/30(일)·8/31(월) 사흘은 우리 키워드가
+# 아니라 **cs.CV 전체에서** 0편이었다(8/28 은 73편). 제출·공지·색인 사이에
+# 며칠이 뜨고, 주말이 끼면 더 벌어진다.
+#
+# 이 여유가 없으면 커서가 "아직 색인 안 된 구간"을 지나쳐 전진하고, 나중에
+# 그 논문들이 색인돼도 이미 커서 뒤쪽이라 영영 안 걸린다(§8-26). 실제로
+# 2026-09-01 정기 실행이 후보 0편으로 끝나면서 사흘치를 지나쳤다.
+#
+# 5일로 둔 이유: 주말(2일) + 실측된 색인 지연(2~3일)을 덮어야 한다. 겹치는
+# 구간을 다시 조회하는 비용은 arXiv 페이지 요청 몇 번뿐이고, LLM 비용은
+# 0 이다 — 이미 요약된 논문은 랭킹 전에 빠지기 때문이다(scan_profile).
+REINDEX_SAFETY_DAYS = 5
+
+
 def topic_signature(core_topics: list[str]) -> str:
     """핵심 키워드 집합의 지문. 순서·대소문자·앞뒤 공백은 무시한다 —
     같은 키워드를 순서만 바꿔 다시 저장한 걸 "바뀌었다"로 보면 안 된다.
@@ -253,13 +270,17 @@ def next_since(db_path: Path, profile_id: str, source: str = "arxiv",
             "WHERE profile_id=? AND source=? ORDER BY started_at DESC LIMIT 1",
             (profile_id, source),
         ).fetchone()
+    now = datetime.now(timezone.utc)
     if not row:
-        return datetime.now(timezone.utc) - timedelta(days=default_lookback_days)
+        return now - timedelta(days=default_lookback_days)
     previous = row["topic_signature"]
     if signature and previous and signature != previous:
-        return datetime.now(timezone.utc) - timedelta(days=default_lookback_days)
+        return now - timedelta(days=default_lookback_days)
     field = "window_to" if row["status"] == "done" else "window_from"
-    return datetime.fromisoformat(row[field])
+    cursor = datetime.fromisoformat(row[field])
+    # 색인 지연만큼은 무조건 되돌아본다 — 지난 실행이 "다 봤다"고 기록한
+    # 구간이라도 그때는 아직 색인 전이었을 수 있다(§8-26).
+    return min(cursor, now - timedelta(days=REINDEX_SAFETY_DAYS))
 
 
 def record_run(
