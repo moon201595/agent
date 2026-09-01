@@ -317,3 +317,45 @@ def test_first_chunk_has_no_wait_cap(monkeypatch):
     src = inspect.getsource(engine._summarize_chunked)
     first_call = src.split("for chunk_num")[0]
     assert "max_wait" not in first_call
+
+
+# ------------------------------------------- 503 재시도 예산 (2026-09-01)
+
+
+def test_overload_backoff_grows_and_is_capped():
+    """혼잡은 몇 초 만에 풀리기도 하고 몇 분 가기도 한다 — 앞은 짧게 자주,
+    뒤로 갈수록 간격을 벌리되 상한을 둔다(새벽 배치가 안 끝나면 안 된다)."""
+    waits = [engine._overload_wait_seconds(i) for i in range(engine.OVERLOAD_RETRIES)]
+    assert waits == sorted(waits)                       # 단조 증가
+    assert all(w <= engine.OVERLOAD_BACKOFF_MAX for w in waits)
+    assert waits[0] == engine.OVERLOAD_BACKOFF
+
+
+def test_overload_budget_is_far_cheaper_than_falling_back_to_groq():
+    """예산을 정한 근거 자체를 못박는다. 실측(§8-15, §8-25): Gemini 성공은
+    호출 1회에 원문 전체를 보고, Groq 폴백은 호출 중앙값 24회에 긴 논문은
+    원문의 절반만 본다(청크당 60초 간격이라 한 편에 약 25분).
+
+    즉 503 을 더 기다리는 비용이 폴백 비용보다 한참 싸야 이 설계가 성립한다.
+    누군가 예산을 다시 9초로 줄이면 이 테스트가 막는다."""
+    budget = sum(engine._overload_wait_seconds(i) for i in range(engine.OVERLOAD_RETRIES))
+    groq_one_paper = 24 * engine.GROQ_CHUNK_DELAY       # 약 1440초
+    assert budget >= 120                                # 혼잡이 지나갈 만큼은 기다린다
+    assert budget < groq_one_paper / 5                  # 그래도 폴백보다 한참 싸다
+
+
+def test_transient_overload_recovers_within_the_larger_budget(monkeypatch):
+    """9초(옛 예산 3회×3초)로는 못 넘겼을 혼잡을 새 예산으로는 넘긴다 —
+    2026-09-01 복구 실행이 정확히 이 지점에서 통째로 Groq 로 넘어갔다."""
+    monkeypatch.setattr(engine.asyncio, "sleep", _no_sleep)
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) <= 4:            # 옛 예산으로는 여기서 포기했다
+            raise _http_error(503)
+        return "요약"
+
+    result = asyncio.run(engine._call_with_rate_limit_retry(flaky, "Gemini"))
+    assert result == "요약"
+    assert len(calls) == 5
