@@ -37,6 +37,7 @@ import profile_scoring
 import s2_delta
 import selection
 import research_profile
+import trend_report
 import server
 
 
@@ -64,6 +65,17 @@ def _arxiv_query_from_core_topics(core_topics: list[str]) -> str:
 # 정상이면 편당 1분 내외라 40편도 소화한다(max_items 는 6이다). Groq 로
 # 떨어진 날에만 실제로 걸리는 상한이다. 환경변수로 덮을 수 있다.
 DEEP_LAYER_BUDGET_SECONDS = float(os.environ.get("DEEP_LAYER_BUDGET_SECONDS", 2400))
+
+# 주간 동향 리뷰를 붙이는 요일(0=월). 매일 붙이면 어제와 거의 같은 표가
+# 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
+WEEKLY_REVIEW_WEEKDAY = 0
+
+
+def is_weekly_review_day(now: datetime | None = None) -> bool:
+    """오늘이 주간 리뷰를 붙이는 날인가. 함수로 뺀 이유는 테스트가
+    이것만 바꿀 수 있게 하기 위해서다 — datetime.now 전체를 갈아끼우면
+    record_run 등 다른 시각 사용까지 깨진다(실제로 한 번 깨뜨렸다)."""
+    return (now or datetime.now(timezone.utc)).weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
 async def scan_profile(
@@ -301,6 +313,17 @@ async def scan_and_digest(
 
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
+
+    # 주간 동향 리뷰는 **주 1회만** 붙인다(월요일). 매일 붙이면 어제와 거의
+    # 같은 표가 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
+    # 실패해도 다이제스트를 막지 않는다 — 부가 정보다.
+    if profile and is_weekly_review_day():
+        try:
+            review = await trend_report.build(db_path, profile, client=client)
+            digest_text = digest_text.rstrip() + "\n\n" + review
+            print("  [동향] 주간 리뷰를 다이제스트에 붙였다")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
     research_profile.save_digest(db_path, profile_id, digest_text)
 
     run_scope.__exit__(None, None, None)
