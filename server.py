@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import random
+import sys
 import re
 import sqlite3
 import time
@@ -109,6 +110,36 @@ MAX_RETRIES = 2
 
 # 다시 불러서 결과가 달라질 수 있는 것만. 4xx 는 다시 불러도 같은 답이 온다.
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# 429(한도 초과)는 나머지 재시도와 **따로 센다**. 성격이 다르기 때문이다:
+# 500·타임아웃은 몇 초 뒤 풀리지만 429 는 상대가 "너무 자주 왔다"고 말하는
+# 것이라 몇 분을 기다려야 한다.
+#
+# 2026-09-02 실측: 기본 예산(2회 × 1·2초 = 약 3초)으로는 arXiv 429 를 못
+# 넘겨 **스캔 전체가 검색 단계에서 죽었다**. 그날 아침 실행에서 이미
+# `arxiv 12(429:3)` 이 찍혔는데 재시도로 흡수돼서 문제로 안 보였을 뿐이다.
+#
+# 예산을 정할 때 실패 비용을 봐야 한다는 건 Gemini 503 에서 이미 배웠다
+# (§5 "503 재시도 예산 재산정"). 여기서 실패하면 그날 다이제스트가 통째로
+# 없다 — 몇 분 기다리는 쪽이 명백히 싸다. 상한은 둔다: 4회 지수 백오프로
+# 최대 약 7분 30초이고, Deep Layer 예산(40분)을 위협하지 않는다.
+#
+# Retry-After 헤더가 오면 그 값을 우선한다 — 상대가 말해준 시간을 무시하고
+# 우리 계산으로 다시 두드리는 건 차단을 길게 만든다(CLAUDE.md 2).
+RATE_LIMIT_RETRIES = 4
+RATE_LIMIT_BACKOFF = 30.0
+RATE_LIMIT_BACKOFF_MAX = 240.0
+
+
+def _rate_limit_wait(exc: httpx.HTTPStatusError, attempt: int) -> float:
+    """429 를 만났을 때 기다릴 시간(초). Retry-After 가 있으면 그걸 쓴다."""
+    header = exc.response.headers.get("Retry-After") if exc.response is not None else None
+    if header:
+        try:
+            return max(1.0, min(float(header), RATE_LIMIT_BACKOFF_MAX))
+        except ValueError:
+            pass
+    return min(RATE_LIMIT_BACKOFF * (2 ** attempt), RATE_LIMIT_BACKOFF_MAX)
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -279,19 +310,31 @@ async def _with_retry(attempt_fn, what: str) -> httpx.Response:
     attempt_fn 은 매번 새로 await 할 수 있는 코루틴 팩토리다 (코루틴은 재사용 불가).
     """
     last: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
+    attempt = 0          # 500·타임아웃 등
+    rate_limited = 0     # 429 — 예산을 따로 센다
+    while True:
         try:
             return await attempt_fn()
         except httpx.HTTPStatusError as e:
             if e.response.status_code not in RETRYABLE_STATUS:
                 raise  # 404·400 등 — 다시 불러도 같은 답
             last = e
+            if e.response.status_code == 429:
+                if rate_limited >= RATE_LIMIT_RETRIES:
+                    raise
+                wait = _rate_limit_wait(e, rate_limited)
+                rate_limited += 1
+                print(f"  [경고] {what} 429 — {wait:.0f}초 대기 후 재시도 "
+                      f"({rate_limited}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
+                await asyncio.sleep(wait)
+                continue
         except (httpx.TimeoutException, httpx.TransportError) as e:
             last = e
-        if attempt < MAX_RETRIES:
-            # 지수 백오프 + 지터. 429 를 동시에 맞은 호출들이 다시 겹치지 않게.
-            await asyncio.sleep(2.0**attempt + random.uniform(0, 0.5))
-    raise last if last else RuntimeError(f"{what} 재시도 실패")
+        if attempt >= MAX_RETRIES:
+            raise last if last else RuntimeError(f"{what} 재시도 실패")
+        # 지수 백오프 + 지터. 동시에 실패한 호출들이 다시 겹치지 않게.
+        await asyncio.sleep(2.0**attempt + random.uniform(0, 0.5))
+        attempt += 1
 
 
 async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx.Response:
