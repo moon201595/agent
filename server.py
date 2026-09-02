@@ -300,6 +300,24 @@ def _clean_arxiv_id(raw: str) -> str:
     return re.sub(r"v\d+$", "", raw)
 
 
+def _s2_headers() -> dict[str, str]:
+    """S2 인증 헤더. 키는 `.env` 에도 있을 수 있으므로 os.environ 만
+    보면 안 된다.
+
+    2026-09-02 실측: `S2_API_KEY` 가 `.env` 에만 있는데 코드가
+    `os.environ.get("S2_API_KEY")` 로 읽고 있어서 **한 번도 안 쓰였다.**
+    §8-3 에는 "2026-08-01 키 등록 완료, 정상 동작 확인"으로 적혀 있지만,
+    실제로는 그 뒤로 계속 비인증 호출이었다 — 비인증은 공유 풀이라 한도가
+    훨씬 빡빡하고, 그동안의 S2 429 가 여기서 왔을 수 있다.
+
+    같은 실수를 `GOOGLE_API_KEY` 임베딩 게이트에서도 했다(§8-27). 키를
+    읽는 자리는 전부 summarize_engine.ENV 를 거쳐야 한다 — 그게 os.environ
+    과 `.env` 를 합쳐 놓은 단일 출처다.
+    """
+    key = summarize_engine.ENV.get("S2_API_KEY")
+    return {"x-api-key": key} if key else {}
+
+
 async def _with_retry(attempt_fn, what: str) -> httpx.Response:
     """①~③ 의 제한 재시도. 상한까지 시도하고 그래도 실패하면 마지막 예외를 올린다.
 
@@ -748,9 +766,7 @@ async def s2_search_papers(params: S2SearchInput) -> str:
         str: JSON — {"count": int, "papers": [{title, year, citation_count,
              arxiv_id, abstract, open_access_pdf}, ...]}
     """
-    headers = {}
-    if os.environ.get("S2_API_KEY"):
-        headers["x-api-key"] = os.environ["S2_API_KEY"]
+    headers = _s2_headers()
     api_params = {
         "query": params.query,
         "limit": params.limit,
@@ -791,9 +807,7 @@ async def _s2_citation_graph(arxiv_id: str, limit: int, edge: str) -> str:
     사용자 관심사와 관련 있는지 판정(Selector)은 이 서버의 일이 아니다 —
     사람이나 Claude Code 가 반환된 제목·초록을 보고 판단한다.
     """
-    headers = {}
-    if os.environ.get("S2_API_KEY"):
-        headers["x-api-key"] = os.environ["S2_API_KEY"]
+    headers = _s2_headers()
     url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}/{edge}"
     api_params = {
         "fields": "title,abstract,year,citationCount,externalIds",
@@ -1535,9 +1549,7 @@ async def fetch_s2_tldrs(client: httpx.AsyncClient, arxiv_ids: list[str]) -> dic
     ids = [a for a in arxiv_ids if a and not a.startswith("pdf-")]
     if not ids:
         return {}
-    headers = {}
-    if os.environ.get("S2_API_KEY"):
-        headers["x-api-key"] = os.environ["S2_API_KEY"]
+    headers = _s2_headers()
     try:
         # 배치는 POST 라 _throttled_s2_get(GET 전용)을 그대로 못 쓴다. 다만
         # "초당 1회, 전체 엔드포인트 합산"이라는 S2 한도는 같이 적용되므로

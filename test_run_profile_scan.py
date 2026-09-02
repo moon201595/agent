@@ -29,6 +29,26 @@ def no_retraction_sweep(monkeypatch):
     monkeypatch.setattr(server, "sweep_retraction_status", _noop)
 
 
+@pytest.fixture(autouse=True)
+def no_s2_search(monkeypatch):
+    """scan_profile 이 부르는 S2 검색을 테스트에서 막는다.
+
+    2026-09-02: 철회 sweep 과 **똑같은 사고**를 한 번 더 냈다. S2 를 두 번째
+    소스로 붙이자마자 테스트가 실제 API 를 치기 시작해 7분을 넘겼다.
+    s2_delta 도 server._throttled_s2_get 을 거쳐 자기 요청을 만들기 때문에
+    테스트가 주입한 arXiv mock 을 우회한다.
+
+    **패턴이 반복된다**: 스캔 경로에 외부 호출을 추가할 때마다 이 파일의
+    격리를 같이 늘려야 한다. 새 소스를 붙이면 여기 스텁도 같이 추가할 것.
+    S2 델타 로직 자체는 test_s2_delta.py 가 네트워크 없이 따로 검증한다.
+    """
+    async def _empty(client, keywords, since, until, limit=100):
+        return {"papers": [], "status": "skipped", "query": "(테스트 스텁)",
+                "keywords_failed": 0}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _empty)
+
+
 def _setup_profile(db_path):
     rp.create_profile(
         db_path, "team_ai", "우리팀",
@@ -223,7 +243,7 @@ def test_deep_layer_processes_each_scored_paper_serially(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         calls.append(arxiv_id)
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
@@ -246,7 +266,7 @@ def test_deep_layer_isolates_failure_of_one_paper(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         calls.append(arxiv_id)
         if arxiv_id == "p2":
             raise RuntimeError("Gemini·Groq 둘 다 실패: 테스트 예외")
@@ -279,7 +299,7 @@ def test_deep_layer_never_calls_launch_background_directly(tmp_path, monkeypatch
     monkeypatch.setattr(docker_runner, "launch_background",
                          lambda aid: lb_calls.append(aid) or "mocked")
 
-    async def fake_process(client, arxiv_id, on_progress=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
     monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
@@ -300,7 +320,7 @@ def test_deep_layer_skips_already_summarized_paper(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         calls.append(arxiv_id)
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
@@ -321,7 +341,7 @@ def test_deep_layer_records_fetch_failed_dict_as_failure(tmp_path, monkeypatch):
     _mock_arxiv_three_agent_papers(monkeypatch)
     monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
 
-    async def fake_process(client, arxiv_id, on_progress=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         if arxiv_id == "p1":
             return {"arxiv_id": arxiv_id, "status": "fetch_failed",
                     "detail": {"error": "HTML도 PDF도 없음"}}
@@ -540,7 +560,7 @@ def test_deep_layer_stops_when_budget_is_exceeded(tmp_path, monkeypatch):
     processed = []
     clock = {"t": 0.0}
 
-    async def fake_process(client, arxiv_id):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         processed.append(arxiv_id)
         clock["t"] += 1000.0          # 논문 한 편에 1000초씩 걸린다고 치자
         return {"status": "done"}
@@ -569,7 +589,7 @@ def test_budget_is_checked_before_starting_not_mid_paper(tmp_path, monkeypatch):
 
     started = []
 
-    async def fake_process(client, arxiv_id):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         started.append(arxiv_id)
         return {"status": "done"}
 
@@ -596,7 +616,7 @@ def test_deferred_papers_are_not_listed_in_the_digest(tmp_path, monkeypatch):
 
     clock = {"t": 0.0}
 
-    async def fake_process(client, arxiv_id):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
         clock["t"] += 9999.0
         return {"status": "done"}
 

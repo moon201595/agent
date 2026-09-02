@@ -1,0 +1,161 @@
+"""s2_delta.py — Semantic Scholar 를 두 번째 델타 검색 소스로 (2026-09-02).
+
+왜 필요한가(실측): 팀 표적 분야는 arXiv 가 아니라 저널에 실린다.
+최근 5일 창을 S2 로 조회한 결과 —
+
+    'surface inspection'   표본 100건 중 arXiv 있음 3건 · **없음 97건**
+    'on-device inference'  표본  46건 중 arXiv 있음 2건 · **없음 44건**
+
+즉 arXiv 단일 소스로는 그 분야 문헌의 3~4% 만 보고 있었다. 키워드를 아무리
+다듬어도 못 보는 96% 는 그대로다. 그리고 그 97건이 **전부 openAccessPdf 와
+DOI 를 갖고 있어서**(실측) 기존 fetch_pdf_from_url 경로로 본문까지 받을 수 있다.
+
+`search_runs.source` 컬럼 주석에 "S2 는 day-level delta 불가(2026-08-24
+리뷰)"라고 적혀 있었는데 **틀린 기록이다.** 그 리뷰는 `year` 파라미터만 보고
+판단한 것으로 보인다 — S2 Graph API 는 `publicationDateOrYear` 로
+`2026-08-28:2026-09-02` 형식의 날짜 범위를 지원한다(실측 확인).
+
+**delta_search.collect_since 를 안 쓴다.** 그 함수는 "최신순 정렬 + 경계
+감지"를 전제하는데, S2 `/paper/search` 는 관련도 순이라 경계 감지가 성립하지
+않는다. 대신 `publicationDateOrYear` 가 **서버에서 하드 필터**로 걸리므로
+(실측: 응답이 전부 창 안이었다) 페이지를 끝까지 받으면 그게 곧 답이다.
+
+S2 검색은 arXiv 처럼 정확 필드 매칭이 아니라 관련도 매칭이라 결과가 헐겁다.
+정밀도는 profile_scoring 의 단어 경계 정규식이 뒤에서 회수한다 — 이 모듈은
+후보를 넓게 가져오는 역할만 한다.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+import httpx
+
+import server
+
+# 키워드 하나당 받아올 최대 건수. S2 는 offset+limit 이 1000 을 못 넘고,
+# 관련도 순이라 뒤로 갈수록 무관해진다 — 앞쪽만 봐도 충분하다.
+PER_KEYWORD_LIMIT = 100
+
+# S2 는 **표적 계층 키워드에만** 쓴다(기본값). 근거:
+#
+# - 커버리지 격차가 거기서 난다. 실측에서 'surface inspection'·'defect
+#   detection' 같은 검사 도메인은 arXiv 커버리지가 3~4% 인 반면, physical AI·
+#   vision-language-action 같은 동향어는 원래 arXiv 중심 분야다. S2 를 쓸
+#   값어치가 계층마다 다르다.
+# - 비용이 든다. 실측(2026-09-02): 키워드 3개에 166초 걸렸다(S2 429 재시도
+#   포함). 27개 전부면 25분이라 Deep Layer 예산(40분)을 잠식한다.
+#
+# 필요하면 호출부가 keywords 를 직접 넘겨 이 기본값을 무시할 수 있다.
+S2_MIN_KEYWORD_WEIGHT = 1.0
+_FIELDS = "title,abstract,publicationDate,externalIds,openAccessPdf,venue,citationCount"
+
+
+def _window(since: datetime, until: datetime) -> str:
+    """S2 publicationDateOrYear 형식. 날짜 단위라 시각은 버린다 — 그만큼
+    창이 넓어지지만, 좁히려다 경계의 논문을 놓치는 것보다 낫다."""
+    return f"{since.date().isoformat()}:{until.date().isoformat()}"
+
+
+def _to_paper(item: dict) -> dict | None:
+    """S2 응답 한 건을 파이프라인이 쓰는 모양으로. 제목이 없으면 버린다 —
+    스코어링도 다이제스트도 제목 없이는 아무것도 못 한다."""
+    title = (item.get("title") or "").strip()
+    if not title:
+        return None
+    external = item.get("externalIds") or {}
+    date = item.get("publicationDate")
+    oa = item.get("openAccessPdf") or {}
+    return {
+        # arXiv 에도 있는 논문이면 그 ID 를 쓴다 — selection.dedupe 가 이걸로
+        # arXiv 결과와 같은 논문을 합친다(중복 요약 방지).
+        "arxiv_id": external.get("ArXiv"),
+        "doi": external.get("DOI"),
+        "title": title,
+        "abstract": item.get("abstract") or "",
+        "published": f"{date}T00:00:00Z" if date else None,
+        "venue": item.get("venue") or "",
+        "citation_count": item.get("citationCount"),
+        "open_access_pdf": oa.get("url") or "",
+        "source": "s2",
+    }
+
+
+async def search_keyword_since(
+    client: httpx.AsyncClient, keyword: str, since: datetime, until: datetime,
+    limit: int = PER_KEYWORD_LIMIT,
+) -> list[dict] | None:
+    """키워드 하나로 창 안의 논문을 받는다.
+
+    **None(실패)과 빈 리스트(결과 없음)를 구분해서 돌려준다.** 둘을 같게
+    다루면 "S2 가 죽었다"와 "정말 새 논문이 없다"를 구분할 수 없고, 그건
+    이 프로젝트가 여러 번 지켜온 구분이다(검증 데이터 없음 vs 통과,
+    재현 기록없음 vs 실패). 처음 짤 때 `if not found` 로 뭉갰다가
+    테스트가 잡았다.
+
+    실패해도 예외를 올리지 않는다 — 한 키워드가 죽어도 나머지는 살아야
+    한다(scan_all_profiles 의 프로필 간 실패 격리와 같은 원칙)."""
+    params = {
+        "query": keyword,
+        "publicationDateOrYear": _window(since, until),
+        "fields": _FIELDS,
+        "limit": min(limit, 100),
+    }
+    try:
+        resp = await server._throttled_s2_get(client, params, server._s2_headers())
+        items = resp.json().get("data") or []
+    except Exception as e:  # noqa: BLE001
+        print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
+        return None
+    return [p for p in (_to_paper(i) for i in items) if p]
+
+
+async def find_new_papers_since(
+    client: httpx.AsyncClient, keywords: list[str], since: datetime, until: datetime,
+    limit: int = PER_KEYWORD_LIMIT,
+) -> dict:
+    """핵심 키워드 전부로 창을 훑어 합친 결과.
+
+    arXiv 쪽 find_new_papers_since 와 **모양을 맞춘다** — 호출부가 두 소스를
+    같은 방식으로 다룰 수 있어야 한다(status/papers/query).
+
+    같은 논문이 여러 키워드에서 나오는 건 흔하다. 여기서 1차로 합치고,
+    arXiv 결과와의 병합은 호출부가 selection.dedupe 로 한다 — 소스 간 병합
+    로직을 두 곳에 두지 않는다.
+    """
+    seen: set[str] = set()
+    papers: list[dict] = []
+    failed = 0
+    for keyword in keywords:
+        found = await search_keyword_since(client, keyword, since, until, limit)
+        if found is None:          # 실패 — 결과 0건과 구분한다
+            failed += 1
+            continue
+        for paper in found:
+            key = (paper.get("arxiv_id") or paper.get("doi")
+                   or paper["title"].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            papers.append(paper)
+
+    # 키워드가 **전부** 실패했으면 "결과 없음"과 구분해야 한다 — 전자는
+    # S2 가 죽은 것이고 후자는 정말 새 논문이 없는 것이다.
+    status = "failed" if keywords and failed == len(keywords) else "done"
+    return {
+        "papers": papers,
+        "status": status,
+        "query": f"S2 keywords×{len(keywords)} {_window(since, until)}",
+        "keywords_failed": failed,
+    }
+
+
+def keywords_for_s2(profile: dict, min_weight: float = S2_MIN_KEYWORD_WEIGHT) -> list[str]:
+    """S2 로 검색할 키워드 — 기본은 표적 계층(가중치 >= 1.0)만.
+
+    가중치를 안 준 프로필(구형)은 전부 1.0 으로 보므로 자연히 전 키워드가
+    대상이 된다 — 하위 호환.
+    """
+    weights = profile.get("core_weights") or {}
+    return [kw for kw in profile.get("core_topics", [])
+            if float(weights.get(kw, 1.0)) >= min_weight]

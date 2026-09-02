@@ -49,12 +49,40 @@ def _write_progress(path: str | None, **fields) -> None:
     Path(path).write_text(json.dumps(fields), encoding="utf-8")
 
 
-async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None) -> dict:
-    print(f"[{arxiv_id}] fetch_paper...")
-    fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
-    if "error" in fetch_result:
-        print(f"[{arxiv_id}] fetch 실패: {fetch_result}")
-        return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result}
+async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
+                          paper: dict | None = None) -> dict:
+    """paper 를 주면 arXiv 밖 논문(저널 오픈액세스)도 처리한다(2026-09-02).
+
+    왜 여기서 분기하나: ⑦ 재현 트리거를 소유한 지점이 이 함수라(CLAUDE.md 5)
+    새 경로를 옆에 만들면 전이 지점이 둘이 된다. 본문을 어디서 받든 그 뒤는
+    같은 한 줄기로 흐르게 둔다.
+
+    arXiv 밖 논문은 fetch_pdf_from_url → ingest_local_pdf 경로를 탄다. 그
+    함수들은 이미 있고 docstring 에 "S2 검색 결과의 open_access_pdf 필드용"
+    이라고 적혀 있다 — 쓰이기를 기다리고 있던 배선이다. 합성 ID(pdf-<해시>)가
+    나오면 그 뒤 저장·검증·재현은 arXiv 논문과 완전히 같다.
+    """
+    if not arxiv_id:
+        pdf_url = (paper or {}).get("open_access_pdf")
+        title = (paper or {}).get("title") or ""
+        if not pdf_url:
+            return {"arxiv_id": "", "status": "fetch_failed",
+                    "detail": "arXiv ID 도 오픈액세스 PDF 링크도 없음"}
+        try:
+            fetched = await server.fetch_pdf_from_url(
+                pdf_url, title, source_note=f"open-access: {(paper or {}).get('doi') or pdf_url}")
+        except Exception as e:  # noqa: BLE001 — 링크가 초록·로그인 페이지인 경우가 흔하다
+            return {"arxiv_id": "", "status": "fetch_failed",
+                    "detail": f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}"}
+        arxiv_id = fetched["arxiv_id"]
+        print(f"[{arxiv_id}] 오픈액세스 PDF 수집됨 ({fetched.get('text_chars', 0):,}자) — {title[:40]}")
+        fetch_result = fetched
+    else:
+        print(f"[{arxiv_id}] fetch_paper...")
+        fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
+        if "error" in fetch_result:
+            print(f"[{arxiv_id}] fetch 실패: {fetch_result}")
+            return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result}
 
     # get_paper_text(MCP 도구)는 채팅 컨텍스트 절약용 80,000자 상한이 있다 —
     # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
