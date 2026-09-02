@@ -202,6 +202,40 @@ def main() -> int:
                 out += [f"    {r['arxiv_id']:12} {r['stage']:9} {r['fail_detail']}" for r in recent]
         except Exception as e:  # noqa: BLE001 — 보고서가 절대 죽으면 안 된다
             out.append(f"  (재현 집계 실패: {type(e).__name__})")
+
+        # ── §8-16 종결 조건 추적
+        #
+        # 이 항목은 "근거가 쌓이면 판단하자"로 한 달을 보냈는데 실제로는
+        # 아무것도 안 쌓이고 있었다(network_suspected 가 계산만 되고 저장은
+        # 안 됐다). 이제 fail_detail 로 기록되므로, 사람이 기억해서 확인하는
+        # 대신 **보고서가 매일 진척을 말하고 조건이 차면 알려준다**.
+        try:
+            target = 10   # 실행 단계(run/build) 누적 시도 — §8-16 종결 조건
+            done = con.execute(
+                "SELECT COUNT(*) FROM repro_results "
+                "WHERE stage IN ('run','build') AND fail_detail IS NOT NULL").fetchone()[0]
+            success = con.execute(
+                "SELECT COUNT(*) FROM repro_results "
+                "WHERE stage='run' AND success=1").fetchone()[0]
+            suspected = con.execute(
+                "SELECT COUNT(*) FROM repro_results "
+                "WHERE fail_detail='run_network_suspected'").fetchone()[0]
+            counted = done + success
+            out.append(_section("⑦ §8-16 egress allowlist 판단 근거"))
+            out.append(f"  실행 단계 누적 {counted}/{target}건 · 네트워크 차단 의심 {suspected}건")
+            if counted < target:
+                out.append(f"  근거 수집 중 — {target - counted}건 더 필요하다.")
+            elif suspected == 0:
+                out.append("  ✅ 종결 조건 충족 — 차단이 아무 대가도 안 치르고 있다.")
+                out.append('     §8-16 을 "필요 없음"으로 닫아도 된다.')
+            else:
+                out.append(f"  ⚠ 종결 조건 충족, 다만 의심 {suspected}건 — 차단이 실제로 "
+                           "재현을 막고 있다.")
+                out.append("     egress allowlist(pypi·github·huggingface 만 허용) 구현 근거가 "
+                           "생겼다.")
+        except sqlite3.Error as e:
+            out.append(f"  (§8-16 집계 실패: {e})")
+
         con.close()
 
     out.append("")
