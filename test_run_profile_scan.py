@@ -638,3 +638,65 @@ def test_budget_default_is_generous_enough_for_a_healthy_run(tmp_path, monkeypat
     한참 넘게 소화해야 평시에 아무것도 안 잘린다."""
     healthy_seconds_per_paper = 60
     assert rps.DEEP_LAYER_BUDGET_SECONDS / healthy_seconds_per_paper >= 20
+
+
+# ------------------------------------------- 주간 동향 리뷰 (2026-09-02)
+
+
+def test_weekly_review_is_attached_only_on_the_review_day(tmp_path, monkeypatch):
+    """매일 붙이면 어제와 거의 같은 표가 반복돼 읽히지 않고, 인용망 조회
+    비용도 매일 낼 이유가 없다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def fake_review(db, profile, client=None, days=7, with_references=True):
+        return "■ 주간 동향 리뷰\n(내용)\n"
+
+    monkeypatch.setattr(rps.trend_report, "build", fake_review)
+
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
+    _r, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert "주간 동향 리뷰" in text
+
+
+def test_weekly_review_absent_on_other_days(tmp_path, monkeypatch):
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def fake_review(db, profile, client=None, days=7, with_references=True):
+        raise AssertionError("리뷰 요일이 아닌데 불렸다")
+
+    monkeypatch.setattr(rps.trend_report, "build", fake_review)
+
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: False)
+    _r, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert "주간 동향 리뷰" not in text
+
+
+def test_weekly_review_failure_does_not_break_the_digest(tmp_path, monkeypatch):
+    """부가 정보 때문에 메일이 안 나가면 주객이 전도된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def boom(db, profile, client=None, days=7, with_references=True):
+        raise RuntimeError("S2 죽음")
+
+    monkeypatch.setattr(rps.trend_report, "build", boom)
+
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
+    _r, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert "오늘의 신규 논문" in text or "새로 걸린 논문이 없습니다" in text
+
+
+def test_weekly_review_day_is_computed_from_the_weekday():
+    from datetime import datetime as _dt, timezone as _tz
+    monday = _dt(2026, 9, 7, tzinfo=_tz.utc)      # 월요일
+    tuesday = _dt(2026, 9, 8, tzinfo=_tz.utc)
+    assert rps.is_weekly_review_day(monday) is True
+    assert rps.is_weekly_review_day(tuesday) is False
