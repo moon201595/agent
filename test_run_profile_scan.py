@@ -11,6 +11,24 @@ import run_profile_scan as rps
 import server
 
 
+@pytest.fixture(autouse=True)
+def no_retraction_sweep(monkeypatch):
+    """scan_and_digest 가 부르는 철회 따라잡기를 테스트에서 막는다.
+
+    2026-09-02 실측 사고: 이 스텁 없이 돌렸더니 테스트 전체가 10초에서
+    **232초**로 늘었고, 운영 DB(data/papers.db)의 is_retracted 49건이
+    실제로 갱신됐다. sweep 이 **자기 httpx 클라이언트를 직접 만들기**
+    때문에 테스트가 주입한 mock 을 우회한 것이다.
+
+    교훈: 함수가 클라이언트를 스스로 만들면 테스트 주입 지점을 빠져나간다.
+    sweep 자체는 test_retraction_sweep.py 가 임시 DB로 따로 검증한다.
+    """
+    async def _noop(limit: int = 20):
+        return {"checked": 0, "resolved": 0, "retracted": 0, "remaining": 0}
+
+    monkeypatch.setattr(server, "sweep_retraction_status", _noop)
+
+
 def _setup_profile(db_path):
     rp.create_profile(
         db_path, "team_ai", "우리팀",
