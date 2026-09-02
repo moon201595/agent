@@ -107,9 +107,19 @@ def _abstract_excerpt(paper: dict) -> str:
 
 _SECTION_RE = None  # 아래에서 정의(모듈 상단 import 순서 유지)
 
+# 2026-09-02: 메일이 요약의 25%만 싣고 있었다. 절 단위로 재보니 4,000자
+# 요약에서 1,212자만 쓰였고, **수치가 들어 있는 본문 `결과` 절(875자)을
+# 통째로 건너뛰고** 결론의 압축본만 실었다. `방법 상세`·`실험 설정`도
+# 안 실렸다. 받는 사람이 결국 arXiv 를 열어야 하는 상태였다.
+#
+# 상한은 Gmail 클리핑(약 102KB)에서 역산한다 — 논문당 약 3,000자면 8편에
+# 24,000자, UTF-8 한글로 약 72KB 에 마크업을 더해도 들어간다. 회귀 테스트가
+# 실제 요약 8편으로 이 상한을 잠근다.
 _ONE_LINER_CHARS = 300
 _OVERVIEW_BULLETS, _OVERVIEW_CHARS = 3, 350
-_RESULT_BULLETS, _RESULT_CHARS = 4, 350
+_METHOD_BULLETS, _METHOD_CHARS = 4, 300
+_SETUP_BULLETS, _SETUP_CHARS = 4, 300
+_RESULT_BULLETS, _RESULT_CHARS = 3, 500
 _LIMIT_CHARS = 350
 
 
@@ -154,6 +164,21 @@ def _bullets(body: str, after: str | None = None) -> list[str]:
     return out
 
 
+def _paragraphs(body: str) -> list[str]:
+    """문단 단위로 자른다. `결과` 절은 불릿이 아니라 산문 문단이라
+    _bullets 로는 한 줄도 못 건진다."""
+    out, buf = [], []
+    for line in body.splitlines():
+        if line.strip():
+            buf.append(line.strip())
+        elif buf:
+            out.append(" ".join(buf))
+            buf = []
+    if buf:
+        out.append(" ".join(buf))
+    return [p for p in out if p]
+
+
 def summary_sections(arxiv_id: str) -> dict:
     """저장된 요약에서 메일에 실을 부분만 뽑는다.
 
@@ -186,18 +211,27 @@ def summary_sections(arxiv_id: str) -> dict:
 
     overview = [_clip(b, _OVERVIEW_CHARS)
                 for b in _bullets(sec.get("연구 개요", ""))[:_OVERVIEW_BULLETS]]
+    method = [_clip(b, _METHOD_CHARS)
+              for b in _bullets(sec.get("방법 상세", ""))[:_METHOD_BULLETS]]
+    setup = [_clip(b, _SETUP_CHARS)
+             for b in _bullets(sec.get("실험 설정", ""))[:_SETUP_BULLETS]]
     # "④ 결과" 는 불릿일 때도 있고 문단일 때도 있다(둘 다 실제 저장물에서
     # 관측됨 — 2026-08-31). 불릿만 보면 문단 형식 논문의 결과가 통째로
     # 빠지는데, 그게 메일에서 제일 중요한 줄이다.
-    results: list[str] = []
-    conclusion_lines = conclusion.splitlines()
-    for i, line in enumerate(conclusion_lines):
-        if "결과" not in line or ":" not in line:
-            continue
-        inline = line.split(":", 1)[1].strip()
-        results = [inline] if inline else _bullets("\n".join(conclusion_lines[i + 1:]))
-        break
-    results = [_clip(b, _RESULT_CHARS) for b in results[:_RESULT_BULLETS]]
+    # 본문 `결과` 절을 우선한다 — 근거 태그가 붙은 실제 수치가 여기 있다.
+    # 결론 ④ 는 그걸 한두 줄로 압축한 것이라, 그것만 실으면 메일에서 수치가
+    # 거의 사라진다(2026-09-02 실측: 875자 절이 통째로 빠지고 있었다).
+    results = [_clip(b, _RESULT_CHARS)
+               for b in _paragraphs(sec.get("결과", ""))[:_RESULT_BULLETS]]
+    if not results:
+        conclusion_lines = conclusion.splitlines()
+        for i, line in enumerate(conclusion_lines):
+            if "결과" not in line or ":" not in line:
+                continue
+            inline = line.split(":", 1)[1].strip()
+            found = [inline] if inline else _bullets("\n".join(conclusion_lines[i + 1:]))
+            results = [_clip(b, _RESULT_CHARS) for b in found[:_RESULT_BULLETS]]
+            break
 
     limits = ""
     for line in sec.get("논문의 한계점", "").splitlines():
@@ -207,8 +241,8 @@ def summary_sections(arxiv_id: str) -> dict:
 
     if not (one_liner or overview or results):
         return {}
-    return {"one_liner": one_liner, "overview": overview,
-            "results": results, "limits": limits}
+    return {"one_liner": one_liner, "overview": overview, "method": method,
+            "setup": setup, "results": results, "limits": limits}
 
 
 def verification_label(arxiv_id: str) -> str:
@@ -441,12 +475,11 @@ def _paper_entry(idx: int, paper: dict) -> str:
         if sections:
             if sections["one_liner"]:
                 lines.append(f"   한 줄 요약 : {sections['one_liner']}")
-            if sections["overview"]:
-                lines.append("   무엇을·어떻게 :")
-                lines += [f"     - {b}" for b in sections["overview"]]
-            if sections["results"]:
-                lines.append("   핵심 결과 :")
-                lines += [f"     - {b}" for b in sections["results"]]
+            for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
+                               ("실험 설정", "setup"), ("핵심 결과", "results")):
+                if sections.get(key):
+                    lines.append(f"   {label} :")
+                    lines += [f"     - {b}" for b in sections[key]]
             if sections["limits"]:
                 lines.append(f"   한계 : {sections['limits']}")
         else:
@@ -635,10 +668,10 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     out = ""
     if sections["one_liner"]:
         out += para(sections["one_liner"], top=8)
-    if sections["overview"]:
-        out += bullets("무엇을·어떻게", sections["overview"])
-    if sections["results"]:
-        out += bullets("핵심 결과", sections["results"])
+    for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
+                       ("실험 설정", "setup"), ("핵심 결과", "results")):
+        if sections.get(key):
+            out += bullets(label, sections[key])
     if sections["limits"]:
         out += para("한계 : " + sections["limits"], muted=True, top=8)
     return out

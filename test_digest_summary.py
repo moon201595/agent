@@ -214,3 +214,81 @@ def test_bullet_form_results_still_work(db_with_summary_path):
     text = generate_digest(_result([_paper("p1")]), "우리팀")
     assert "0.990의 ROC-AUC" in text
     assert "1.000의 ROC-AUC" in text
+
+
+# ------------------------------------------------------------------ 절 확장 (2026-09-02)
+
+
+RICH_SUMMARY = SUMMARY_MD.replace("""### 방법 상세
+- 입력과 출력 : 고해상도 이미지를 받아 정상/불량을 낸다.
+""", """### 방법 상세
+- 입력과 출력 : 고해상도 이미지를 받아 정상/불량을 낸다.
+- 학습 목적함수 : 결함 탐지를 우선해 재현율을 중점 최적화했다.
+- 모델 규모·백본 : ResNet34 백본의 U-Net 을 썼다.
+- 재현에 필요한 자원 : A100 40GB 에서 25에포크 학습했다.
+
+### 실험 설정
+- 데이터셋 : 산업 827장, 공개 198장.
+- 평가 지표 : IoU, F1, ROC-AUC.
+- 비교 대상 : DeepLabV3, PatchCore, YOLOv8.
+
+### 결과
+제안 파이프라인은 산업 데이터셋에서 0.990의 ROC-AUC를 달성했다(본문 V-A절 [S0153] ★★★).
+
+Roboflow 데이터셋에서는 1.000의 ROC-AUC를 기록했다(본문 V-A절 [S0168] ★★★).
+
+처리 속도는 1장에 평균 18.0초였다(본문 V-A절 [S0170] ★★★).
+""")
+
+
+def test_digest_carries_method_setup_and_body_results(db_with_summary_path):
+    """실측(2026-09-02): 메일이 4,000자 요약에서 1,212자만 싣고 있었고,
+    **수치가 들어 있는 본문 `결과` 절(875자)을 통째로 건너뛰고** 결론의
+    압축본만 실었다. 받는 사람이 결국 arXiv 를 열어야 했다."""
+    _seed(db_with_summary_path, "p1", markdown=RICH_SUMMARY)
+    text = generate_digest(_result([_paper("p1")]), "우리팀")
+
+    assert "방법 상세 :" in text
+    assert "ResNet34 백본" in text
+    assert "실험 설정 :" in text
+    assert "IoU, F1, ROC-AUC" in text
+    assert "핵심 결과 :" in text
+    assert "0.990의 ROC-AUC" in text          # 근거 태그가 붙은 실제 수치
+    assert "18.0초" in text
+
+
+def test_body_results_are_preferred_over_the_conclusion_summary(db_with_summary_path):
+    """결론 ④ 는 본문 결과를 한두 줄로 압축한 것이라, 그것만 실으면 메일에서
+    수치가 거의 사라진다. 본문 절이 있으면 그쪽을 쓴다."""
+    _seed(db_with_summary_path, "p1", markdown=RICH_SUMMARY)
+    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    assert "처리 속도는 1장에 평균 18.0초" in text     # 본문에만 있는 문장
+
+
+def test_falls_back_to_conclusion_when_body_results_missing(db_with_summary_path):
+    """본문 `결과` 절이 없는 요약도 있다 — 그때는 결론 ④ 로 떨어진다."""
+    _seed(db_with_summary_path, "p1", markdown=SUMMARY_MD)   # 본문 결과 절 없음
+    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    assert "핵심 결과 :" in text
+    assert "0.990의 ROC-AUC" in text
+
+
+def test_html_stays_under_gmail_limit_with_real_stored_summaries(db_with_summary_path):
+    """**실제 저장된 요약 파일**로 잰다. 기존 클리핑 테스트는 지어낸 짧은
+    요약을 써서 절을 늘려도 상한에 안 걸렸다 — 실전 크기를 안 재면 메일이
+    잘리는 걸 못 잡는다."""
+    import glob
+    real = sorted(glob.glob("data/summaries/*.md"), key=lambda p: -len(open(p, encoding="utf-8").read()))
+    if not real:
+        pytest.skip("저장된 요약이 없다")
+    biggest = open(real[0], encoding="utf-8").read()
+
+    papers = []
+    for i in range(8):                     # max_items 기본값보다 넉넉하게
+        aid = f"p{i}"
+        _seed(db_with_summary_path, aid, markdown=biggest, total=31, matched=28)
+        papers.append(_paper(aid, abstract="x" * 3000))
+
+    html = generate_digest_html(_result(papers), "우리팀")
+    size = len(html.encode("utf-8"))
+    assert size < 102_400, f"{size:,}바이트 — Gmail 이 자른다"
