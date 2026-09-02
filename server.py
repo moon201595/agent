@@ -873,7 +873,11 @@ async def hybrid_search_local_papers(params: HybridSearchInput) -> str:
 
     query_vec: list[float] | None = None
     doc_vecs: list[list[float] | None] = [None] * len(rows)
-    if os.environ.get("GOOGLE_API_KEY"):
+    # os.environ 만 보면 .env 에만 있는 키를 못 본다 — 그러면 임베딩이
+    # 조용히 꺼진 채 BM25 단독으로 돌고, 사용자는 하이브리드 검색을 쓴다고
+    # 믿는다(§8-27 과 같은 부류의 결함, 2026-09-02). 키 목록은
+    # summarize_engine 이 .env 까지 읽어 소유한다.
+    if summarize_engine.gemini_key_names():
         async with httpx.AsyncClient() as client:
             try:
                 query_vec = await hybrid_search.embed_text(client, params.query, "RETRIEVAL_QUERY")
