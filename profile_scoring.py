@@ -147,32 +147,56 @@ def _passes_polysemy_guard(keyword: str, text: str) -> bool:
     return bool(pat.search(text))
 
 
+# 도메인 가점은 **계층 격차보다 작아야 한다**. 안 그러면 낮은 계층 키워드 +
+# 도메인이 높은 계층 키워드를 항상 따라잡아, 계층을 둔 의미가 사라진다.
+#
+# 2026-09-02 실측에서 정확히 그 일이 벌어졌다. 도메인 가점이 0.2 였는데
+# 계층 격차도 (1.0-0.6)/2.0 = 0.20 이라 **완전히 상쇄**됐다:
+#
+#   표적어(w1.0) 1개, 도메인 0개  → 0.500
+#   동향어(w0.6) 1개, 도메인 1개  → 0.500   ← 같다
+#
+# 그날 상위 6편 점수가 0.6191~0.6422(폭 0.023)로 뭉쳐 순위가 사실상
+# 무작위였고, 표적어인 defect detection 논문이 동향어 논문보다 아래에
+# 있었다. 별점도 6편 전부 ★ 였다.
+#
+# 0.1 로 낮춰 격차의 절반만 되게 한다 — 도메인은 **동점을 가르는** 신호이지
+# 계층을 뛰어넘는 신호가 아니다.
+_DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP = 0.1
+
+
 @dataclass
 class Weights:
     core_topic: float = 1.0     # relevance(0~1)에 곱함
-    domain_hit: float = 0.2     # target_domain 매칭 1건당 (DOMAIN_HITS_CAP 까지)
+    domain_hit: float = _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP
     venue_hit: float = 0.3      # venue 매칭 시 고정 가점
     recency: float = 0.15       # recency_score(0~1)에 곱함
     recency_half_life_days: float = 30.0
 
 
-def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float]:
-    """핵심 키워드 적중 목록과 그 가중치 합. 다의어 가드에 걸린 적중은 빠진다.
+def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float, float]:
+    """핵심 키워드 적중 목록, 가중치 **합**, 그리고 가장 무거운 적중의 가중치.
+
+    합과 최댓값이 둘 다 필요하다. 합만으로는 "표적어를 맞혔나"를 알 수 없다 —
+    동향어 두 개(0.6+0.6=1.2)가 표적어 하나(1.0)보다 크기 때문이다.
+    합은 순위(총점)에, 최댓값은 별점(분류)에 쓴다.
 
     점수 계산과 분리해 둔 이유: 다이제스트의 동향 집계(어떤 키워드가 이번
     창에서 몇 편 걸렸나)가 순위와 무관하게 같은 판정을 써야 하기 때문이다.
     """
     text = _paper_text(paper)
     weights = profile.get("core_weights") or {}
-    hits, total = [], 0.0
+    hits, total, top = [], 0.0, 0.0
     for kw in profile.get("core_topics", []):
         if not _keyword_pattern(kw).search(text):
             continue
         if not _passes_polysemy_guard(kw, text):
             continue
+        w = float(weights.get(kw, 1.0))
         hits.append(kw)
-        total += float(weights.get(kw, 1.0))
-    return hits, total
+        total += w
+        top = max(top, w)
+    return hits, total, top
 
 
 def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dict:
@@ -186,19 +210,19 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     exclude_hits = _find_hits(text, profile.get("exclude", []))
     if exclude_hits:
         return {"priority": 0.0, "excluded": True, "exclude_hits": exclude_hits,
-                "core_hits": [], "core_weight": 0.0, "domain_hits": [],
-                "venue_hit": None, "recency": None}
+                "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
+                "domain_hits": [], "venue_hit": None, "recency": None}
 
     core_topics = profile.get("core_topics", [])
-    core_hits, core_weight = core_hits_with_weight(paper, profile)
+    core_hits, core_weight, top_core_weight = core_hits_with_weight(paper, profile)
     if core_topics and not core_hits:
         # core_topics는 OR 조건 — 프로필 설명(설계 문서 §1)과 같다. 하나도
         # 안 걸리면 이 프로필과 무관한 논문으로 보고 0점 처리(제외는 아님 —
         # exclude와 구분해서, 호출부가 "그냥 순위가 낮다"와 "명시적으로
         # 걸러졌다"를 구분할 수 있게 excluded=False로 둔다).
         return {"priority": 0.0, "excluded": False, "exclude_hits": [],
-                "core_hits": [], "core_weight": 0.0, "domain_hits": [],
-                "venue_hit": None, "recency": None}
+                "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
+                "domain_hits": [], "venue_hit": None, "recency": None}
 
     domain_hits = _find_hits(text, profile.get("target_domain", []))
     v_hit = venue_hit(paper, profile.get("venues", []))
@@ -222,7 +246,8 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     return {
         "priority": round(priority, 4), "excluded": False,
         "exclude_hits": [], "core_hits": core_hits,
-        "core_weight": round(core_weight, 4), "domain_hits": domain_hits,
+        "core_weight": round(core_weight, 4),
+        "top_core_weight": round(top_core_weight, 4), "domain_hits": domain_hits,
         "venue_hit": v_hit, "recency": recency,
     }
 

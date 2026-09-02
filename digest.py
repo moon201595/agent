@@ -36,21 +36,42 @@ import server
 
 _ABSTRACT_EXCERPT_CHARS = 220
 
-# 2026-08-31 랭킹 개편에 맞춰 ★★★ 문턱을 1.2 에서 1.0 으로 내렸다. 개편으로
-# 최신성 가중치가 0.4→0.15, 도메인 가점이 0.3→0.2(2건 상한)로 줄어 도달
-# 가능한 최댓값 자체가 내려갔기 때문이다 — 문턱을 그대로 두면 ★★★이 사실상
-# 안 나온다. 기준을 낮춘 게 아니라 같은 의미("핵심 적합도 만점에 준함")를
-# 새 눈금으로 옮긴 것이다.
-# ★★ 문턱 0.7 은 그대로 둔다 — "표적 키워드 1개 + 도메인 일치"(≈0.83)가
-# 여기 걸리고, 범용 키워드 1개만 스친 논문(≈0.64)은 안 걸린다.
-_STAR_THRESHOLDS = ((1.0, "★★★"), (0.7, "★★"))
+# 별점은 **총점이 아니라 핵심 키워드 가중치 합**으로 매긴다(2026-09-02).
+#
+# 총점 기준이 두 가지로 깨져 있었다. 첫째, ★★★ 문턱 1.0 이 도달 불가능했다 —
+# 저장된 35편을 재채점하니 최댓값이 0.745 였다. 3단 눈금인데 맨 위가 영원히
+# 안 뜨면 2단이나 마찬가지다. 둘째, 최신성(±0.15)이 계층 정보를 덮었다:
+# "표적어 단독"이 0.500~0.645 로 흩어져 "동향어+도메인"(0.523~0.545)과
+# 겹쳤다 — 같은 별점인데 하나는 우리 표적 도메인이고 하나는 아니다.
+#
+# 가중치 합을 쓰면 둘 다 사라진다. 읽는 사람이 별점에서 알고 싶은 건
+# "이게 우리 주제인가"이지 "며칠 전 논문인가"가 아니고, 어차피 한 다이제스트
+# 안의 논문은 전부 비슷하게 최신이다. 순위는 종전대로 총점이 정한다 —
+# 별점은 순위가 아니라 **분류**다.
+#
+# **가중치 합이 아니라 최댓값**을 본다. 합으로는 "표적어를 맞혔나"를 알 수
+# 없다 — 실측 분포에서 동향어 두 개(0.6+0.6=1.2)가 표적어 하나(1.0)보다
+# 컸다. 별점이 "우리 표적 도메인인가"를 말해야 하는데 합을 쓰면 그게 뒤집힌다.
+#
+#   ★★★ 표적어를 맞혔고 핵심 적중이 2개 이상
+#   ★★  표적어를 맞혔다               (가장 무거운 적중 ≥ 1.0)
+#   ★   동향어·범용어만 맞혔다
+#
+# 실측 분포(35편): ★★ 6편(17%) · ★ 29편. ★★★ 은 아직 0편이지만 도달
+# 가능하다 — 옛 총점 기준의 ★★★(문턱 1.0)은 최댓값이 0.745 라 원리적으로
+# 불가능했다. 그 차이가 중요하다.
+_TARGET_TIER_WEIGHT = 1.0
 
 
-def _stars(priority: float) -> str:
-    for threshold, stars in _STAR_THRESHOLDS:
-        if priority >= threshold:
-            return stars
-    return "★"
+def _stars(score: dict) -> str:
+    """score 는 profile_scoring.score_paper() 의 반환값 전체를 받는다.
+    구형 호출부가 숫자를 넘기면 그대로 총점 기준으로 떨어진다(하위 호환)."""
+    if not isinstance(score, dict):
+        return "★★★" if score >= 1.0 else ("★★" if score >= 0.7 else "★")
+    top = score.get("top_core_weight", 0.0) or 0.0
+    if top < _TARGET_TIER_WEIGHT:
+        return "★"
+    return "★★★" if len(score.get("core_hits") or []) >= 2 else "★★"
 
 
 def _why_matched(score: dict) -> str:
@@ -388,7 +409,7 @@ def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
     lines = [
-        f"{idx}. [{_stars(score.get('priority', 0.0))}] {paper.get('title') or '(제목 없음)'}",
+        f"{idx}. [{_stars(score)}] {paper.get('title') or '(제목 없음)'}",
     ]
     # 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5 철회 / M7 인젝션).
     for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
@@ -662,7 +683,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         f'<details{open_attr} style="background-color:{_PAPER_BG};color:{_INK};'
         f'border:1px solid {_LINE};border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
         f'<summary style="color:{_INK};font-size:15px;font-weight:600;cursor:pointer;">'
-        f'{idx}. [{_stars(score.get("priority", 0.0))}] {_esc(title)}</summary>'
+        f'{idx}. [{_stars(score)}] {_esc(title)}</summary>'
         f'<div style="margin-top:8px;">{chips}</div>'
         f'{detail}'
         f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'

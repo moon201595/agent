@@ -266,3 +266,47 @@ def test_guard_substring_does_not_leak_through_unrelated_word():
     profile = {"core_topics": ["quantization"], "target_domain": [], "exclude": []}
     paper = _paper_with("arbitrary quantization of the abstract state space")
     assert score_paper(paper, profile)["core_hits"] == []
+
+
+# ---------------------------------------------------------------- 가중치 상쇄 (2026-09-02)
+
+
+def test_domain_bonus_must_not_cancel_the_tier_gap():
+    """실측 결함(2026-09-02): 도메인 가점이 0.2 였는데 계층 격차도
+    (1.0-0.6)/2.0 = 0.20 이라 정확히 상쇄됐다. 표적어 논문과 동향어+도메인
+    논문의 점수가 **완전히 같아져**, 계층을 둔 의미가 사라졌다.
+
+    그날 상위 6편이 0.6191~0.6422(폭 0.023)로 뭉쳐 순위가 사실상 무작위였다.
+    이 테스트가 그 파라미터 조합으로 되돌아가는 걸 막는다."""
+    profile = {"core_topics": ["defect detection", "sim-to-real"],
+               "target_domain": ["digital twin"], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "sim-to-real": 0.6}}
+    target_only = _paper_with("a defect detection method")
+    trend_with_domain = _paper_with("sim-to-real for a digital twin")
+
+    assert score_paper(target_only, profile)["priority"] > \
+           score_paper(trend_with_domain, profile)["priority"]
+
+
+def test_domain_weight_is_strictly_below_the_tier_gap():
+    """산수로 못박는다 — 파라미터를 손대도 이 관계가 깨지면 안 된다."""
+    w = Weights()
+    tier_gap = (1.0 - 0.6) / profile_scoring.CORE_WEIGHT_FOR_FULL_SCORE
+    assert w.domain_hit < tier_gap
+
+
+def test_top_core_weight_distinguishes_target_from_multiple_trend_hits():
+    """가중치 **합**으로는 표적 여부를 못 판단한다 — 동향어 두 개
+    (0.6+0.6=1.2)가 표적어 하나(1.0)보다 크다. 별점이 이 값을 쓴다."""
+    profile = {"core_topics": ["defect detection", "sim-to-real", "neuromorphic"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0,
+                                "sim-to-real": 0.6, "neuromorphic": 0.6}}
+    target = score_paper(_paper_with("a defect detection method"), profile)
+    two_trends = score_paper(_paper_with("sim-to-real neuromorphic study"), profile)
+
+    assert two_trends["core_weight"] > target["core_weight"]     # 합은 뒤집힌다
+    assert target["top_core_weight"] > two_trends["top_core_weight"]   # 최댓값은 안 뒤집힌다
+
+
+import profile_scoring  # noqa: E402  (위 테스트가 상수를 참조한다)

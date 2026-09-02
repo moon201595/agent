@@ -55,12 +55,17 @@ def _seed_repro(db, arxiv_id, repo_url, success, stage=None, attempt=1, fail_det
 
 
 def _scored_paper(arxiv_id, title, priority, core_hits=None, domain_hits=None,
-                   venue_hit=None, abstract="", deep_status=None):
+                   venue_hit=None, abstract="", deep_status=None, top_core_weight=None):
+    """top_core_weight 를 안 주면 core_hits 유무로 적당히 채운다 — 별점을
+    안 보는 테스트들이 매번 이 값을 신경 쓰지 않아도 되게."""
+    hits = core_hits or []
     paper = {
         "arxiv_id": arxiv_id, "title": title, "abstract": abstract,
         "_score": {
-            "priority": priority, "core_hits": core_hits or [],
+            "priority": priority, "core_hits": hits,
             "domain_hits": domain_hits or [], "venue_hit": venue_hit,
+            "top_core_weight": (top_core_weight if top_core_weight is not None
+                                else (1.0 if hits else 0.0)),
         },
     }
     if deep_status is not None:
@@ -95,17 +100,43 @@ def test_generate_digest_includes_title_arxiv_link_and_match_reason():
     assert "robot hand" in text
 
 
-def test_generate_digest_stars_scale_with_priority():
-    high = _scored_paper("a", "높은 점수", 1.5)
-    mid = _scored_paper("b", "중간 점수", 0.8)
-    low = _scored_paper("c", "낮은 점수", 0.1)
-    result = {"papers": [high, mid, low], "candidates_found": 3, "excluded_count": 0, "unmatched_count": 0}
+def test_generate_digest_stars_separate_target_from_trend():
+    """2026-09-02: 별점 기준을 총점에서 **핵심 키워드 최대 가중치**로 옮겼다.
+    주장("별점이 단계별로 갈린다")은 그대로고 눈금만 바뀌었다.
 
+    총점 기준이 두 가지로 깨져 있었다. ★★★ 문턱 1.0 이 도달 불가능했고
+    (저장된 35편 최댓값 0.745), 최신성(±0.15)이 계층 정보를 덮어
+    "표적어 단독"(0.500~0.645)이 "동향어+도메인"(0.523~0.545)과 겹쳤다 —
+    같은 별점인데 하나는 우리 표적 도메인이고 하나는 아니었다.
+
+    가중치 **합**이 아니라 **최댓값**을 쓰는 이유: 합으로는 동향어 두 개
+    (0.6+0.6=1.2)가 표적어 하나(1.0)보다 커서 순서가 뒤집힌다."""
+    target_multi = _scored_paper("a", "표적 복수", 0.9,
+                                 core_hits=["defect detection", "NPU"], top_core_weight=1.0)
+    target_one = _scored_paper("b", "표적 단독", 0.6,
+                               core_hits=["defect detection"], top_core_weight=1.0)
+    trend_multi = _scored_paper("c", "동향 복수", 0.8,
+                                core_hits=["sim-to-real", "neuromorphic"], top_core_weight=0.6)
+
+    result = {"papers": [target_multi, target_one, trend_multi], "candidates_found": 3}
     text = generate_digest(result, "p")
 
-    assert "[★★★] 높은 점수" in text
-    assert "[★★] 중간 점수" in text
-    assert "[★] 낮은 점수" in text
+    assert "[★★★] 표적 복수" in text
+    assert "[★★] 표적 단독" in text
+    # 총점이 더 높아도(0.8 > 0.6) 표적어가 없으면 ★ 다 — 이게 핵심이다
+    assert "[★] 동향 복수" in text
+
+
+def test_stars_ignore_recency_driven_score_changes():
+    """같은 논문이 며칠 지났다고 별점이 떨어지면 안 된다 — 별점은 순위가
+    아니라 분류이고, 한 다이제스트 안의 논문은 어차피 다 최신이다."""
+    fresh = _scored_paper("a", "오늘", 0.645, core_hits=["defect detection"],
+                          top_core_weight=1.0)
+    older = _scored_paper("b", "닷새 전", 0.500, core_hits=["defect detection"],
+                          top_core_weight=1.0)
+    text = generate_digest({"papers": [fresh, older], "candidates_found": 2}, "p")
+    assert "[★★] 오늘" in text
+    assert "[★★] 닷새 전" in text
 
 
 def test_generate_digest_truncates_long_abstract_and_labels_it_excerpt_not_summary():
