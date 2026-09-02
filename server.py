@@ -1525,6 +1525,53 @@ async def fetch_s2_tldrs(client: httpx.AsyncClient, arxiv_ids: list[str]) -> dic
     return out
 
 
+async def sweep_retraction_status(limit: int = 20) -> dict:
+    """철회 조회가 안 된 논문을 오래된 것부터 limit 편까지 따라잡는다.
+
+    왜 필요한가(2026-09-02 실측): refresh_retraction_status 는 **요약 저장
+    시점에만** 불린다. 그 설계는 "NULL 이 재시도 큐 역할을 한다"고 적혀
+    있었지만, 논문이 다시 요약될 일이 없어서 **큐가 영원히 안 빠진다.**
+    실제로 저장된 83편 중 69편(83%)이 NULL 이었고 원인이 둘이었다:
+
+      54편  M5(2026-08-28) 도입 전에 저장 — 애초에 조회된 적이 없다
+      15편  신규 논문이라 OpenAlex 에 아직 없어 404
+
+    둘 다 "나중에 다시 보면 풀리는" 문제인데 다시 보는 주체가 없었다.
+
+    오래된 것부터 처리한다 — 밀린 것이 먼저 빠지고, 갓 나온 논문(아직 색인
+    전이라 어차피 404)은 자연히 뒤로 밀린다. 나이 기준 상수를 따로 두지
+    않는 이유: 실측에서 4~5일 된 논문도 조회에 성공했다. 근거 없는 문턱을
+    만드느니 순서로 해결한다.
+
+    limit 로 하루 비용을 묶는다. 조회 실패는 그냥 NULL 로 남아 다음 날
+    다시 대상이 된다 — 어떤 실패에도 예외를 올리지 않는다.
+    """
+    _init_storage()
+    with _db() as con:
+        rows = con.execute(
+            "SELECT arxiv_id FROM papers WHERE is_retracted IS NULL "
+            "ORDER BY fetched_at ASC LIMIT ?", (limit,)
+        ).fetchall()
+
+    checked = resolved = retracted = 0
+    for row in rows:
+        checked += 1
+        status = await refresh_retraction_status(row["arxiv_id"])
+        if status is None:
+            continue
+        resolved += 1
+        if status:
+            retracted += 1
+    return {"checked": checked, "resolved": resolved, "retracted": retracted,
+            "remaining": _null_retraction_count()}
+
+
+def _null_retraction_count() -> int:
+    with _db() as con:
+        return con.execute(
+            "SELECT COUNT(*) FROM papers WHERE is_retracted IS NULL").fetchone()[0]
+
+
 async def refresh_retraction_status(arxiv_id: str) -> int | None:
     """⑧ 철회 여부를 조회해 papers.is_retracted 에 저장한다(M5, 2026-08-28).
     MCP 도구가 아니다 — retraction.py 가 판정까지 끝낸 뒤 결과만 저장한다

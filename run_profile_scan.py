@@ -244,6 +244,19 @@ async def scan_and_digest(
         result["papers"] = [p for p in result["papers"] if p not in deferred]
         result["deferred_count"] = len(deferred)
 
+    # 철회 조회가 밀린 논문을 하루 몫만큼 따라잡는다(§8 철회 미조회 83%).
+    # 요약 저장 시점에만 조회하던 구조라 NULL 큐를 비우는 주체가 없었다.
+    # 실패해도 다이제스트를 막지 않는다 — 부가 정보다.
+    try:
+        sweep_scope = api_usage.Scope()
+        with sweep_scope:
+            sweep = await server.sweep_retraction_status()
+        print(f"  [철회] {sweep['checked']}편 조회 · {sweep['resolved']}편 확정 "
+              f"· 철회 {sweep['retracted']}편 · 남은 미조회 {sweep['remaining']}편 "
+              f"— {sweep_scope.format_summary()}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [철회] 따라잡기 실패(무시): {type(e).__name__}")
+
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
