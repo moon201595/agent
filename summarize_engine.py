@@ -587,6 +587,32 @@ async def _summarize_chunked(
     return summary
 
 
+def coverage_ratio(paper_text: str, engine_name: str) -> float:
+    """그 엔진의 청크 설정으로 **원문 문장의 몇 할을 실제로 봤는가** (0.0~1.0).
+
+    왜 필요한가(§8-25, 2026-08-31 실측): Groq 경로는 청크 상한
+    (GROQ_MAX_CHUNKS=32 × 3000자 ≈ 96,000자)에 걸리면 그 뒤를 통째로 안 본다.
+    저장된 논문 12편 중 5편이 상한에 포화했고, 188,412자 논문은 원문의
+    48.8% 만 보고 요약됐다. Gemini 는 30만자를 한 청크로 읽어 이 문제가 없다.
+
+    **⑤ 검증이 이걸 절대 못 잡는다** — 검증기는 요약이 인용한 문장이 원문에
+    있는지만 보므로, 앞의 절반만 보고 쓴 요약도 pass_ratio 1.0 이 나온다.
+    그래서 별도로 재서 표시해야 한다.
+
+    글자 수가 아니라 **문장 수**로 센다. 청크에는 [S번호] 태그가 붙어 있어
+    글자 수로 세면 100% 를 넘는다(실측 102.9%).
+    """
+    if engine_name == "gemini":
+        size, cap = CHUNK_SIZE, MAX_CHUNKS
+    else:
+        size, cap = GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS
+    chunks, sentences = sentence_grounding.build_tagged_chunks(paper_text, size, cap)
+    if not sentences:
+        return 1.0
+    seen = sum(len(sentence_grounding._TAG_RE.findall(c)) for c in chunks)
+    return min(seen / len(sentences), 1.0)
+
+
 async def summarize(
     client: httpx.AsyncClient, paper_text: str, template: str, on_progress=None,
 ) -> tuple[str, str]:

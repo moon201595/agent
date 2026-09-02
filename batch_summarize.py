@@ -69,7 +69,8 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
     print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자)")
 
     save_result = json.loads(
-        await server.save_summary(server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=summary))
+        await server.save_summary(server.SaveSummaryInput(
+            arxiv_id=arxiv_id, markdown=summary, engine=used_engine))
     )
     verification = save_result.get("verification", {})
 
@@ -151,7 +152,7 @@ async def main() -> None:
 
     if not (args.ids or args.title or args.keyword):
         parser.error("--ids, --title, --keyword 중 하나는 지정해야 함")
-    if not engine.ENV.get("GOOGLE_API_KEY") and not engine.ENV.get("GROQ_API_KEY"):
+    if not engine.gemini_key_names() and not engine.ENV.get("GROQ_API_KEY"):
         parser.error(".env 에 GOOGLE_API_KEY 또는 GROQ_API_KEY 가 필요함")
 
     try:

@@ -224,6 +224,38 @@ def verification_label(arxiv_id: str) -> str:
     return label
 
 
+# 커버리지가 이 값 밑이면 표시한다. 1.0 미만을 전부 표시하면 문장 하나
+# 차이로도 라벨이 붙어 노이즈가 된다.
+_COVERAGE_WARN_BELOW = 0.98
+
+
+def coverage_label(arxiv_id: str) -> str:
+    """요약이 원문의 몇 할을 보고 쓰였는지 (§8-25).
+
+    Groq 폴백 경로는 청크 상한에 걸리면 긴 논문의 뒤를 통째로 안 본다 —
+    실측: 188,412자 논문이 원문 문장의 40.2% 만 보고 요약됐다. 그런데
+    **⑤ 검증이 이걸 못 잡는다**: 검증기는 인용한 문장이 원문에 있는지만
+    보므로 앞부분만 보고 쓴 요약도 pass_ratio 1.0 이 나온다. 그래서
+    "검증 통과"와 "원문을 다 봤다"를 나란히 보여줘야 오해가 없다.
+
+    엔진을 모르는 구형 요약은 커버리지도 NULL 이다 — 빈 문자열을 돌려
+    아는 척하지 않는다.
+    """
+    try:
+        with server._db() as con:
+            row = con.execute(
+                "SELECT coverage_ratio FROM summaries WHERE arxiv_id=?", (arxiv_id,)
+            ).fetchone()
+    except sqlite3.Error:
+        return ""
+    if row is None or row["coverage_ratio"] is None:
+        return ""
+    ratio = float(row["coverage_ratio"])
+    if ratio >= _COVERAGE_WARN_BELOW:
+        return ""
+    return f"⚠ 원문 {ratio * 100:.0f}%만 반영"
+
+
 # 파이프라인이 어디까지 갔는지의 순서. 여러 후보를 시도했으면 **가장 멀리 간**
 # 시도가 그 논문에 대해 제일 많은 것을 말해준다 — clone 도 못 한 후보 두 개보다
 # 실제로 실행까지 간 후보 하나가 정보량이 크다.
@@ -398,7 +430,11 @@ def _paper_entry(idx: int, paper: dict) -> str:
                 lines.append(f"   한계 : {sections['limits']}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
-        lines.append(f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}")
+        labels = f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}"
+        cov = coverage_label(arxiv_id)
+        if cov:
+            labels += f"   {cov}"
+        lines.append(labels)
 
     lines.append(f"   https://arxiv.org/abs/{arxiv_id}")
     return "\n".join(lines)
@@ -599,9 +635,14 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         # flag 가 있거나 재현이 실패한 항목은 펼쳐서 보낸다. Gmail·Outlook 은
         # 어차피 항상 펼쳐 보여주므로 이 속성이 실제로 의미를 갖는 건
         # Apple Mail 뿐이다(위 주석 1번).
-        needs_attention = ("flag" in v_label) or ("✗" in r_label)
+        c_label = coverage_label(arxiv_id)
+        needs_attention = ("flag" in v_label) or ("✗" in r_label) or bool(c_label)
         chips = _status_chip(v_label.strip("[]"), flagged="flag" in v_label)
         chips += _status_chip(r_label.strip("[]"), flagged="✗" in r_label)
+        if c_label:
+            # 커버리지 경고는 flag 취급한다 — "검증 통과"만 보고 요약을
+            # 그대로 믿으면 안 되는 상황이라 눈에 띄어야 한다.
+            chips += _status_chip(c_label, flagged=True)
         detail = ""
 
     # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —

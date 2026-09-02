@@ -225,6 +225,16 @@ def _init_storage() -> None:
         if "fail_detail" not in existing_r:
             con.execute("ALTER TABLE repro_results ADD COLUMN fail_detail TEXT")
 
+        # 어느 엔진이 만들었고 원문을 얼마나 봤는지(2026-09-02, §8-25).
+        # Groq 경로는 청크 상한에 걸리면 긴 논문의 뒤를 통째로 안 보는데,
+        # ⑤ 검증은 인용한 문장이 원문에 있는지만 보므로 절반만 보고 쓴
+        # 요약도 pass_ratio 1.0 이 나온다 — 따로 재서 남겨야 보인다.
+        existing_s = {row[1] for row in con.execute("PRAGMA table_info(summaries)")}
+        if "engine" not in existing_s:
+            con.execute("ALTER TABLE summaries ADD COLUMN engine TEXT")
+        if "coverage_ratio" not in existing_s:
+            con.execute("ALTER TABLE summaries ADD COLUMN coverage_ratio REAL")
+
         # ① 하이브리드 검색(2026-08-06)용 임베딩 캐시. 논문 텍스트(제목+초록)가
         # 바뀌지 않는 한 임베딩도 안 바뀌므로, 검색할 때마다 다시 계산하지
         # 않고 여기 저장해 재사용한다 — hybrid_search.py 는 이 캐시를 모른다
@@ -618,6 +628,9 @@ class SaveSummaryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     arxiv_id: str = Field(..., description="요약 대상 논문의 arXiv ID (fetch_paper 선행 필요)")
     markdown: str = Field(..., min_length=1, description="템플릿 형식을 따른 요약 마크다운 전문")
+    engine: str | None = Field(default=None,
+                               description="이 요약을 만든 엔진('gemini'|'groq'). 주면 "
+                                           "원문 커버리지를 같이 계산해 저장한다")
 
 
 class HybridSearchInput(BaseModel):
@@ -1375,6 +1388,10 @@ async def save_summary(params: SaveSummaryInput) -> str:
     # 아는 지점이 여기라, 신규 저장 경로 전부(batch_summarize 배치·review_app
     # 재생성·PDF 업로드)가 이 함수 하나를 지나므로 여기 한 곳만 True 로 준다.
     report = verify_numbers(params.markdown, source, expect_grounded=True)
+    # 엔진을 모르면 커버리지도 모른다 — 1.0 으로 넘겨짚지 않고 NULL 로 둔다
+    # (CLAUDE.md 8: 미실측을 측정값처럼 쓰지 않는다).
+    coverage = (summarize_engine.coverage_ratio(source, params.engine)
+                if params.engine else None)
 
     out_path = SUMMARY_DIR / f"{arxiv_id.replace('/', '_')}.md"
     out_path.write_text(params.markdown, encoding="utf-8")
@@ -1386,9 +1403,10 @@ async def save_summary(params: SaveSummaryInput) -> str:
         con.execute(
             """INSERT OR REPLACE INTO summaries
                (arxiv_id, path, numbers_total, numbers_matched, created_at,
-                review_status, review_note, reviewed_at)
-               VALUES (?,?,?,?,?,'pending',NULL,NULL)""",
-            (arxiv_id, str(out_path), report.total, report.matched, _now()),
+                review_status, review_note, reviewed_at, engine, coverage_ratio)
+               VALUES (?,?,?,?,?,'pending',NULL,NULL,?,?)""",
+            (arxiv_id, str(out_path), report.total, report.matched, _now(),
+             params.engine, coverage),
         )
     return json.dumps(
         {"saved_path": str(out_path), "verification": report.to_dict()},
