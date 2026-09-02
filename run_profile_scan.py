@@ -34,6 +34,8 @@ import batch_summarize
 import digest
 import find_new_papers
 import profile_scoring
+import s2_delta
+import selection
 import research_profile
 import server
 
@@ -99,10 +101,40 @@ async def scan_profile(
         result["status"], len(result["papers"]), signature=signature,
     )
 
+    # ── 두 번째 소스: Semantic Scholar (2026-09-02)
+    #
+    # 팀 표적 분야는 arXiv 가 아니라 저널에 실린다. 실측: 'surface inspection'
+    # 최근 5일 표본 100건 중 **97건이 arXiv 에 없었다**(커버리지 3%). 그 97건이
+    # 전부 openAccessPdf 와 DOI 를 갖고 있어 본문까지 받을 수 있다.
+    #
+    # 새 지휘자 계층이 아니다(CLAUDE.md 6) — 기존 진입점 안에서 소스를 하나 더
+    # 부르고, 병합은 처음부터 그 용도로 있던 selection.dedupe 가 한다
+    # ("S2 는 arxiv_id 가 없을 수 있다"고 그 docstring 에 적혀 있다).
+    #
+    # arXiv 가 실패해도 S2 는 시도한다 — 한 소스가 죽었다고 그날을 통째로
+    # 버리지 않는다. 반대도 같다.
+    s2_papers: list[dict] = []
+    s2_status = "skipped"
+    s2_keywords = s2_delta.keywords_for_s2(profile)
+    if s2_keywords:
+        s2_result = await s2_delta.find_new_papers_since(
+            client, s2_keywords, since, until,
+        )
+        s2_papers = s2_result["papers"]
+        s2_status = s2_result["status"]
+        research_profile.record_run(
+            db_path, profile_id, "s2", s2_result["query"], since, until,
+            s2_status, len(s2_papers), signature=signature,
+        )
+        print(f"  [S2] 키워드 {len(s2_keywords)}개 → {len(s2_papers)}편 "
+              f"(arXiv 밖 {sum(1 for x in s2_papers if not x.get('arxiv_id'))}편)")
+
+    merged = selection.dedupe(result["papers"] + s2_papers)
+
     # 이미 요약된 논문은 후보에서 뺀다(§8-26) — 창이 겹치므로 안 빼면 어제
     # 메일에 나간 논문이 오늘 또 나간다. 이 필터가 겹침의 비용을 0 으로 만든다.
-    seen = _already_summarized([p.get("arxiv_id") for p in result["papers"]])
-    fresh = [p for p in result["papers"] if p.get("arxiv_id") not in seen]
+    seen = _already_summarized([p.get("arxiv_id") for p in merged])
+    fresh = [p for p in merged if not p.get("arxiv_id") or p.get("arxiv_id") not in seen]
 
     scored = profile_scoring.score_and_rank(
         fresh, profile, top_k=profile["max_items"],
@@ -110,7 +142,9 @@ async def scan_profile(
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
         "run_status": result["status"], "candidates_found": len(fresh),
-        "retrieved_count": len(result["papers"]), "already_seen_count": len(seen),
+        "retrieved_count": len(merged), "already_seen_count": len(seen),
+        "arxiv_count": len(result["papers"]), "s2_count": len(s2_papers),
+        "s2_status": s2_status,
         **scored,
     }
 
@@ -193,10 +227,12 @@ async def scan_and_digest(
     deferred: list[dict] = []
     for paper in result["papers"]:
         arxiv_id = paper.get("arxiv_id")
-        if not arxiv_id:
-            paper["deep_status"] = "failed: arxiv_id 없음"
+        # arXiv 밖 논문(S2 경유 저널)은 arxiv_id 가 없다 — 오픈액세스 PDF
+        # 링크가 있으면 _process_paper 가 그 경로로 본문을 받는다(2026-09-02).
+        if not arxiv_id and not paper.get("open_access_pdf"):
+            paper["deep_status"] = "failed: 식별자도 오픈액세스 링크도 없음"
             continue
-        if _summary_exists(arxiv_id):
+        if arxiv_id and _summary_exists(arxiv_id):
             paper["deep_status"] = "skipped: 이미 요약 저장됨"
             continue
         # 예산은 **논문을 시작하기 전에** 본다. 처리 중간에 끊으면 요약을
@@ -211,7 +247,8 @@ async def scan_and_digest(
         paper_scope = api_usage.Scope()
         try:
             with paper_scope:
-                outcome = await batch_summarize._process_paper(client, arxiv_id)
+                outcome = await batch_summarize._process_paper(
+                    client, arxiv_id or "", paper=paper)
         except Exception as e:  # noqa: BLE001 — 한 편의 실패가 나머지를 막으면 안 됨
             paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
             paper["api_calls"] = paper_scope.snapshot()
@@ -220,6 +257,11 @@ async def scan_and_digest(
         # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
         if outcome.get("status") == "done":
             paper["deep_status"] = "ok"
+            # 합성 ID 를 돌려받았으면(오픈액세스 경로) 이후 라벨 조회가
+            # 그 ID 를 써야 한다 — 안 그러면 다이제스트가 검증·재현 결과를
+            # 못 찾아 "데이터 없음"으로 나간다.
+            if not paper.get("arxiv_id") and outcome.get("arxiv_id"):
+                paper["arxiv_id"] = outcome["arxiv_id"]
         else:
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
         paper["api_calls"] = paper_scope.snapshot()
