@@ -19,6 +19,11 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 이 스크립트는 scripts/ 아래에 있어서 sys.path 에 레포 루트가 안 들어간다.
+# 2026-09-02 첫 실전에서 digest 임포트가 ModuleNotFoundError 로 죽어 재현
+# 집계가 통째로 빠졌다 — 보고서가 조용히 한 절을 잃는 형태라 더 나쁘다.
+sys.path.insert(0, str(ROOT))
+
 LOG = ROOT / "logs" / "daily_scan.log"
 DB = ROOT / "data" / "papers.db"
 
@@ -70,6 +75,33 @@ def _kst(ts: str | None) -> str:
     return d.astimezone().strftime("%m-%d %H:%M")
 
 
+def _work_window(started: str | None) -> str | None:
+    """이번 실행이 요약을 저장한 첫 시각~마지막 시각. 벽시계와 다르면
+    그 차이가 곧 "멈춰 있던 시간"이다."""
+    if not (DB.exists() and started):
+        return None
+    try:
+        con = sqlite3.connect(DB)
+        row = con.execute(
+            "SELECT MIN(created_at), MAX(created_at), COUNT(*) FROM summaries "
+            "WHERE created_at >= ?", (started.replace("Z", ""),)
+        ).fetchone()
+        con.close()
+    except sqlite3.Error:
+        return None
+    lo, hi, n = row
+    if not (lo and hi and n):
+        return None
+    try:
+        a = datetime.fromisoformat(lo.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(hi.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    s = int((b - a).total_seconds())
+    return (f"{_kst(lo)} ~ {_kst(hi)} KST "
+            f"({s // 60}분 {s % 60}초 동안 {n}편)")
+
+
 def _section(title: str) -> str:
     return f"\n{'─' * 66}\n{title}\n{'─' * 66}"
 
@@ -82,8 +114,20 @@ def main() -> int:
         return 1
 
     out.append(f"■ 일일 스캔 보고 — 시작 {_kst(started)} KST")
-    out.append(f"  소요 {_elapsed(started, ended)}"
+    out.append(f"  벽시계 {_elapsed(started, ended)}"
                + (f" · 종료코드 {exit_code}" if exit_code is not None else " · **아직 실행 중**"))
+
+    # 벽시계만 보면 오해한다 — PC 가 자면 프로세스도 같이 멈춰 있다가 깨어난 뒤
+    # 이어서 돈다. 2026-09-02 실전이 그랬다: 벽시계 4시간 45분인데 요약 6편은
+    # 마지막 4분에 다 나왔다. 실제 작업 구간을 같이 보여줘야 "느렸다"와
+    # "자고 있었다"를 구분할 수 있다.
+    work = _work_window(started)
+    if work:
+        out.append(f"  실제 작업 {work}")
+
+    delivery = [l.strip().strip(',') for l in block if '"delivery"' in l]
+    if delivery:
+        out.append("  " + delivery[-1].replace('"delivery":', "메일:").replace('"', ""))
 
     # ── 엔진 (키 회전이 먹었는지가 여기서 보인다)
     gemini_n = sum(1 for l in block if "gemini 로 생성됨" in l)
@@ -126,9 +170,14 @@ def main() -> int:
         out.append(_section("⑤ 다이제스트"))
         if prof and prof["last_digest"]:
             out.append(f"  저장 시각: {_kst(prof['last_digest_at'])} KST")
-            for line in (prof["last_digest"] or "").splitlines():
+            digest_lines = (prof["last_digest"] or "").splitlines()
+            for i, line in enumerate(digest_lines):
                 if re.match(r"^\d+\. \[", line) or line.startswith("■"):
                     out.append("  " + line)
+                    # "동향 신호" 절은 제목 다음 줄에 들여쓰기로 온다 —
+                    # 제목만 찍고 내용을 빠뜨리면 절이 있으나 마나다.
+                    if "동향 신호" in line and i + 1 < len(digest_lines):
+                        out.append("     " + digest_lines[i + 1].strip())
                 elif line.strip().startswith(("왜 걸렸나", "[검증", "[재현")):
                     out.append("     " + line.strip())
         else:
