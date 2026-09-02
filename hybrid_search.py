@@ -35,6 +35,8 @@ from pathlib import Path
 
 import httpx
 
+import summarize_engine
+
 # summarize_engine.py 와 같은 이유로 httpx 기본 요청 로깅을 꺼둔다 — 키를
 # 헤더로 보내 URL엔 안 실리지만, 매 호출마다 INFO 로그가 찍히는 걸 막아
 # 터미널 출력을 깔끔하게 유지한다.
@@ -190,19 +192,37 @@ _EMBED_TEXT_CHAR_CAP = 8000
 async def embed_text(client: httpx.AsyncClient, text: str, task_type: str) -> list[float]:
     """task_type: 'RETRIEVAL_QUERY'(질의) | 'RETRIEVAL_DOCUMENT'(문서) —
     비대칭 검색에서 둘을 구분해 인코딩하면 관련도가 더 좋아진다(Gemini 임베딩
-    API가 공식 지원하는 파라미터, 2026-08-06 실측 확인)."""
-    key = ENV.get("GOOGLE_API_KEY")
-    if not key:
+    API가 공식 지원하는 파라미터, 2026-08-06 실측 확인).
+
+    요약 경로와 **같은 키의 같은 무료 한도**를 나눠 쓰므로 키 회전도 같이
+    쓴다(§8-27, 2026-09-02). 안 그러면 검색을 많이 한 날 첫 키가 말라서
+    새벽 배치가 그 대가를 치른다 — 실제로 429 가 요약 실패의 주된 원인이었다.
+    키 이름 목록은 summarize_engine 이 소유한다(한 곳에서만 정한다).
+    """
+    names = summarize_engine.gemini_key_names()
+    if not names:
         raise RuntimeError("GOOGLE_API_KEY 없음")
-    resp = await client.post(
-        _EMBED_URL,
-        json={
-            "model": "models/gemini-embedding-001",
-            "content": {"parts": [{"text": text[:_EMBED_TEXT_CHAR_CAP]}]},
-            "taskType": task_type,
-        },
-        headers={"x-goog-api-key": key},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["embedding"]["values"]
+
+    last_rate_limited: httpx.HTTPStatusError | None = None
+    for name in names:
+        resp = await client.post(
+            _EMBED_URL,
+            json={
+                "model": "models/gemini-embedding-001",
+                "content": {"parts": [{"text": text[:_EMBED_TEXT_CHAR_CAP]}]},
+                "taskType": task_type,
+            },
+            headers={"x-goog-api-key": summarize_engine.ENV[name]},
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            # 429 에서만 다음 키로 넘어간다. 503 은 모델 전체 혼잡이라 어느
+            # 키로 가도 같고, 회전하면 요청만 낭비하며 그게 다시 할당량을
+            # 깎는다(summarize_engine._post_gemini 와 같은 판단).
+            last_rate_limited = httpx.HTTPStatusError(
+                "429", request=resp.request, response=resp)
+            continue
+        resp.raise_for_status()
+        return resp.json()["embedding"]["values"]
+
+    raise last_rate_limited
