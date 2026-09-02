@@ -505,3 +505,98 @@ def test_digest_reports_already_seen_count(tmp_path, monkeypatch):
     assert "이미 보낸 논문 7건" in text
     assert "제외 규칙 1건" in text
     assert "조건 불일치 3건" in text
+
+
+# ------------------------------------------- Deep Layer 시간 예산 (§8-14)
+
+
+def test_deep_layer_stops_when_budget_is_exceeded(tmp_path, monkeypatch):
+    """실측 배경: Gemini 가 막힌 날 Groq 폴백이 편당 약 25분이라(§8-15)
+    max_items=6 이면 새벽 배치가 아침까지 안 끝난다. 편수가 아니라 시간으로
+    자르는 이유는, 편당 비용이 엔진에 따라 24배까지 벌어지기 때문이다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in (1, 2, 3)])
+
+    processed = []
+    clock = {"t": 0.0}
+
+    async def fake_process(client, arxiv_id):
+        processed.append(arxiv_id)
+        clock["t"] += 1000.0          # 논문 한 편에 1000초씩 걸린다고 치자
+        return {"status": "done"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    monkeypatch.setattr(rps.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(rps, "DEEP_LAYER_BUDGET_SECONDS", 1500.0)
+
+    async def main():
+        return await rps.scan_and_digest(db_path, "team_ai", None, max_pages=2)
+
+    result, _digest = asyncio.run(main())
+
+    # 1편(0초)·2편(1000초)까지는 시작하고, 3편째(2000초)에서 예산 초과
+    assert processed == ["p1", "p2"]
+    assert result["deferred_count"] == 1
+
+
+def test_budget_is_checked_before_starting_not_mid_paper(tmp_path, monkeypatch):
+    """처리 중간에 끊으면 요약을 반쯤 만들고 버리게 되는데, 그 호출은 이미
+    무료 한도를 쓴 뒤다. 시작 전에만 본다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    started = []
+
+    async def fake_process(client, arxiv_id):
+        started.append(arxiv_id)
+        return {"status": "done"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    monkeypatch.setattr(rps, "DEEP_LAYER_BUDGET_SECONDS", 0.0)   # 예산 0
+    monkeypatch.setattr(rps.time, "monotonic", lambda: 0.0)      # 경과도 0
+
+    async def main():
+        return await rps.scan_and_digest(db_path, "team_ai", None, max_pages=2)
+
+    result, _ = asyncio.run(main())
+    # 경과 0 은 예산 0 을 "초과"하지 않는다 — 첫 편은 반드시 시작한다
+    assert started == ["p1"]
+    assert result.get("deferred_count", 0) == 0
+
+
+def test_deferred_papers_are_not_listed_in_the_digest(tmp_path, monkeypatch):
+    """요약이 없어 보여줄 내용이 없고, 내일 다시 후보로 올라와 그때 제대로
+    실린다 — 오늘 제목만 내보내면 같은 논문이 이틀 연속 나간다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in (1, 2)])
+
+    clock = {"t": 0.0}
+
+    async def fake_process(client, arxiv_id):
+        clock["t"] += 9999.0
+        return {"status": "done"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    monkeypatch.setattr(rps.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(rps, "DEEP_LAYER_BUDGET_SECONDS", 100.0)
+
+    async def main():
+        return await rps.scan_and_digest(db_path, "team_ai", None, max_pages=2)
+
+    result, digest_text = asyncio.run(main())
+
+    assert [p["arxiv_id"] for p in result["papers"]] == ["p1"]
+    assert "시간 예산으로 내일로 미룸 1건" in digest_text
+
+
+def test_budget_default_is_generous_enough_for_a_healthy_run(tmp_path, monkeypatch):
+    """Gemini 가 정상이면 편당 1분 내외다(§8-15) — 기본 예산이 max_items 를
+    한참 넘게 소화해야 평시에 아무것도 안 잘린다."""
+    healthy_seconds_per_paper = 60
+    assert rps.DEEP_LAYER_BUDGET_SECONDS / healthy_seconds_per_paper >= 20

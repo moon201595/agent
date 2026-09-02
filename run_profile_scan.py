@@ -21,6 +21,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +44,24 @@ def _arxiv_query_from_core_topics(core_topics: list[str]) -> str:
     "digital"과 "twin"을 각각 독립된 단어로 봐서 무관한 논문까지 걸린다."""
     terms = [f'all:"{kw}"' if " " in kw else f"all:{kw}" for kw in core_topics]
     return " OR ".join(terms)
+
+
+# Deep Layer(④⑤⑦)에 쓸 수 있는 벽시계 예산(초). 넘으면 남은 논문을 내일로
+# 미룬다 — §8-14 의 처리다.
+#
+# 왜 "편수"가 아니라 "시간"인가: 실제 제약은 "새벽 배치가 아침 전에 끝나야
+# 한다"이지 "몇 편을 처리한다"가 아니다. 그리고 편당 비용이 엔진에 따라
+# 24배까지 벌어진다(§8-15 실측: Gemini 호출 1회·1분 내외 vs Groq 중앙값
+# 24회·약 25분). 편수로 자르면 좋은 날엔 놀고 나쁜 날엔 여전히 밤을 샌다.
+#
+# 미뤄도 잃지 않는다는 게 전제다 — §8-26 수정으로 델타 커서가 최근 5일을
+# 무조건 다시 보므로, 오늘 못 한 논문은 내일 후보에 그대로 다시 올라온다.
+# 그 수정 전이었다면 이 방식은 논문을 영구히 버리는 것이었다.
+#
+# 2400초(40분)로 둔 이유: 05:00 시작 기준 아침까지 여유가 있고, Gemini 가
+# 정상이면 편당 1분 내외라 40편도 소화한다(max_items 는 6이다). Groq 로
+# 떨어진 날에만 실제로 걸리는 상한이다. 환경변수로 덮을 수 있다.
+DEEP_LAYER_BUDGET_SECONDS = float(os.environ.get("DEEP_LAYER_BUDGET_SECONDS", 2400))
 
 
 async def scan_profile(
@@ -169,6 +189,8 @@ async def scan_and_digest(
 
     # Deep Layer — result["papers"]는 score_and_rank가 이미 top_k=max_items로
     # 잘라놓은 목록이라 별도 상한을 두지 않는다.
+    deep_started = time.monotonic()
+    deferred: list[dict] = []
     for paper in result["papers"]:
         arxiv_id = paper.get("arxiv_id")
         if not arxiv_id:
@@ -176,6 +198,15 @@ async def scan_and_digest(
             continue
         if _summary_exists(arxiv_id):
             paper["deep_status"] = "skipped: 이미 요약 저장됨"
+            continue
+        # 예산은 **논문을 시작하기 전에** 본다. 처리 중간에 끊으면 요약을
+        # 반쯤 만들고 버리게 되고, 그 호출은 이미 무료 한도를 쓴 뒤다.
+        elapsed = time.monotonic() - deep_started
+        if elapsed > DEEP_LAYER_BUDGET_SECONDS:
+            paper["deep_status"] = "deferred: 시간 예산 초과"
+            deferred.append(paper)
+            print(f"  [예산] {arxiv_id} 이후를 내일로 미룸 "
+                  f"({elapsed / 60:.0f}분 경과 > {DEEP_LAYER_BUDGET_SECONDS / 60:.0f}분)")
             continue
         paper_scope = api_usage.Scope()
         try:
@@ -205,6 +236,13 @@ async def scan_and_digest(
             text = tldrs.get(paper.get("arxiv_id"))
             if text:
                 paper["s2_tldr"] = text
+
+    # 미룬 논문은 다이제스트 목록에서 뺀다. 요약이 없어 보여줄 내용이 없고,
+    # 내일 다시 후보로 올라와 그때 제대로 실린다 — 오늘 제목만 내보내면
+    # 같은 논문이 이틀 연속 나가게 된다. 대신 건수는 정직하게 보고한다.
+    if deferred:
+        result["papers"] = [p for p in result["papers"] if p not in deferred]
+        result["deferred_count"] = len(deferred)
 
     profile = research_profile.get_profile(db_path, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)

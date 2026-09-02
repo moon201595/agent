@@ -462,6 +462,11 @@ def _filtered_line(scan_result: dict) -> str:
     (§8-26) "이미 보낸 논문"이 새로운 항목으로 생겼다 — 조용히 빼면 후보
     수가 왜 줄었는지 설명이 안 된다."""
     parts = []
+    deferred = scan_result.get("deferred_count", 0)
+    if deferred:
+        # 이건 "걸러졌다"가 아니라 "아직 안 했다"이므로 표현을 구분한다 —
+        # 내일 후보에 다시 올라와 그때 제대로 실린다(§8-14, §8-26).
+        parts.append(f"시간 예산으로 내일로 미룸 {deferred}건")
     seen = scan_result.get("already_seen_count", 0)
     if seen:
         parts.append(f"이미 보낸 논문 {seen}건")
