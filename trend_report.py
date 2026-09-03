@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections import Counter
@@ -50,11 +51,123 @@ MIN_SHARED_CITATIONS = 2
 REFERENCE_BUDGET_SECONDS = 120.0
 
 
+# ---------------------------------------------------------------- 미등록 용어 (2026-09-03)
+#
+# **닫힌 고리를 끊는다.** 지금까지 하네스는 core_topics 로 검색하고,
+# core_topics 로 점수 매기고, core_topics 별 편수를 세서 "이게 동향"이라고
+# 말했다. 새로 뜨는 것은 새 이름을 달고 오므로 모든 단계에서 구조적으로
+# 안 보인다 — 우리가 이름 붙인 것만 되돌려주는 거울이었다.
+#
+# 실측(2026-09-03, 저장된 83편 초록): core_topics 에 없는데 자주 나오는 말이
+# 이만큼 있었다.
+#
+#   5편 anomaly detection      ← 표면검사의 형제어
+#   5편 vla models             ← vision-language-action 은 있는데 약어가 없다
+#   5편 edge devices
+#   4편 jetson orin / orin nano ← 팀이 실제로 쓸 하드웨어
+#   4편 retrieval-augmented generation · agentic systems
+#
+# **LLM 을 안 쓴다**(규칙 7). 기계는 n-gram 을 세기만 하고, 이걸 core_topics 에
+# 넣을지는 사람이 정한다. "무엇이 뜨고 있는가"를 모델에게 물으면 검증할 수
+# 없는 답이 오지만, "이 말이 몇 편에 나왔나"는 위조가 불가능하다.
+#
+# 편수로 센다(출현 횟수가 아니라). 한 논문이 같은 말을 20번 해도 1편이다 —
+# 아니면 장황한 논문 하나가 동향을 만들어낸다.
+
+# 두 목록을 나눈다.
+#
+# _BOILERPLATE 는 **조합 어디에도 오면 안 되는 말** — 주제어가 아니라 논문의
+# 형식이다("we propose", "code available at https://github.com").
+#
+# _EDGE_STOP 은 **양 끝에만 못 오는 말** — 불용어와 연구 동사(train·evaluate·
+# leverage 등). 동사는 주제가 아니라 형식이라 머리에 오면 `train vla models`
+# 같은 잘린 조합이 진짜 용어 `vla models` 를 밀어낸다. 처음에 model·learning 을 상투어로
+# 넣었더니 `vla models`(실측 5편)와 `reinforcement learning` 이 통째로
+# 죽었다 — 이것들은 합성어의 머리로 쓰일 때 정확히 우리가 찾는 신호다.
+# "the model" 은 반대편 끝이 불용어라 어차피 걸리므로, model·learning 자체는
+# 어느 목록에도 안 넣는다. 넣었더니 `large language models` 가 통째로 죽고
+# 잘린 `large language` 만 남았다 — 꼬리 자리가 바로 우리가 찾는 자리다.
+_BOILERPLATE = frozenset("""
+https http www github com org net arxiv doi io gitlab huggingface
+available publicly release released open source repository
+paper study experiments experiment evaluation results result
+propose proposed proposes present presents introduce introduces
+show shows shown demonstrate demonstrates achieve achieves achieved
+state art sota baseline baselines outperform outperforms
+compared comparison extensive comprehensive significantly substantially
+first second third recent recently novel
+approach approaches method methods framework frameworks technique techniques
+""".split())
+
+_EDGE_STOP = frozenset("""
+a an the of for and or with in on to from by via using use uses used based
+toward towards we our this that these those is are be was were can it its as
+at into over under between within without more most less than however such
+also each other both same many while when where which who what have has had
+do does did been being not only but if then there their them they you your
+his her will would could should may might must per across new various several
+different multiple time times data code analysis here thus hence therefore
+train trains trained training evaluate evaluates evaluated apply applies applied
+leverage leverages leveraged employ employs employed utilize utilizes utilized
+develop develops developed design designs designed build builds built enable
+enables enabled allow allows allowed require requires required obtain obtains
+""".split()) | _BOILERPLATE
+
+_WORD_RE = re.compile(r"[a-z][a-z0-9\-]+")
+
+
+def _ngrams(text: str, n: int):
+    """상투어·불용어로 시작하거나 끝나는 조합은 버린다 — 'the defect' 같은 것. model·learning 은 머리로는 쓰이므로 양끝만 막는다."""
+    words = [w for w in _WORD_RE.findall(text.lower()) if len(w) > 2]
+    for i in range(len(words) - n + 1):
+        gram = words[i:i + n]
+        if gram[0] in _EDGE_STOP or gram[-1] in _EDGE_STOP:
+            continue
+        if any(w in _BOILERPLATE for w in gram):
+            continue
+        yield " ".join(gram)
+
+
+def _subsumed(term: str, others: set[str]) -> bool:
+    """더 긴 조합에 그대로 들어 있으면 짧은 쪽은 버린다 —
+    'language models' 와 'large language models' 를 둘 다 보고하지 않는다."""
+    return any(term != o and term in o for o in others)
+
+
+def emerging_terms(rows: list[sqlite3.Row], profile: dict,
+                   prev_rows: list[sqlite3.Row] | None = None,
+                   min_papers: int = 3, top_n: int = 12) -> list[tuple[str, int, int]]:
+    """core_topics 에 없는데 자주 나오는 말. (용어, 이번 주 편수, 지난 주 편수).
+
+    이번 주에 min_papers 편 이상 나온 것만 본다 — 한두 편은 우연이다.
+    지난 주 편수를 같이 주므로 "새로 생긴 것"과 "원래 있던 것"이 구분된다.
+    """
+    known = {k.lower() for k in profile.get("core_topics", [])}
+    known |= {d.lower() for d in (profile.get("domain_hints") or [])}
+
+    def count(rs) -> Counter:
+        c: Counter = Counter()
+        for row in rs or []:
+            text = f"{row['title'] or ''}. {row['abstract'] or ''}"
+            seen = set()
+            for n in (2, 3):
+                seen.update(_ngrams(text, n))
+            c.update(seen)          # 편수 — 한 논문이 반복해도 1
+        return c
+
+    now, prev = count(rows), count(prev_rows)
+    cand = {g for g, n in now.items()
+            if n >= min_papers and not any(k in g or g in k for k in known)}
+    cand = {g for g in cand if not _subsumed(g, cand)}
+    ranked = sorted(cand, key=lambda g: (-now[g], g))
+    return [(g, now[g], prev.get(g, 0)) for g in ranked[:top_n]]
+
+
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
         return con.execute(
-            "SELECT p.arxiv_id, p.title, p.published, p.source, s.engine, s.coverage_ratio "
+            "SELECT p.arxiv_id, p.title, p.abstract, p.published, p.source, s.engine, s.coverage_ratio "
             "FROM papers p JOIN summaries s ON s.arxiv_id = p.arxiv_id "
             "WHERE s.created_at >= ? AND s.created_at < ? ORDER BY s.created_at",
             (start.isoformat(), end.isoformat()),
@@ -170,6 +283,16 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
     gone = [kw for kw in prev if kw not in now]
     if gone:
         lines.append(f"   지난주엔 있었으나 이번주 없음: {', '.join(sorted(gone)[:8])}")
+
+    fresh = emerging_terms(this_week, profile, last_week)
+    if fresh:
+        lines += ["", "▶ 등록 안 된 말 중 자주 나온 것 (키워드로 넣을지는 사람이 판단)"]
+        for term, n, was in fresh:
+            if was == 0:
+                lines.append(f"   {term} — {n}편 (지난주 없었음)")
+            else:
+                lines.append(f"   {term} — {n}편 ({was}→{n}, {n - was:+d})")
+        lines.append("   ※ core_topics 에 없어서 검색·점수·추이 어디에도 안 잡히는 말들이다.")
 
     if shared:
         scope = f"{examined}/{targets}편 조회" if targets else ""

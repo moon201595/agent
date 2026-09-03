@@ -26,7 +26,7 @@ def db(tmp_path):
     path = tmp_path / "t.db"
     with sqlite3.connect(path) as con:
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, title TEXT, "
-                    "published TEXT, source TEXT)")
+                    "abstract TEXT, published TEXT, source TEXT)")
         con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, created_at TEXT, "
                     "engine TEXT, coverage_ratio REAL)")
     return path
@@ -35,7 +35,8 @@ def db(tmp_path):
 def _add(db, aid, title, days_ago, source=None, engine="gemini", coverage=1.0):
     ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
     with sqlite3.connect(db) as con:
-        con.execute("INSERT OR REPLACE INTO papers VALUES (?,?,?,?)", (aid, title, ts, source))
+        con.execute("INSERT OR REPLACE INTO papers (arxiv_id, title, published, source) "
+                    "VALUES (?,?,?,?)", (aid, title, ts, source))
         con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)",
                     (aid, ts, engine, coverage))
 
@@ -103,7 +104,8 @@ class _Rows(list):
 
 
 def _row(aid):
-    return {"arxiv_id": aid, "title": "T", "published": None,
+    # abstract 는 실제 _rows_between 이 뽑는 컬럼이다 — emerging_terms 가 쓴다.
+    return {"arxiv_id": aid, "title": "T", "abstract": "", "published": None,
             "source": None, "engine": "gemini", "coverage_ratio": 1.0}
 
 
@@ -184,3 +186,74 @@ def test_report_states_the_sample_when_partial():
                                       shared=[("Base", 3)], examined=4, targets=10)
     assert "4/10편 조회" in text
     assert "시간 예산으로 일부만 봤다" in text
+
+
+# ---------------------------------------------------------------- 미등록 용어 (2026-09-03)
+#
+# 닫힌 고리를 끊는 장치다 — core_topics 로 검색·채점·집계하면 새로 뜨는 것은
+# 새 이름을 달고 오므로 구조적으로 안 보인다.
+
+def _text_row(title, abstract=""):
+    """emerging_terms 는 title·abstract 만 본다 — sqlite3.Row 대신 dict 로 충분."""
+    return {"title": title, "abstract": abstract}
+
+
+_PROFILE = {"core_topics": ["defect detection", "in-sensor computing"],
+            "domain_hints": ["manufacturing"]}
+
+
+def test_emerging_terms_finds_words_not_in_core_topics():
+    rows = [_text_row(f"paper {i}", "we evaluate on jetson orin nano for edge devices")
+            for i in range(4)]
+    got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
+    assert "jetson orin nano" in got
+    assert "edge devices" in got
+
+
+def test_registered_keywords_are_excluded():
+    """이미 아는 말은 여기 뜨면 안 된다 — 주제별 편수 절이 이미 센다."""
+    rows = [_text_row("defect detection on surfaces", "defect detection everywhere")
+            for _ in range(5)]
+    got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
+    assert not any("defect detection" in t for t in got)
+
+
+def test_boilerplate_is_not_a_trend():
+    """'code available at https://github.com' 은 주제어가 아니라 논문의 형식이다."""
+    rows = [_text_row("a paper", "our code is publicly available at https://github.com/x/y "
+                            "and we propose a novel approach that achieves state of the art")
+            for _ in range(6)]
+    got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
+    assert not any(w in t for t in got
+                   for w in ("github", "https", "available", "propose", "novel", "sota"))
+
+
+def test_model_and_learning_survive_as_compound_heads():
+    """model·learning 을 상투어로 막았더니 vla models 와 reinforcement learning 이
+    통째로 죽었다 — 꼬리 자리가 바로 우리가 찾는 자리다."""
+    rows = [_text_row("x", "we train vla models with reinforcement learning") for _ in range(4)]
+    got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
+    assert "vla models" in got
+    assert "reinforcement learning" in got
+
+
+def test_longer_term_subsumes_shorter():
+    """'large language' 와 'large language models' 를 둘 다 보고하지 않는다."""
+    rows = [_text_row("x", "large language models are everywhere") for _ in range(5)]
+    got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
+    assert "large language models" in got
+    assert "large language" not in got
+
+
+def test_counts_papers_not_occurrences():
+    """장황한 논문 하나가 동향을 만들면 안 된다."""
+    rows = [_text_row("x", "edge devices " * 40)]           # 1편이 40번 반복
+    assert trend_report.emerging_terms(rows, _PROFILE, min_papers=3) == []
+
+
+def test_previous_week_count_is_reported():
+    """새로 생긴 것과 원래 있던 것이 구분돼야 한다."""
+    now = [_text_row("x", "we use edge devices here") for _ in range(4)]
+    prev = [_text_row("x", "we use edge devices here") for _ in range(2)]
+    got = dict((t, (n, w)) for t, n, w in trend_report.emerging_terms(now, _PROFILE, prev))
+    assert got["edge devices"] == (4, 2)
