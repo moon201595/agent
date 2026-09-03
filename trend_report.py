@@ -189,6 +189,12 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
 # 재현 성공률, 사내 문서. 가르는 기준은 **"무엇에 관심 있나"는 나가도 되지만
 # "무엇을 하고 있나"는 안 된다**.
 #
+# **저자 이름은 안 보낸다**(2026-09-03 결정). 규칙 4 의 새 경계선으로는
+# "공개된 논문 메타데이터니까 허용"으로 읽히지만, 그건 보내도 되느냐의 답이지
+# 보내야 하느냐의 답이 아니다. "이 그룹이 이 주제를 밀고 있다"를 LLM 에 쓰게
+# 하면 개인·기관 프로파일링을 외부 모델에 시키는 게 되는데, 저자 빈도 집계는
+# 로컬 셈으로 똑같이 나온다(§8-40). **얻는 게 같고 성격만 나쁘면 안 보낸다.**
+#
 # **규칙 8은 두 겹으로 지킨다.** 프롬프트에서 숫자를 못 쓰게 하고, 그래도
 # 나오면 원문 대조로 걸러 표시한다. 편수는 위 셈 절이 이미 정확히 갖고 있고,
 # 그 숫자와 모델이 지어낸 숫자가 한 화면에서 섞이는 게 제일 나쁘다.
@@ -271,17 +277,30 @@ def ungrounded_numbers(text: str, corpus: str) -> list[str]:
     return sorted(set(out))
 
 
-def narrative_topics(profile: dict, limit: int = 12) -> str:
-    """프롬프트에 넣을 관심 분야. 가중치 높은 것부터.
+def narrative_topics(profile: dict, rows: list | None = None, limit: int = 12) -> str:
+    """프롬프트에 넣을 관심 분야.
 
-    **키워드 이름만 보낸다 — 가중치 값은 안 보낸다.** "우리가 무엇에 관심
-    있나"는 나가도 되지만 "무엇을 얼마나 중요하게 보나"는 우선순위라
-    "무엇을 하고 있나"에 가깝다(규칙 4).
+    **이번 주 논문에 실제로 걸린 키워드만 보낸다**(2026-09-03).
+    서술의 목적이 "이번 흐름이 우리와 어디서 만나나"이므로 안 걸린 키워드는
+    프롬프트에 있을 이유가 없다. 기능은 그대로고 노출만 준다.
+
+    왜 노출을 줄이나: 키워드 하나하나는 일반 기술 용어라 규칙 4 로 나가도
+    되지만, **27개를 한 줄로 늘어놓으면 조합이 정보가 된다** — "검사·온센서·
+    로봇·비접촉 생체신호를 동시에 한다"는 과제 구성에 가깝고, 그건 규칙 4 가
+    그은 선의 반대쪽이다. 걸린 것만 보내면 매주 나가는 조합이 달라져 전체
+    구성이 한 번에 드러나지 않는다.
+
+    **가중치 값은 여전히 안 보낸다** — 순서에만 쓴다. "무엇에 관심 있나"는
+    나가도 되지만 "무엇을 얼마나 중요하게 보나"는 우선순위라 "무엇을 하고
+    있나"에 가깝다.
     """
     weights = profile.get("core_weights") or {}
-    topics = sorted(profile.get("core_topics", []),
-                    key=lambda k: (-float(weights.get(k, 1.0)), k))
-    return ", ".join(topics[:limit])
+    topics = profile.get("core_topics", [])
+    if rows is not None:
+        hit = set(keyword_counts(rows, profile))
+        topics = [t for t in topics if t in hit] or topics
+    ranked = sorted(topics, key=lambda k: (-float(weights.get(k, 1.0)), k))
+    return ", ".join(ranked[:limit])
 
 
 async def narrative(client: httpx.AsyncClient, rows: list,
@@ -296,7 +315,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     if used < 3:
         return None      # 표본이 이보다 적으면 "흐름"이라 부를 게 없다
 
-    topics = narrative_topics(profile or {}) or "(지정 없음)"
+    topics = narrative_topics(profile or {}, rows) or "(지정 없음)"
     prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics)
     try:
         text = await se._call_with_rate_limit_retry(

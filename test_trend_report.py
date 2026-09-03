@@ -362,3 +362,35 @@ def test_list_markers_are_not_treated_as_claims():
     assert trend_report.ungrounded_numbers("1. 흐름\n2) 접점\n- 3. 새로움", corpus) == []
     # 줄머리를 뺐다고 본문 숫자까지 놓치면 안 된다
     assert trend_report.ungrounded_numbers("1. 성능이 17편 늘었다", corpus) == ["17"]
+
+
+def test_topics_narrow_to_what_actually_matched_this_week():
+    """키워드 하나하나는 일반 용어지만 27개를 한 줄로 늘어놓으면 조합이
+    과제 구성이 된다 — 이번 주 걸린 것만 보낸다(2026-09-03)."""
+    profile = {"core_topics": ["defect detection", "in-sensor computing",
+                               "contactless vital sign", "robot manipulation"],
+               "core_weights": {}}
+    rows = [{"title": "Defect detection on PV panels", "abstract": ""}]
+    got = trend_report.narrative_topics(profile, rows)
+    assert got == "defect detection"
+    assert "contactless vital sign" not in got     # 안 걸린 건 안 나간다
+
+
+def test_topics_fall_back_to_full_list_when_nothing_matched():
+    """하나도 안 걸리면 빈 문자열보다 전체가 낫다 — 서술이 '왜 봐야 하나'를
+    아예 못 쓰게 되는 것보다는 낫고, 그 주는 어차피 표본이 얇다."""
+    profile = {"core_topics": ["defect detection", "in-sensor computing"], "core_weights": {}}
+    rows = [{"title": "Something unrelated entirely", "abstract": ""}]
+    got = trend_report.narrative_topics(profile, rows)
+    assert "defect detection" in got and "in-sensor computing" in got
+
+
+def test_author_names_never_reach_the_prompt():
+    """저자 빈도 집계는 로컬 셈으로 똑같이 나온다 — 얻는 게 같고 성격만
+    나쁘면 안 보낸다(2026-09-03 결정). 나중 세션이 '공개 메타데이터니까
+    괜찮다'로 넘어가지 않게 못 박는다."""
+    rows = [{"title": "Defect detection", "abstract": "본문",
+             "authors": "Hong Gildong, Kim Cheolsu", "source": "arxiv"}]
+    corpus, used = trend_report._narrative_corpus(rows)
+    assert used == 1
+    assert "Hong Gildong" not in corpus and "Kim Cheolsu" not in corpus
