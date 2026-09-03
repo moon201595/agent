@@ -624,7 +624,18 @@ def _pid_alive(pid: int) -> bool:
     영원히 "진행 중"으로 남는다(실측으로 직접 재현·확인함). 그래서 먼저
     `waitpid(WNOHANG)`로 우리 자식이면 회수를 시도하고(논블로킹 — 아직
     안 끝났으면 즉시 (0,0)으로 돌아옴), 그다음에만 kill(pid,0)로 진짜
-    생존 여부를 확인한다."""
+    생존 여부를 확인한다.
+
+    2026-09-02: 양수 pid 인지 먼저 확인한다. 호출부가
+    `job.get("pid", -1)` 로 **기본값 -1** 을 넘기는데, POSIX 에서 -1 은
+    "아무 자식이나"를 뜻해서 `waitpid(-1)` 이 무관한 자식을 회수하고
+    `kill(-1, 0)` 은 성공한다 — 즉 **pid 가 없으면 작업이 영원히 "진행 중"
+    으로 남았다.** 이 함수가 막으려고 쓰인 바로 그 증상이 기본값으로 다시
+    들어와 있었다. 0 도 같은 이유로(프로세스 그룹) 막는다. progress 파일이
+    깨져 문자열이 들어와도 예외 대신 False 로 떨어진다 — 여기서 예외가
+    나면 화면 전체가 죽는다."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
     try:
         reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
         if reaped_pid == pid:
