@@ -271,25 +271,49 @@ _PUB = [{"title": "Defect detection on PV panels", "abstract": "We report 42.5% 
          "source": "open-access-doi"}]
 
 
-def test_prompt_carries_only_public_paper_text():
-    """핵심 회귀 — 규칙 4. 팀의 연구 방향(core_topics)이 프롬프트에 새면 안 된다."""
-    rows = _PUB + [{"title": "Internal roadmap", "abstract": "secret",
-                    "source": "manual-pdf-upload"}]
-    corpus, used = trend_report._narrative_corpus(rows)
-    assert used == 3
-    assert "Internal roadmap" not in corpus      # 출처를 보증 못 하는 건 안 보낸다
-    assert "Defect detection on PV panels" in corpus
+def test_all_paper_sources_reach_the_prompt():
+    """2026-09-03 규칙 4 개정. **이 주장은 뒤집혔다** — 사유를 남긴다.
 
-    prompt = trend_report._NARRATIVE_PROMPT.format(papers=corpus)
-    for leak in ("core_topics", "team_ai_advance", "KETI", "가중치", "core_weights"):
+    개정 전에는 출처를 arXiv·오픈액세스로 한정했다. 그런데 ④ 요약은 이미
+    직접 올린 PDF 를 LLM 에 보내고 있어(실측 `pdf-5bd2ec925e`) 여기만 엄격한
+    게 앞뒤가 안 맞았고, 무엇보다 목적을 막고 있었다.
+    개정 규칙은 **논문 텍스트는 출처 무관 허용**이다.
+    """
+    rows = _PUB + [{"title": "Uploaded conference paper", "abstract": "본문",
+                    "source": "manual-pdf: streamlit-upload"}]
+    corpus, used = trend_report._narrative_corpus(rows)
+    assert used == 4
+    assert "Uploaded conference paper" in corpus
+
+
+def test_prompt_carries_topics_but_never_our_measurements():
+    """핵심 회귀 — 개정된 규칙 4 의 경계선.
+
+    '무엇에 관심 있나'(core_topics)는 나가도 되지만 '무엇을 하고 있나'
+    (집계·편수·별점·가중치·미등록 용어)는 안 된다.
+    """
+    corpus, _ = trend_report._narrative_corpus(_PUB)
+    profile = {"core_topics": ["defect detection", "in-sensor computing"],
+               "core_weights": {"defect detection": 1.0, "in-sensor computing": 0.6}}
+    prompt = trend_report._NARRATIVE_PROMPT.format(
+        papers=corpus, topics=trend_report.narrative_topics(profile))
+
+    assert "defect detection" in prompt          # 관심 분야는 나간다
+    # 우리 쪽 측정값은 하나도 안 나간다. ("편수"라는 낱말 자체는 프롬프트에
+    # 있지만 그건 "숫자를 쓰지 말라"는 지시어지 데이터가 아니다 — 값이 새는지를
+    # 본다.)
+    for leak in ("core_weights", "0.6", "가중치", "★", "pass_ratio",
+                 "coverage_ratio", "emerging", "재현 성공", "team_ai_advance"):
         assert leak not in prompt
 
 
-def test_source_none_counts_as_public_arxiv():
-    """papers.source 는 비-arXiv 경로에서만 채워진다 — 비어 있으면 arXiv 다."""
-    corpus, used = trend_report._narrative_corpus(
-        [{"title": "T", "abstract": "A", "source": None}])
-    assert used == 1
+def test_narrative_topics_sends_names_without_weights():
+    """가중치는 우선순위라 '무엇을 하고 있나'에 가깝다 — 이름만 보낸다."""
+    profile = {"core_topics": ["low", "high"],
+               "core_weights": {"low": 0.3, "high": 1.0}}
+    got = trend_report.narrative_topics(profile)
+    assert got == "high, low"                    # 가중치 순, 값은 빠진다
+    assert "0.3" not in got and "1.0" not in got
 
 
 def test_ungrounded_numbers_flags_invented_ones():

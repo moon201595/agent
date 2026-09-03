@@ -174,12 +174,20 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
 # 여기서 나오는 글은 아무것도 정하지 않는다. 논문을 고르지도, 점수를 바꾸지도,
 # 다이제스트를 막지도 않는다. 사람이 읽는 글이고, ④ 요약이 이미 같은 범주다.
 #
-# **진짜 제약은 규칙 4다: LLM 에는 공개 논문 텍스트만 보낸다.** 그래서
-# 프롬프트에 다음을 절대 넣지 않는다 — core_topics(팀의 연구 방향 그 자체다),
-# 우리 집계, 프로필 이름, 팀 이름, emerging_terms 결과(core_topics 를 빼서
-# 만든 것이라 여집합이 새어 나간다). 모델이 보는 건 **이번 주 논문의 제목과
-# 초록뿐**이고, 그것도 공개 출처(arXiv·오픈액세스)로 한정한다. 수동 업로드
-# PDF 는 출처를 우리가 보증할 수 없어 뺀다.
+# **규칙 4(2026-09-03 개정)를 따른다: 밖에 나가도 되는 것만 보낸다.**
+#
+# 처음엔 관심 분야까지 뺐다. 그랬더니 서술이 "VLA 연구가 이어진다" 같은 일반
+# 요약만 하고 **"그게 우리 분야와 어디서 만나는가"를 못 썼다** — 그게 이
+# 시스템의 목적 그 자체인데. 규칙을 지키느라 목적을 놓친 경우라 규칙을 고쳤다.
+#
+# 보내는 것: 논문 제목·초록(출처 무관 — ④ 요약이 이미 직접 올린 PDF 를 보내고
+# 있어 여기만 엄격한 건 앞뒤가 안 맞았다), 그리고 관심 분야 키워드
+# (core_topics·domain_hints). "defect detection" 같은 일반 기술 용어다.
+#
+# 안 보내는 것은 그대로다: 우리 집계·편수·별점, emerging_terms 결과
+# (core_topics 를 빼서 만든 것이라 "우리가 아직 안 보는 것"이 드러난다),
+# 재현 성공률, 사내 문서. 가르는 기준은 **"무엇에 관심 있나"는 나가도 되지만
+# "무엇을 하고 있나"는 안 된다**.
 #
 # **규칙 8은 두 겹으로 지킨다.** 프롬프트에서 숫자를 못 쓰게 하고, 그래도
 # 나오면 원문 대조로 걸러 표시한다. 편수는 위 셈 절이 이미 정확히 갖고 있고,
@@ -200,20 +208,22 @@ _LIST_MARKER_RE = re.compile(r"^[\s\-*·]*\d+[.)]\s", re.MULTILINE)
 
 NARRATIVE_MAX_PAPERS = 20      # 한 번의 프롬프트에 넣을 논문 수 상한
 NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
-NARRATIVE_PUBLIC_SOURCES = ("arxiv", "open-access")
 
 _NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록이다.
+읽는 사람이 관심 있는 분야는 다음과 같다: {topics}
+
 이것만 보고 한국어 평서체로 짧게 쓴다.
 
 1. 여러 논문에 공통으로 나타나는 기술적 흐름 (최대 3개)
-2. 서로 다른 갈래가 만나는 지점이 있으면 그것
-3. 눈에 띄게 새로운 접근이 있으면 그것
+2. 그 흐름이 위 관심 분야와 만나는 지점 — 우리가 왜 봐야 하는가
+3. 관심 분야 밖이지만 곧 넘어올 것 같은 움직임이 있으면 그것
 
 지킬 것:
 - 초록에 없는 내용을 쓰지 않는다. 근거가 없으면 "이 표본으로는 알 수 없다"고 쓴다.
 - **숫자·통계·비율·증감을 쓰지 않는다.** 편수는 따로 집계돼 있다.
 - 논문을 가리킬 때는 제목 앞부분을 그대로 인용한다.
-- 전체 400자 이내. 항목마다 한두 문장.
+- 관심 분야 목록을 그대로 나열하지 않는다. 논문과 이어질 때만 언급한다.
+- 전체 500자 이내. 항목마다 한두 문장.
 
 논문 목록:
 {papers}
@@ -221,16 +231,15 @@ _NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록�
 
 
 def _narrative_corpus(rows: list) -> tuple[str, int]:
-    """프롬프트에 넣을 공개 논문 텍스트. (본문, 넣은 편수).
+    """프롬프트에 넣을 논문 텍스트. (본문, 넣은 편수).
 
-    공개 출처만 넣는다 — 규칙 4. source 가 비어 있으면 arXiv 델타에서 온
-    것이라 공개다(papers.source 는 비-arXiv 경로에서만 채워진다).
+    출처로 거르지 않는다 — 규칙 4(2026-09-03 개정)는 논문 텍스트를 arXiv·
+    오픈액세스·직접 올린 PDF 모두 허용한다. 여기만 걸렀더니 ④ 요약이 이미
+    직접 올린 PDF 를 LLM 에 보내고 있는 것과 앞뒤가 안 맞았다(실측:
+    `pdf-5bd2ec925e` 는 요약이 이미 있다).
     """
     parts, used = [], 0
     for row in rows:
-        src = (_field(row, "source") or "arxiv").lower()
-        if not src.startswith(NARRATIVE_PUBLIC_SOURCES):
-            continue
         title = (_field(row, "title") or "").strip()
         abstract = (_field(row, "abstract") or "").strip()[:NARRATIVE_ABSTRACT_CHARS]
         if not title:
@@ -262,8 +271,22 @@ def ungrounded_numbers(text: str, corpus: str) -> list[str]:
     return sorted(set(out))
 
 
-async def narrative(client: httpx.AsyncClient, rows: list) -> tuple[str, list[str]] | None:
-    """이번 주 논문 제목·초록만으로 쓴 서술. (글, 검증 안 된 숫자들).
+def narrative_topics(profile: dict, limit: int = 12) -> str:
+    """프롬프트에 넣을 관심 분야. 가중치 높은 것부터.
+
+    **키워드 이름만 보낸다 — 가중치 값은 안 보낸다.** "우리가 무엇에 관심
+    있나"는 나가도 되지만 "무엇을 얼마나 중요하게 보나"는 우선순위라
+    "무엇을 하고 있나"에 가깝다(규칙 4).
+    """
+    weights = profile.get("core_weights") or {}
+    topics = sorted(profile.get("core_topics", []),
+                    key=lambda k: (-float(weights.get(k, 1.0)), k))
+    return ", ".join(topics[:limit])
+
+
+async def narrative(client: httpx.AsyncClient, rows: list,
+                    profile: dict | None = None) -> tuple[str, list[str]] | None:
+    """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들).
 
     실패하면 None — 셈 절은 그대로 나간다. 서술은 부가 정보다.
     """
@@ -273,7 +296,8 @@ async def narrative(client: httpx.AsyncClient, rows: list) -> tuple[str, list[st
     if used < 3:
         return None      # 표본이 이보다 적으면 "흐름"이라 부를 게 없다
 
-    prompt = _NARRATIVE_PROMPT.format(papers=corpus)
+    topics = narrative_topics(profile or {}) or "(지정 없음)"
+    prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics)
     try:
         text = await se._call_with_rate_limit_retry(
             lambda: se._post_gemini(client, prompt), "Gemini(동향 서술)")
@@ -461,5 +485,5 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
         shared, examined, targets = await shared_references(client, this_week)
     story = None
     if client is not None and with_narrative and this_week:
-        story = await narrative(client, this_week)
+        story = await narrative(client, this_week, profile)
     return format_report(this_week, last_week, profile, shared, examined, targets, story)
