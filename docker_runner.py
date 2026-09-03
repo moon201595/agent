@@ -92,17 +92,59 @@ def _safe_import_name(package_name: str) -> str:
     return package_name.replace("-", "_")
 
 
+# 임포트 대상 추정에서 제외할 최상위 .py 파일. 저장소에 있어도 "이 논문의
+# 코드"가 아니거나(setup.py·conftest.py) 임포트 자체가 부작용을 내는 것들이다.
+_NON_MODULE_FILES = {"setup.py", "conftest.py", "manage.py", "__init__.py",
+                     "__main__.py"}
+
+
+def _is_candidate_module(path: Path) -> bool:
+    name = path.name
+    return (path.suffix == ".py" and name not in _NON_MODULE_FILES
+            and not name.startswith(("_", ".", "test_"))
+            and not name.endswith("_test.py"))
+
+
 def _guess_importable_package(repo_dir: Path) -> str | None:
-    """pyproject.toml/setup.py 가 없을 때 쓰는 최후 수단 — __init__.py 를 가진
-    최상위 디렉터리를 찾는다. tests/docs/examples 류는 제외한다.
+    """pyproject.toml/setup.py 가 없거나 선언 이름이 안 맞을 때 쓰는 최후 수단.
+
+    세 가지를 순서대로 본다(2026-09-02 확장, §8-29):
+
+      1. `__init__.py` 를 가진 최상위 디렉터리 — 가장 확실하다.
+      2. **PEP 420 네임스페이스 패키지** — `__init__.py` 없이 `.py` 파일만
+         가진 디렉터리. 파이썬 3.3부터 정상적인 패키지이고 실제 저장소에서
+         흔한데, 예전엔 통째로 못 봤다.
+      3. **최상위 단일 모듈**(`foo.py`) — 후보가 **정확히 하나일 때만** 쓴다.
+         여럿이면 어느 게 진입점인지 알 방법이 없고, 아무거나 고르면 "임포트
+         성공"이 이 논문 코드와 무관한 사실이 된다. 모호하면 안 고르는 쪽이
+         맞다 — 그때는 install_only 로 남는다.
+
+    왜 넓혔나: 이 함수가 None 을 돌려주면 저장소가 `install_only` 로 떨어져
+    Docker 빌드만 하고 끝난다(실측 330초, §8-28). 임포트 대상을 하나라도 더
+    찾으면 그 비용이 실제 판정으로 바뀐다.
+
+    `setup.py` 의 `packages=` 선언은 안 읽는다 — 실제로는 `find_packages()`
+    호출인 경우가 대부분이라 리터럴 파싱으로 얻을 게 거의 없다.
     """
-    for child in sorted(repo_dir.iterdir()):
-        if not child.is_dir() or child.name.startswith((".", "_")):
-            continue
-        if child.name.lower() in _NON_PACKAGE_DIRS:
-            continue
+    dirs = [c for c in sorted(repo_dir.iterdir())
+            if c.is_dir() and not c.name.startswith((".", "_"))
+            and c.name.lower() not in _NON_PACKAGE_DIRS]
+
+    for child in dirs:                                   # 1. 명시적 패키지
         if (child / "__init__.py").exists():
             return child.name
+
+    for child in dirs:                                   # 2. PEP 420
+        try:
+            if any(_is_candidate_module(f) for f in child.iterdir()):
+                return child.name
+        except OSError:
+            continue
+
+    modules = [f for f in sorted(repo_dir.iterdir())     # 3. 단일 모듈
+               if f.is_file() and _is_candidate_module(f)]
+    if len(modules) == 1:
+        return modules[0].stem
     return None
 
 
