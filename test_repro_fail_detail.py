@@ -136,11 +136,85 @@ def _plan_for(tmp_path, files: dict[str, str]):
 def test_detect_install_plan_is_not_the_bug(tmp_path):
     """requirements.txt 만 있어도 installer·install_cmd 는 제대로 채워진다.
     이 함수에 테스트를 써봐야 정상 동작만 고정할 뿐 결함은 안 잡힌다 —
-    처음에 원인을 여기로 잘못 짚었던 것을 기록해 둔다."""
-    plan = _plan_for(tmp_path, {"requirements.txt": "numpy\n", "train.py": "print(1)\n"})
+    처음에 원인을 여기로 잘못 짚었던 것을 기록해 둔다.
+
+    2026-09-02: 픽스처에서 train.py 를 뺐다. §8-29 확장으로 최상위 단일
+    모듈이 임포트 대상으로 잡히게 됐기 때문이다 — 이 테스트가 보려는 것은
+    "installer 는 채워지는데 실행 대상만 없다"라서, 실행 대상이 진짜로 없는
+    구성으로 바꿨다. 확장 자체는 아래 별도 테스트가 본다."""
+    plan = _plan_for(tmp_path, {"requirements.txt": "numpy\n", "README.md": "hi\n"})
     assert plan.installer == "pip-requirements"
     assert "requirements.txt" in plan.install_cmd
     assert plan.entry_point is None and plan.package_name is None   # 실행 대상만 없다
+
+
+# ------------------------------------------- 임포트 대상 추정 확장 (§8-29)
+#
+# 이 함수가 None 을 돌려주면 저장소가 install_only 로 떨어져 Docker 빌드만
+# 하고 끝난다(실측 330초, §8-28). 대상을 하나라도 더 찾으면 그 비용이 실제
+# 판정으로 바뀐다.
+
+
+def test_explicit_package_still_wins(tmp_path):
+    """__init__.py 를 가진 디렉터리가 가장 확실한 신호다 — 순서가 바뀌면 안 된다."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "solo.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) == "pkg"
+
+
+def test_pep420_namespace_package_is_found(tmp_path):
+    """__init__.py 없이 .py 만 가진 디렉터리도 파이썬 3.3부터 정상 패키지다.
+    예전엔 이걸 통째로 못 봐서 install_only 로 떨어졌다."""
+    (tmp_path / "mylib").mkdir()
+    (tmp_path / "mylib" / "core.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) == "mylib"
+
+
+def test_single_top_level_module_is_found(tmp_path):
+    (tmp_path / "hadamard.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) == "hadamard"
+
+
+def test_ambiguous_top_level_modules_are_refused(tmp_path):
+    """여럿이면 어느 게 진입점인지 알 방법이 없다. 아무거나 고르면
+    "임포트 성공"이 이 논문 코드와 무관한 사실이 된다 — 모호하면 안 고른다."""
+    for name in ("train.py", "eval.py", "utils.py"):
+        (tmp_path / name).write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) is None
+
+
+def test_setup_and_conftest_are_not_import_targets(tmp_path):
+    """setup.py 임포트는 부작용을 내고, conftest.py 는 이 논문 코드가 아니다."""
+    (tmp_path / "setup.py").write_text("x=1", encoding="utf-8")
+    (tmp_path / "conftest.py").write_text("x=1", encoding="utf-8")
+    (tmp_path / "real.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) == "real"
+
+
+def test_test_files_are_not_import_targets(tmp_path):
+    (tmp_path / "test_model.py").write_text("x=1", encoding="utf-8")
+    (tmp_path / "model_test.py").write_text("x=1", encoding="utf-8")
+    (tmp_path / "model.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) == "model"
+
+
+def test_excluded_dirs_are_still_excluded(tmp_path):
+    """tests/docs/examples 류는 PEP 420 확장 뒤에도 제외돼야 한다 — 안 그러면
+    실측으로 잡았던 문제(services 가 진짜 패키지보다 먼저 뽑힘)가 되살아난다."""
+    for name in ("tests", "docs", "examples"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "a.py").write_text("x=1", encoding="utf-8")
+    assert dr._guess_importable_package(tmp_path) is None
+
+
+def test_widening_turns_install_only_into_a_real_run(monkeypatch, tmp_path):
+    """§8-29 의 목적: install_only 로 떨어지던 저장소가 실제 판정까지 간다."""
+    (tmp_path / "requirements.txt").write_text("numpy\n", encoding="utf-8")
+    (tmp_path / "hadamard.py").write_text("x=1", encoding="utf-8")
+    out, ran = _outcome(monkeypatch, tmp_path, {})
+    assert out["stage"] == "run"
+    assert ran == [1]
 
 
 def _outcome(monkeypatch, tmp_path, files, build_ok=True):
