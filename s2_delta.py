@@ -150,12 +150,44 @@ async def find_new_papers_since(
     }
 
 
+# 서로 거의 같은 결과를 돌려주는 키워드 쌍. **왼쪽만 질의하고 오른쪽은 뺀다.**
+#
+# 2026-09-03 실측(60일 창, 키워드당 상한 100편)으로 겹침을 직접 쟀다:
+#
+#   'on-sensor computing' 100편 중 86편(86%)이 'in-sensor computing' 에도 있음
+#   'micro defect detection' 100편 중 61편(61%)이 'defect detection' 에도 있음
+#   'surface inspection'    100편 중 13편(13%)만 'defect detection' 에도 있음
+#   'few-shot defect detection' 100편 중 5편(5%)만 'defect detection' 에도 있음
+#
+# **처음 세운 가설("키워드 7개인데 개념은 4개")은 틀렸다.** 문구가 포함관계면
+# 결과도 포함관계일 거라 봤는데, S2 검색은 부분문자열 매칭이 아니라 관련도
+# 검색이라 그렇게 안 움직인다 — 'few-shot defect detection' 은 few-shot 학습
+# 문헌을 데려와서 겹침이 5% 다. 합집합 443편 / 단순합 614편으로 **72%가 고유**다.
+# 그래서 넓은 키워드로 좁은 것을 대체하지 않는다. 지우면 논문을 잃는다.
+#
+# 86% 인 한 쌍만 뺀다. 잃는 건 그 개념 합집합 114편 중 14편(12%)이고,
+# 얻는 건 S2 호출 하나다 — 429 사슬 하나가 최대 450초였다.
+#
+# **채점에서는 안 뺀다.** 27개 core_topics 로 점수를 매기는 건 전부 로컬이라
+# 공짜다. 줄이는 건 나가는 질의뿐이다.
+S2_REDUNDANT_KEYWORDS = {
+    "on-sensor computing": "in-sensor computing",
+}
+
+
 def keywords_for_s2(profile: dict, min_weight: float = S2_MIN_KEYWORD_WEIGHT) -> list[str]:
-    """S2 로 검색할 키워드 — 기본은 표적 계층(가중치 >= 1.0)만.
+    """S2 로 **질의할** 키워드 — 표적 계층(가중치 >= 1.0) 중 중복 제외.
+
+    채점 키워드와 다르다. 채점은 core_topics 전부를 쓰고 로컬이라 공짜지만,
+    질의는 한 개마다 S2 호출 하나이고 그게 429 의 원인이다.
 
     가중치를 안 준 프로필(구형)은 전부 1.0 으로 보므로 자연히 전 키워드가
     대상이 된다 — 하위 호환.
     """
     weights = profile.get("core_weights") or {}
-    return [kw for kw in profile.get("core_topics", [])
-            if float(weights.get(kw, 1.0)) >= min_weight]
+    picked = [kw for kw in profile.get("core_topics", [])
+              if float(weights.get(kw, 1.0)) >= min_weight]
+    # 대신할 키워드가 실제로 질의 목록에 있을 때만 뺀다 — 없으면 그 개념을
+    # 통째로 잃는다.
+    return [kw for kw in picked
+            if S2_REDUNDANT_KEYWORDS.get(kw) not in picked]

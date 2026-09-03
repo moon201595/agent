@@ -12,6 +12,9 @@ server 를 63% 로 올린 뒤에 착수했다 — **리팩토링은 그물이 �
 import asyncio
 import threading
 import time
+from unittest import mock
+
+import pytest
 
 import pacing
 
@@ -154,3 +157,74 @@ def test_both_flavours_share_the_same_rule():
     import inspect
     src = inspect.getsource(pacing)
     assert src.count("min_interval - (time.monotonic()") == 1
+
+
+# ---------------------------------------------------------------- 적응형 페이싱 (2026-09-03)
+#
+# S2 를 1.0초 간격으로 7키워드 연속 호출하니 14회 중 7회가 429 였고 재시도
+# 사슬이 8분(전체 36분의 22%)을 먹었다. 간격을 코드에 크게 박으면 규칙 3 에
+# 걸리므로 429 응답만 보고 넓힌다.
+
+def test_widen_doubles_up_to_cap():
+    p = pacing.AsyncPacer(1.0, max_interval=16.0)
+    assert [p.widen() for _ in range(6)] == [2.0, 4.0, 8.0, 16.0, 16.0, 16.0]
+    assert p.widened == 4  # 상한에 닿은 뒤로는 안 센다
+
+
+def test_widen_is_noop_without_cap():
+    """상한을 안 준 페이서(arXiv 등)는 기존 동작 그대로."""
+    p = pacing.AsyncPacer(3.0)
+    assert [p.widen() for _ in range(3)] == [3.0, 3.0, 3.0]
+    assert p.widened == 0
+
+
+def test_widened_interval_is_actually_enforced():
+    """넓힌 값이 기록만 되고 안 지켜지면 의미가 없다."""
+    import asyncio, time
+    p = pacing.AsyncPacer(0.01, max_interval=0.20)
+    p.widen(); p.widen(); p.widen(); p.widen()   # 0.01 → 0.16
+    assert p.min_interval == pytest.approx(0.16)
+
+    async def two_calls():
+        async with p.gate():
+            pass
+        t0 = time.monotonic()
+        async with p.gate():
+            pass
+        return time.monotonic() - t0
+
+    assert asyncio.run(two_calls()) >= 0.15
+
+
+def test_s2_429_widens_the_server_pacer():
+    """server 의 S2 경로가 429 를 받으면 실제로 간격이 넓어진다."""
+    import httpx, server
+
+    before = server._s2_pacer.min_interval
+    try:
+        server._s2_pacer.min_interval = 0.001
+        server._s2_pacer.max_interval = 0.01
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, json={})
+            return httpx.Response(200, json={"data": []})
+
+        async def go():
+            transport = httpx.MockTransport(handler)
+            async with httpx.AsyncClient(transport=transport) as c:
+                return await server._throttled_s2_get(c, {}, {})
+
+        import asyncio
+        # 재시도 대기는 0 으로 — 이 테스트가 재는 건 간격이지 백오프가 아니다
+        with mock.patch.object(server, "_rate_limit_wait", new=lambda *a, **k: 0.0):
+            resp = asyncio.run(go())
+        assert resp.status_code == 200
+        assert server._s2_pacer.widened >= 1
+        assert server._s2_pacer.min_interval > 0.001
+    finally:
+        server._s2_pacer.min_interval = before
+        server._s2_pacer.max_interval = server.S2_MAX_INTERVAL
+        server._s2_pacer.widened = 0
