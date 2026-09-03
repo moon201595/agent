@@ -163,6 +163,132 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
     return [(g, now[g], prev.get(g, 0)) for g in ranked[:top_n]]
 
 
+# ---------------------------------------------------------------- 서술 (2026-09-03)
+#
+# "규칙 기반으로 어떻게 동향을 보고하나"는 지적을 받고 넣었다. 맞는 말이다 —
+# 편수 표는 무엇이 몇 편인지는 알려주지만 **무엇과 무엇이 이어지는지**는 못
+# 말한다. 그건 글이어야 하고, 글은 LLM 이 쓴다.
+#
+# **규칙 7 위반이 아니다.** 규칙 7 이 막는 건 *판정*이다 — 검증 통과 여부,
+# 재현 성공 여부처럼 파이프라인이 그걸 근거로 다음 행동을 정하는 자리.
+# 여기서 나오는 글은 아무것도 정하지 않는다. 논문을 고르지도, 점수를 바꾸지도,
+# 다이제스트를 막지도 않는다. 사람이 읽는 글이고, ④ 요약이 이미 같은 범주다.
+#
+# **진짜 제약은 규칙 4다: LLM 에는 공개 논문 텍스트만 보낸다.** 그래서
+# 프롬프트에 다음을 절대 넣지 않는다 — core_topics(팀의 연구 방향 그 자체다),
+# 우리 집계, 프로필 이름, 팀 이름, emerging_terms 결과(core_topics 를 빼서
+# 만든 것이라 여집합이 새어 나간다). 모델이 보는 건 **이번 주 논문의 제목과
+# 초록뿐**이고, 그것도 공개 출처(arXiv·오픈액세스)로 한정한다. 수동 업로드
+# PDF 는 출처를 우리가 보증할 수 없어 뺀다.
+#
+# **규칙 8은 두 겹으로 지킨다.** 프롬프트에서 숫자를 못 쓰게 하고, 그래도
+# 나오면 원문 대조로 걸러 표시한다. 편수는 위 셈 절이 이미 정확히 갖고 있고,
+# 그 숫자와 모델이 지어낸 숫자가 한 화면에서 섞이는 게 제일 나쁘다.
+
+def _field(row, name: str, default: str = "") -> str:
+    """sqlite3.Row 는 .get() 이 없다 — 없는 컬럼에 죽지 않게 감싼다.
+    주간 리뷰는 부가 정보라 필드 하나 때문에 다이제스트를 막으면 안 된다."""
+    try:
+        value = row[name]
+    except (KeyError, IndexError):
+        return default
+    return default if value is None else str(value)
+
+
+# 줄머리 목차 번호("1." "2)" "- 3.")는 숫자 주장이 아니다.
+_LIST_MARKER_RE = re.compile(r"^[\s\-*·]*\d+[.)]\s", re.MULTILINE)
+
+NARRATIVE_MAX_PAPERS = 20      # 한 번의 프롬프트에 넣을 논문 수 상한
+NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
+NARRATIVE_PUBLIC_SOURCES = ("arxiv", "open-access")
+
+_NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록이다.
+이것만 보고 한국어 평서체로 짧게 쓴다.
+
+1. 여러 논문에 공통으로 나타나는 기술적 흐름 (최대 3개)
+2. 서로 다른 갈래가 만나는 지점이 있으면 그것
+3. 눈에 띄게 새로운 접근이 있으면 그것
+
+지킬 것:
+- 초록에 없는 내용을 쓰지 않는다. 근거가 없으면 "이 표본으로는 알 수 없다"고 쓴다.
+- **숫자·통계·비율·증감을 쓰지 않는다.** 편수는 따로 집계돼 있다.
+- 논문을 가리킬 때는 제목 앞부분을 그대로 인용한다.
+- 전체 400자 이내. 항목마다 한두 문장.
+
+논문 목록:
+{papers}
+"""
+
+
+def _narrative_corpus(rows: list) -> tuple[str, int]:
+    """프롬프트에 넣을 공개 논문 텍스트. (본문, 넣은 편수).
+
+    공개 출처만 넣는다 — 규칙 4. source 가 비어 있으면 arXiv 델타에서 온
+    것이라 공개다(papers.source 는 비-arXiv 경로에서만 채워진다).
+    """
+    parts, used = [], 0
+    for row in rows:
+        src = (_field(row, "source") or "arxiv").lower()
+        if not src.startswith(NARRATIVE_PUBLIC_SOURCES):
+            continue
+        title = (_field(row, "title") or "").strip()
+        abstract = (_field(row, "abstract") or "").strip()[:NARRATIVE_ABSTRACT_CHARS]
+        if not title:
+            continue
+        parts.append(f"- {title}\n  {abstract}" if abstract else f"- {title}")
+        used += 1
+        if used >= NARRATIVE_MAX_PAPERS:
+            break
+    return "\n".join(parts), used
+
+
+def ungrounded_numbers(text: str, corpus: str) -> list[str]:
+    """서술에 나왔는데 원문에 없는 숫자. 규칙 8 의 두 번째 겹.
+
+    verify.py 의 추출·정규화를 그대로 빌려 쓴다(읽기만 한다 — 민감 모듈이라
+    고치지 않는다). 규칙이 하나면 검증기와 여기가 어긋날 일이 없다.
+    """
+    import verify
+    normalized = corpus.replace(",", "")
+    # 줄머리의 "1." "2)" 는 목차 번호지 주장이 아니다. 실측(2026-09-03 첫 라이브
+    # 호출)에서 이걸 안 빼니 멀쩡한 서술에 ['1','3'] 경고가 붙었다 — 매번 뜨는
+    # 경고는 아무도 안 읽으므로 진짜 조작을 놓치게 만든다.
+    body = _LIST_MARKER_RE.sub("", text)
+    out = []
+    for m in verify._NUMBER_RE.finditer(body):
+        norm = verify._normalize(m.group(1))
+        if not verify._number_in_text(norm, normalized):
+            out.append(m.group(1))
+    return sorted(set(out))
+
+
+async def narrative(client: httpx.AsyncClient, rows: list) -> tuple[str, list[str]] | None:
+    """이번 주 논문 제목·초록만으로 쓴 서술. (글, 검증 안 된 숫자들).
+
+    실패하면 None — 셈 절은 그대로 나간다. 서술은 부가 정보다.
+    """
+    import summarize_engine as se
+
+    corpus, used = _narrative_corpus(rows)
+    if used < 3:
+        return None      # 표본이 이보다 적으면 "흐름"이라 부를 게 없다
+
+    prompt = _NARRATIVE_PROMPT.format(papers=corpus)
+    try:
+        text = await se._call_with_rate_limit_retry(
+            lambda: se._post_gemini(client, prompt), "Gemini(동향 서술)")
+    except Exception:
+        try:
+            text = await se._call_with_rate_limit_retry(
+                lambda: se._post_groq(client, prompt), "Groq(동향 서술)")
+        except Exception:
+            return None
+    text = (text or "").strip()
+    if not text:
+        return None
+    return text, ungrounded_numbers(text, corpus)
+
+
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
@@ -252,8 +378,15 @@ async def shared_references(
 
 def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
                   profile: dict, shared: list[tuple[str, int]] | None = None,
-                  examined: int = 0, targets: int = 0) -> str:
-    """사람이 메일에서 바로 읽는 형태. 숫자만 담는다."""
+                  examined: int = 0, targets: int = 0,
+                  story: tuple[str, list[str]] | None = None) -> str:
+    """사람이 메일에서 바로 읽는 형태.
+
+    **셈과 서술을 섞지 않는다.** 위쪽은 전부 기계가 센 숫자라 위조가 불가능하고,
+    맨 아래 서술 절만 LLM 이 쓴 글이다. 둘을 한 문단에 섞으면 읽는 사람이
+    어디까지가 측정이고 어디부터가 해석인지 구분할 수 없게 된다 — 그게 이
+    프로젝트가 라벨로 계속 막아 온 뭉갬이다(§8-23·24·33).
+    """
     now = keyword_counts(this_week, profile)
     prev = keyword_counts(last_week, profile)
 
@@ -305,16 +438,28 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
         lines += ["", f"▶ 공통 인용: 없음 ({examined}/{targets}편 조회 — "
                       "논문들이 서로 다른 토대를 쓰고 있다)"]
 
+    if story:
+        text, ungrounded = story
+        lines += ["", "─" * 60,
+                  "▶ 서술 (LLM 이 이번 주 논문의 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다)"]
+        lines += [f"   {ln}" for ln in text.strip().splitlines()]
+        if ungrounded:
+            lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
+
     return "\n".join(lines) + "\n"
 
 
 async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None,
-                days: int = 7, with_references: bool = True) -> str:
-    """주간 리뷰 본문. client 를 안 주면 인용망 조회를 건너뛴다(네트워크 없음)."""
+                days: int = 7, with_references: bool = True,
+                with_narrative: bool = True) -> str:
+    """주간 리뷰 본문. client 를 안 주면 인용망 조회와 서술을 건너뛴다(네트워크 없음)."""
     end = datetime.now(timezone.utc)
     this_week = _rows_between(db, end - timedelta(days=days), end)
     last_week = _rows_between(db, end - timedelta(days=days * 2), end - timedelta(days=days))
     shared, examined, targets = None, 0, 0
     if client is not None and with_references and this_week:
         shared, examined, targets = await shared_references(client, this_week)
-    return format_report(this_week, last_week, profile, shared, examined, targets)
+    story = None
+    if client is not None and with_narrative and this_week:
+        story = await narrative(client, this_week)
+    return format_report(this_week, last_week, profile, shared, examined, targets, story)
