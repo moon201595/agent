@@ -13,8 +13,6 @@
 import asyncio
 from datetime import datetime, timezone
 
-import pytest
-
 import s2_delta
 
 

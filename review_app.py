@@ -1539,15 +1539,6 @@ def render_review_tab():
 # ④⑤⑦이 저장 직후 자동으로 끝나고, 사람은 결과를 읽기만 한다.
 
 
-def _profile_summary_line(p: dict) -> str:
-    parts = [f"핵심 {len(p['core_topics'])}개"]
-    if p["target_domain"]:
-        parts.append(f"도메인 {len(p['target_domain'])}개")
-    if p["exclude"]:
-        parts.append(f"제외 {len(p['exclude'])}개")
-    return f"{p['name']} — " + ", ".join(parts)
-
-
 def _format_run_row(row: dict) -> str:
     emoji = {"done": "✅", "partial": "🟡", "failed": "❌"}.get(row["status"], "⚪")
     when = _relative_time(row["started_at"]) if row.get("started_at") else "?"

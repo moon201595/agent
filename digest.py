@@ -314,10 +314,14 @@ def coverage_label(arxiv_id: str) -> str:
 # 파이프라인이 어디까지 갔는지의 순서. 여러 후보를 시도했으면 **가장 멀리 간**
 # 시도가 그 논문에 대해 제일 많은 것을 말해준다 — clone 도 못 한 후보 두 개보다
 # 실제로 실행까지 간 후보 하나가 정보량이 크다.
-_STAGE_DEPTH = {"clone": 0, "no_target": 1, "build": 2, "run": 3}
+# install_only 는 build 성공 뒤 실행 대상이 없어 멈춘 상태다 — build 실패보다
+# 멀리 갔지만, 실제로 코드를 돌려본 run 보다는 정보량이 적다.
+_STAGE_DEPTH = {"clone": 0, "no_target": 1, "build": 2, "install_only": 3, "run": 4}
 
 # (stage, fail_detail) → 라벨. ✗ 와 – 의 구분이 이 표의 핵심이다:
 #   ✗ = 코드를 실제로 돌렸는데 실패했다        → 저자 코드에 대한 판정
+#   ◐ = 의존성 설치까지는 됐으나 실행 대상이 없다 → 판정 불가, 다만 "설치되는
+#       진짜 코드"라는 약한 신호는 있다(2026-09-02)
 #   – = 돌려보지도 못했다                      → 저자 코드에 대한 판정이 아님
 # 2026-09-01 이전에는 둘 다 [재현 ✗] 였고, 그래서 "저자가 코드를 안 올렸다(404)"가
 # "저자 코드가 안 돈다"로 읽혔다(실측: 2608.25176).
@@ -326,6 +330,7 @@ _REPRO_LABELS = {
     ("run", "run_timeout"): "[재현 ✗ 시간 초과]",
     ("run", "run_nonzero_exit"): "[재현 ✗ 실행 실패]",
     ("build", "build_failed"): "[재현 ✗ 설치 실패]",
+    ("install_only", "install_only_no_run_target"): "[재현 ◐ 설치만 확인]",
     ("no_target", "no_install_target"): "[재현 – 실행 대상 없음]",
     ("clone", "repo_not_found"): "[재현 – 저장소 없음(404)]",
     ("clone", "clone_timeout"): "[재현 – 클론 시간 초과]",
@@ -338,6 +343,7 @@ _REPRO_LABELS = {
 # 않는다 — stage 만으로도 "돌려봤는가"는 알 수 있기 때문이다.
 _REPRO_LABELS_BY_STAGE = {
     "run": "[재현 ✗ 실행 실패]",
+    "install_only": "[재현 ◐ 설치만 확인]",
     "build": "[재현 ✗ 설치 실패]",
     "no_target": "[재현 – 실행 대상 없음]",
     "clone": "[재현 – 클론 실패]",

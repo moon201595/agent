@@ -294,7 +294,18 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
     # print)만 돈다. exit 0 이 나온다고 "성공"으로 세면 검증기와 같은 방식의
     # 거짓 통과가 된다 — 프로젝트가 지키는 Goodhart 가드 원칙을 여기서도 지켜야
     # 하므로, 아예 시도하지 않고 명시적으로 "판정 불가"로 남긴다.
-    if run_cmd is None and not plan.entry_point and not plan.package_name:
+    # 2026-09-02: 예전 가드는 **실행 대상만** 보면서 로그에는 "설치 대상도 못
+    # 찾음"이라고 적었다. 조건과 메시지가 어긋나 있었고, 그 탓에
+    # requirements.txt 가 멀쩡히 있는 저장소가 "아무것도 없음"으로 거부됐다
+    # (실측: llm-awq/pyproject.toml, Hadamard·UrbanGround/requirements.txt).
+    #
+    # 그래서 셋으로 나눈다. 핵심은 "설치는 되는데 실행 대상이 없는" 중간
+    # 상태를 **성공이 아닌 별도 상태**로 남기는 것이다 — 철회의 0/NULL,
+    # 검증의 통과/수치없음, ⑦ 라벨의 ✗/– 와 같은 결이다.
+    has_run_target = run_cmd is not None or bool(plan.entry_point or plan.package_name)
+    has_install_target = plan.installer != "none"
+
+    if not has_run_target and not has_install_target:
         return {"success": False, "stage": "no_target", "plan": asdict(plan),
                 "fail_detail": "no_install_target",
                 "log": "설치 대상(pyproject/setup.py/requirements.txt)도 임포트 가능한 "
@@ -309,6 +320,21 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
             return {"success": False, "stage": "build", "plan": asdict(plan),
                     "fail_detail": "build_failed",
                     "log": build_log, "attempts": []}
+
+        if not has_run_target:
+            # 설치는 됐지만 실행할 대상이 없다. **placeholder 를 돌리지 않는다** —
+            # 돌리면 exit 0 이 나오고 그게 성공으로 세어져 검증기와 같은 거짓
+            # 통과가 된다(2026-08-03 TSPulse 실측). 여기서 멈추면 exit 0 이
+            # 나올 자리 자체가 없어 그 문제가 구조적으로 사라진다.
+            #
+            # "의존성 설치가 성공했다"는 build 종료 코드만으로 위조 불가능하게
+            # 판정되는 약한 신호다. success 로는 안 세고 상태로만 남긴다.
+            return {"success": False, "stage": "install_only", "plan": asdict(plan),
+                    "fail_detail": "install_only_no_run_target",
+                    "log": "의존성 설치는 성공했으나 실행할 진입점도 임포트 가능한 "
+                           "패키지도 없어 스모크 테스트를 구성할 수 없다 — 설치까지만 "
+                           "확인된 상태다(성공 아님).",
+                    "attempts": []}
 
         # 실행 단계는 네트워크 없음으로 **고정**한다(M7, 2026-08-28).
         #

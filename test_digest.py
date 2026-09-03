@@ -478,6 +478,7 @@ def test_tldr_not_used_for_successfully_processed_paper(isolated_db):
     ("run", "run_timeout", "[재현 ✗ 시간 초과]"),
     ("run", "run_nonzero_exit", "[재현 ✗ 실행 실패]"),
     ("build", "build_failed", "[재현 ✗ 설치 실패]"),
+    ("install_only", "install_only_no_run_target", "[재현 ◐ 설치만 확인]"),
     ("no_target", "no_install_target", "[재현 – 실행 대상 없음]"),
     ("clone", "repo_not_found", "[재현 – 저장소 없음(404)]"),
     ("clone", "clone_timeout", "[재현 – 클론 시간 초과]"),
@@ -553,3 +554,38 @@ def test_not_run_labels_do_not_force_attention_in_html(isolated_db):
     html = _html_for([_scored_paper("p1", "논문", 1.0)])
     assert "저장소 없음(404)" in html
     assert "<details open" not in html
+
+
+def test_install_only_is_not_collapsed_into_no_target(isolated_db):
+    """실측(2026-09-02): requirements.txt 가 있는 저장소가 "실행 대상 없음"으로
+    거부돼 "가중치 전용 저장소"와 구분이 안 됐다. ◐ 는 "설치되는 진짜 코드지만
+    실행 대상이 없어 판정 불가"라는 뜻이고, – 와 다른 사실이다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage="install_only", fail_detail="install_only_no_run_target")
+    text = _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 ◐ 설치만 확인]" in text
+    assert "실행 대상 없음" not in text
+
+
+def test_actually_running_beats_install_only_in_depth(isolated_db):
+    """후보 둘 중 하나가 실제로 실행까지 갔으면 그쪽이 정보량이 크다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/one", success=False,
+                stage="install_only", attempt=1, fail_detail="install_only_no_run_target")
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
+                stage="run", attempt=2, fail_detail="run_nonzero_exit")
+    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_install_only_beats_build_failure_in_depth(isolated_db):
+    """설치가 된 쪽이 안 된 쪽보다 멀리 간 것이다."""
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/one", success=False,
+                stage="build", attempt=1, fail_detail="build_failed")
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
+                stage="install_only", attempt=2, fail_detail="install_only_no_run_target")
+    assert "[재현 ◐ 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+def test_old_install_only_row_without_detail_still_renders(isolated_db):
+    _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
+                stage="install_only", fail_detail=None)
+    assert "[재현 ◐ 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))

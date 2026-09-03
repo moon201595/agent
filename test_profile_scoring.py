@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from profile_scoring import Weights, recency_score, score_and_rank, score_paper, venue_hit
+from profile_scoring import Weights, recency_score, score_and_rank, score_paper
 
 PROFILE = {
     "core_topics": ["agent", "digital twin"],
