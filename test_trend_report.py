@@ -257,3 +257,84 @@ def test_previous_week_count_is_reported():
     prev = [_text_row("x", "we use edge devices here") for _ in range(2)]
     got = dict((t, (n, w)) for t, n, w in trend_report.emerging_terms(now, _PROFILE, prev))
     assert got["edge devices"] == (4, 2)
+
+
+# ---------------------------------------------------------------- 서술 (2026-09-03)
+#
+# 규칙 7 이 막는 건 판정이지 서술이 아니다. 여기서 지켜야 할 건 규칙 4
+# (LLM 에는 공개 논문 텍스트만)와 규칙 8(수치를 만들어내지 않는다)이다.
+
+_PUB = [{"title": "Defect detection on PV panels", "abstract": "We report 42.5% gain.",
+         "source": "arxiv"},
+        {"title": "In-sensor computing array", "abstract": "A memristor array.", "source": None},
+        {"title": "Edge inference on Jetson", "abstract": "Runs at 30 fps.",
+         "source": "open-access-doi"}]
+
+
+def test_prompt_carries_only_public_paper_text():
+    """핵심 회귀 — 규칙 4. 팀의 연구 방향(core_topics)이 프롬프트에 새면 안 된다."""
+    rows = _PUB + [{"title": "Internal roadmap", "abstract": "secret",
+                    "source": "manual-pdf-upload"}]
+    corpus, used = trend_report._narrative_corpus(rows)
+    assert used == 3
+    assert "Internal roadmap" not in corpus      # 출처를 보증 못 하는 건 안 보낸다
+    assert "Defect detection on PV panels" in corpus
+
+    prompt = trend_report._NARRATIVE_PROMPT.format(papers=corpus)
+    for leak in ("core_topics", "team_ai_advance", "KETI", "가중치", "core_weights"):
+        assert leak not in prompt
+
+
+def test_source_none_counts_as_public_arxiv():
+    """papers.source 는 비-arXiv 경로에서만 채워진다 — 비어 있으면 arXiv 다."""
+    corpus, used = trend_report._narrative_corpus(
+        [{"title": "T", "abstract": "A", "source": None}])
+    assert used == 1
+
+
+def test_ungrounded_numbers_flags_invented_ones():
+    """규칙 8 의 두 번째 겹 — 프롬프트로 막고, 그래도 나오면 대조로 잡는다."""
+    corpus, _ = trend_report._narrative_corpus(_PUB)
+    assert trend_report.ungrounded_numbers("42.5% 올랐다", corpus) == []
+    assert trend_report.ungrounded_numbers("17편에서 88% 늘었다", corpus) == ["17", "88"]
+
+
+def test_narrative_skips_when_sample_too_small():
+    """3편 미만이면 '흐름'이라 부를 게 없다 — 부르지도 않는다."""
+    import asyncio
+    assert asyncio.run(trend_report.narrative(None, _PUB[:2])) is None
+
+
+def test_narrative_returns_none_when_both_engines_fail(monkeypatch):
+    """서술이 실패해도 셈은 나가야 한다."""
+    import asyncio
+    import summarize_engine as se
+
+    async def boom(*a, **k):
+        raise RuntimeError("engine down")
+
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", boom)
+    assert asyncio.run(trend_report.narrative(None, _PUB)) is None
+
+
+def test_report_labels_the_narrative_as_unverified():
+    """셈과 서술이 한 화면에서 섞이면 안 된다 — 어디부터 해석인지 보여야 한다."""
+    out = trend_report.format_report([], [], {"core_topics": []},
+                                     story=("결함 검출이 온센서와 만난다.", []))
+    assert "검증되지 않았다" in out
+    assert "결함 검출이 온센서와 만난다." in out
+
+
+def test_report_warns_about_invented_numbers():
+    out = trend_report.format_report([], [], {"core_topics": []},
+                                     story=("17편이 늘었다.", ["17"]))
+    assert "원문에 없는 숫자" in out and "17" in out
+
+
+def test_list_markers_are_not_treated_as_claims():
+    """실측 오탐 — 첫 라이브 호출에서 목차 번호 1·3 에 경고가 붙었다.
+    매번 뜨는 경고는 아무도 안 읽으므로 진짜 조작을 놓치게 만든다."""
+    corpus, _ = trend_report._narrative_corpus(_PUB)
+    assert trend_report.ungrounded_numbers("1. 흐름\n2) 접점\n- 3. 새로움", corpus) == []
+    # 줄머리를 뺐다고 본문 숫자까지 놓치면 안 된다
+    assert trend_report.ungrounded_numbers("1. 성능이 17편 늘었다", corpus) == ["17"]
