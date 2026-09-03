@@ -104,6 +104,13 @@ ARXIV_MIN_INTERVAL = 3.0
 # 2026-08-01 키 등록 시점에 사용자가 직접 확인한 값. 반드시 지킬 것.
 S2_MIN_INTERVAL = 1.0
 
+# 1.0 초를 지켜도 429 가 온다 — 2026-09-03 실측에서 7키워드 연속 호출 중
+# **14회 중 7회가 429** 였고 재시도 사슬이 8분을 먹었다. 같은 날 8초 간격으로
+# 다시 재보니 처음 두 호출만 429 를 맞고 이후 다섯 호출은 전부 통과했다.
+# 그래서 간격을 미리 8초로 못 박는 대신 **429 를 맞을 때마다 두 배씩 넓히고**
+# 여기서 멈춘다. 한도 수치를 코드에 적지 않는 방식이다(규칙 3).
+S2_MAX_INTERVAL = 16.0
+
 # ①~③ 구간의 제한 재시도 상한. 최초 1회 + 재시도 MAX_RETRIES 회.
 # 이것은 에이전틱 루프가 아니라 예외 처리다 — 무엇을 다시 부를지 LLM 이 정하지 않고
 # 코드가 정해진 횟수만 다시 부른다. 상한을 올리기 전에 왜 올리는지부터 정할 것.
@@ -154,7 +161,7 @@ mcp = MCPServer("paper_harness_mcp")
 # 같은 다섯 줄이 여기 둘 + code_finder + retraction 으로 네 벌 있었다.
 _arxiv_pacer = pacing.AsyncPacer(ARXIV_MIN_INTERVAL)
 
-_s2_pacer = pacing.AsyncPacer(S2_MIN_INTERVAL)
+_s2_pacer = pacing.AsyncPacer(S2_MIN_INTERVAL, max_interval=S2_MAX_INTERVAL)
 
 
 def _init_storage() -> None:
@@ -396,6 +403,12 @@ async def _throttled_s2_get(
         async with _s2_pacer.gate():
             resp = await client.get(url, params=params, headers=headers, timeout=30)
         api_usage.record("s2", "ok" if resp.status_code == 200 else str(resp.status_code))
+        if resp.status_code == 429:
+            # 재시도 대기(_rate_limit_wait)는 이번 호출만 늦춘다. 이건 **다음
+            # 호출부터**를 늦춘다 — 그래야 사슬을 처음부터 안 탄다.
+            widened = _s2_pacer.widen()
+            print(f"  [페이싱] Semantic Scholar 호출 간격을 {widened:.0f}초로 넓힘"
+                  f" (429 를 받아 처리량을 줄인다)", flush=True)
         resp.raise_for_status()
         return resp
 

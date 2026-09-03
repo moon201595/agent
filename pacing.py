@@ -35,8 +35,36 @@ class AsyncPacer:
     조회를 하게 된 경위가 그것이다)."""
 
     min_interval: float
+    # widen() 이 올릴 수 있는 상한. 0 이면 이 페이서는 간격을 안 넓힌다.
+    # **이건 상대 서비스의 한도 수치가 아니라 우리 백오프의 천장이다** —
+    # 규칙 3 이 금지하는 건 전자다.
+    max_interval: float = 0.0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_call: float = 0.0
+    widened: int = 0
+
+    def widen(self, factor: float = 2.0) -> float:
+        """429 를 받았을 때 이후 호출 간격을 넓힌다.
+
+        2026-09-03 실측: S2 를 1.0초 간격으로 7키워드 연속 호출하니 **14회 중
+        7회가 429** 였고, 그 재시도 사슬(30·60·120·240초)이 **8분**을 먹었다.
+        전체 36분의 22%가 순수 대기였다.
+
+        간격을 미리 크게 잡는 방법도 있지만 그건 "S2 의 한도는 N 초"를 코드에
+        적는 것이라 규칙 3 에 걸린다 — 한도는 예고 없이 바뀐다(2025-12 Gemini
+        삭감). 대신 **실제 429 응답만 보고** 줄인다: 한 번 맞으면 두 배로
+        넓히고, 그 실행 안에서는 유지한다. 매일 새 프로세스로 도니 다음
+        실행에는 자연히 원래 간격에서 다시 시작한다 — 한도가 완화되면
+        저절로 따라간다.
+
+        되돌리지 않는 이유: 한 번 429 를 낸 상대에게 곧바로 원래 속도로
+        돌아가면 같은 사슬을 또 탄다. 규칙 2 의 (c) 처리량 축소다.
+        """
+        if self.max_interval <= 0 or self.min_interval >= self.max_interval:
+            return self.min_interval
+        self.min_interval = min(self.min_interval * factor, self.max_interval)
+        self.widened += 1
+        return self.min_interval
 
     async def wait(self) -> None:
         """락을 **잡은 채로** 돌려주지 않는다 — 호출부가 `async with

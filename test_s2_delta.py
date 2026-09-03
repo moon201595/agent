@@ -159,3 +159,32 @@ def test_one_request_per_keyword(monkeypatch):
     """키워드당 55초가 드는 게 실측이라, 요청 수가 조용히 늘면 안 된다."""
     _out, calls = _run(["a", "b", "c"], monkeypatch, {})
     assert calls == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------- 중복 질의 제외 (2026-09-03)
+
+def test_redundant_keyword_dropped_only_when_substitute_present():
+    """86% 겹치는 쌍만 뺀다. 대신할 키워드가 없으면 개념을 통째로 잃으므로 안 뺀다."""
+    both = {"core_topics": ["in-sensor computing", "on-sensor computing", "autofocus"]}
+    assert s2_delta.keywords_for_s2(both) == ["in-sensor computing", "autofocus"]
+
+    alone = {"core_topics": ["on-sensor computing", "autofocus"]}
+    assert s2_delta.keywords_for_s2(alone) == ["on-sensor computing", "autofocus"]
+
+
+def test_low_overlap_keywords_are_kept():
+    """실측 겹침이 낮은 것(5%·13%·61%)은 넓은 형제가 있어도 그대로 질의한다.
+
+    문구가 포함관계라고 결과까지 포함관계는 아니다 — S2 는 관련도 검색이라
+    'few-shot defect detection' 은 few-shot 학습 문헌을 데려온다(겹침 5%).
+    """
+    p = {"core_topics": ["defect detection", "micro defect detection",
+                         "few-shot defect detection", "surface inspection"]}
+    assert s2_delta.keywords_for_s2(p) == p["core_topics"]
+
+
+def test_scoring_keywords_are_not_reduced():
+    """줄이는 건 나가는 질의뿐 — 채점은 로컬이라 공짜다."""
+    p = {"core_topics": ["in-sensor computing", "on-sensor computing"]}
+    assert len(s2_delta.keywords_for_s2(p)) == 1
+    assert len(p["core_topics"]) == 2  # 프로필은 안 건드린다
