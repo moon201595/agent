@@ -1,4 +1,4 @@
-"""review_app 의 UI 없는 로직 — Streamlit 없이 돈다 (§8-31, 2026-09-02).
+"""review_core 의 UI 없는 로직 — Streamlit 없이 돈다 (§8-31, 2026-09-02).
 
 배경: review_app.py 는 1,902줄에 커버리지 **0%** 였고 그 안에 ⑦ 전이 지점이
 3곳 있다. 함수 33개 중 **20개(382줄)에는 `st.` 호출이 하나도 없다** — UI 와
@@ -9,15 +9,18 @@
 여기서 그물을 짜 두면 분리는 그 뒤에 안전하게 할 수 있고, 분리를 안 하더라도
 회귀 감지라는 실익은 이미 얻는다.
 
-`import review_app` 은 Streamlit 경고를 찍지만 부작용 없이 통과한다(실측).
+2026-09-02: 처음엔 review_app 에서 그대로 임포트해 테스트했고(그물 먼저),
+그 뒤에 review_core.py 로 분리했다. 이 파일은 **Streamlit 을 아예 임포트하지
+않는다** — 그게 분리가 실제로 된 증거다.
 """
 
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import review_app as app
+import review_core as app
 import server
 
 
@@ -154,3 +157,36 @@ def test_reproduce_running_escapes_slash_in_id(db, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "REPRO_DIR", repro)
     (repro / "cs.AI_0601001.running").write_text("t")
     assert app._reproduce_running("cs.AI/0601001") is True
+
+
+def test_review_core_does_not_import_streamlit():
+    """분리가 실제로 됐는지 확인하는 유일한 기계적 증거다. `st.` 을 쓰는
+    함수가 하나라도 다시 들어오면 이 파일 전체가 Streamlit 없이는 못 돌고,
+    커버리지가 다시 0 으로 돌아간다.
+
+    데코레이터도 포함이다 — `@st.cache_data` 가 붙은 `_translate_cached` 를
+    처음에 옮기려다 문법 오류로 드러났다(AST 의 lineno 가 def 줄을 가리켜
+    데코레이터를 빠뜨렸다)."""
+    import ast
+    import review_core
+    src = Path(review_core.__file__).read_text(encoding="utf-8")
+    assert "import streamlit" not in src
+    # 주석·docstring 은 봐준다(이 파일이 왜 나뉘었는지 설명하며 `st.` 을
+    # 언급한다). **실제 코드에서** st 를 참조하는지만 본다 — 데코레이터도
+    # ast.walk 에 잡힌다.
+    tree = ast.parse(src)
+    referenced = {n.value.id for n in ast.walk(tree)
+                  if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
+    referenced |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    assert "st" not in referenced
+
+
+def test_transition_point_lives_here_now():
+    """CLAUDE.md 5 는 ⑦ 자동 전이 지점을 이름으로 못박는다. 그 규칙의 목적은
+    "전이 지점이 흩어지지 않는 것"이고, 함수가 통째로 옮겨왔으므로 목적은
+    그대로다 — 다만 규칙 문구도 같이 갱신했다.
+
+    이 테스트는 전이 지점이 **여전히 한 곳**임을 확인한다."""
+    import review_core
+    src = Path(review_core.__file__).read_text(encoding="utf-8")
+    assert src.count("docker_runner.launch_background(") == 1

@@ -20,11 +20,15 @@
 5. **전이 지점 단일 소유.** 단계 간 자동 전이(④⑤ 저장 → ⑦ 재현)는
    docker_runner.launch_background() 하나로만 트리거한다. 현재 호출
    지점은 다섯 곳이 전부다 — 자동 전이 2곳(batch_summarize.
-   _process_paper()와 review_app._summarize_target(), 둘 다 요약 저장
+   _process_paper()와 review_core._summarize_target(), 둘 다 요약 저장
    직후)과 review_app.py의 수동 버튼 3곳(재현 재시도·시작·재생성 —
    사람이 직접 누르는 액션). 새 자동 호출 지점을 추가하지 않는다 —
    특히 스캔 경로(scan_and_digest)는 _process_paper를 통해서만 ⑦에
    도달해야 한다. 근거: docs/PROGRESS.md §9(pipeline.py 폐기 사유).
+   (2026-09-02: _summarize_target이 review_app.py에서 review_core.py로
+   옮겨졌다. 규칙의 목적인 "전이 지점이 흩어지지 않는 것"은 그대로이고,
+   위치만 바뀌었다 — 오히려 Streamlit 없이 테스트되는 곳으로 와서
+   test_review_core.py가 "전이 지점이 여전히 한 곳"임을 감시한다.)
 6. **새 지휘자 계층 금지.** 단계들을 다시 꿰는 별도 오케스트레이션
    스크립트/클래스/프레임워크(pipeline.py 부활, LangGraph, Airflow 등)를
    만들지 않는다. 기존 진입점(_process_paper, scan_and_digest,
