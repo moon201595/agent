@@ -26,7 +26,7 @@ def db(tmp_path):
     path = tmp_path / "t.db"
     with sqlite3.connect(path) as con:
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, title TEXT, "
-                    "abstract TEXT, published TEXT, source TEXT)")
+                    "abstract TEXT, authors TEXT, published TEXT, source TEXT)")
         con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, created_at TEXT, "
                     "engine TEXT, coverage_ratio REAL)")
     return path
@@ -118,10 +118,9 @@ def test_shared_references_counts_papers_not_occurrences(monkeypatch):
                                       {"title": "Other"}]})
 
     monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
-    shared, examined, targets = asyncio.run(
-        trend_report.shared_references(None, [_row("1"), _row("2")]))
-    assert ("Base Paper", 2) in shared
-    assert examined == 2 and targets == 2
+    scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
+    assert ("Base Paper", 2) in scan.shared
+    assert scan.examined == 2 and scan.targets == 2
 
 
 def test_shared_requires_more_than_one_paper(monkeypatch):
@@ -131,8 +130,8 @@ def test_shared_requires_more_than_one_paper(monkeypatch):
         return json.dumps({"papers": [{"title": f"Ref for {aid}"}]})
 
     monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
-    shared, _e, _t = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
-    assert shared == []
+    scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
+    assert scan.shared == []
 
 
 def test_synthetic_pdf_ids_are_skipped(monkeypatch):
@@ -145,10 +144,10 @@ def test_synthetic_pdf_ids_are_skipped(monkeypatch):
         return json.dumps({"papers": []})
 
     monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
-    _s, examined, targets = asyncio.run(
+    scan = asyncio.run(
         trend_report.shared_references(None, [_row("2608.1"), _row("pdf-abc")]))
     assert calls == ["2608.1"]
-    assert targets == 1
+    assert scan.targets == 1
 
 
 def test_budget_stops_early_and_reports_the_sample_size(monkeypatch):
@@ -163,10 +162,10 @@ def test_budget_stops_early_and_reports_the_sample_size(monkeypatch):
 
     monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
     monkeypatch.setattr(trend_report.time, "monotonic", lambda: clock["t"])
-    _s, examined, targets = asyncio.run(trend_report.shared_references(
+    scan = asyncio.run(trend_report.shared_references(
         None, [_row(str(i)) for i in range(10)], budget_s=250.0))
-    assert examined < targets
-    assert targets == 10
+    assert scan.examined < scan.targets
+    assert scan.targets == 10
 
 
 def test_lookup_failure_does_not_break_the_report(monkeypatch):
@@ -175,9 +174,8 @@ def test_lookup_failure_does_not_break_the_report(monkeypatch):
         raise RuntimeError("S2 죽음")
 
     monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
-    shared, examined, targets = asyncio.run(
-        trend_report.shared_references(None, [_row("1")]))
-    assert shared == [] and examined == 0 and targets == 1
+    scan = asyncio.run(trend_report.shared_references(None, [_row("1")]))
+    assert scan.shared == [] and scan.examined == 0 and scan.targets == 1
 
 
 def test_report_states_the_sample_when_partial():
@@ -394,3 +392,144 @@ def test_author_names_never_reach_the_prompt():
     corpus, used = trend_report._narrative_corpus(rows)
     assert used == 1
     assert "Hong Gildong" not in corpus and "Kim Cheolsu" not in corpus
+
+
+# ---------------------------------------------------------------- §8-40 (2026-09-03)
+#
+# 인용·저자 신호를 하나도 안 쓰고 있었다. 셋 다 추가 API 호출이 0회다 —
+# authors 는 이미 저장돼 있고, 참고문헌 집합과 citationCount 는 공통 인용
+# 조회가 이미 받아오는데 세고 나서 버리고 있었다.
+
+def _author_row(names, title="T"):
+    import json as _json
+    return {"title": title, "abstract": "", "authors": _json.dumps(names)}
+
+
+def test_author_counts_needs_two_papers():
+    """공저자가 많은 논문 한 편이 저자 전원을 1편씩 올린다 — 1편짜리를 세면
+    그냥 저자 목록이지 '누가 밀고 있나'가 아니다."""
+    rows = [_author_row(["Ai", "Wei"]), _author_row(["Ai", "Liu"])]
+    assert trend_report.author_counts(rows) == [("Ai", 2)]
+
+
+def test_author_counts_survives_broken_json():
+    """리뷰가 부가 정보라 필드 하나 때문에 죽으면 안 된다."""
+    rows = [{"title": "T", "abstract": "", "authors": "not json"},
+            {"title": "T", "abstract": "", "authors": None},
+            _author_row(["Ai"]), _author_row(["Ai"])]
+    assert trend_report.author_counts(rows) == [("Ai", 2)]
+
+
+def test_author_counted_once_per_paper():
+    rows = [_author_row(["Ai", "Ai"]), _author_row(["Ai"])]
+    assert trend_report.author_counts(rows) == [("Ai", 2)]
+
+
+def test_lineage_groups_papers_sharing_references():
+    """공통 인용이 '다들 무엇을 딛고 있나'라면 여기는 '누가 누구와 같은 데를
+    딛고 있나'다."""
+    by_paper = {
+        "a": {"R1", "R2", "R3", "R4"},
+        "b": {"R1", "R2", "R3", "R9"},      # a 와 크게 겹친다
+        "c": {"Z1", "Z2", "Z3", "Z4"},      # 완전히 다른 토대
+    }
+    rows = [{"arxiv_id": k, "title": f"Paper {k}"} for k in "abc"]
+    groups = trend_report.lineage_groups(by_paper, rows)
+    assert len(groups) == 1
+    assert sorted(groups[0]) == ["Paper a", "Paper b"]
+
+
+def test_lineage_ignores_lone_papers():
+    """혼자인 논문은 갈래가 아니다."""
+    by_paper = {"a": {"R1"}, "b": {"Z1"}}
+    rows = [{"arxiv_id": k, "title": k} for k in "ab"]
+    assert trend_report.lineage_groups(by_paper, rows) == []
+
+
+def test_lineage_needs_no_extra_api_calls(monkeypatch):
+    """핵심 — 계보 묶기는 공통 인용이 이미 받아온 집합을 재사용한다."""
+    calls = []
+
+    async def fake(aid, limit, edge):
+        calls.append(aid)
+        import json as _json
+        return _json.dumps({"papers": [{"title": "Base", "citationCount": 900},
+                                       {"title": "Other", "citationCount": 3}]})
+
+    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
+    assert len(calls) == 2                       # 논문당 한 번, 그게 전부
+    trend_report.lineage_groups(scan.by_paper, [_row("1"), _row("2")])
+    assert len(calls) == 2                       # 묶는 데는 한 번도 안 부른다
+    assert scan.cites["Base"] == 900
+
+
+def test_shared_references_ranked_by_citation_count_within_same_share(monkeypatch):
+    """'분야의 토대라 다들 인용한다'와 '우연히 같은 무명 논문을 인용했다'가
+    같은 줄에 섞여 있었다 — 둘 다 2편이 인용해도 순서가 갈려야 한다."""
+    async def fake(aid, limit, edge):
+        import json as _json
+        return _json.dumps({"papers": [{"title": "Obscure", "citationCount": 1},
+                                       {"title": "Foundational", "citationCount": 50000}]})
+
+    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
+    assert [t for t, _n in scan.shared] == ["Foundational", "Obscure"]
+
+    text = trend_report.format_report([_row("1")], [], PROFILE, shared=scan.shared,
+                                      examined=2, targets=2, cites=scan.cites)
+    assert "총 인용 50,000" in text
+
+
+def test_frontier_looks_forward_from_the_foundations_not_our_papers():
+    """§8-40 넷째 항목. 순진한 형태('우리 논문을 누가 인용하나')는 안 된다 —
+    delta 논문은 30일 이내라 인용이 0이다. 토대 논문에서 앞으로 본다."""
+    seeds = {"Attention Is All You Need": "1706.03762"}
+    asked = []
+    this_year = datetime.now(timezone.utc).year
+
+    async def fake(aid, limit, edge):
+        asked.append((aid, edge))
+        import json as _json
+        return _json.dumps({"papers": [
+            {"title": "Recent work building on it", "year": this_year},
+            {"title": "Old work", "year": 2018},          # 최전선이 아니다
+            {"title": "No year given"},
+        ]})
+
+    import trend_report as tr
+    orig = tr.server._s2_citation_graph
+    tr.server._s2_citation_graph = fake
+    try:
+        frontier, examined = asyncio.run(tr.frontier_papers(
+            None, [("Attention Is All You Need", 3)], seeds))
+    finally:
+        tr.server._s2_citation_graph = orig
+
+    assert asked == [("1706.03762", "citations")]     # 앞 방향으로 물었다
+    assert examined == 1
+    titles = [t for t, _n in frontier]
+    assert "Recent work building on it" in titles
+    assert "Old work" not in titles                   # 오래된 인용은 최전선이 아니다
+
+
+def test_frontier_skips_references_without_an_arxiv_id():
+    """S2 인용망은 arXiv ID 로 찾는다 — ID 없는 토대는 씨앗이 못 된다."""
+    frontier, examined = asyncio.run(
+        trend_report.frontier_papers(None, [("Some Book", 5)], {}))
+    assert frontier == [] and examined == 0
+
+
+def test_frontier_failure_does_not_break_the_report():
+    async def boom(aid, limit, edge):
+        raise RuntimeError("S2 죽음")
+
+    import trend_report as tr
+    orig = tr.server._s2_citation_graph
+    tr.server._s2_citation_graph = boom
+    try:
+        frontier, examined = asyncio.run(
+            tr.frontier_papers(None, [("T", 2)], {"T": "1706.03762"}))
+    finally:
+        tr.server._s2_citation_graph = orig
+    assert frontier == [] and examined == 0
