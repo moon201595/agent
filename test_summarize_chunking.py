@@ -8,6 +8,7 @@ sentence_grounding 은 실제로 돌려서 통합까지 확인한다.
 
 import asyncio
 
+import httpx
 import pytest
 
 import summarize_engine as engine
@@ -359,3 +360,122 @@ def test_transient_overload_recovers_within_the_larger_budget(monkeypatch):
     result = asyncio.run(engine._call_with_rate_limit_retry(flaky, "Gemini"))
     assert result == "요약"
     assert len(calls) == 5
+
+
+# ---------------------------------------------------------------- Groq 적응형 청크 간격 (2026-09-03)
+#
+# GROQ_CHUNK_DELAY=60.0 은 재본 적 없는 추정치였고 논문 한 편의 절반 이상을
+# 이 상수가 정하고 있었다. Groq 이 응답 헤더로 정확한 회복 시간을 알려준다.
+
+def test_parse_reset_seconds_handles_groq_formats():
+    p = engine.parse_reset_seconds
+    assert p("35.812s") == pytest.approx(35.812)
+    assert p("1m26.4s") == pytest.approx(86.4)
+    assert p("2m") == pytest.approx(120.0)
+    assert p("7.66s") == pytest.approx(7.66)
+    assert p("") is None and p("oops") is None and p(None) is None
+
+
+def test_chunk_delay_prefers_observed_over_the_guess(monkeypatch):
+    monkeypatch.setattr(engine, "_groq_reset_seconds", None)
+    assert engine.groq_chunk_delay() == engine.GROQ_CHUNK_DELAY   # 관측 전엔 폴백
+
+    monkeypatch.setattr(engine, "_groq_reset_seconds", 35.8)
+    assert engine.groq_chunk_delay() == pytest.approx(35.8)
+
+
+def test_chunk_delay_honors_backpressure_above_the_old_guess(monkeypatch):
+    """핵심 회귀 — 상한이 위험 구간을 만들면 안 된다.
+
+    라이브 실측에서 연속 호출 중 reset 이 51.6초까지 올랐다. 상한을 60 에 두면
+    서버가 70 초를 요구할 때 60 만 기다려 429 를 자초하고, 그 재시도가 아낀
+    시간보다 크다.
+    """
+    monkeypatch.setattr(engine, "_groq_reset_seconds", 70.0)
+    assert engine.groq_chunk_delay() == pytest.approx(70.0)
+
+
+def test_chunk_delay_gives_up_on_daily_quota_style_waits(monkeypatch):
+    """'오늘은 끝났다' 수준(분 단위)은 여기서 안 버틴다 — 기준을 두 개 두지
+    않으려고 재시도 경로와 같은 ADDENDUM_MAX_WAIT 를 쓴다."""
+    monkeypatch.setattr(engine, "_groq_reset_seconds", 900.0)
+    assert engine.groq_chunk_delay() == engine.ADDENDUM_MAX_WAIT
+
+
+def test_post_groq_records_the_reset_header(monkeypatch):
+    """헤더를 읽어야 다음 청크 간격이 맞는다."""
+    monkeypatch.setattr(engine, "ENV", {"GROQ_API_KEY": "fake"})
+    monkeypatch.setattr(engine, "_groq_reset_seconds", None)
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "요약"}}]},
+                              headers={"x-ratelimit-reset-tokens": "35.812s"})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await engine._post_groq(c, "prompt")
+
+    assert asyncio.run(go()) == "요약"
+    assert engine._groq_reset_seconds == pytest.approx(35.812)
+
+
+def test_chunked_accepts_callable_delay(monkeypatch):
+    """Groq 경로는 매 청크마다 최신 관측값을 다시 읽어야 한다 —
+    상수로 한 번 고정하면 프롬프트 길이가 달라져도 안 따라간다."""
+    waited = []
+
+    async def fake_sleep(s):
+        waited.append(s)
+
+    async def single(client, chunk, template):
+        return "요약 [S1]"
+
+    async def addendum(client, chunk):
+        return "추가"
+
+    monkeypatch.setattr(engine.asyncio, "sleep", fake_sleep)
+    values = iter([10.0, 20.0])
+    asyncio.run(engine._summarize_chunked(
+        None, _make_paper(200), "T", single, addendum,
+        chunk_size=500, max_chunks=3, chunk_delay=lambda: next(values),
+        label="Groq"))
+    assert waited == [10.0, 20.0]      # 청크마다 다시 물어봤다 — 고정값이 아니다
+
+
+# ---------------------------------------------------------------- Gemini 모델 회전 (2026-09-03)
+#
+# 503 은 모델별 서빙 풀 혼잡이라 키를 바꿔도 같은 풀이다. 모델을 바꾸면 다른
+# 풀이다 — 429↔키 회전과 대칭.
+
+def test_503_advances_the_model_cursor(monkeypatch):
+    monkeypatch.setattr(engine, "ENV", {"GOOGLE_API_KEY": "k"})
+    monkeypatch.setattr(engine, "_gemini_model_cursor", 0)
+    first = engine.current_gemini_model()
+
+    def handler(request):
+        assert first in str(request.url)      # 첫 시도는 기본 모델로 간다
+        return httpx.Response(503, json={})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await engine._post_gemini_once(c, "p", "k")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(go())
+    assert engine.current_gemini_model() != first   # 다음 시도는 다른 풀로
+
+
+def test_429_does_not_touch_the_model_cursor(monkeypatch):
+    """429 는 키 문제다 — 모델을 바꾸면 엉뚱한 축을 건드린다."""
+    monkeypatch.setattr(engine, "ENV", {"GOOGLE_API_KEY": "k"})
+    monkeypatch.setattr(engine, "_gemini_model_cursor", 0)
+    before = engine.current_gemini_model()
+
+    async def go():
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(429, json={}))) as c:
+            return await engine._post_gemini_once(c, "p", "k")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(go())
+    assert engine.current_gemini_model() == before

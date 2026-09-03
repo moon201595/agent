@@ -109,7 +109,56 @@ GROQ_CHUNK_SIZE = GROQ_FALLBACK_CHARS
 # 대신 상한 있는 예외 처리) 그대로라 시간을 더 늘리는 대신 이 상한을
 # 유지하기로 했다.
 GROQ_MAX_CHUNKS = 32
+# 2026-09-03 실측으로 이 값의 근거가 바뀌었다. 60.0 은 재본 적 없는 추정치였다
+# (llama-3.3-70b 시절 값을 gpt-oss-120b 로 바꾸면서 청크 **크기**만 다시 쟀다).
+# 논문 한 편이 19청크면 18분이라 전체 실행 시간의 절반을 이 상수가 정하고 있었다.
+#
+# 그런데 **Groq 이 응답 헤더로 정확히 알려준다.** 실제 청크 호출 하나(템플릿
+# 포함 9,501자)를 보내고 헤더를 읽었다:
+#
+#   x-ratelimit-limit-tokens:     8000
+#   x-ratelimit-remaining-tokens: 3225   ← 이 한 번에 4,775 토큰을 썼다
+#   x-ratelimit-reset-tokens:     35.812s ← 그만큼 회복되는 데 걸리는 시간
+#
+# 8000/60 = 133.3 토큰/초 이므로 4775/133.3 = 35.8초, 헤더 값과 정확히 같다.
+# 즉 필요한 간격은 35.8초고 60초는 1.68배 보수적이었다.
+#
+# **그래서 숫자를 새로 박지 않고 헤더를 읽어 쓴다.** 한도는 예고 없이 바뀌고
+# (규칙 3), 프롬프트 길이가 달라지면 소비 토큰도 달라진다 — 어느 쪽이든
+# 헤더가 그때그때 맞는 값을 준다. 아래 상수는 헤더가 없을 때만 쓰는 폴백이다.
 GROQ_CHUNK_DELAY = 60.0
+
+# 마지막 Groq 응답이 알려준 "소비한 토큰이 회복되는 데 걸리는 시간"(초).
+# None 이면 아직 한 번도 못 읽었다는 뜻이라 GROQ_CHUNK_DELAY 로 돌아간다.
+_groq_reset_seconds: float | None = None
+
+_RESET_RE = re.compile(r"(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$")
+
+
+def parse_reset_seconds(value: str) -> float | None:
+    """Groq 의 reset 헤더를 초로. '35.812s', '1m26.4s', '2m' 형식이다."""
+    m = _RESET_RE.fullmatch((value or "").strip())
+    if not m or not any(m.groups()):
+        return None
+    minutes, seconds = m.group(1), m.group(2)
+    return float(minutes or 0) * 60 + float(seconds or 0)
+
+
+def groq_chunk_delay() -> float:
+    """다음 Groq 청크까지 기다릴 시간. 헤더로 관측한 값이 있으면 그걸 쓴다.
+
+    상한을 GROQ_CHUNK_DELAY(60초)가 아니라 ADDENDUM_MAX_WAIT(120초)에 둔다.
+    2026-09-03 라이브 실측에서 연속 호출 중 reset 이 35.6 → 41.4 → **51.6** 초로
+    올랐다(버킷이 빡빡해질수록 회복이 오래 걸린다). 60 으로 자르면 서버가
+    70 초를 요구할 때 60 만 기다려 429 를 자초하고, 그 재시도가 아낀 시간보다
+    크다 — 상한이 위험 구간을 만드는 셈이다.
+
+    120 초를 넘는 요구는 "오늘은 끝났다" 쪽이라 여기서 버티지 않는다. 그 판단은
+    재시도 경로의 ADDENDUM_MAX_WAIT 가 이미 하고 있다 — 기준을 두 개 두지 않는다.
+    """
+    if _groq_reset_seconds is None:
+        return GROQ_CHUNK_DELAY
+    return min(_groq_reset_seconds, ADDENDUM_MAX_WAIT)
 
 # 2026-08-05 실측: 논문 34편을 연속 호출로 돌렸더니 22편째부터 Gemini·Groq
 # 무료 티어 둘 다 429(분당 한도 초과)를 맞았다 — 호출 사이에 페이싱이 전혀
@@ -217,9 +266,31 @@ def build_prompt(chunk_text: str, template: str) -> str:
 """
 
 
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
-)
+# 503 은 **모델별 서빙 풀 혼잡**이다. 키를 바꿔도 같은 풀이라 소용없지만
+# (그래서 _post_gemini 는 429 에서만 키를 회전한다), **모델을 바꾸면 다른
+# 풀이다.** 429↔키 회전과 정확히 대칭으로 503↔모델 회전을 둔다.
+#
+# 2026-09-03 실측: 그날 Gemini 실패가 `503:7, 429:0` 이었다. 키를 몇 개 더
+# 붙여도 이런 날엔 아무것도 안 바뀐다 — 진단이 맞아야 처방이 맞는다.
+#
+# **재시도를 대체하지 않고 축을 하나 더한다.** 같은 날 저녁 실측에서 503 이
+# 4회 연속 난 뒤 5회차가 성공했다(§8-38 반증) — 재시도도 실제로 듣는다.
+# 그래서 커서만 밀어 두고, 바깥 백오프 루프의 다음 시도가 자연히 다른 모델로
+# 가게 한다. 두 축이 곱해진다.
+#
+# 폴백 모델이 더 작아 품질이 낮을 수는 있다. 그래도 대안이 Groq 폴백(청크
+# 19회, 원문 커버리지 48~85%, 18분)인 걸 생각하면 명백히 낫다.
+_GEMINI_MODELS = ("gemini-flash-latest", "gemini-flash-lite-latest")
+_gemini_model_cursor = 0
+
+
+def _gemini_url(model: str) -> str:
+    return ("https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent")
+
+
+def current_gemini_model() -> str:
+    return _GEMINI_MODELS[_gemini_model_cursor % len(_GEMINI_MODELS)]
 
 
 # 여러 개의 무료 키를 쓴다. 이름 규칙: GOOGLE_API_KEY, GOOGLE_API_KEY2,
@@ -248,9 +319,11 @@ def gemini_key_names() -> list[str]:
 
 async def _post_gemini_once(client: httpx.AsyncClient, prompt: str, key: str) -> str:
     # URL 쿼리 파라미터로 키를 보내면 로그·프록시 기록에 그대로 남는다 — 헤더로 보낸다.
+    global _gemini_model_cursor
+    model = current_gemini_model()
     try:
         resp = await client.post(
-            _GEMINI_URL,
+            _gemini_url(model),
             json={"contents": [{"parts": [{"text": prompt}]}]},
             headers={"x-goog-api-key": key},
             timeout=180,
@@ -259,6 +332,13 @@ async def _post_gemini_once(client: httpx.AsyncClient, prompt: str, key: str) ->
         api_usage.record("gemini", "error")
         raise
     api_usage.record("gemini", "ok" if resp.status_code == 200 else str(resp.status_code))
+    if resp.status_code == 503 and len(_GEMINI_MODELS) > 1:
+        # 커서만 민다 — 여기서 바로 다시 부르지 않는다. 바깥 백오프 루프가
+        # 다음 시도에서 자연히 다른 모델을 쓰게 되고, 그래야 "재시도"와
+        # "모델 전환"이 서로를 대체하지 않고 곱해진다.
+        _gemini_model_cursor = (_gemini_model_cursor + 1) % len(_GEMINI_MODELS)
+        print(f"  [경고] Gemini {model} 503(풀 혼잡) — 다음 시도는 "
+              f"{current_gemini_model()} 로 간다", file=sys.stderr)
     resp.raise_for_status()
     data = resp.json()
     parts = data["candidates"][0]["content"]["parts"]
@@ -302,7 +382,13 @@ async def _post_gemini(client: httpx.AsyncClient, prompt: str) -> str:
                 print(f"  [경고] Gemini {name} 429(한도 소진) — 다음 키로 전환",
                       file=sys.stderr)
             continue
-        _gemini_key_cursor = index
+        # 성공한 키에 **고정하지 않고 한 칸 민다**(2026-09-03).
+        # 고정하면 한 키만 바닥까지 쓰다가 실행 중간에 429 를 맞고, 그때부터
+        # 논문마다 회전 재시도가 한 번씩 더 붙는다. 라운드로빈이면 소비가
+        # 고르게 퍼져 그 지점이 뒤로 밀린다. 총 용량이 느는 건 아니다 —
+        # 순차 회전이 이미 모든 키를 바닥까지 쓰므로 합계는 같다.
+        # 긴 논문이 청킹돼 연속 호출이 생길 때 분당 한도에 덜 닿는 이점도 있다.
+        _gemini_key_cursor = (index + 1) % len(names)
         return result
 
     print(f"  [경고] Gemini 키 {len(names)}개 모두 429 — 대기·폴백 경로로 넘어감",
@@ -433,6 +519,13 @@ async def _post_groq(client: httpx.AsyncClient, prompt: str) -> str:
         api_usage.record("groq", "error")
         raise
     api_usage.record("groq", "ok" if resp.status_code == 200 else str(resp.status_code))
+    # 서버가 "소비한 토큰이 언제 회복되는지"를 말해 준다 — 다음 청크까지의
+    # 간격을 이 값으로 잡는다. 상수를 새로 박는 것보다 정확하고, 한도나
+    # 프롬프트 길이가 바뀌어도 저절로 따라간다(규칙 3).
+    global _groq_reset_seconds
+    observed = parse_reset_seconds(resp.headers.get("x-ratelimit-reset-tokens", ""))
+    if observed is not None:
+        _groq_reset_seconds = observed
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -531,7 +624,7 @@ async def _call_with_rate_limit_retry(coro_fn, label: str, max_wait: float | Non
 async def _summarize_chunked(
     client: httpx.AsyncClient, paper_text: str, template: str,
     call_single, call_addendum, chunk_size: int, max_chunks: int,
-    chunk_delay: float, label: str, on_progress=None,
+    chunk_delay, label: str, on_progress=None,
 ) -> str:
     """첫 청크로 전체 템플릿을 채운 뒤, 남은 청크들로 "추가 결과·추가
     한계점"만 보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지
@@ -562,8 +655,12 @@ async def _summarize_chunked(
         lambda: call_single(client, chunks[0], template), label,
     )
     for chunk_num, chunk_text in enumerate(chunks[1:], start=2):
-        if chunk_delay:
-            await asyncio.sleep(chunk_delay)
+        # chunk_delay 는 상수일 수도, "지금 얼마나 기다려야 하나"를 돌려주는
+        # 함수일 수도 있다. Groq 은 후자다 — 직전 응답 헤더가 알려준 회복
+        # 시간을 매 청크마다 다시 읽어야 프롬프트 길이가 달라져도 맞는다.
+        wait = chunk_delay() if callable(chunk_delay) else chunk_delay
+        if wait:
+            await asyncio.sleep(wait)
         if on_progress:
             on_progress(label, chunk_num, len(chunks))
         try:
@@ -639,7 +736,7 @@ async def summarize(
     try:
         summary = await _summarize_chunked(
             client, paper_text, template, call_groq, call_groq_addendum,
-            GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, GROQ_CHUNK_DELAY, "Groq", on_progress,
+            GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, groq_chunk_delay, "Groq", on_progress,
         )
         return summary, "groq"
     except Exception as e:  # noqa: BLE001

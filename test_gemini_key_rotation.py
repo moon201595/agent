@@ -137,12 +137,28 @@ def test_non_rate_limit_errors_propagate_immediately(monkeypatch):
     assert used == ["k1"]
 
 
-def test_cursor_starts_from_the_last_working_key(monkeypatch):
-    """죽은 키를 매번 먼저 찔러 한 번씩 버리면, 논문 6편이면 6번 버린다."""
+def test_cursor_never_reprobes_the_dead_key(monkeypatch):
+    """죽은 키를 매번 먼저 찔러 한 번씩 버리면, 논문 6편이면 6번 버린다.
+
+    2026-09-03: 커서가 "성공한 키에 고정"에서 "성공한 다음 칸"(라운드로빈)으로
+    바뀌어 기대값을 k2 → k3 로 옮겼다. **지켜야 할 것은 그대로다** — 죽은 k1 을
+    다시 안 찌른다는 것. 고정하면 한 키만 바닥까지 쓰다 실행 중간에 429 를
+    맞고 그때부터 논문마다 회전 재시도가 한 번씩 더 붙는다.
+    """
     outcomes = {"k1": _http_error(429), "k2": "요약", "k3": "요약"}
-    _run(monkeypatch, outcomes)                 # k1 죽고 k2 성공 → 커서가 k2
+    _run(monkeypatch, outcomes)                 # k1 죽고 k2 성공 → 커서는 k3
     _result, used = _run(monkeypatch, outcomes)
-    assert used == ["k2"]                        # k1 을 다시 안 찌른다
+    assert used == ["k3"]
+    assert "k1" not in used                      # 이게 이 테스트의 핵심 주장이다
+
+
+def test_round_robin_spreads_load_across_keys(monkeypatch):
+    """모든 키가 멀쩡하면 호출이 한 키에 몰리지 않는다."""
+    seen = []
+    for _ in range(4):
+        _result, used = _run(monkeypatch, {"k1": "요약", "k2": "요약", "k3": "요약"})
+        seen.append(used[0])
+    assert seen == ["k1", "k2", "k3", "k1"]
 
 
 def test_single_key_setup_behaves_exactly_as_before(monkeypatch):
