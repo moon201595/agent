@@ -40,13 +40,13 @@ correction·expression of concern 까지 true 로 오분류한 이력이 학술�
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 import re
 import time
 
 import httpx
 import api_usage
+import pacing
 
 # 판정 코드 — server.papers.is_retracted 컬럼에 그대로 들어간다.
 NOT_RETRACTED = 0
@@ -62,23 +62,9 @@ OPENALEX_MIN_INTERVAL = 1.0
 CROSSREF_MIN_INTERVAL = 1.0
 _TIMEOUT = 20.0
 
-@dataclass
-class _Pacer:
-    """호출 간 최소 간격을 지키는 상태. 락과 "마지막 호출 시각"을 한
-    덩어리로 묶는다.
-
-    2026-09-02 이전에는 락과 시각이 따로 놀고, `_throttled_get` 이
-    `globals()[last_holder]` 로 **문자열 키를 써서 전역변수를 읽고 썼다.**
-    이름을 오타내면 조용한 KeyError 가 되고 정적 분석도 못 잡는다. 지금은
-    객체를 그냥 넘긴다 — 동작은 같고 오타가 불가능해졌다.
-    """
-    lock: asyncio.Lock
-    last_call: float = 0.0
-    min_interval: float = 1.0
-
-
-_openalex = _Pacer(asyncio.Lock(), min_interval=OPENALEX_MIN_INTERVAL)
-_crossref = _Pacer(asyncio.Lock(), min_interval=CROSSREF_MIN_INTERVAL)
+# 간격 계산 규칙은 pacing.py 한 곳에만 있다(§8-30).
+_openalex = pacing.AsyncPacer(OPENALEX_MIN_INTERVAL)
+_crossref = pacing.AsyncPacer(CROSSREF_MIN_INTERVAL)
 
 # arXiv ID 형태만 DOI 로 바꾼다. PDF 업로드·오픈액세스로 들어온 합성 ID
 # (pdf-<hash>)는 arXiv DOI 가 없으므로 조회 자체를 건너뛴다.
@@ -92,18 +78,14 @@ def arxiv_doi(arxiv_id: str) -> str | None:
 
 async def _throttled_get(
     client: httpx.AsyncClient, url: str, params: dict, headers: dict,
-    pacer: "_Pacer",
+    pacer: pacing.AsyncPacer,
 ) -> httpx.Response:
     """server._throttled_s2_get 과 같은 발상 — 호출 간 최소 간격을 프로세스
     전역에서 강제한다. 재시도는 하지 않는다: 철회 조회는 실패해도 파이프라인을
     멈추면 안 되는 부가 정보라, 한 번 실패하면 그냥 None(미조회)으로 두고
     다음 실행에서 다시 본다(NULL 자체가 재시도 큐 역할을 한다)."""
-    async with pacer.lock:
-        wait = pacer.min_interval - (time.monotonic() - pacer.last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
+    async with pacer.gate():
         resp = await client.get(url, params=params, headers=headers, timeout=_TIMEOUT)
-        pacer.last_call = time.monotonic()
     provider = "openalex" if "openalex" in url else "crossref"
     api_usage.record(provider, "ok" if resp.status_code == 200 else str(resp.status_code))
     return resp

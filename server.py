@@ -47,6 +47,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
 import hybrid_search
+import pacing
 import injection_scan
 import retraction
 import summarize_engine
@@ -149,11 +150,11 @@ mcp = MCPServer("paper_harness_mcp")
 
 # ---------------------------------------------------------------- 공용 유틸
 
-_arxiv_lock = asyncio.Lock()
-_last_arxiv_call = 0.0
+# 간격 계산 규칙은 pacing.py 한 곳에만 있다(§8-30, 2026-09-02). 예전엔
+# 같은 다섯 줄이 여기 둘 + code_finder + retraction 으로 네 벌 있었다.
+_arxiv_pacer = pacing.AsyncPacer(ARXIV_MIN_INTERVAL)
 
-_s2_lock = asyncio.Lock()
-_last_s2_call = 0.0
+_s2_pacer = pacing.AsyncPacer(S2_MIN_INTERVAL)
 
 
 def _init_storage() -> None:
@@ -363,11 +364,7 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
     """
 
     async def once() -> httpx.Response:
-        global _last_arxiv_call
-        async with _arxiv_lock:
-            wait = ARXIV_MIN_INTERVAL - (time.monotonic() - _last_arxiv_call)
-            if wait > 0:
-                await asyncio.sleep(wait)
+        async with _arxiv_pacer.gate():
             # 2026-08-31 실측: arXiv 응답 시간이 크게 흔들린다 — 같은 시각에
             # 키워드 3개짜리 짧은 쿼리가 45초 타임아웃이 나고 21개짜리 긴
             # 쿼리는 15초에 왔다. 쿼리 복잡도가 아니라 서버 쪽 변동이다.
@@ -375,7 +372,6 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
             # 응답을 실패로 버리게 된다 — 60초로 올린다(_with_retry 가 상한
             # 2회까지 재시도하므로 최악 대기는 여전히 유한하다).
             resp = await client.get(ARXIV_API, params=params, timeout=60)
-            _last_arxiv_call = time.monotonic()
         api_usage.record("arxiv", "ok" if resp.status_code == 200 else str(resp.status_code))
         resp.raise_for_status()
         return resp
@@ -397,13 +393,8 @@ async def _throttled_s2_get(
     """
 
     async def once() -> httpx.Response:
-        global _last_s2_call
-        async with _s2_lock:
-            wait = S2_MIN_INTERVAL - (time.monotonic() - _last_s2_call)
-            if wait > 0:
-                await asyncio.sleep(wait)
+        async with _s2_pacer.gate():
             resp = await client.get(url, params=params, headers=headers, timeout=30)
-            _last_s2_call = time.monotonic()
         api_usage.record("s2", "ok" if resp.status_code == 200 else str(resp.status_code))
         resp.raise_for_status()
         return resp
@@ -1554,17 +1545,12 @@ async def fetch_s2_tldrs(client: httpx.AsyncClient, arxiv_ids: list[str]) -> dic
         # 배치는 POST 라 _throttled_s2_get(GET 전용)을 그대로 못 쓴다. 다만
         # "초당 1회, 전체 엔드포인트 합산"이라는 S2 한도는 같이 적용되므로
         # 같은 락·같은 간격을 쓴다 — 엔드포인트마다 따로 세면 한도를 우회하게 된다.
-        global _last_s2_call
-        async with _s2_lock:
-            wait = S2_MIN_INTERVAL - (time.monotonic() - _last_s2_call)
-            if wait > 0:
-                await asyncio.sleep(wait)
+        async with _s2_pacer.gate():
             resp = await client.post(
                 S2_BATCH_API, params={"fields": "tldr"},
                 json={"ids": [f"ARXIV:{a}" for a in ids]},
                 headers=headers, timeout=40,
             )
-            _last_s2_call = time.monotonic()
         resp.raise_for_status()
         data = resp.json()
     except Exception:  # noqa: BLE001 — 부가 정보라 실패해도 파이프라인은 계속된다
