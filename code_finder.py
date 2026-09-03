@@ -37,6 +37,7 @@ from urllib.parse import quote
 import httpx
 
 import api_usage
+import pacing
 
 import server
 
@@ -49,17 +50,13 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # 하드코딩하지 않는다는 원칙(CLAUDE.md 3)과 안 부딪힌다 — 이건 "한도 값"이
 # 아니라 우리가 스스로 지키는 호출 간격이다.
 GITHUB_SEARCH_MIN_INTERVAL = 2.5
-_gh_search_lock = threading.Lock()
-_last_gh_search = 0.0
+# 간격 계산 규칙은 pacing.py 한 곳에만 있다(§8-30). code_finder 는 동기
+# 코드라 SyncPacer 를 쓴다 — 여기에 async 를 끌어들이면 ⑦ 재현 경로
+# 전체를 바꿔야 한다.
+_gh_pacer = pacing.SyncPacer(GITHUB_SEARCH_MIN_INTERVAL)
 
 
-def _throttle_github_search() -> None:
-    global _last_gh_search
-    with _gh_search_lock:
-        wait = GITHUB_SEARCH_MIN_INTERVAL - (time.monotonic() - _last_gh_search)
-        if wait > 0:
-            time.sleep(wait)
-        _last_gh_search = time.monotonic()
+
 
 
 # 알려진 코드/모델 호스팅 도메인 — 이 안에 있으면 "저장소 링크"로 확신한다.
@@ -232,15 +229,15 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
     과 같은 발상). code_finder 는 동기 코드라 asyncio.Lock 대신 threading.Lock
     을 쓴다.
     """
-    _throttle_github_search()
     try:
         # 공백 포함 검색어를 인코딩 없이 URL에 그대로 붙이면 gh api 가 걸린 채
         # 30초 타임아웃까지 간다 (실측: "SWE-agent"처럼 한 단어일 때만 성공하고
         # 나머지 다중 단어 검색어는 전부 실패했다). quote() 로 반드시 인코딩한다.
-        result = subprocess.run(
-            ["gh", "api", f"search/repositories?q={quote(query)}&sort=stars&order=desc"],
-            capture_output=True, text=True, timeout=30, check=True,
-        )
+        with _gh_pacer.gate():
+            result = subprocess.run(
+                ["gh", "api", f"search/repositories?q={quote(query)}&sort=stars&order=desc"],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
         api_usage.record("github", "error")
         print(f"  [경고] GitHub 검색 실패: {e}")

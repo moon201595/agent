@@ -1531,7 +1531,11 @@ TSPulse 실측에서 확인한, placeholder print 가 exit 0 을 내 거짓 통�
     **이번 가드 정정과 분리했다** — 같이 하면 "가드를 고쳤더니 뭐가 달라졌나"를
     또 못 본다(23·25 를 분리했던 것과 같은 이유).
 
-30. **스로틀 3벌 통합은 보류** (2026-09-02, 코드 검토).
+30. ~~**스로틀 3벌 통합은 보류**~~ — 2026-09-02 완료(같은 날 조건 충족 후 착수). **종결 조건이었던 server 커버리지 60% 를 먼저 채웠다**(39% → 63%, `test_server_tools.py` 27건). 리팩토링은 그물이 먼저다.
+    **처리**: `pacing.py` 신설. 간격 계산 규칙(`_remaining`)이 이제 한 곳에만 있고, 네 벌이던 구현이 `AsyncPacer`(server ×2, retraction ×2)와 `SyncPacer`(code_finder)로 정리됐다.
+    **동기와 비동기를 억지로 하나로 안 합쳤다** — `code_finder` 는 동기 코드이고 거기에 async 를 끌어들이면 ⑦ 재현 경로 전체를 바꿔야 한다. 클래스는 둘로 두되 규칙은 한 곳에 적었고, 그 사실 자체를 테스트로 못박았다(`test_both_flavours_share_the_same_rule`).
+    **부수 개선**: `code_finder` 의 스로틀이 호출 **전에** 시각을 기록하던 것을 나머지와 같이 **응답 후** 기준으로 맞췄다 — 느린 응답이 다음 호출을 앞당기지 않는다. 예외 시 락 해제도 게이트가 보장한다(예전엔 code_finder 쪽이 `subprocess.run` 밖에 있어 그 보장이 없었다).
+    아래는 원래 진단이다.
     같은 "호출 간 최소 간격" 로직이 `code_finder._throttle_github_search`
     (threading.Lock), `retraction._throttled_get`(asyncio.Lock + `globals()`
     문자열 조회), `server._throttled_arxiv_get`/`_throttled_s2_get` 셋으로
