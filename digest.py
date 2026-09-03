@@ -445,6 +445,22 @@ def injection_label(arxiv_id: str) -> str:
     return "[⚠ 본문에 모델 대상 지시로 보이는 패턴 — 확인 필요]"
 
 
+def paper_link(paper: dict) -> str:
+    """논문으로 가는 링크. arXiv 논문이면 abs 페이지, 아니면 DOI.
+
+    2026-09-03 실측: S2 로 들어온 저널 논문에 arxiv_id 가 없어 메일에
+    `https://arxiv.org/abs/None` 이 찍혔다 — 클릭하면 404 다. 소스가 둘이
+    됐으면 링크도 둘이어야 한다.
+    """
+    arxiv_id = paper.get("arxiv_id")
+    if arxiv_id and not str(arxiv_id).startswith("pdf-"):
+        return f"https://arxiv.org/abs/{arxiv_id}"
+    doi = paper.get("doi")
+    if doi:
+        return f"https://doi.org/{doi}"
+    return paper.get("open_access_pdf") or ""
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
@@ -496,7 +512,9 @@ def _paper_entry(idx: int, paper: dict) -> str:
             labels += f"   {cov}"
         lines.append(labels)
 
-    lines.append(f"   https://arxiv.org/abs/{arxiv_id}")
+    link = paper_link(paper)
+    if link:
+        lines.append(f"   {link}")
     return "\n".join(lines)
 
 
@@ -539,6 +557,36 @@ def _filtered_line(scan_result: dict) -> str:
     return ", ".join(parts)
 
 
+def _title_only_section(scan_result: dict) -> list[str]:
+    """본문을 못 받는 논문 목록. 제목·출처·링크만 한 줄씩.
+
+    2026-09-03 실측: S2 를 붙이자 팀 표적 논문이 실제로 올라왔는데
+    (PhyHGNet 등 ★★★ 2편) **59편 중 35편(59%)이 arXiv ID 도 오픈액세스
+    PDF 도 없었다.** 그날 상위 6편 중 5편이 그런 논문이라 요약 없이
+    "처리 실패"로 나갔다.
+
+    **"실패"가 아니다.** 저자가 코드를 안 올린 것을 `[재현 ✗]` 로 부르면
+    안 되는 것과 같은 이유로(§8-24), 페이월 뒤에 있는 논문을 "처리 실패"로
+    부르면 안 된다 — 우리 쪽이 고장난 게 아니다. 기관 구독으로 볼 수 있는
+    논문이니 **제목과 링크를 주는 것 자체가 정보**다.
+    """
+    papers = scan_result.get("title_only_papers") or []
+    if not papers:
+        return []
+    lines = ["", f"■ 본문 비공개 — 제목만 확인 ({len(papers)}편)",
+             "   (arXiv 에도 없고 오픈액세스 PDF 도 없다. 기관 구독으로 볼 수 있다)"]
+    for paper in papers:
+        score = paper.get("_score", {})
+        lines.append(f"   [{_stars(score)}] {paper.get('title') or '(제목 없음)'}")
+        why = _why_matched(score)
+        venue = (paper.get("venue") or "").strip()
+        lines.append(f"        {why}" + (f" / {venue}" if venue else ""))
+        link = paper_link(paper)
+        if link:
+            lines.append(f"        {link}")
+    return lines
+
+
 def generate_digest(scan_result: dict, profile_name: str) -> str:
     """scan_result: run_profile_scan.scan_profile()의 반환값 그대로 받는다.
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
@@ -548,7 +596,9 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     papers = scan_result.get("papers", [])
     candidates = scan_result.get("candidates_found", 0)
 
-    if not papers:
+    title_only = scan_result.get("title_only_papers") or []
+
+    if not papers and not title_only:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
         # 그 답이 메일 안에 없었다. 걸러진 내역을 여기에도 붙인다.
@@ -561,9 +611,17 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
                      "최근 며칠은 다음 실행에서 다시 조회합니다.")
         return f"{header}\n\n{body}\n"
 
-    lines = [header, "", f"■ 오늘의 신규 논문 {len(papers)}편 (전체 후보 {candidates}건 중)", ""]
-    for i, paper in enumerate(papers, start=1):
-        lines.append(_paper_entry(i, paper))
+    lines = [header, ""]
+    if papers:
+        lines += [f"■ 오늘의 신규 논문 {len(papers)}편 (전체 후보 {candidates}건 중)", ""]
+        for i, paper in enumerate(papers, start=1):
+            lines.append(_paper_entry(i, paper))
+            lines.append("")
+    else:
+        lines += [f"■ 본문을 받을 수 있는 신규 논문은 없었습니다 (전체 후보 {candidates}건 중).", ""]
+
+    lines += _title_only_section(scan_result)
+    if lines and lines[-1] != "":
         lines.append("")
 
     trend = _trend_line(scan_result)
@@ -729,9 +787,42 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         f'왜 걸렸나 : {_esc(_why_matched(score))}</div>'
         f'{_summary_block_html(arxiv_id, paper, deep_status)}'
         f'<div style="margin-top:8px;font-size:13px;">'
-        f'<a href="https://arxiv.org/abs/{_esc(arxiv_id)}" '
-        f'style="color:{_NAVY};">arxiv.org/abs/{_esc(arxiv_id)}</a></div>'
+        f'<a href="{_esc(paper_link(paper))}" '
+        f'style="color:{_NAVY};">{_esc(paper_link(paper).replace("https://", ""))}</a></div>'
         f"</details>"
+    )
+
+
+def _title_only_html(scan_result: dict) -> str:
+    """본문 비공개 논문 목록의 HTML 판. 근거는 _title_only_section 주석 참고."""
+    papers = scan_result.get("title_only_papers") or []
+    if not papers:
+        return ""
+    rows = []
+    for paper in papers:
+        score = paper.get("_score", {})
+        link = paper_link(paper)
+        title = _esc(paper.get("title") or "(제목 없음)")
+        if link:
+            title = (f'<a href="{_esc(link)}" style="color:{_NAVY};'
+                     f'text-decoration:none;">{title}</a>')
+        venue = (paper.get("venue") or "").strip()
+        meta = _esc(_why_matched(score)) + (f" / {_esc(venue)}" if venue else "")
+        rows.append(
+            f'<li style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'margin-bottom:6px;">{_esc(_stars(score))} {title}'
+            f'<br><span style="color:{_MUTED};font-size:12px;">{meta}</span></li>'
+        )
+    return (
+        f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+        f'font-weight:600;border-top:1px solid {_LINE};padding-top:10px;'
+        f'margin-top:14px;margin-bottom:4px;">본문 비공개 — 제목만 확인 '
+        f'({len(papers)}편)</p>'
+        f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+        f'margin:0 0 8px;">arXiv 에도 없고 오픈액세스 PDF 도 없습니다. '
+        f'기관 구독으로 볼 수 있습니다.</p>'
+        f'<ul style="background-color:{_PAPER_BG};padding-left:18px;margin:0;">'
+        + "".join(rows) + "</ul>"
     )
 
 
@@ -755,8 +846,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
     retraction_slot = "<!-- retraction-warnings -->"
+    title_only = scan_result.get("title_only_papers") or []
 
-    if not papers:
+    if not papers and not title_only:
         reason = _filtered_line(scan_result)
         extra = ""
         if reason:
@@ -768,7 +860,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;">'
             f'오늘은 새로 걸린 논문이 없습니다 (후보 {candidates}건).{extra}</p>'
         )
-    else:
+    elif papers:
         entries = "".join(
             _paper_entry_html(i, p) for i, p in enumerate(papers, start=1)
         )
@@ -777,6 +869,14 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'margin:14px 0 10px;">오늘의 신규 논문 {len(papers)}편 '
             f'(전체 후보 {candidates}건 중)</p>{entries}'
         )
+    else:
+        body = (
+            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
+            f'margin:14px 0 10px;">본문을 받을 수 있는 신규 논문은 없었습니다 '
+            f'(전체 후보 {candidates}건 중).</p>'
+        )
+
+    body += _title_only_html(scan_result)
 
     trend = _trend_line(scan_result)
     if trend:
