@@ -25,6 +25,7 @@ import re
 import sqlite3
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -336,7 +337,8 @@ def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
         return con.execute(
-            "SELECT p.arxiv_id, p.title, p.abstract, p.published, p.source, s.engine, s.coverage_ratio "
+            "SELECT p.arxiv_id, p.title, p.abstract, p.authors, p.published, p.source, "
+            "s.engine, s.coverage_ratio "
             "FROM papers p JOIN summaries s ON s.arxiv_id = p.arxiv_id "
             "WHERE s.created_at >= ? AND s.created_at < ? ORDER BY s.created_at",
             (start.isoformat(), end.isoformat()),
@@ -356,6 +358,37 @@ def keyword_counts(rows: list[sqlite3.Row], profile: dict) -> Counter:
             {"title": row["title"], "abstract": ""}, profile)
         counts.update(hits)
     return counts
+
+
+def author_counts(rows: list[sqlite3.Row], min_papers: int = 2,
+                  top_n: int = 10) -> list[tuple[str, int]]:
+    """이 기간에 여러 편을 낸 저자. (이름, 편수).
+
+    "누가 이 분야를 밀고 있나"는 조사 요약의 핵심인데 `papers.authors` 를
+    90편 전부 갖고 있으면서 어디서도 안 읽고 있었다(§8-40). **추가 API 호출이
+    0회다** — 이미 저장된 값을 세기만 한다.
+
+    **셈 절에만 쓴다. 프롬프트에는 안 보낸다**(2026-09-03 결정) — 저자 빈도는
+    로컬 셈으로 똑같이 나오는데 LLM 에 넘기면 개인·기관 프로파일링을 외부
+    모델에 시키는 게 된다. `_narrative_corpus` 주석 참고.
+
+    편수로 센다. 공저자가 많은 논문 한 편이 저자 전원을 1편씩 올리므로
+    min_papers=2 가 실질적인 하한이다 — 1편짜리를 세면 그냥 저자 목록이다.
+    """
+    counts: Counter = Counter()
+    for row in rows:
+        raw = _field(row, "authors")
+        if not raw:
+            continue
+        try:
+            names = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(names, list):
+            continue
+        # 한 논문 안에서 같은 이름이 두 번 나와도 1편이다
+        counts.update({n.strip() for n in names if isinstance(n, str) and n.strip()})
+    return [(n, k) for n, k in counts.most_common(top_n) if k >= min_papers]
 
 
 def source_mix(rows: list[sqlite3.Row]) -> Counter:
@@ -385,20 +418,41 @@ def partial_coverage(rows: list[sqlite3.Row], below: float = 0.98) -> list[tuple
     return sorted(out, key=lambda x: x[1])
 
 
+@dataclass
+class ReferenceScan:
+    """공통 인용 조회 한 번에서 나오는 것 전부.
+
+    처음엔 (공통인용, 조회수, 대상수) 3-튜플이었는데 계보 묶기와 인용수 정렬,
+    최전선 조회가 **같은 응답에서** 나오면서 6개가 됐다. 튜플로 6개를 돌려주면
+    호출부에서 순서를 세게 되므로 이름을 붙인다 — 값이 늘어난 건 추가 호출이
+    생겨서가 아니라 **버리던 걸 안 버리게 됐기 때문**이다(§8-40).
+    """
+    shared: list[tuple[str, int]]        # (참고문헌 제목, 함께 인용한 편수)
+    examined: int                        # 실제로 조회한 우리 논문 수
+    targets: int                         # 조회 대상이던 우리 논문 수
+    by_paper: dict[str, set[str]]        # 우리 논문 → 참고문헌 제목 집합 (계보용)
+    cites: dict[str, int]                # 참고문헌 제목 → 그 논문의 총 인용수
+    ref_ids: dict[str, str]              # 참고문헌 제목 → arXiv ID (최전선 조회용)
+
+
 async def shared_references(
     client: httpx.AsyncClient, rows: list[sqlite3.Row],
     limit: int = REFERENCES_PER_PAPER, budget_s: float = REFERENCE_BUDGET_SECONDS,
-) -> tuple[list[tuple[str, int]], int, int]:
+) -> ReferenceScan:
     """이번 주 논문들이 **함께 인용한** 논문. 이 분야가 뭘 딛고 서 있는지.
 
-    returns (공통 인용 목록, 실제로 조회한 논문 수, 조회 대상이던 논문 수)
-    — 표본 크기를 같이 돌려준다. 예산에 걸려 일부만 봤을 때 그걸 숨기면
-    "전체를 본 결과"로 오해된다.
+    returns (공통 인용 목록, 조회한 논문 수, 조회 대상 수, 논문별 참고문헌
+    집합, 참고문헌별 인용수) — 표본 크기를 같이 돌려준다. 예산에 걸려 일부만
+    봤을 때 그걸 숨기면 "전체를 본 결과"로 오해된다.
+    뒤의 둘은 계보 묶기와 정렬용이고, **같은 응답에서 나오므로 추가 호출이 없다.**
 
     arXiv ID 가 있는 논문만 조회한다 — S2 인용망은 arXiv ID 로 찾는다.
     실패는 조용히 건너뛴다: 동향 보고가 못 나온다고 다이제스트를 막으면 안 된다.
     """
     counter: Counter = Counter()
+    cites: dict[str, int] = {}
+    ref_ids: dict[str, str] = {}
+    by_paper: dict[str, set[str]] = {}
     targets = [r for r in rows
                if (r["arxiv_id"] or "") and not (r["arxiv_id"] or "").startswith("pdf-")]
     started = time.monotonic()
@@ -413,16 +467,140 @@ async def shared_references(
             continue
         examined += 1
         # 같은 논문 안에서 같은 참고문헌이 두 번 세지지 않게 제목으로 유일화
-        for title in {(r.get("title") or "").strip() for r in refs if r.get("title")}:
-            counter[title] += 1
-    shared = [(t, n) for t, n in counter.most_common(20) if n >= MIN_SHARED_CITATIONS]
-    return shared, examined, len(targets)
+        titles = {(r.get("title") or "").strip() for r in refs if r.get("title")}
+        counter.update(titles)
+        # 논문별 집합을 **버리지 않고 남긴다** — 계보 묶기가 이걸 쓴다.
+        # 추가 호출이 0회인 이유가 이것이다(§8-40).
+        by_paper[row["arxiv_id"]] = titles
+        # citationCount 는 이미 응답에 온다(server._s2_citation_graph 의 fields).
+        # 필드를 더 요청할 필요도 없다.
+        for r in refs:
+            t = (r.get("title") or "").strip()
+            if not t:
+                continue
+            n = r.get("citationCount")
+            if isinstance(n, int):
+                cites[t] = max(cites.get(t, 0), n)
+            # externalIds 도 이미 응답에 온다 — 최전선 조회의 씨앗이 된다.
+            aid = ((r.get("externalIds") or {}).get("ArXiv") or "").strip()
+            if aid:
+                ref_ids.setdefault(t, aid)
+
+    # 몇 편이 함께 인용했나가 1순위, 그 논문 자체의 인용수가 2순위.
+    # **2순위를 넣는 이유**: 지금은 "이 분야의 토대라서 다들 인용한다"와
+    # "이 3편이 우연히 같은 무명 논문을 인용했다"가 같은 줄에 섞여 있다.
+    # delta 논문은 인용수가 0이라 신호가 없지만(§8-40 실측), **공통 인용으로
+    # 올라오는 논문은 오래된 논문이라 인용수가 실제로 크다** — 같은 필드를
+    # 값이 있는 곳에 쓰는 것이다.
+    ranked = sorted(counter.items(), key=lambda kv: (-kv[1], -cites.get(kv[0], 0), kv[0]))
+    shared = [(t, n) for t, n in ranked[:20] if n >= MIN_SHARED_CITATIONS]
+    return ReferenceScan(shared, examined, len(targets), by_paper, cites, ref_ids)
+
+
+# 두 논문이 "같은 토대 위에 있다"고 부를 참고문헌 겹침 비율(Jaccard).
+# 0.15 는 참고문헌 20편 기준 대략 3편이 겹치는 수준이다 — 우연이라기엔 많고
+# 같은 주제라기엔 느슨한, 계보를 말하기 시작할 만한 선.
+LINEAGE_MIN_JACCARD = 0.15
+
+
+def lineage_groups(by_paper: dict[str, set[str]], rows: list[sqlite3.Row],
+                   min_jaccard: float = LINEAGE_MIN_JACCARD) -> list[list[str]]:
+    """참고문헌이 겹치는 논문끼리 묶는다. (그룹별 논문 제목 목록)
+
+    **추가 API 호출이 0회다** — `shared_references` 가 이미 받아온 참고문헌
+    집합을 재사용한다. 지금까지는 그 집합을 세고 나서 버리고 있었다(§8-40).
+
+    공통 인용 절이 "다들 무엇을 딛고 있나"라면 여기는 "누가 누구와 같은 데를
+    딛고 있나"다. 평평한 논문 목록이 갈래로 보이기 시작하는 지점이고, 개별
+    논문 요약으로는 절대 안 나온다.
+
+    묶는 방법은 단일 연결(하나라도 임계 이상 겹치면 같은 그룹)이다. 계층
+    군집이나 그래프 라이브러리를 쓰지 않는다 — 한 주에 논문 수십 편 규모라
+    O(n²) 비교로 충분하고, 새 의존성이 주는 이득이 없다.
+    """
+    ids = [i for i in by_paper if by_paper[i]]
+    parent = {i: i for i in ids}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a_idx, a in enumerate(ids):
+        for b in ids[a_idx + 1:]:
+            sa, sb = by_paper[a], by_paper[b]
+            union = len(sa | sb)
+            if union and len(sa & sb) / union >= min_jaccard:
+                parent[find(a)] = find(b)
+
+    titles = {(_field(r, "arxiv_id")): (_field(r, "title") or "(제목 없음)") for r in rows}
+    groups: dict[str, list[str]] = {}
+    for i in ids:
+        groups.setdefault(find(i), []).append(titles.get(i, i))
+    # 혼자인 논문은 "갈래"가 아니다
+    return sorted((g for g in groups.values() if len(g) > 1), key=len, reverse=True)
+
+
+# 최전선을 볼 때 토대 논문 몇 편까지 거슬러 올라갈지. S2 는 초당 1회라
+# 여기 넣는 수만큼 호출이 늘어난다 — 주 1회 실행이고 부가 정보라 3편이면 족하다.
+FRONTIER_SEED_PAPERS = 3
+FRONTIER_RECENT_YEARS = 2
+
+
+async def frontier_papers(
+    client: httpx.AsyncClient, shared: list[tuple[str, int]],
+    seed_ids: dict[str, str], limit: int = REFERENCES_PER_PAPER,
+    budget_s: float = REFERENCE_BUDGET_SECONDS,
+) -> tuple[list[tuple[str, int]], int]:
+    """이 분야의 토대 논문을 **최근에 인용한** 논문들. (제목, 인용한 토대 수), 조회 수.
+
+    **순진한 형태는 안 된다.** "우리 논문을 누가 인용하나"를 보려 했는데,
+    delta 검색이 물어오는 논문은 30일 이내라 인용수가 0 이다(§8-40 실측:
+    저장 논문의 41% 가 30일 이내). 물어볼 대상 자체가 없다.
+
+    **방향을 뒤집는다.** `shared_references` 가 찾아낸 토대 논문은 오래됐고
+    인용이 많다 — 그걸 **누가 지금 인용하고 있나**를 보면 이 분야의 최전선이
+    나온다. 그리고 그중 상당수는 **우리 키워드에 안 걸린 논문**이다.
+    §8-39 가 "닫힌 고리의 절반만 끊었다"고 적은 나머지 절반이 여기다:
+    미등록 용어는 *이미 수집한* 논문 안에서 못 보던 말을 찾지만, 이건
+    *수집 대상 밖*에서 관련 논문을 데려온다.
+
+    여러 토대를 동시에 인용한 논문일수록 이 분야에 가깝다 — 그걸로 정렬한다.
+    실패와 예산 초과는 조용히 부분 결과로 끝낸다(공통 인용과 같은 원칙).
+    """
+    counter: Counter = Counter()
+    started = time.monotonic()
+    examined = 0
+    cutoff = datetime.now(timezone.utc).year - FRONTIER_RECENT_YEARS
+    for title, _n in shared[:FRONTIER_SEED_PAPERS]:
+        seed = seed_ids.get(title)
+        if not seed:
+            continue
+        if time.monotonic() - started > budget_s:
+            break
+        try:
+            raw = await server._s2_citation_graph(seed, limit, "citations")
+            citing = json.loads(raw).get("papers") or []
+        except Exception:  # noqa: BLE001
+            continue
+        examined += 1
+        for p in citing:
+            t = (p.get("title") or "").strip()
+            year = p.get("year")
+            # 오래된 인용은 최전선이 아니다 — 지금 누가 쓰고 있나가 관심사다
+            if t and isinstance(year, int) and year >= cutoff:
+                counter[t] += 1
+    return counter.most_common(10), examined
 
 
 def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
                   profile: dict, shared: list[tuple[str, int]] | None = None,
                   examined: int = 0, targets: int = 0,
-                  story: tuple[str, list[str]] | None = None) -> str:
+                  story: tuple[str, list[str]] | None = None,
+                  lineage: list[list[str]] | None = None,
+                  cites: dict[str, int] | None = None,
+                  frontier: list[tuple[str, int]] | None = None) -> str:
     """사람이 메일에서 바로 읽는 형태.
 
     **셈과 서술을 섞지 않는다.** 위쪽은 전부 기계가 센 숫자라 위조가 불가능하고,
@@ -476,10 +654,35 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
         if targets and examined < targets:
             lines.append("   (시간 예산으로 일부만 봤다 — 아래는 그 표본 기준이다)")
         for title, n in shared[:10]:
-            lines.append(f"   {n}편이 인용 — {title[:70]}")
+            # 그 논문 자체의 인용수를 같이 보여준다 — "분야의 토대라 다들
+            # 인용한다"와 "우연히 같은 무명 논문을 인용했다"가 갈린다.
+            total = (cites or {}).get(title)
+            weight = f" (총 인용 {total:,})" if total else ""
+            lines.append(f"   {n}편이 인용{weight} — {title[:70]}")
     elif shared is not None:
         lines += ["", f"▶ 공통 인용: 없음 ({examined}/{targets}편 조회 — "
                       "논문들이 서로 다른 토대를 쓰고 있다)"]
+
+    if lineage:
+        lines += ["", "▶ 같은 토대를 쓰는 논문 묶음 (참고문헌이 겹치는 것끼리)"]
+        for i, group in enumerate(lineage[:4], start=1):
+            lines.append(f"   갈래 {i} — {len(group)}편")
+            for title in group[:5]:
+                lines.append(f"      · {title[:66]}")
+        lines.append("   ※ 공통 인용이 '다들 무엇을 딛고 있나'라면 여기는 "
+                     "'누가 누구와 같은 데를 딛고 있나'다.")
+
+    if frontier:
+        lines += ["", "▶ 이 분야의 토대를 최근에 인용한 논문 (우리 검색 밖일 수 있다)"]
+        for title, n in frontier[:8]:
+            lines.append(f"   토대 {n}편을 인용 — {title[:66]}")
+        lines.append("   ※ 미등록 용어가 '이미 모은 논문 안에서' 못 보던 말을 찾는다면, "
+                     "여기는 '수집 대상 밖에서' 관련 논문을 데려온다.")
+
+    authors = author_counts(this_week)
+    if authors:
+        lines += ["", "▶ 이번 기간에 여러 편을 낸 저자"]
+        lines.append("   " + " · ".join(f"{n} {k}편" for n, k in authors))
 
     if story:
         text, ungrounded = story
@@ -494,15 +697,24 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
 
 async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None,
                 days: int = 7, with_references: bool = True,
-                with_narrative: bool = True) -> str:
+                with_narrative: bool = True, with_frontier: bool = True) -> str:
     """주간 리뷰 본문. client 를 안 주면 인용망 조회와 서술을 건너뛴다(네트워크 없음)."""
     end = datetime.now(timezone.utc)
     this_week = _rows_between(db, end - timedelta(days=days), end)
     last_week = _rows_between(db, end - timedelta(days=days * 2), end - timedelta(days=days))
     shared, examined, targets = None, 0, 0
+    lineage, cites, frontier = None, None, None
     if client is not None and with_references and this_week:
-        shared, examined, targets = await shared_references(client, this_week)
+        scan = await shared_references(client, this_week)
+        shared, examined, targets = scan.shared, scan.examined, scan.targets
+        cites = scan.cites
+        # 계보 묶기는 위 응답을 재사용한다 — 추가 호출 0회(§8-40).
+        lineage = lineage_groups(scan.by_paper, this_week)
+        # 최전선만 호출이 더 든다(토대 논문 3편). 실패해도 나머지는 그대로 나간다.
+        if with_frontier and shared:
+            frontier, _seen = await frontier_papers(client, shared, scan.ref_ids)
     story = None
     if client is not None and with_narrative and this_week:
         story = await narrative(client, this_week, profile)
-    return format_report(this_week, last_week, profile, shared, examined, targets, story)
+    return format_report(this_week, last_week, profile, shared, examined, targets,
+                         story, lineage, cites, frontier)
