@@ -11,6 +11,7 @@ import sqlite3
 
 import pytest
 
+import digest
 import server
 from digest import generate_digest
 
@@ -589,3 +590,53 @@ def test_old_install_only_row_without_detail_still_renders(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage="install_only", fail_detail=None)
     assert "[재현 ◐ 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+
+
+# ---------------------------------------------------------------- 본문 비공개 논문 (2026-09-03)
+#
+# S2 를 붙이자 팀 표적 논문이 실제로 걸렸는데(★★★ 2편) 그날 상위 6편 중 5편이
+# arXiv ID 도 오픈액세스 PDF 도 없는 저널 논문이었다(실측 59편 중 35편, 59%).
+# 링크는 `https://arxiv.org/abs/None` 으로 깨졌고 라벨은 "처리 실패"였다.
+
+_TITLE_ONLY = {
+    "title": "PhyHGNet: Physics guided micro defect detection",
+    "doi": "10.1016/j.solener.2026.1",
+    "venue": "Solar Energy",
+    "_score": {"priority": 1.1, "core_hits": ["defect detection"],
+               "domain_hits": [], "venue_hit": None, "top_core_weight": 1.0},
+}
+
+
+def test_paper_link_uses_doi_when_not_arxiv():
+    """arXiv 밖 논문에 arxiv.org/abs/None 을 찍지 않는다."""
+    assert digest.paper_link({"arxiv_id": "2608.1"}) == "https://arxiv.org/abs/2608.1"
+    assert digest.paper_link({"doi": "10.1/x"}) == "https://doi.org/10.1/x"
+    # 업로드 PDF 의 합성 ID(pdf-*)는 arXiv 링크가 아니다
+    assert digest.paper_link({"arxiv_id": "pdf-a", "doi": "10.1/y"}) == "https://doi.org/10.1/y"
+    assert digest.paper_link({"open_access_pdf": "http://x/y.pdf"}) == "http://x/y.pdf"
+    assert digest.paper_link({}) == ""
+
+
+def test_no_broken_arxiv_none_link_anywhere():
+    """핵심 회귀: 어떤 렌더 경로에서도 /abs/None 이 나오면 안 된다."""
+    scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY]}
+    for text in (digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")):
+        assert "abs/None" not in text
+        assert "10.1016/j.solener.2026.1" in text
+
+
+def test_title_only_papers_are_listed_not_called_failures():
+    """페이월 뒤 논문은 '처리 실패'가 아니다 — §8-24 와 같은 구분."""
+    scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY]}
+    text = digest.generate_digest(scan, "t")
+    assert "본문 비공개" in text
+    assert "처리 실패" not in text
+    assert "PhyHGNet" in text
+    # 논문이 있는데 "없습니다"로 끝나면 안 된다
+    assert "오늘은 새로 걸린 논문이 없습니다" not in text
+
+
+def test_empty_scan_still_reports_nothing_found():
+    """제목만 목록도 비면 종전대로 빈 다이제스트."""
+    scan = {"papers": [], "candidates_found": 0}
+    assert "오늘은 새로 걸린 논문이 없습니다" in digest.generate_digest(scan, "t")

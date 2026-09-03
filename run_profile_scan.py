@@ -70,6 +70,10 @@ DEEP_LAYER_BUDGET_SECONDS = float(os.environ.get("DEEP_LAYER_BUDGET_SECONDS", 24
 # 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
 WEEKLY_REVIEW_WEEKDAY = 0
 
+# 본문을 못 받는(arXiv ID 도 오픈액세스 PDF 도 없는) 논문을 다이제스트에 몇 편까지
+# 목록으로 보여줄지. 요약이 없으니 한 줄씩만 차지한다 — 넉넉해도 메일이 길어지지 않는다.
+TITLE_ONLY_MAX_ITEMS = 8
+
 
 def is_weekly_review_day(now: datetime | None = None) -> bool:
     """오늘이 주간 리뷰를 붙이는 날인가. 함수로 뺀 이유는 테스트가
@@ -148,12 +152,34 @@ async def scan_profile(
     seen = _already_summarized([p.get("arxiv_id") for p in merged])
     fresh = [p for p in merged if not p.get("arxiv_id") or p.get("arxiv_id") not in seen]
 
+    # 본문을 받을 수 있는 논문과 제목만 아는 논문을 나눈다(2026-09-03 실측).
+    #
+    # S2 를 붙이자 팀 표적 논문이 실제로 올라왔는데(★★★ 2편), **59편 중
+    # 35편(59%)이 arXiv ID 도 오픈액세스 PDF 도 없었다.** 그런 논문이 상위
+    # 6칸을 차지하면 요약할 수 있는 논문이 밀려난다 — 실제로 그날 6편 중
+    # 5편이 본문 없이 제목만 실려 나갔다.
+    #
+    # 그렇다고 버리지는 않는다. "이런 논문이 나왔다"는 것 자체가 정보이고
+    # (기관 구독으로 볼 수 있다), 다이제스트의 원칙이 "발견은 빠르게, 검증은
+    # 필요한 것부터 깊게"다. 다만 **자리를 나눠 준다** — Deep Layer 6칸은
+    # 처리 가능한 논문에만 쓰고, 나머지는 목록으로 따로 보여준다.
+    def _has_text_source(paper: dict) -> bool:
+        return bool(paper.get("arxiv_id") or paper.get("open_access_pdf"))
+
+    processable = [p for p in fresh if _has_text_source(p)]
+    title_only = [p for p in fresh if not _has_text_source(p)]
+
     scored = profile_scoring.score_and_rank(
-        fresh, profile, top_k=profile["max_items"],
+        processable, profile, top_k=profile["max_items"],
+    )
+    listed = profile_scoring.score_and_rank(
+        title_only, profile, top_k=TITLE_ONLY_MAX_ITEMS,
     )
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
         "run_status": result["status"], "candidates_found": len(fresh),
+        "title_only_papers": listed["papers"],
+        "title_only_count": listed["scored_count"],
         "retrieved_count": len(merged), "already_seen_count": len(seen),
         "arxiv_count": len(result["papers"]), "s2_count": len(s2_papers),
         "s2_status": s2_status,

@@ -700,3 +700,49 @@ def test_weekly_review_day_is_computed_from_the_weekday():
     tuesday = _dt(2026, 9, 8, tzinfo=_tz.utc)
     assert rps.is_weekly_review_day(monday) is True
     assert rps.is_weekly_review_day(tuesday) is False
+
+
+def test_scan_profile_splits_papers_by_text_availability(tmp_path, monkeypatch):
+    """본문을 못 받는 논문이 Deep Layer 자리를 먹지 않는다 (§8-33).
+
+    2026-09-03 실측: S2 논문 59편 중 35편(59%)이 arXiv ID 도 오픈액세스 PDF 도
+    없었고, 그날 상위 6편 중 5편이 그런 논문이라 요약 없이 나갔다.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 셋 다 프로필에 걸리지만 본문 확보 수단이 다르다
+    pages = {0: [
+        {"arxiv_id": "a1", "title": "An agent for robot hand control",
+         "abstract": "", "published": published},
+        {"arxiv_id": None, "doi": "10.1/oa", "open_access_pdf": "http://x/y.pdf",
+         "title": "An agent for robot arm grasping", "abstract": "", "published": published},
+        {"arxiv_id": None, "doi": "10.1/paywalled",
+         "title": "An agent for robot locomotion", "abstract": "", "published": published},
+    ]}
+    starts_seen = []
+
+    async def fake_throttled(client, params):
+        starts_seen.append(params["start"])
+
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+
+    result = asyncio.run(
+        rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3))
+
+    # arXiv ID 나 오픈액세스 PDF 가 있는 둘만 Deep Layer 로 간다
+    got = {p.get("arxiv_id") or p.get("doi") for p in result["papers"]}
+    assert got == {"a1", "10.1/oa"}
+    # 페이월 논문은 버려지지 않고 별도 목록으로 간다
+    assert [p["doi"] for p in result["title_only_papers"]] == ["10.1/paywalled"]
+    assert result["title_only_count"] == 1
+    # 후보 집계는 여전히 전부를 센다
+    assert result["candidates_found"] == 3
