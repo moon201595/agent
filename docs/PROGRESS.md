@@ -1253,6 +1253,45 @@ LLM 을 안 쓴다: 주제별 편수의 **지난주 대비 증감**, 출처(arXi
 
 ---
 
+### ⑦ 가드 정정 — install_only 를 별도 상태로 (2026-09-02)
+
+**처음에 원인을 잘못 짚었다.** 코드 검토에서 ⑦ 실행 단계 도달률 20%의 최대
+원인이 `no_target`(40%)임을 보고 "`detect_install_plan` 에 테스트를 쓰겠다"고
+계획했는데, 그 함수는 **정상 동작한다** — requirements.txt 만 있는 디렉터리로
+실측하니 `installer='pip-requirements'`, `install_cmd` 도 제대로 채운다.
+
+거부는 호출부인 `run_repo_in_docker` 의 가드에서 일어났다:
+
+```python
+if run_cmd is None and not plan.entry_point and not plan.package_name:
+    return {..., "log": "설치 대상(pyproject/setup.py/requirements.txt)도 못 찾음"}
+```
+
+**조건은 run 대상만 보는데 메시지는 install 대상을 말한다.** 그래서
+`llm-awq`(pyproject.toml), `Hadamard`·`UrbanGround`(requirements.txt)가
+"아무것도 없음"으로 거부됐다. 그 함수에 테스트를 썼다면 정상 동작만 고정하고
+결함은 못 잡았을 것이다.
+
+**설계 결정**: 가드를 셋으로 나누고 `install_only` 를 **success 가 아닌 별도
+상태**로 남긴다. 이 프로젝트가 이미 세 번 쓴 패턴이다 — 철회의 0/NULL, 검증의
+"통과"/"검증할 수치 없음", ⑦ 라벨의 ✗/–.
+
+**placeholder 를 실행하지 않는다.** `docker build` 까지만 하고 멈춘다. 그러면
+exit 0 이 나올 자리가 아예 없어 Goodhart 문제가 구조적으로 사라진다(2026-08-03
+TSPulse 실측에서 확인한, placeholder print 가 exit 0 을 내 거짓 통과가 되던
+바로 그 문제다). "의존성 설치가 성공했다"는 build 종료 코드만으로 위조
+불가능하게 판정되는 약한 신호다.
+
+**종단 확인(2608.28295 / gallicch/Hadamard)**: 재현을 다시 돌려
+`stage='no_target'` → `stage='install_only'`, 라벨 `[재현 – 실행 대상 없음]` →
+`[재현 ◐ 설치만 확인]` 로 바뀌는 것을 확인했다. §8-16 실행 단계 누적도
+2/10 → 4/10 으로 늘었다(install_only 가 실행 단계로 잡힌다).
+
+**비용 실측**: 그 한 후보에 **330초(5.5분)** 걸렸다. 전에는 build 를 아예 안
+타서 0초에 거부됐던 저장소다 — §8 에 새 항목으로 올린다.
+
+---
+
 ## 8. 미해결 (우선순위)
 
 1. ~~**논문 1편 실제 왕복**~~ — 2026-07-30 완료. §5 참고.
@@ -1459,6 +1498,51 @@ LLM 을 안 쓴다: 주제별 편수의 **지난주 대비 증감**, 출처(arXi
     **처리 방법은 이미 있다**: `summarize_engine.gemini_key_names()` 를 그대로
     쓰면 된다. 임베딩 엔드포인트는 요약과 다른 URL 이라 회전 루프를 한 번 더
     쓰거나, 키 선택만 공유하고 재시도는 지금 방식을 유지하면 된다.
+
+
+28. **install_only 확정 후보를 매번 다시 빌드한다** (2026-09-02, 가드 정정의 대가).
+    `install_only` 판정 조건(`entry_point` 도 `package_name` 도 없음)은 **저장소
+    파일 구조에서만** 나온다 — 재클론해도 결과가 같다. 즉 이 저장소들은 앞으로도
+    영원히 install 까지만 하고 끝난다. 그런데 `reproduce()` 는 `success=False` 면
+    무조건 다음 후보로 넘어가고, `code_finder` 랭킹에 "이 저장소는 지난번에
+    install_only 였다"는 기억이 없다.
+    **실측 비용**: 후보 하나에 330초(2608.28295). `INSTALL_TIMEOUT=900` ·
+    `MAX_ATTEMPTS=3` 이므로 최악은 논문당 45분이다. 전에는 build 를 안 타서
+    0초에 거부됐다 — **정확성을 얻고 시간을 낸 맞바꿈**이다.
+    ⑦ 는 별도 프로세스라 새벽 배치(§8-14 시간 예산)를 직접 막지는 않지만,
+    Docker 와 디스크를 그만큼 쓴다.
+    **대응 후보**: (a) `_guess_importable_package` 확장(아래 29번)으로
+    install_only 자체를 줄인다 (b) install_only 확정 저장소를 신뢰도 랭킹에서
+    후순위로 내린다 (c) 그대로 둔다 — 논문당 한 번뿐이라 감당 가능하다.
+    **종결 조건**: `install_only` 가 10건 쌓이면 실제 소요 시간 분포를 보고
+    (a)~(c) 중 고른다. 지금은 1건이라 판단 근거가 없다.
+
+29. **`_guess_importable_package` 가 좁다** (2026-09-02).
+    `__init__.py` 를 가진 디렉터리만 임포트 대상으로 본다. 그래서 PEP 420
+    네임스페이스 패키지, 루트의 단일 모듈(`foo.py`), `setup.py` 의 `packages=`
+    선언을 못 잡는다. 넓히면 지금 `install_only` 로 떨어지는 저장소 일부가
+    진짜 `run` 까지 올라가고, 28번의 비용도 같이 준다.
+    **이번 가드 정정과 분리했다** — 같이 하면 "가드를 고쳤더니 뭐가 달라졌나"를
+    또 못 본다(23·25 를 분리했던 것과 같은 이유).
+
+30. **스로틀 3벌 통합은 보류** (2026-09-02, 코드 검토).
+    같은 "호출 간 최소 간격" 로직이 `code_finder._throttle_github_search`
+    (threading.Lock), `retraction._throttled_get`(asyncio.Lock + `globals()`
+    문자열 조회), `server._throttled_arxiv_get`/`_throttled_s2_get` 셋으로
+    나뉘어 있다. 재시도도 `summarize_engine._call_with_rate_limit_retry` 와
+    `server._with_retry` 두 벌이고, 후자는 2026-09-02 에 전자를 보고 다시 만든
+    것이다. 상수도 5개가 두 모듈에 흩어져 있다.
+    **지금 통합하지 않는다**: `code_finder`(58%)·`server`(39%) 를 가로지르는
+    리팩토링인데 회귀를 잡아줄 그물이 없다. 규칙 12 이전에 순서 문제다.
+    **종결 조건**: `server` 커버리지가 60% 를 넘으면 착수한다.
+
+31. **`review_app` 1,902줄이 커버리지 0% 인데 ⑦ 트리거 호출을 3곳 갖고 있다**
+    (2026-09-02, 코드 검토). 835 `_summarize_target`(자동), 1304·1325
+    `_render_repro_status`(수동), 1522 `render_review_tab`(수동).
+    `batch_summarize._process_paper`(자동) 까지 합쳐 **자동 2 + 수동 3 = 5곳**
+    으로 CLAUDE.md 5 와 정확히 일치하므로 위반은 아니다. 다만 검증이 전혀 없는
+    파일에 전이 지점이 있다는 사실은 기록해 둔다. UI(프레젠테이션)와 코어
+    로직이 한 파일에 섞여 있어 커버리지를 올리려면 책임 분리가 먼저다.
 
 
 ### 측정하지 않은 것

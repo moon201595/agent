@@ -213,7 +213,7 @@ def main() -> int:
             target = 10   # 실행 단계(run/build) 누적 시도 — §8-16 종결 조건
             done = con.execute(
                 "SELECT COUNT(*) FROM repro_results "
-                "WHERE stage IN ('run','build') AND fail_detail IS NOT NULL").fetchone()[0]
+                "WHERE stage IN ('run','build','install_only') AND fail_detail IS NOT NULL").fetchone()[0]
             success = con.execute(
                 "SELECT COUNT(*) FROM repro_results "
                 "WHERE stage='run' AND success=1").fetchone()[0]
