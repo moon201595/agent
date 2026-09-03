@@ -11,3 +11,11 @@ data/
 
 # run_daily_scan.sh(cron)가 계속 이어붙이는 로그 — 계속 커지는 파일이라 커밋 안 함.
 logs/
+
+# 커버리지 측정 산출물(2026-09-02) — 개발 도구가 만드는 파일이라 커밋 안 함.
+.coverage
+htmlcov/
+
+# Claude Code 스킬 캐시 — 도구가 관리하는 디렉터리지 이 프로젝트 코드가 아니다.
+.agents/
+skills-lock.json
