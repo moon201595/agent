@@ -790,3 +790,49 @@ def test_high_relevance_paper_without_text_outranks_low_relevance_with_text(tmp_
     top = result["papers"][0]
     assert (top.get("doi") or top.get("arxiv_id")) == "10.1/strong"
     assert len(top["_score"]["core_hits"]) > len(result["papers"][1]["_score"]["core_hits"])
+
+
+def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
+    """핵심 회귀 — 조기 반환이 **세 곳**에 있었다(§8-50).
+
+    batch_summarize 안의 둘을 한 곳으로 모았는데 run_profile_scan 에 세 번째가
+    남아 있어서, 링크 없는 논문이 `_process_paper` 에 닿지도 못하고
+    `failed: 식별자도 오픈액세스 링크도 없음` 으로 잘렸다. 초록이 있어도.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    pages = {0: [{"arxiv_id": None, "doi": "10.1/x",
+                  "title": "A digital twin agent for factory lines",
+                  "abstract": "We detect defects.", "published": published}]}
+    starts_seen = []
+    reached = []
+
+    async def fake_throttled(client, params):
+        starts_seen.append(params["start"])
+
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    async def fake_process(client, arxiv_id, paper=None, **kw):
+        reached.append((paper or {}).get("doi"))
+        return {"arxiv_id": "", "status": "abstract_only",
+                "brief": "- 무엇을 하려 했는가 : 결함을 검출한다."}
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+
+    result, digest_text = asyncio.run(
+        rps.scan_and_digest(db_path, "team_ai", None, max_pages=3))
+
+    assert reached == ["10.1/x"]                      # 잘리지 않고 닿았다
+    top = result["papers"][0]
+    assert top["deep_status"] == "abstract_only"
+    assert "결함을 검출한다" in top["abstract_brief"]
+    assert "식별자도 오픈액세스 링크도 없음" not in digest_text
+    assert "본문 비공개 — 초록만 보고 정리한 것이다" in digest_text

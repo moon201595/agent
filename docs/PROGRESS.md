@@ -2333,7 +2333,22 @@ TSPulse 실측에서 확인한, placeholder print 가 exit 0 을 내 거짓 통�
     **교훈이 반복된다.** §8-33→44 도, 여기도, 처리를 "그때 본 갈래"에만 넣어서
     생긴 문제다. 같은 결말로 가는 길이 여럿이면 **모이는 지점을 먼저 만든다.**
 
+    **그리고 같은 실수를 바로 또 했다(같은 날).** batch_summarize 안의 둘을
+    모으고 재실행했는데 메일에 여전히 `처리 실패: 식별자도 오픈액세스 링크도
+    없음` 이 찍혔다. **조기 반환이 세 곳이었다** — 세 번째는 다른 파일
+    (`run_profile_scan.py:277`)에 있었고, `_process_paper` 를 **부르기도 전에**
+    잘라내고 있었다. 그래서 batch_summarize 를 아무리 고쳐도 안 닿았다.
+
+    두 파일에 같은 판단이 흩어져 있던 것이다. 이제 판단은 `_process_paper`
+    한 곳이 하고, `run_profile_scan` 은 거르지 않는다.
+    회귀 테스트 `test_paper_without_link_reaches_process_paper` 가
+    scan_and_digest 종단으로 세 갈래를 다 확인한다 — `_process_paper` 에
+    실제로 닿았는지(`reached`), 다이제스트에 옛 문구가 없는지까지.
+
 51. **③ 검색 예산이 실전에서 물렸다** (2026-09-04 실측, §8-34 검증).
+    (같은 날 두 번째 재실행은 **네트워크가 끊겨** 무효다 —
+    `ConnectError: [Errno -3] Temporary failure in name resolution` 이
+    S2·arXiv·Gemini·Groq 에 전부 떴다. 측정으로 안 센다.)
     새 예산으로 재실행: **6분 19초**(직전 실행은 45분에도 ③ 를 못 빠져나감).
 
     ```
