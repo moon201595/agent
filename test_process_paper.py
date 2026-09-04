@@ -242,3 +242,37 @@ async def _none():
 
 async def _text(s):
     return s
+
+
+def test_paper_without_pdf_link_still_reaches_the_abstract_brief(monkeypatch):
+    """핵심 회귀 — 09-04 실측에서 상위 6편 중 **4편**이 조기 반환에 걸렸다.
+
+        if not pdf_url:
+            return {... "detail": "arXiv ID 도 오픈액세스 PDF 링크도 없음"}
+
+    링크가 없으면 초록을 볼 기회도 없이 튕겼고, 초록이 **있는** 논문까지
+    영어 원문이 그대로 메일에 실렸다. 본문을 못 받는 갈래는 셋인데 처리가
+    한 곳에만 있었다.
+    """
+    async def boom(*a, **k):
+        raise AssertionError("링크가 없으면 PDF 수집을 시도하면 안 된다")
+
+    monkeypatch.setattr(bs.server, "fetch_pdf_from_url", boom)
+    monkeypatch.setattr(bs.server, "resolve_openalex_abstract", lambda doi: _text(""))
+    monkeypatch.setattr(bs.engine, "summarize_abstract",
+                        lambda c, t, a: _text("- 무엇을 하려 했는가 : 결함을 검출한다."))
+
+    out = asyncio.run(bs._process_paper(
+        None, "", paper={"doi": "10.1/x", "title": "T",
+                         "abstract": "We detect defects on metal surfaces."}))
+    assert out["status"] == "abstract_only"
+    assert "결함을 검출한다" in out["brief"]
+
+
+def test_no_link_no_abstract_anywhere_is_still_an_honest_failure(monkeypatch):
+    """초록을 어디서도 못 구하면 정리를 만들지 않는다 — 지어내지 않는다."""
+    monkeypatch.setattr(bs.server, "resolve_openalex_abstract", lambda doi: _text(""))
+    out = asyncio.run(bs._process_paper(
+        None, "", paper={"doi": "10.1/x", "title": "T", "abstract": ""}))
+    assert out["status"] == "fetch_failed"
+    assert "초록도 없음" in out["detail"]
