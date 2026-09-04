@@ -9,6 +9,7 @@
 보다가** 우연히 찾았다. 테스트가 있었으면 더 일찍 잡혔을 것들이다.
 """
 
+import http_client
 import storage
 import json
 import sqlite3
@@ -83,7 +84,11 @@ def _stub_s2(monkeypatch, payload):
         seen["url"] = url
         return _Resp(payload)
 
+    # _s2_citation_graph 가 http_client 로 옮겨갔다(2026-09-04) — server 별칭을
+    # 패치해도 그쪽은 안 본다. 실측: 이걸 안 옮겨서 테스트가 실제 네트워크로
+    # 나가 **실패가 아니라 hang** 으로 나타났다.
     monkeypatch.setattr(server, "_throttled_s2_get", fake)
+    monkeypatch.setattr(http_client, "throttled_s2_get", fake)
     return seen
 
 

@@ -2407,6 +2407,22 @@ TSPulse 실측에서 확인한, placeholder print 가 exit 0 을 내 거짓 통�
     스스로 그 어긋남을 찾아낸 셈**이다. 2026-09-03 `no such column:
     p.abstract` 사고가 다시 날 자리 다섯 곳이 닫혔다.
 
+    **③ 외부 API 어댑터도 옮겼다.** `_s2_citation_graph`·`_http_error_to_message`
+    는 MCP 와 무관한 순수 HTTP 어댑터인데 `server.py` 에 있어서, `trend_report`
+    같은 분석 모듈이 그것 하나 때문에 MCP SDK 를 끌고 왔다. http_client 로
+    옮기자 `trend_report` 의 server 의존이 사라졌다.
+
+    **네 번째로 같은 함정을 밟았다.** `_s2_citation_graph` 가 옮겨가자
+    `test_server_tools` 의 `server._throttled_s2_get` 목이 안 먹어 또 hang.
+    이 실패 모드는 네 번 다 똑같았다 — **목이 가리키는 곳과 코드가 부르는 곳이
+    갈라지면, 테스트는 실패하지 않고 조용히 진짜 네트워크로 나간다.**
+    앞으로 함수를 모듈 밖으로 옮길 때는 **옮기기 전에 그 함수를 patch 하는
+    테스트를 먼저 찾는 것**이 순서다.
+
+    **최종 상태**: server.py 1,803 → 1,528줄. 생산 코드의 `server._*` 크로스
+    참조 0건. 남은 `import server` 아홉 모듈은 MCP 도구 자체(`fetch_paper`,
+    `save_summary` 등)를 부르는 것이라 정상이다.
+
     **하지 않은 것**: `digest.py` 의 텍스트판·HTML판 이중 구현 통합.
     검토도 "렌더러 추상화는 비용이 크고 지금 테스트가 실제로 막고 있으니
     급하지 않다" 고 했고 동의한다. `RATE_LIMIT_RETRIES` 이름 충돌
