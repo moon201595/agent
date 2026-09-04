@@ -1347,6 +1347,57 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str = "", source_note: str = "manu
             "pdf_path": str(pdf_path), "text_path": str(text_path), "preview": text[:400]}
 
 
+# OpenAlex 는 초록을 **역색인**(단어 → 위치 목록)으로 준다. 저작권 때문에
+# 통짜 텍스트로 안 주는 형식이고, 위치대로 다시 이으면 원문이 된다.
+OPENALEX_WORK_API = "https://api.openalex.org/works/doi:{doi}"
+
+
+def _abstract_from_inverted_index(index: dict | None) -> str:
+    if not index:
+        return ""
+    positions: dict[int, str] = {}
+    for word, spots in index.items():
+        for spot in spots or []:
+            positions[spot] = word
+    return " ".join(positions[i] for i in sorted(positions))
+
+
+async def resolve_openalex_abstract(doi: str) -> str:
+    """DOI 로 초록을 찾는다. 못 찾으면 빈 문자열.
+
+    **왜 필요했나**(2026-09-04 실측). 09-04 아침 메일 상위 6편 중 **3편이
+    "(초록 없음)"** 으로 나갔다. S2 가 초록을 안 주는 논문이 많기 때문이다.
+    본문도 못 받고 초록도 없으면 제목 말고 실을 게 없다.
+
+    그런데 **OpenAlex 에는 있었다** — 그 3편을 포함해 7편 중 5편의 초록을
+    갖고 있다(1,457~1,879자). 무료고 키도 필요 없고, 철회 조회에서 이미
+    쓰는 서비스다. §8-40 의 "갖고 있는데 안 쓰는 것"과 같은 유형이다.
+
+    실패는 조용히 빈 문자열 — 초록 보강은 부가 정보다.
+    """
+    doi = (doi or "").strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
+        if doi.startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    if not doi:
+        return ""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                OPENALEX_WORK_API.format(doi=doi),
+                headers={"User-Agent": f"paper-harness (mailto:{UNPAYWALL_EMAIL})"},
+                timeout=20,
+            )
+        api_usage.record("openalex", "ok" if resp.status_code == 200 else str(resp.status_code))
+        if resp.status_code != 200:
+            return ""
+        return _abstract_from_inverted_index(resp.json().get("abstract_inverted_index"))
+    except Exception:  # noqa: BLE001 — 부가 정보다. 실패해도 파이프라인은 계속된다.
+        api_usage.record("openalex", "error")
+        return ""
+
+
 async def resolve_unpaywall_pdf(doi: str) -> dict | None:
     """DOI로 합법적 오픈액세스 PDF 위치와 제목을 찾는다(Unpaywall API). 못
     찾으면 None — 그 경우 이 논문은 오픈액세스가 아니라는 뜻이고, 수동

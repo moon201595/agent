@@ -109,8 +109,14 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
                 # Unpaywall 로도 안 되면 이 논문은 앞으로도 초록밖에 못 본다.
                 # **그러면 초록이라도 제대로 정리한다**(2026-09-04) — 잘린 초록
                 # 한 토막에 오류 문자열을 붙여 내보내는 건 요약이 아니다.
-                brief = await engine.summarize_abstract(
-                    client, title, (paper or {}).get("abstract") or "")
+                abstract = ((paper or {}).get("abstract") or "").strip()
+                if not abstract and doi:
+                    # S2 가 초록을 안 주는 논문이 많다 — 09-04 메일 상위 6편 중
+                    # 3편이 "(초록 없음)" 이었다. OpenAlex 에는 있었다(실측 5/7).
+                    abstract = await server.resolve_openalex_abstract(doi)
+                    if abstract:
+                        print(f"  [초록] OpenAlex 에서 보강 ({len(abstract):,}자) — {title[:40]}")
+                brief = await engine.summarize_abstract(client, title, abstract)
                 return {"arxiv_id": "", "status": "abstract_only" if brief else "fetch_failed",
                         "brief": brief,
                         "detail": "본문 비공개(오픈액세스 아님) — 초록만 확인"
