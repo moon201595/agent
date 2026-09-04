@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import sys
 
@@ -217,3 +218,62 @@ async def throttled_s2_get(
         return resp
 
     return await with_retry(once, "Semantic Scholar", max_wait=max_wait)
+
+
+def http_error_to_message(e: Exception, service: str) -> str:
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        if code == 429:
+            return _error(
+                f"{service} 요청 한도 초과 (429)",
+                "잠시 후 재시도. Semantic Scholar는 S2_API_KEY 환경변수로 키를 등록하면 한도가 완화됨.",
+            )
+        if code == 404:
+            return _error(f"{service}에서 대상을 찾을 수 없음 (404)", "ID·질의를 확인할 것.")
+        return _error(f"{service} 요청 실패 (HTTP {code})")
+    if isinstance(e, httpx.TimeoutException):
+        return _error(f"{service} 응답 시간 초과", "네트워크 상태 확인 후 재시도.")
+    return _error(f"{service} 처리 중 예기치 못한 오류: {type(e).__name__}: {e}")
+
+
+async def s2_citation_graph(arxiv_id: str, limit: int, edge: str) -> str:
+    """s2_get_references/s2_get_citations 공용 구현. edge: 'references'(backward,
+    이 논문이 인용한 것) | 'citations'(forward, 이 논문을 인용한 것).
+
+    문헌 조사에서 실제로 자주 필요한 동작인데 지금까지 완전히 빠져 있던 축이다
+    (2026-08-04 조사 문서 §0.3, §1-A-5). Crawler/Selector 패턴(PaSa)에서
+    Crawler 에 해당하는 결정적 부분만 구현한다 — depth는 항상 1(이 논문 기준
+    한 홉만), 후보 수는 limit 으로 코드가 상한을 강제한다. 어떤 후보가
+    사용자 관심사와 관련 있는지 판정(Selector)은 이 서버의 일이 아니다 —
+    사람이나 Claude Code 가 반환된 제목·초록을 보고 판단한다.
+    """
+    headers = s2_headers()
+    url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}/{edge}"
+    api_params = {
+        "fields": "title,abstract,year,citationCount,externalIds",
+        "limit": limit,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await throttled_s2_get(client, api_params, headers, url=url)
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        return http_error_to_message(e, "Semantic Scholar")
+    key = "citedPaper" if edge == "references" else "citingPaper"
+    papers = []
+    for item in data.get("data", []):
+        p = item.get(key) or {}
+        ext = p.get("externalIds") or {}
+        papers.append(
+            {
+                "title": p.get("title"),
+                "year": p.get("year"),
+                "citation_count": p.get("citationCount"),
+                "arxiv_id": ext.get("ArXiv"),
+                "abstract": (p.get("abstract") or "")[:600],
+            }
+        )
+    return json.dumps(
+        {"arxiv_id": arxiv_id, "edge": edge, "count": len(papers), "papers": papers},
+        ensure_ascii=False, indent=2,
+    )

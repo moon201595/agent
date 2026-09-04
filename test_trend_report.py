@@ -117,7 +117,7 @@ def test_shared_references_counts_papers_not_occurrences(monkeypatch):
         return json.dumps({"papers": [{"title": "Base Paper"}, {"title": "Base Paper"},
                                       {"title": "Other"}]})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
     assert ("Base Paper", 2) in scan.shared
     assert scan.examined == 2 and scan.targets == 2
@@ -129,7 +129,7 @@ def test_shared_requires_more_than_one_paper(monkeypatch):
         import json
         return json.dumps({"papers": [{"title": f"Ref for {aid}"}]})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
     assert scan.shared == []
 
@@ -143,7 +143,7 @@ def test_synthetic_pdf_ids_are_skipped(monkeypatch):
         import json
         return json.dumps({"papers": []})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(
         trend_report.shared_references(None, [_row("2608.1"), _row("pdf-abc")]))
     assert calls == ["2608.1"]
@@ -160,7 +160,7 @@ def test_budget_stops_early_and_reports_the_sample_size(monkeypatch):
         import json
         return json.dumps({"papers": [{"title": "Base"}]})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     monkeypatch.setattr(trend_report.time, "monotonic", lambda: clock["t"])
     scan = asyncio.run(trend_report.shared_references(
         None, [_row(str(i)) for i in range(10)], budget_s=250.0))
@@ -173,7 +173,7 @@ def test_lookup_failure_does_not_break_the_report(monkeypatch):
     async def fake(aid, limit, edge):
         raise RuntimeError("S2 죽음")
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(trend_report.shared_references(None, [_row("1")]))
     assert scan.shared == [] and scan.examined == 0 and scan.targets == 1
 
@@ -456,7 +456,7 @@ def test_lineage_needs_no_extra_api_calls(monkeypatch):
         return _json.dumps({"papers": [{"title": "Base", "citationCount": 900},
                                        {"title": "Other", "citationCount": 3}]})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
     assert len(calls) == 2                       # 논문당 한 번, 그게 전부
     trend_report.lineage_groups(scan.by_paper, [_row("1"), _row("2")])
@@ -472,7 +472,7 @@ def test_shared_references_ranked_by_citation_count_within_same_share(monkeypatc
         return _json.dumps({"papers": [{"title": "Obscure", "citationCount": 1},
                                        {"title": "Foundational", "citationCount": 50000}]})
 
-    monkeypatch.setattr(trend_report.server, "_s2_citation_graph", fake)
+    monkeypatch.setattr(trend_report.http_client, "s2_citation_graph", fake)
     scan = asyncio.run(trend_report.shared_references(None, [_row("1"), _row("2")]))
     assert [t for t, _n in scan.shared] == ["Foundational", "Obscure"]
 
@@ -498,13 +498,13 @@ def test_frontier_looks_forward_from_the_foundations_not_our_papers():
         ]})
 
     import trend_report as tr
-    orig = tr.server._s2_citation_graph
-    tr.server._s2_citation_graph = fake
+    orig = tr.http_client.s2_citation_graph
+    tr.http_client.s2_citation_graph = fake
     try:
         frontier, examined = asyncio.run(tr.frontier_papers(
             None, [("Attention Is All You Need", 3)], seeds))
     finally:
-        tr.server._s2_citation_graph = orig
+        tr.http_client.s2_citation_graph = orig
 
     assert asked == [("1706.03762", "citations")]     # 앞 방향으로 물었다
     assert examined == 1
@@ -525,11 +525,11 @@ def test_frontier_failure_does_not_break_the_report():
         raise RuntimeError("S2 죽음")
 
     import trend_report as tr
-    orig = tr.server._s2_citation_graph
-    tr.server._s2_citation_graph = boom
+    orig = tr.http_client.s2_citation_graph
+    tr.http_client.s2_citation_graph = boom
     try:
         frontier, examined = asyncio.run(
             tr.frontier_papers(None, [("T", 2)], {"T": "1706.03762"}))
     finally:
-        tr.server._s2_citation_graph = orig
+        tr.http_client.s2_citation_graph = orig
     assert frontier == [] and examined == 0

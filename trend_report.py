@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-import server
+import http_client
 
 # 공통 인용을 볼 때 논문 하나당 받아올 참고문헌 수. S2 는 초당 1회라
 # 논문 수만큼 요청이 나간다 — 주 1회 실행이라 감당할 만하다.
@@ -461,7 +461,7 @@ async def shared_references(
         if time.monotonic() - started > budget_s:
             break
         try:
-            raw = await server._s2_citation_graph(row["arxiv_id"], limit, "references")
+            raw = await http_client.s2_citation_graph(row["arxiv_id"], limit, "references")
             refs = json.loads(raw).get("papers") or []
         except Exception:  # noqa: BLE001
             continue
@@ -472,7 +472,7 @@ async def shared_references(
         # 논문별 집합을 **버리지 않고 남긴다** — 계보 묶기가 이걸 쓴다.
         # 추가 호출이 0회인 이유가 이것이다(§8-40).
         by_paper[row["arxiv_id"]] = titles
-        # citationCount 는 이미 응답에 온다(server._s2_citation_graph 의 fields).
+        # citationCount 는 이미 응답에 온다(http_client.s2_citation_graph 의 fields).
         # 필드를 더 요청할 필요도 없다.
         for r in refs:
             t = (r.get("title") or "").strip()
@@ -580,7 +580,7 @@ async def frontier_papers(
         if time.monotonic() - started > budget_s:
             break
         try:
-            raw = await server._s2_citation_graph(seed, limit, "citations")
+            raw = await http_client.s2_citation_graph(seed, limit, "citations")
             citing = json.loads(raw).get("papers") or []
         except Exception:  # noqa: BLE001
             continue
