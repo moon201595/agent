@@ -740,3 +740,45 @@ def test_markdown_bold_stripped_from_narrative_too():
     text = digest.generate_digest(scan, "t")
     assert "**" not in text
     assert "결함 검출은 합성 데이터로 메우는 흐름이다." in text
+
+
+# ---------------------------------------------------------------- 평문 메일 형식 (2026-09-04)
+#
+# 실제 논문 2편으로 시험하다 잡은 것들. 요약 내용은 정확한데 형식 때문에
+# 메일에서 안 읽혔다.
+
+def test_result_bullets_do_not_collapse_into_one_line():
+    """핵심 회귀 — 실측(2608.28070)에서 `- - CF-YOLO는 … - 컴포넌트 … - 외부 …`
+    가 한 줄로 찍혔다. '결과 절은 산문 문단'이라는 전제가 틀렸다."""
+    got = digest._paragraphs("- 첫째 결과다.\n- 둘째 결과다.\n- 셋째 결과다.")
+    assert got == ["첫째 결과다.", "둘째 결과다.", "셋째 결과다."]
+
+
+def test_prose_paragraphs_still_work():
+    """불릿을 받게 만들면서 기존 산문 경로가 깨지면 안 된다."""
+    got = digest._paragraphs("산문 첫 줄\n이어지는 줄\n\n두 번째 문단")
+    assert got == ["산문 첫 줄 이어지는 줄", "두 번째 문단"]
+
+
+def test_bullet_with_continuation_line_stays_one_item():
+    got = digest._paragraphs("- 불릿 하나\n  이어지는 설명\n- 불릿 둘")
+    assert got == ["불릿 하나 이어지는 설명", "불릿 둘"]
+
+
+def test_latex_is_made_readable_not_deleted():
+    """메일에는 MathJax 가 없다. 지우면 정보를 버리므로 읽히게만 만든다."""
+    got = digest._plain(r"입력은 표면 이미지( $I_i \in \mathbb{R}^{H \times W \times C}$ )이며")
+    assert "\\" not in got and "$" not in got
+    assert "∈" in got and "×" in got
+    assert "I_i" in got            # 기호 이름은 살아 있다
+
+
+def test_latex_loss_names_survive():
+    got = digest._plain(r"회귀 손실( $\mathcal{L}_{CIoU}$ )과 분류 손실( $\mathcal{L}_{BCE}$ )")
+    assert "L_CIoU" in got and "L_BCE" in got
+    assert "mathcal" not in got
+
+
+def test_plain_leaves_ordinary_text_alone():
+    for s in ("정밀도 0.882, AP50 0.823 [S0170].", "640×640 해상도 · 배치 16"):
+        assert digest._plain(s) == s
