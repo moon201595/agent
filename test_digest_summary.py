@@ -170,12 +170,18 @@ def test_html_stays_under_gmail_limit_with_full_summaries(db_with_summary_path):
 # ------------------------------------------------------------------ 동향 집계
 
 def test_trend_line_reports_counts_over_all_candidates(db_with_summary_path):
-    """상위 5편이 아니라 후보 전체 기준이어야 '이번 주 무엇이 늘었나'가 답해진다."""
+    """상위 5편이 아니라 후보 전체 기준이어야 '이번 주 무엇이 늘었나'가 답해진다.
+
+    2026-09-04: 절 이름을 "동향 신호" → "키워드별 적중 편수"로 바꿨다.
+    빈도표를 "동향"이라 부른 게 문제였다 — 사용자 지적("논문 제목에 별표만
+    친 게 왜 동향이야?"). 동향은 그 아래 "오늘의 흐름" 절이 맡는다.
+    **이 테스트의 주장(후보 전체 기준으로 센다)은 그대로다.**
+    """
     _seed(db_with_summary_path, "p1")
     result = _result([_paper("p1")],
                      core_hit_counts={"physical AI": 18, "defect detection": 12})
     text = generate_digest(result, "우리팀")
-    assert "이번 창의 동향 신호" in text
+    assert "키워드별 적중 편수" in text
     assert "physical AI 18" in text
     assert "defect detection 12" in text
 
@@ -184,14 +190,14 @@ def test_trend_line_absent_when_no_counts(db_with_summary_path):
     """구형 scan_result(집계 없음)에서도 다이제스트가 깨지지 않는다."""
     _seed(db_with_summary_path, "p1")
     text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "이번 창의 동향 신호" not in text
+    assert "키워드별 적중 편수" not in text
 
 
 def test_trend_line_in_html(db_with_summary_path):
     _seed(db_with_summary_path, "p1")
     html = generate_digest_html(
         _result([_paper("p1")], core_hit_counts={"on-sensor computing": 4}), "우리팀")
-    assert "이번 창의 동향 신호" in html
+    assert "키워드별 적중 편수" in html
     assert "on-sensor computing 4" in html
 
 

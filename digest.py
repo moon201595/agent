@@ -478,7 +478,15 @@ def _paper_entry(idx: int, paper: dict) -> str:
     # deep_status 키 자체가 없는 경우(M1 이전 경로로 만들어진 결과)도
     # DB 조회 결과가 곧 사실이라 같은 경로로 보낸다.
     deep_status = str(paper.get("deep_status") or "")
-    if deep_status.startswith("failed"):
+    if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
+        # 본문을 못 받았지만 초록으로 정리는 했다(2026-09-04). **본문 요약과
+        # 라벨을 절대 같이 쓰지 않는다**(규칙 8) — ⑤ 검증을 통과한 게 아니다.
+        lines.append("   본문 비공개 — 초록만 보고 정리한 것이다")
+        for ln in paper["abstract_brief"].strip().splitlines():
+            if ln.strip():
+                lines.append(f"     {ln.strip()}")
+        lines.append("   [초록 기반 정리 · 본문 미확보 · 미검증]")
+    elif deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
         # S2 tldr 이 있으면 초록 발췌 대신 그걸 쓴다(M6) — 다만 S2 모델이 만든
         # 요약이지 우리 ⑤를 통과한 게 아니라 라벨을 다르게 단다. 검증된 요약과
@@ -587,6 +595,28 @@ def _title_only_section(scan_result: dict) -> list[str]:
     return lines
 
 
+def _narrative_section(scan_result: dict) -> list[str]:
+    """오늘의 동향 서술. 셈 절과 **섞지 않고** 라벨을 붙인다.
+
+    2026-09-04: 그전까지 "동향" 절은 키워드 빈도표 한 줄이었다
+    (`quantization 22 · vision-language-action 16 · …`). 무엇이 몇 편인지는
+    알려주지만 무엇이 어디로 가는지는 못 말한다 — 사용자 지적("논문 제목에
+    별표만 친 게 왜 동향이야?")이 정확했다.
+
+    숫자는 위 빈도표가 정확히 갖고 있고, 여기는 글이다. 둘을 한 문단에 섞으면
+    어디까지가 측정이고 어디부터가 해석인지 구분이 안 된다(§8-23·24·33).
+    """
+    story = scan_result.get("narrative")
+    if not story:
+        return []
+    text, ungrounded = story
+    lines = ["", "■ 오늘의 흐름 (LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다)"]
+    lines += [f"   {ln}" for ln in text.strip().splitlines() if ln.strip()]
+    if ungrounded:
+        lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
+    return lines
+
+
 def generate_digest(scan_result: dict, profile_name: str) -> str:
     """scan_result: run_profile_scan.scan_profile()의 반환값 그대로 받는다.
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
@@ -626,8 +656,11 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
 
     trend = _trend_line(scan_result)
     if trend:
-        lines += [f"■ 이번 창의 동향 신호 (후보 {candidates}건에서 핵심 키워드별 적중 편수)",
-                  f"   {trend}", ""]
+        lines += [f"■ 이번 창의 키워드별 적중 편수 (후보 {candidates}건 기준)",
+                  f"   {trend}"]
+    lines += _narrative_section(scan_result)
+    if lines and lines[-1] != "":
+        lines.append("")
 
     filtered = _filtered_line(scan_result)
     if filtered:
@@ -746,6 +779,17 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     arxiv_id = str(paper.get("arxiv_id", "?"))
     title = paper.get("title") or "(제목 없음)"
     deep_status = str(paper.get("deep_status") or "")
+
+    if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
+        body = "".join(
+            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'margin:2px 0;">{_esc(ln.strip())}</div>'
+            for ln in paper["abstract_brief"].strip().splitlines() if ln.strip())
+        return (
+            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'margin-top:6px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}'
+            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'margin-top:4px;">[초록 기반 정리 · 본문 미확보 · 미검증]</div>')
 
     if deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
@@ -883,8 +927,28 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         body += (
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'border-top:1px solid {_LINE};padding-top:10px;margin-top:14px;">'
-            f'<span style="color:{_INK};font-weight:600;">이번 창의 동향 신호</span> '
-            f'(후보 {candidates}건에서 핵심 키워드별 적중 편수)<br>{_esc(trend)}</p>'
+            f'<span style="color:{_INK};font-weight:600;">이번 창의 키워드별 적중 편수</span> '
+            f'(후보 {candidates}건 기준)<br>{_esc(trend)}</p>'
+        )
+
+    story = scan_result.get("narrative")
+    if story:
+        text, ungrounded = story
+        paras = "".join(
+            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'margin:3px 0;">{_esc(ln.strip())}</div>'
+            for ln in text.strip().splitlines() if ln.strip())
+        warn = ""
+        if ungrounded:
+            warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
+                    f'margin-top:4px;">⚠ 원문에 없는 숫자가 섞여 있다: '
+                    f'{_esc(", ".join(ungrounded))} — 믿지 말 것</div>')
+        body += (
+            f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'font-weight:600;margin:14px 0 4px;">오늘의 흐름</p>'
+            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'margin:0 0 6px;">LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — '
+            f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}'
         )
 
     filtered = _filtered_line(scan_result)

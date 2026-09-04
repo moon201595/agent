@@ -557,6 +557,64 @@ async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
     return await _post_groq(client, prompt)
 
 
+# ---------------------------------------------------------------- 초록 기반 정리 (2026-09-04)
+#
+# **"이걸 요약 정리라 할 수 있나"는 지적을 받고 넣었다.** 본문을 못 받은 논문은
+# 다이제스트에 이렇게 나가고 있었다:
+#
+#   초록 발췌 : The digital transformation of the wood-processing industry incre…
+#   [미검증 · 초록 기반] 처리 실패: 오픈액세스 PDF 수집 실패: HTTPStatusError…
+#
+# 잘린 초록 한 토막에 사람에게 아무 쓸모없는 오류 문자열이다. 요약이 아니다.
+#
+# 실측(2026-09-04): 그날 상위 6편 중 5편이 이 상태였고, DOI 로 Unpaywall 에
+# 다시 물어 1편을 살렸다. **나머지 4편은 진짜로 오픈액세스가 아니다** — 앞으로도
+# 초록밖에 못 본다. 그러면 초록이라도 제대로 정리하는 게 맞다.
+#
+# **본문 요약과 절대 같은 라벨을 쓰지 않는다**(규칙 8). 이건 ⑤ 검증을 통과한
+# 요약이 아니라 초록만 보고 쓴 글이고, `summaries` 테이블에 저장하지 않으므로
+# eval 기준선(39편, 0.982)에도 영향이 없다. ⑦ 재현도 트리거하지 않는다 —
+# 초록에는 재현할 코드가 없다(규칙 5의 전이 지점은 그대로 한 곳이다).
+_ABSTRACT_BRIEF_PROMPT = """다음은 논문의 제목과 초록이다. **본문은 구할 수 없었다.**
+초록만 보고 한국어 평서체로 정리한다.
+
+- 무엇을 하려 했는가 : 한두 문장
+- 어떻게 했는가 : 한두 문장
+- 무엇을 보였는가 : 한두 문장
+
+지킬 것:
+- **초록에 없는 내용을 쓰지 않는다.** 초록이 안 밝힌 항목은 "초록에 없음"이라고 쓴다.
+  본문을 봤으면 알 수 있었을 내용을 추측해 채우지 마라.
+- 숫자는 초록에 그대로 있는 것만 쓴다.
+- 각 항목 두 문장 이내, 전체 400자 이내.
+
+제목: {title}
+
+초록:
+{abstract}
+"""
+
+
+async def summarize_abstract(client: httpx.AsyncClient, title: str, abstract: str) -> str:
+    """본문을 못 받은 논문을 초록만으로 정리한다. 실패하면 빈 문자열.
+
+    엔진 폴백은 본문 요약과 같다(Gemini → Groq). 초록은 짧아서 청킹이 필요
+    없으므로 청크 경로를 안 탄다 — Groq 로 떨어져도 60초 대기가 안 붙는다.
+    """
+    abstract = (abstract or "").strip()
+    if not abstract:
+        return ""
+    prompt = _ABSTRACT_BRIEF_PROMPT.format(title=(title or "").strip(), abstract=abstract)
+    for engine, post in (("Gemini(초록 정리)", _post_gemini), ("Groq(초록 정리)", _post_groq)):
+        try:
+            text = await _call_with_rate_limit_retry(lambda: post(client, prompt), engine)
+        except Exception:  # noqa: BLE001 — 초록 정리는 부가 정보다. 실패해도 메일은 나간다.
+            continue
+        if (text or "").strip():
+            return text.strip()
+    return ""
+
+
 def _retry_wait_seconds(e: Exception, attempt: int) -> float:
     """429 재시도 대기시간. 서버가 Retry-After 헤더로 알려주면 그 값을
     존중한다(M1, 2026-08-28) — 서버가 "언제 풀리는지"를 직접 아는데 고정

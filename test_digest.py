@@ -640,3 +640,85 @@ def test_empty_scan_still_reports_nothing_found():
     """제목만 목록도 비면 종전대로 빈 다이제스트."""
     scan = {"papers": [], "candidates_found": 0}
     assert "오늘은 새로 걸린 논문이 없습니다" in digest.generate_digest(scan, "t")
+
+
+# ---------------------------------------------------------------- 초록 기반 정리 (2026-09-04)
+#
+# "여전히 초록만 보고 있고 내용이 짧더라. 이걸 요약 정리라 할 수 있나?"
+# 본문을 못 받으면 잘린 초록 한 토막에 오류 문자열을 붙여 내보내고 있었다.
+
+_BRIEF = ("- 무엇을 하려 했는가 : 금속 표면의 미세 결함을 적은 데이터로 검출하려 했다.\n"
+          "- 어떻게 했는가 : StyleGAN2-ADA 로 결함 이미지를 생성해 학습시켰다.\n"
+          "- 무엇을 보였는가 : 초록에 없음.")
+
+
+def _brief_paper():
+    return {"arxiv_id": None, "doi": "10.1/x", "title": "Metal Surface Defect Detection",
+            "deep_status": "abstract_only", "abstract_brief": _BRIEF,
+            "_score": {"priority": 1.0, "core_hits": ["defect detection"],
+                       "domain_hits": [], "venue_hit": None, "top_core_weight": 1.0}}
+
+
+def test_abstract_brief_replaces_the_error_dump():
+    entry = digest._paper_entry(1, _brief_paper())
+    assert "StyleGAN2-ADA" in entry
+    assert "처리 실패" not in entry          # 페이월은 우리 실패가 아니다
+    assert "초록 발췌" not in entry          # 잘린 토막 대신 정리된 글
+
+
+def test_abstract_brief_never_claims_verification():
+    """본문 요약과 라벨을 같이 쓰면 안 된다 — ⑤ 를 통과한 게 아니다(규칙 8)."""
+    entry = digest._paper_entry(1, _brief_paper())
+    assert "[초록 기반 정리 · 본문 미확보 · 미검증]" in entry
+    assert "검증 " not in entry.replace("미검증", "")
+
+
+def test_abstract_brief_falls_back_when_empty():
+    """정리를 못 만들었으면 예전 경로 그대로 — 빈 요약을 요약인 척하지 않는다."""
+    p = _brief_paper()
+    p["abstract_brief"] = ""
+    p["deep_status"] = "failed: 오픈액세스 PDF 수집 실패"
+    entry = digest._paper_entry(1, p)
+    assert "초록 발췌" in entry
+
+
+# ---------------------------------------------------------------- 오늘의 흐름 (2026-09-04)
+#
+# "동향을 알려줘야지 논문 제목에 별표만 친 게 왜 동향이야?"
+# 동향 절이 키워드 빈도표 한 줄뿐이었다.
+
+def _scan_with_story(ungrounded=None):
+    return {"papers": [{"arxiv_id": "2609.1", "title": "A defect detection method",
+                        "deep_status": "ok",
+                        "_score": {"priority": 1.0, "core_hits": ["defect detection"],
+                                   "domain_hits": [], "venue_hit": None, "top_core_weight": 1.0}}],
+            "candidates_found": 321, "core_hit_counts": {"quantization": 22},
+            "narrative": ("결함 검출은 합성 데이터로 메우는 흐름이 뚜렷하다.",
+                          ungrounded or [])}
+
+
+def test_daily_digest_carries_a_narrative_not_just_counts():
+    text = digest.generate_digest(_scan_with_story(), "t")
+    assert "결함 검출은 합성 데이터로 메우는 흐름이 뚜렷하다." in text
+    assert "오늘의 흐름" in text
+    # 빈도표는 "동향"이라 부르지 않는다 — 그건 셈이다
+    assert "키워드별 적중 편수" in text
+
+
+def test_narrative_is_labelled_unverified_and_separated_from_counts():
+    text = digest.generate_digest(_scan_with_story(), "t")
+    assert "검증되지 않았다" in text
+    assert text.index("키워드별 적중 편수") < text.index("오늘의 흐름")
+
+
+def test_narrative_warns_about_invented_numbers():
+    text = digest.generate_digest(_scan_with_story(["17"]), "t")
+    assert "원문에 없는 숫자" in text and "17" in text
+
+
+def test_digest_renders_without_a_narrative():
+    scan = _scan_with_story()
+    del scan["narrative"]
+    text = digest.generate_digest(scan, "t")
+    assert "오늘의 흐름" not in text
+    assert "키워드별 적중 편수" in text
