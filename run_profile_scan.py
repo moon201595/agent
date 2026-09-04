@@ -273,9 +273,16 @@ async def scan_and_digest(
         arxiv_id = paper.get("arxiv_id")
         # arXiv 밖 논문(S2 경유 저널)은 arxiv_id 가 없다 — 오픈액세스 PDF
         # 링크가 있으면 _process_paper 가 그 경로로 본문을 받는다(2026-09-02).
-        if not arxiv_id and not paper.get("open_access_pdf"):
-            paper["deep_status"] = "failed: 식별자도 오픈액세스 링크도 없음"
-            continue
+        #
+        # **여기서 미리 막지 않는다**(2026-09-04). 예전엔 링크가 없으면
+        # `failed: 식별자도 오픈액세스 링크도 없음` 으로 잘라냈는데, 그러면
+        # 초록이 있는 논문도 정리 한 줄 없이 나간다. `_process_paper` 가
+        # 이제 그 갈래를 받아 초록 정리(§8-41)와 OpenAlex 보강(§8-49)까지
+        # 간다 — **판단을 두 곳에 두지 않는다.**
+        #
+        # §8-50 에서 batch_summarize 안의 조기 반환 두 곳을 한 곳으로 모았는데,
+        # **여기 세 번째가 남아 있었다.** 같은 결말로 가는 길이 여럿이면
+        # 모이는 지점을 먼저 만들라는 교훈이 또 걸렸다.
         if arxiv_id and _summary_exists(arxiv_id):
             paper["deep_status"] = "skipped: 이미 요약 저장됨"
             continue
