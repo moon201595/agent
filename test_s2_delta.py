@@ -105,7 +105,7 @@ def _stub_s2(monkeypatch, by_keyword):
             raise by_keyword
         return _FakeResp(by_keyword.get(params["query"], []))
 
-    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", fake_get)
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
     return calls
 
 
@@ -134,7 +134,7 @@ def test_one_failing_keyword_does_not_kill_the_rest(monkeypatch):
             raise RuntimeError("S2 죽음")
         return _FakeResp([good])
 
-    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", fake_get)
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
     out = asyncio.run(s2_delta.find_new_papers_since(
         None, ["bad", "good"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
     assert len(out["papers"]) == 1
@@ -206,7 +206,7 @@ def test_budget_stops_searching_and_reports_partial(monkeypatch):
         return _FakeResp([{"title": f"T{len(asked)}", "publicationDate": "2026-09-01",
                            "externalIds": {}}])
 
-    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", slow_get)
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", slow_get)
     monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock["t"])
 
     since = datetime(2026, 9, 1, tzinfo=timezone.utc)
@@ -226,7 +226,7 @@ def test_budget_not_reached_stays_done(monkeypatch):
     async def fast_get(client, params, headers, url=None, max_wait=None):
         return _FakeResp([{"title": "T", "publicationDate": "2026-09-01", "externalIds": {}}])
 
-    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", fast_get)
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fast_get)
     since = datetime(2026, 9, 1, tzinfo=timezone.utc)
     until = datetime(2026, 9, 4, tzinfo=timezone.utc)
     got = asyncio.run(s2_delta.find_new_papers_since(None, ["k1", "k2"], since, until))
@@ -245,7 +245,7 @@ def test_remaining_budget_is_passed_as_the_call_wait_cap(monkeypatch):
         clock["t"] += 100.0
         return _FakeResp([])
 
-    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", capture)
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", capture)
     monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock["t"])
     since = datetime(2026, 9, 1, tzinfo=timezone.utc)
     until = datetime(2026, 9, 4, tzinfo=timezone.utc)

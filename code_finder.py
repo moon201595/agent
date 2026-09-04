@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import http_client
 import json
 import logging
 import re
@@ -226,7 +227,7 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
 
     검색 엔드포인트는 코어 API(5,000/시간)와 **별개의 낮은 한도**를 쓴다 —
     실측(2026-08-28) 기준 인증 상태에서 분당 30회다. 논문을 연속으로 처리하면
-    여기 먼저 걸리므로 호출 간 최소 간격을 강제한다(server._throttled_s2_get
+    여기 먼저 걸리므로 호출 간 최소 간격을 강제한다(http_client.throttled_s2_get
     과 같은 발상). code_finder 는 동기 코드라 asyncio.Lock 대신 threading.Lock
     을 쓴다.
     """

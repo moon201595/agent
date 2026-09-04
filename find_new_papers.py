@@ -1,7 +1,7 @@
 """find_new_papers.py — 오케스트레이터 프로토타입: ① 위에 delta 검색을 얹는다.
 
 server.py 핵심은 건드리지 않는다 — arxiv_search_papers가 이미 하는 HTTP
-호출·재시도·페이싱(server._throttled_arxiv_get)을 그대로 재사용하고, "언제
+호출·재시도·페이싱(http_client.throttled_arxiv_get)을 그대로 재사용하고, "언제
 페이지네이션을 멈출지"만 delta_search.collect_since()가 결정한다. batch_
 summarize.py가 server.py를 라이브러리로 직접 import해서 쓰는 것과 같은
 패턴이다 — 이 파일도 아직 MCP 도구로 등록하지 않았다(오케스트레이터 계층
@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import http_client
 import httpx
 
 import delta_search
@@ -75,7 +76,7 @@ async def find_new_papers_since(
     q = _build_query(query, category, since, until, use_server_side_range)
 
     async def fetch_page(start: int, size: int) -> list[dict]:
-        resp = await server._throttled_arxiv_get(client, {
+        resp = await http_client.throttled_arxiv_get(client, {
             "search_query": q, "start": start, "max_results": size,
             "sortBy": "submittedDate", "sortOrder": "descending",
         })

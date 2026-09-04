@@ -41,6 +41,7 @@ correction·expression of concern 까지 true 로 오분류한 이력이 학술�
 from __future__ import annotations
 
 from dataclasses import dataclass
+import http_client
 import re
 import time
 
@@ -80,7 +81,7 @@ async def _throttled_get(
     client: httpx.AsyncClient, url: str, params: dict, headers: dict,
     pacer: pacing.AsyncPacer,
 ) -> httpx.Response:
-    """server._throttled_s2_get 과 같은 발상 — 호출 간 최소 간격을 프로세스
+    """http_client.throttled_s2_get 과 같은 발상 — 호출 간 최소 간격을 프로세스
     전역에서 강제한다. 재시도는 하지 않는다: 철회 조회는 실패해도 파이프라인을
     멈추면 안 되는 부가 정보라, 한 번 실패하면 그냥 None(미조회)으로 두고
     다음 실행에서 다시 본다(NULL 자체가 재시도 큐 역할을 한다)."""
