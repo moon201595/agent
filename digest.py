@@ -165,18 +165,38 @@ def _bullets(body: str, after: str | None = None) -> list[str]:
     return out
 
 
+_BULLET_RE = re.compile(r"^\s*[-*•]\s+")
+
+
 def _paragraphs(body: str) -> list[str]:
-    """문단 단위로 자른다. `결과` 절은 불릿이 아니라 산문 문단이라
-    _bullets 로는 한 줄도 못 건진다."""
+    """`결과` 절을 항목 단위로 자른다. 빈 줄로도 자르고 **불릿으로도 자른다**.
+
+    처음엔 빈 줄로만 잘랐다 — "결과 절은 불릿이 아니라 산문 문단"이라는
+    전제였다. **그 전제가 항상 참이 아니다**(2026-09-04 실측, 2608.28070):
+    같은 템플릿인데 모델이 불릿 세 줄로 쓸 때가 있고, 그러면 빈 줄이 없어
+    셋이 한 문단으로 뭉친 뒤 렌더러가 앞에 불릿을 하나 더 붙여 메일에
+    `- - CF-YOLO는 … - 컴포넌트 소거 … - 외부 검증용 …` 이 찍혔다.
+
+    모델이 어느 형식으로 쓸지에 의존하지 않게 **둘 다 받는다** — `_plain` 을
+    넣은 것과 같은 이유다(형식이 모델의 지시 준수에 의존하면 안 된다).
+    """
     out, buf = [], []
-    for line in body.splitlines():
-        if line.strip():
-            buf.append(line.strip())
-        elif buf:
+
+    def flush():
+        if buf:
             out.append(" ".join(buf))
-            buf = []
-    if buf:
-        out.append(" ".join(buf))
+            buf.clear()
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+        elif _BULLET_RE.match(line):
+            flush()                              # 불릿은 언제나 새 항목이다
+            buf.append(_BULLET_RE.sub("", stripped))
+        else:
+            buf.append(stripped)                 # 이어지는 줄은 같은 항목
+    flush()
     return [p for p in out if p]
 
 
@@ -505,14 +525,14 @@ def _paper_entry(idx: int, paper: dict) -> str:
         sections = summary_sections(arxiv_id)
         if sections:
             if sections["one_liner"]:
-                lines.append(f"   한 줄 요약 : {sections['one_liner']}")
+                lines.append(f"   한 줄 요약 : {_plain(sections['one_liner'])}")
             for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
                                ("실험 설정", "setup"), ("핵심 결과", "results")):
                 if sections.get(key):
                     lines.append(f"   {label} :")
-                    lines += [f"     - {b}" for b in sections[key]]
+                    lines += [f"     - {_plain(b)}" for b in sections[key]]
             if sections["limits"]:
-                lines.append(f"   한계 : {sections['limits']}")
+                lines.append(f"   한계 : {_plain(sections['limits'])}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
         labels = f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}"
@@ -598,6 +618,35 @@ def _title_only_section(scan_result: dict) -> list[str]:
 
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
+# 평문 메일에서 읽히게 만드는 최소한의 LaTeX 정리(2026-09-04 실측).
+# 2608.28070 요약에 이렇게 찍혔다:
+#   "입력은 산업용 부품의 표면 이미( $I_i \in \mathbb{R}^{H \times W \times C}$ )이며"
+# 메일에는 MathJax 가 없으니 이건 그냥 읽을 수 없는 글자다. 요약 자체는
+# 정확하고 근거 태그까지 붙어 있는데 형식 때문에 못 읽히면 손해다.
+#
+# **수식을 지우지 않는다** — 정보를 버리는 것이기 때문이다. 흔한 명령만
+# 사람이 읽는 기호로 바꾸고 나머지는 백슬래시와 중괄호만 벗긴다.
+_TEX_SYMBOLS = {
+    r"\in": "∈", r"\times": "×", r"\leq": "≤", r"\geq": "≥", r"\neq": "≠",
+    r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\lambda": "λ",
+    r"\sigma": "σ", r"\mu": "μ", r"\theta": "θ", r"\epsilon": "ε",
+    r"\cdot": "·", r"\approx": "≈", r"\sum": "Σ", r"\rightarrow": "→",
+}
+_TEX_MATH_RE = re.compile(r"\$+([^$]+?)\$+")
+_TEX_CMD_RE = re.compile(r"\\(?:mathbb|mathcal|mathrm|mathbf|text|left|right|operatorname)\s*")
+_TEX_BRACE_RE = re.compile(r"[{}]")
+
+
+def _detex(fragment: str) -> str:
+    """`$...$` 안쪽을 평문으로. 지우지 않고 읽히게만 만든다."""
+    out = fragment
+    for tex, sym in _TEX_SYMBOLS.items():
+        out = out.replace(tex, sym)
+    out = _TEX_CMD_RE.sub("", out)
+    out = _TEX_BRACE_RE.sub("", out)
+    out = re.sub(r"\\([A-Za-z]+)", r"\1", out)      # 남은 명령은 이름만 남긴다
+    return re.sub(r"\s+", " ", out).strip()
+
 
 def _plain(line: str) -> str:
     """평문 메일에 마크다운이 새지 않게 한다.
@@ -608,7 +657,9 @@ def _plain(line: str) -> str:
     "굵게 쓰지 마라"를 거는 것보다 받는 쪽에서 지우는 게 확실하다 —
     모델이 지시를 지키는지에 형식이 의존하면 안 된다.
     """
-    return _MD_BOLD_RE.sub(r"\1", line).strip()
+    out = _MD_BOLD_RE.sub(r"\1", line)
+    out = _TEX_MATH_RE.sub(lambda m: _detex(m.group(1)), out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _narrative_section(scan_result: dict) -> list[str]:
@@ -780,13 +831,13 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
 
     out = ""
     if sections["one_liner"]:
-        out += para(sections["one_liner"], top=8)
+        out += para(_plain(sections["one_liner"]), top=8)
     for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
                        ("실험 설정", "setup"), ("핵심 결과", "results")):
         if sections.get(key):
-            out += bullets(label, sections[key])
+            out += bullets(label, [_plain(b) for b in sections[key]])
     if sections["limits"]:
-        out += para("한계 : " + sections["limits"], muted=True, top=8)
+        out += para("한계 : " + _plain(sections["limits"]), muted=True, top=8)
     return out
 
 
