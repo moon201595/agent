@@ -47,6 +47,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, Field
 
 import hybrid_search
+import http_client
 import pacing
 import storage
 import injection_scan
@@ -139,15 +140,6 @@ RATE_LIMIT_BACKOFF = 30.0
 RATE_LIMIT_BACKOFF_MAX = 240.0
 
 
-def _rate_limit_wait(exc: httpx.HTTPStatusError, attempt: int) -> float:
-    """429 를 만났을 때 기다릴 시간(초). Retry-After 가 있으면 그걸 쓴다."""
-    header = exc.response.headers.get("Retry-After") if exc.response is not None else None
-    if header:
-        try:
-            return max(1.0, min(float(header), RATE_LIMIT_BACKOFF_MAX))
-        except ValueError:
-            pass
-    return min(RATE_LIMIT_BACKOFF * (2 ** attempt), RATE_LIMIT_BACKOFF_MAX)
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -157,11 +149,6 @@ mcp = MCPServer("paper_harness_mcp")
 
 # ---------------------------------------------------------------- 공용 유틸
 
-# 간격 계산 규칙은 pacing.py 한 곳에만 있다(§8-30, 2026-09-02). 예전엔
-# 같은 다섯 줄이 여기 둘 + code_finder + retraction 으로 네 벌 있었다.
-_arxiv_pacer = pacing.AsyncPacer(ARXIV_MIN_INTERVAL)
-
-_s2_pacer = pacing.AsyncPacer(S2_MIN_INTERVAL, max_interval=S2_MAX_INTERVAL)
 
 
 # 스토리지는 storage.py 가 소유한다(2026-09-04). 여기 있던 스키마·마이그레이션·
@@ -184,124 +171,35 @@ _now = storage.now
 _clean_arxiv_id = storage.clean_arxiv_id
 
 
-def _s2_headers() -> dict[str, str]:
-    """S2 인증 헤더. 키는 `.env` 에도 있을 수 있으므로 os.environ 만
-    보면 안 된다.
-
-    2026-09-02 실측: `S2_API_KEY` 가 `.env` 에만 있는데 코드가
-    `os.environ.get("S2_API_KEY")` 로 읽고 있어서 **한 번도 안 쓰였다.**
-    §8-3 에는 "2026-08-01 키 등록 완료, 정상 동작 확인"으로 적혀 있지만,
-    실제로는 그 뒤로 계속 비인증 호출이었다 — 비인증은 공유 풀이라 한도가
-    훨씬 빡빡하고, 그동안의 S2 429 가 여기서 왔을 수 있다.
-
-    같은 실수를 `GOOGLE_API_KEY` 임베딩 게이트에서도 했다(§8-27). 키를
-    읽는 자리는 전부 summarize_engine.ENV 를 거쳐야 한다 — 그게 os.environ
-    과 `.env` 를 합쳐 놓은 단일 출처다.
-    """
-    key = summarize_engine.ENV.get("S2_API_KEY")
-    return {"x-api-key": key} if key else {}
 
 
-async def _with_retry(attempt_fn, what: str, max_wait: float | None = None) -> httpx.Response:
-    """①~③ 의 제한 재시도. 상한까지 시도하고 그래도 실패하면 마지막 예외를 올린다.
-
-    max_wait 를 주면 **429 대기 총합**이 그 값을 넘을 때 더 안 기다리고 포기한다.
-    2026-09-04 실측: S2 가 나쁜 날 키워드마다 30+60+120+240=450초를 다 쓰는데,
-    ③ 검색 예산(300초)을 한 키워드가 통째로 넘겨버렸다. 예산은 키워드 사이에서만
-    검사되므로 호출 안쪽에도 상한이 필요하다 — summarize_engine 의
-    ADDENDUM_MAX_WAIT 와 같은 발상이다.
-
-    루프가 아니라 예외 처리다. 재시도 여부를 LLM 이 판단하지 않고, 재시도할 대상도
-    바꾸지 않는다. 상한을 넘으면 조용히 넘어가지 않고 예외를 올려 호출부가
-    사용자에게 보고하게 한다.
-
-    attempt_fn 은 매번 새로 await 할 수 있는 코루틴 팩토리다 (코루틴은 재사용 불가).
-    """
-    last: Exception | None = None
-    attempt = 0          # 500·타임아웃 등
-    rate_limited = 0     # 429 — 예산을 따로 센다
-    waited_total = 0.0   # max_wait 판정용 누적 대기
-    while True:
-        try:
-            return await attempt_fn()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code not in RETRYABLE_STATUS:
-                raise  # 404·400 등 — 다시 불러도 같은 답
-            last = e
-            if e.response.status_code == 429:
-                if rate_limited >= RATE_LIMIT_RETRIES:
-                    raise
-                wait = _rate_limit_wait(e, rate_limited)
-                if max_wait is not None and waited_total + wait > max_wait:
-                    print(f"  [경고] {what} 429 — 대기 상한({max_wait:.0f}초)을 넘어 "
-                          f"여기서 포기한다", file=sys.stderr)
-                    raise
-                waited_total += wait
-                rate_limited += 1
-                print(f"  [경고] {what} 429 — {wait:.0f}초 대기 후 재시도 "
-                      f"({rate_limited}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
-                await asyncio.sleep(wait)
-                continue
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            last = e
-        if attempt >= MAX_RETRIES:
-            raise last if last else RuntimeError(f"{what} 재시도 실패")
-        # 지수 백오프 + 지터. 동시에 실패한 호출들이 다시 겹치지 않게.
-        await asyncio.sleep(2.0**attempt + random.uniform(0, 0.5))
-        attempt += 1
 
 
-async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx.Response:
-    """arXiv API 호출 간 최소 간격을 서버 전역에서 강제하고, 상한까지 재시도한다.
-
-    간격 강제가 재시도마다 다시 적용된다 — 재시도가 arXiv 권장 간격을 무시하면
-    한도에 걸려 상황이 나빠진다.
-    """
-
-    async def once() -> httpx.Response:
-        async with _arxiv_pacer.gate():
-            # 2026-08-31 실측: arXiv 응답 시간이 크게 흔들린다 — 같은 시각에
-            # 키워드 3개짜리 짧은 쿼리가 45초 타임아웃이 나고 21개짜리 긴
-            # 쿼리는 15초에 왔다. 쿼리 복잡도가 아니라 서버 쪽 변동이다.
-            # 정상 응답이 43초 걸린 사례를 실제로 측정해서, 30초로는 멀쩡한
-            # 응답을 실패로 버리게 된다 — 60초로 올린다(_with_retry 가 상한
-            # 2회까지 재시도하므로 최악 대기는 여전히 유한하다).
-            resp = await client.get(ARXIV_API, params=params, timeout=60)
-        api_usage.record("arxiv", "ok" if resp.status_code == 200 else str(resp.status_code))
-        resp.raise_for_status()
-        return resp
-
-    return await _with_retry(once, "arXiv API")
 
 
-async def _throttled_s2_get(
-    client: httpx.AsyncClient, params: dict, headers: dict, url: str = S2_API,
-    max_wait: float | None = None,
-) -> httpx.Response:
-    """Semantic Scholar 호출 간 최소 간격(S2_MIN_INTERVAL)을 서버 전역에서 강제한다.
-    "초당 1회, 전체 엔드포인트 합산" 이 키 등록 여부와 무관하게 적용되는 공식 한도라
-    _throttled_arxiv_get 과 같은 패턴으로 막는다 — 재시도마다 다시 적용해야
-    재시도가 한도를 또 넘기지 않는다.
 
-    url 을 파라미터로 받는다(기본값은 검색 엔드포인트) — "전체 엔드포인트 합산"이라
-    references/citations 처럼 다른 엔드포인트를 불러도 이 락을 그대로 같이 써야
-    간격이 실제로 지켜진다. 엔드포인트마다 별도 락을 두면 한도를 우회하게 된다.
-    """
 
-    async def once() -> httpx.Response:
-        async with _s2_pacer.gate():
-            resp = await client.get(url, params=params, headers=headers, timeout=30)
-        api_usage.record("s2", "ok" if resp.status_code == 200 else str(resp.status_code))
-        if resp.status_code == 429:
-            # 재시도 대기(_rate_limit_wait)는 이번 호출만 늦춘다. 이건 **다음
-            # 호출부터**를 늦춘다 — 그래야 사슬을 처음부터 안 탄다.
-            widened = _s2_pacer.widen()
-            print(f"  [페이싱] Semantic Scholar 호출 간격을 {widened:.0f}초로 넓힘"
-                  f" (429 를 받아 처리량을 줄인다)", flush=True)
-        resp.raise_for_status()
-        return resp
+# ①~③ 의 HTTP 규약은 http_client.py 가 소유한다(2026-09-04).
+# 아래 별칭은 기존 호출부(find_new_papers·retraction·code_finder·s2_delta·
+# summarize_engine·api_usage·테스트)가 `server._with_retry` 등을 직접 부르고
+# 있어서 남긴다 — 이동과 호출부 정리를 한 커밋에 섞지 않는다.
+_rate_limit_wait = http_client.rate_limit_wait
+_s2_headers = http_client.s2_headers
+_with_retry = http_client.with_retry
+_throttled_arxiv_get = http_client.throttled_arxiv_get
+_throttled_s2_get = http_client.throttled_s2_get
 
-    return await _with_retry(once, "Semantic Scholar", max_wait=max_wait)
+# 상수·페이서도 http_client 것을 본다 — 두 곳에 두면 어긋난다.
+ARXIV_MIN_INTERVAL = http_client.ARXIV_MIN_INTERVAL
+S2_MIN_INTERVAL = http_client.S2_MIN_INTERVAL
+S2_MAX_INTERVAL = http_client.S2_MAX_INTERVAL
+MAX_RETRIES = http_client.MAX_RETRIES
+RETRYABLE_STATUS = http_client.RETRYABLE_STATUS
+RATE_LIMIT_RETRIES = http_client.RATE_LIMIT_RETRIES
+RATE_LIMIT_BACKOFF = http_client.RATE_LIMIT_BACKOFF
+RATE_LIMIT_BACKOFF_MAX = http_client.RATE_LIMIT_BACKOFF_MAX
+_arxiv_pacer = http_client._arxiv_pacer
+_s2_pacer = http_client._s2_pacer
 
 
 def _parse_arxiv_feed(xml_text: str) -> list[dict]:
