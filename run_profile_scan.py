@@ -300,6 +300,13 @@ async def scan_and_digest(
             # 못 찾아 "데이터 없음"으로 나간다.
             if not paper.get("arxiv_id") and outcome.get("arxiv_id"):
                 paper["arxiv_id"] = outcome["arxiv_id"]
+        elif outcome.get("status") == "abstract_only":
+            # 본문을 못 받았지만 초록으로 정리는 했다. **"실패"가 아니다** —
+            # 페이월 뒤 논문을 우리 실패로 부르지 않는다(§8-33 과 같은 구분).
+            # summaries 테이블에 안 들어가므로 eval 기준선과 무관하고,
+            # ⑦ 재현도 안 탄다(초록에는 재현할 코드가 없다).
+            paper["deep_status"] = "abstract_only"
+            paper["abstract_brief"] = outcome.get("brief") or ""
         else:
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
         paper["api_calls"] = paper_scope.snapshot()
@@ -338,6 +345,28 @@ async def scan_and_digest(
         print(f"  [철회] 따라잡기 실패(무시): {type(e).__name__}")
 
     profile = research_profile.get_profile(db_path, profile_id)
+
+    # **매일 동향 서술**(2026-09-04). 그전까지 다이제스트의 "동향" 절은
+    # `quantization 22 · vision-language-action 16 · …` 이라는 빈도표 한 줄이
+    # 전부였다. 사용자 지적이 정확했다 — "동향을 알려줘야지 논문 제목에
+    # 별표만 친 게 왜 동향이야?". 빈도표는 무엇이 몇 편인지만 말하고
+    # **무엇이 어디로 가는지**는 말하지 않는다.
+    #
+    # 서술은 주간 리뷰(월요일)에만 있었는데, 이 시스템의 목적이 "매일 아침
+    # 메일 하나로 이 분야가 어디로 가는지 아는 것"이다(CLAUDE.md 목적 절).
+    # 주 1회로는 그 목적을 6일 동안 못 채운다. 하루 LLM 호출 1회면 된다.
+    #
+    # 인용망 조회(주간 리뷰의 비싼 부분)는 여기 안 붙인다 — 그건 주 1회 그대로다.
+    if profile and result.get("papers"):
+        try:
+            shown = list(result["papers"]) + list(result.get("title_only_papers") or [])
+            story = await trend_report.narrative(client, shown, profile)
+            if story:
+                result["narrative"] = story
+                print("  [동향] 오늘의 서술을 붙였다")
+        except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
+            print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
+
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
 
     # 주간 동향 리뷰는 **주 1회만** 붙인다(월요일). 매일 붙이면 어제와 거의

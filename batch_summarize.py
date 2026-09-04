@@ -68,12 +68,41 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         if not pdf_url:
             return {"arxiv_id": "", "status": "fetch_failed",
                     "detail": "arXiv ID 도 오픈액세스 PDF 링크도 없음"}
+        doi = (paper or {}).get("doi") or ""
         try:
             fetched = await server.fetch_pdf_from_url(
-                pdf_url, title, source_note=f"open-access: {(paper or {}).get('doi') or pdf_url}")
+                pdf_url, title, source_note=f"open-access: {doi or pdf_url}")
         except Exception as e:  # noqa: BLE001 — 링크가 초록·로그인 페이지인 경우가 흔하다
-            return {"arxiv_id": "", "status": "fetch_failed",
-                    "detail": f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}"}
+            # **S2 의 openAccessPdf 는 못 믿는다.** 2026-09-04 실측: 그 링크를 가진
+            # 5편 중 1편은 403, 4편은 PDF 가 아니라 초록·로그인 HTML 이 왔다.
+            # 링크가 있다는 것과 받을 수 있다는 건 다르다.
+            #
+            # 그래서 DOI 로 Unpaywall 에 한 번 더 묻는다 — 같은 5편으로 재보니
+            # 1편(Scientific Reports)이 nature.com 직링크로 살아났다. 20% 다.
+            # `resolve_unpaywall_pdf` 는 이미 있는데 이 경로에서만 안 쓰이고
+            # 있었다(S2 를 붙일 때 배선을 빠뜨렸다).
+            fetched = None
+            if doi:
+                try:
+                    alt = await server.resolve_unpaywall_pdf(doi)
+                    if alt and alt.get("url") and alt["url"] != pdf_url:
+                        fetched = await server.fetch_pdf_from_url(
+                            alt["url"], title or alt.get("title") or "",
+                            source_note=f"open-access(unpaywall): {doi}")
+                        print(f"  [본문] Unpaywall 로 복구 — {title[:40]}")
+                except Exception:  # noqa: BLE001 — 폴백 실패는 원래 실패로 되돌린다
+                    fetched = None
+            if fetched is None:
+                # Unpaywall 로도 안 되면 이 논문은 앞으로도 초록밖에 못 본다.
+                # **그러면 초록이라도 제대로 정리한다**(2026-09-04) — 잘린 초록
+                # 한 토막에 오류 문자열을 붙여 내보내는 건 요약이 아니다.
+                brief = await engine.summarize_abstract(
+                    client, title, (paper or {}).get("abstract") or "")
+                return {"arxiv_id": "", "status": "abstract_only" if brief else "fetch_failed",
+                        "brief": brief,
+                        "detail": "본문 비공개(오픈액세스 아님) — 초록만 확인"
+                                  if brief else
+                                  f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}"}
         arxiv_id = fetched["arxiv_id"]
         print(f"[{arxiv_id}] 오픈액세스 PDF 수집됨 ({fetched.get('text_chars', 0):,}자) — {title[:40]}")
         fetch_result = fetched
