@@ -197,9 +197,16 @@ def test_widened_interval_is_actually_enforced():
     assert asyncio.run(two_calls()) >= 0.15
 
 
-def test_s2_429_widens_the_server_pacer():
-    """server 의 S2 경로가 429 를 받으면 실제로 간격이 넓어진다."""
-    import httpx, server
+def test_s2_429_widens_the_http_client_pacer():
+    """S2 경로가 429 를 받으면 실제로 간격이 넓어진다.
+
+    2026-09-05: 페이서가 http_client 로 옮겨갔는데(§8-52) 이 테스트만 옛
+    위치(server)를 보고 있었다. 그 탓에 **MCP SDK 가 없는 환경에서 이 파일
+    하나만 실패**했다 — 나머지 test_pacing 은 순수 모듈이라 잘 돌았는데.
+    이름도 같이 바꾼다: 확인하는 대상이 server 가 아니라 http_client 다.
+    """
+    import httpx
+    import http_client as server        # 아래 본문을 그대로 두기 위한 별칭
 
     before = server._s2_pacer.min_interval
     try:
@@ -216,7 +223,7 @@ def test_s2_429_widens_the_server_pacer():
         async def go():
             transport = httpx.MockTransport(handler)
             async with httpx.AsyncClient(transport=transport) as c:
-                return await server._throttled_s2_get(c, {}, {})
+                return await server.throttled_s2_get(c, {}, {})
 
         import asyncio
         # 재시도 대기는 0 으로 — 이 테스트가 재는 건 간격이지 백오프가 아니다
@@ -229,3 +236,48 @@ def test_s2_429_widens_the_server_pacer():
         server._s2_pacer.min_interval = before
         server._s2_pacer.max_interval = server.S2_MAX_INTERVAL
         server._s2_pacer.widened = 0
+
+
+# ---------------------------------------------------------------- 경계 감시 (2026-09-05)
+#
+# §8-52 분리 뒤 남은 위험 둘을 테스트로 못 박는다. 주석은 읽는 사람이 있어야
+# 효과가 있지만 테스트는 안 읽어도 걸린다.
+
+def test_db_path_has_exactly_one_owner():
+    """`server.DB_PATH` 는 하위호환 별칭이고 소유자는 `storage.DB_PATH` 다.
+
+    지금 테스트들이 **둘 다** monkeypatch 해서 동작하는데, 한쪽만 패치하는
+    테스트가 새로 생기면 조용히 다른 DB 를 본다. 값이 갈라지는 순간 여기서
+    걸리게 한다 — 신규 코드는 storage.DB_PATH 만 쓴다.
+    """
+    import server
+    import storage
+    assert server.DB_PATH == storage.DB_PATH
+    for name in ("DATA_DIR", "PDF_DIR", "TEXT_DIR", "SUMMARY_DIR",
+                 "IMAGE_DIR", "REPRO_DIR"):
+        assert getattr(server, name) == getattr(storage, name), name
+
+
+def test_pure_modules_do_not_import_server():
+    """순수 로직 모듈은 MCP SDK 없이 열려야 한다(§8-52 의 목적 그 자체).
+
+    `import server` 는 `from mcp.server.mcpserver import MCPServer` 를 끌고
+    온다. 아래 모듈이 그걸 다시 잡으면 MCP 가 없는 환경(CI·다른 사람의 클론)
+    에서 임포트조차 안 된다.
+    """
+    import ast
+    from pathlib import Path
+
+    PURE = ("digest.py", "trend_report.py", "storage.py", "http_client.py",
+            "pacing.py", "selection.py", "profile_scoring.py", "s2_delta.py",
+            "find_new_papers.py", "summarize_engine.py")
+    offenders = []
+    for name in PURE:
+        tree = ast.parse(Path(name).read_text(encoding="utf-8"))
+        mods = {n.module.split(".")[0] for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and n.module}
+        mods |= {a.name.split(".")[0] for n in ast.walk(tree)
+                 if isinstance(n, ast.Import) for a in n.names}
+        if "server" in mods:
+            offenders.append(name)
+    assert offenders == [], f"server 를 임포트하면 MCP SDK 없이 못 연다: {offenders}"

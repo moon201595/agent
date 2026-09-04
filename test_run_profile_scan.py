@@ -116,7 +116,7 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
         return pages[starts_seen[-1]]
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", fake_parse)
 
     async def main():
         return await rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3)
@@ -156,7 +156,7 @@ def _mock_empty_arxiv(monkeypatch):
         return FakeResp()
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: [])
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _xml: [])
 
 
 def test_scan_and_digest_saves_digest_to_db_not_just_return_value(tmp_path, monkeypatch):
@@ -226,7 +226,7 @@ def _mock_arxiv_three_agent_papers(monkeypatch):
         return FakeResp()
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: papers)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _xml: papers)
 
 
 def _run_scan_and_digest(db_path):
@@ -495,7 +495,7 @@ def _mock_arxiv_pages(monkeypatch, papers):
         return papers if starts_seen[-1] == 0 else []
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", fake_parse)
 
 
 def _agent_paper(aid, days_ago):
@@ -743,7 +743,7 @@ def test_scan_profile_ranks_by_relevance_not_text_availability(tmp_path, monkeyp
         return FakeResp()
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
 
     result = asyncio.run(
         rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3))
@@ -787,7 +787,7 @@ def test_high_relevance_paper_without_text_outranks_low_relevance_with_text(tmp_
         return FakeResp()
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
 
     result = asyncio.run(
         rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3))
@@ -829,7 +829,7 @@ def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
                 "brief": "- 무엇을 하려 했는가 : 결함을 검출한다."}
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
     monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
 
     result, digest_text = asyncio.run(

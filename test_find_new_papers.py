@@ -38,7 +38,7 @@ def test_find_new_papers_since_defaults_to_server_side_range(monkeypatch):
         return []
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", fake_parse)
 
     async def main():
         since = datetime(2026, 8, 20, tzinfo=timezone.utc)
@@ -104,7 +104,7 @@ def test_find_new_papers_since_wires_collect_since_to_real_arxiv_helpers(monkeyp
         return pages[starts_seen[-1]]
 
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
-    monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", fake_parse)
 
     async def main():
         return await find_new_papers.find_new_papers_since(

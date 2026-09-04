@@ -34,7 +34,6 @@ import http_client
 import httpx
 
 import delta_search
-import server
 
 
 def _build_query(
@@ -80,7 +79,7 @@ async def find_new_papers_since(
             "search_query": q, "start": start, "max_results": size,
             "sortBy": "submittedDate", "sortOrder": "descending",
         })
-        return server._parse_arxiv_feed(resp.text)
+        return http_client.parse_arxiv_feed(resp.text)
 
     result = await delta_search.collect_since(fetch_page, since, page_size, max_pages)
     result["since"] = since.isoformat()
