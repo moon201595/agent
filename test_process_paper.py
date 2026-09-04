@@ -173,3 +173,72 @@ def test_survey_template_is_chosen_by_code_not_llm(stub_pipeline, monkeypatch):
     monkeypatch.setattr(bs.server, "fetch_paper", fake_fetch)
     _run("2608.1")
     assert stub_pipeline["summarize"] == ["템플릿:A Survey of X"]
+
+
+# ---------------------------------------------------------------- 초록 보강 (2026-09-04)
+#
+# 09-04 아침 메일 상위 6편 중 **3편이 "(초록 없음)"** 으로 나갔다. 본문도
+# 못 받고 초록도 없으면 제목 말고 실을 게 없다. 그런데 OpenAlex 에는 있었다
+# (실측 7편 중 5편, 1,457~1,879자).
+
+def test_openalex_fills_a_missing_abstract(monkeypatch):
+    """S2 가 초록을 안 줘도 DOI 로 보강해 정리까지 간다."""
+    asked = []
+
+    async def fake_fetch(*a, **k):
+        raise ValueError("PDF가 아닌 응답")
+
+    async def fake_unpaywall(doi):
+        return None
+
+    async def fake_openalex(doi):
+        asked.append(doi)
+        return "Metal surfaces sustain scratches and pits during manufacturing."
+
+    async def fake_brief(client, title, abstract):
+        assert abstract, "보강된 초록이 정리 함수까지 와야 한다"
+        return "- 무엇을 하려 했는가 : 금속 표면 결함을 검사한다."
+
+    monkeypatch.setattr(bs.server, "fetch_pdf_from_url", fake_fetch)
+    monkeypatch.setattr(bs.server, "resolve_unpaywall_pdf", fake_unpaywall)
+    monkeypatch.setattr(bs.server, "resolve_openalex_abstract", fake_openalex)
+    monkeypatch.setattr(bs.engine, "summarize_abstract", fake_brief)
+
+    out = asyncio.run(bs._process_paper(
+        None, "", paper={"open_access_pdf": "http://x", "doi": "10.1/x",
+                         "title": "T", "abstract": ""}))
+    assert asked == ["10.1/x"]
+    assert out["status"] == "abstract_only"
+    assert "금속 표면 결함" in out["brief"]
+
+
+def test_openalex_not_called_when_abstract_already_present(monkeypatch):
+    """이미 있으면 호출을 아낀다 — 무료라도 공짜는 아니다."""
+    asked = []
+
+    async def fake_fetch(*a, **k):
+        raise ValueError("PDF가 아닌 응답")
+
+    async def fake_openalex(doi):
+        asked.append(doi)
+        return "should not be used"
+
+    monkeypatch.setattr(bs.server, "fetch_pdf_from_url", fake_fetch)
+    monkeypatch.setattr(bs.server, "resolve_unpaywall_pdf",
+                        lambda doi: _none())
+    monkeypatch.setattr(bs.server, "resolve_openalex_abstract", fake_openalex)
+    monkeypatch.setattr(bs.engine, "summarize_abstract",
+                        lambda c, t, a: _text("- 정리"))
+
+    asyncio.run(bs._process_paper(
+        None, "", paper={"open_access_pdf": "http://x", "doi": "10.1/x",
+                         "title": "T", "abstract": "이미 있는 초록"}))
+    assert asked == []
+
+
+async def _none():
+    return None
+
+
+async def _text(s):
+    return s
