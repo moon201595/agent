@@ -71,6 +71,35 @@ DEEP_LAYER_BUDGET_SECONDS = float(os.environ.get("DEEP_LAYER_BUDGET_SECONDS", 24
 # 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
 WEEKLY_REVIEW_WEEKDAY = 0
 
+# 상위 목록에서 **본문을 받을 수 있는 논문에 최소한 보장할 자리 수**(2026-09-05).
+#
+# 실측이 두 번 겹쳐 나온 결론이다.
+#
+# (1) **저널 본문을 받을 무료 경로가 없다.** 어제 걸린 저널 14편으로 쟀다:
+#     arXiv preprint 0/14 · OpenAlex 오픈액세스 위치 1/14(그마저 봇 차단).
+#     Measurement·Displays·Applied Soft Computing·Solar Energy 같은 산업공학
+#     저널은 preprint 문화가 없다. **이건 우리가 고칠 수 있는 문제가 아니다.**
+#     (검색 방법부터 검증했다 — 처음엔 하이픈 때문에 arXiv 에 있는 논문도
+#     못 찾아서 2/3 이었다. 고친 뒤에도 0/14 다.)
+#
+# (2) **그런데 arXiv 에 관련 논문이 있는데 순위 밖으로 밀린다.** 같은 창의
+#     arXiv 델타 193편을 채점하니 `Multi-View Reflective Surface Inspection`
+#     (★★, 반사 금속 표면 검사 — 팀 표적 그 자체)과 `FuDU`(★★, 결함 검출)가
+#     6~7위였다. 저널 논문이 표적 키워드를 **두 개씩** 맞혀서 위를 다 차지한다.
+#
+# 그 결과 09-04 메일은 상위 14편이 전부 저널이었고 **검증 라벨 0건·재현 라벨
+# 0건**이었다 — ④⑤⑦ 이 통째로 안 돈 것이다.
+#
+# **§8-33 의 실수를 반복하지 않는다.** 그때는 "본문 확보 가능"을 관련도보다
+# **앞에** 놓아서 ★★★ 팀 표적 논문이 맨 아래로 밀렸다(§8-44 로 되돌림).
+# 여기서는 순서를 바꾸지 않는다 — **자리 몇 개를 보장**할 뿐이고, 최종 목록은
+# 다시 관련도로 정렬한다. "가장 관련 있는 것"과 "깊이 볼 수 있는 것"을
+# 맞바꾸지 않고 둘 다 넣는다.
+#
+# arxiv_id 만 본다. `open_access_pdf` 는 있어도 실제로는 HTML 이 오는 경우가
+# 대부분이라(§8-41 실측 5편 중 5편 실패) 보장의 근거가 못 된다.
+FULL_TEXT_RESERVED = 2
+
 # 본문을 못 받는(arXiv ID 도 오픈액세스 PDF 도 없는) 논문을 다이제스트에 몇 편까지
 # 목록으로 보여줄지. 요약이 없으니 한 줄씩만 차지한다 — 넉넉해도 메일이 길어지지 않는다.
 TITLE_ONLY_MAX_ITEMS = 8
@@ -81,6 +110,54 @@ def is_weekly_review_day(now: datetime | None = None) -> bool:
     이것만 바꿀 수 있게 하기 위해서다 — datetime.now 전체를 갈아끼우면
     record_run 등 다른 시각 사용까지 깨진다(실제로 한 번 깨뜨렸다)."""
     return (now or datetime.now(timezone.utc)).weekday() == WEEKLY_REVIEW_WEEKDAY
+
+
+def _key(paper: dict) -> str:
+    """논문을 내용으로 식별한다.
+
+    `score_and_rank` 는 사본을 돌려주므로(dedupe 가 `dict(paper)` 를 만든다)
+    `id()` 로는 원본과 못 맞춘다 — 내용 기준 키가 필요하다.
+    """
+    return (paper.get("arxiv_id") or paper.get("doi")
+            or (paper.get("title") or "").strip().lower())
+
+
+def _reserve_full_text_slots(ranked: list[dict], max_items: int,
+                             reserved: int = FULL_TEXT_RESERVED) -> list[dict]:
+    """관련도로 줄 세운 **전체 목록**에서 상위 max_items 를 고르되,
+    본문을 받을 수 있는 논문에 최소 `reserved` 자리를 보장한다.
+
+    **채점을 다시 하지 않는다.** 여분을 따로 채점하면 프로필이 없거나 다른
+    가중치를 쓸 때 결과가 갈린다 — 실제로 그렇게 짰다가 테스트에서 교체가
+    통째로 안 일어났다. 이미 매겨진 순위 하나만 본다.
+
+    모자라면 **가장 낮은 점수의 비-arXiv** 를 **가장 높은 점수의 arXiv** 로
+    바꾸고, 마지막에 다시 관련도로 정렬한다 — 읽는 순서는 그대로 관련도다
+    (§8-44 의 교훈: 자리는 보장하되 순서는 안 바꾼다).
+
+    풀에 arXiv 논문이 모자라면 있는 만큼만 넣는다. 없는 걸 만들지 않는다.
+    """
+    def has_full_text(paper: dict) -> bool:
+        aid = paper.get("arxiv_id") or ""
+        return bool(aid) and not str(aid).startswith("pdf-")
+
+    top = ranked[:max_items]
+    have = sum(1 for p in top if has_full_text(p))
+    if have >= reserved:
+        return top
+
+    spare = [p for p in ranked[max_items:] if has_full_text(p)]
+    droppable = sorted((p for p in top if not has_full_text(p)),
+                       key=lambda p: p["_score"]["priority"])
+    swaps = min(reserved - have, len(spare), len(droppable))
+    if not swaps:
+        return top
+
+    out = {_key(p) for p in droppable[:swaps]}
+    merged = [p for p in top if _key(p) not in out] + spare[:swaps]
+    print(f"  [자리] 본문 확보 가능한 논문 {swaps}편을 상위 목록에 넣었다 "
+          f"(⑤ 검증·⑦ 재현이 돌 수 있게)")
+    return sorted(merged, key=lambda p: -p["_score"]["priority"])
 
 
 async def scan_profile(
@@ -171,17 +248,14 @@ async def scan_profile(
     #
     # 렌더링 깊이만 다르다 — 본문 요약 > 초록 정리 > 제목·링크. 자리는
     # 관련도가 정하고, 깊이는 확보한 것이 정한다.
-    def _key(paper: dict) -> str:
-        # score_and_rank 는 사본을 돌려주므로(dedupe 가 dict(paper) 를 만든다)
-        # id() 로는 못 맞춘다 — 내용 기준 키가 필요하다.
-        return (paper.get("arxiv_id") or paper.get("doi")
-                or (paper.get("title") or "").strip().lower())
-
-    scored = profile_scoring.score_and_rank(fresh, profile, top_k=profile["max_items"])
+    # **한 번만 채점한다.** 상위 목록도 "그 밖에" 목록도 같은 순위에서 자른다 —
+    # 따로 채점하면 두 목록의 기준이 갈릴 수 있다.
+    scored = profile_scoring.score_and_rank(fresh, profile)
+    ranked = scored["papers"]
+    scored["papers"] = _reserve_full_text_slots(ranked, profile["max_items"])
     top_keys = {_key(p) for p in scored["papers"]}
-    listed = profile_scoring.score_and_rank(
-        [p for p in fresh if _key(p) not in top_keys], profile, top_k=TITLE_ONLY_MAX_ITEMS,
-    )
+    listed = {"papers": [p for p in ranked if _key(p) not in top_keys][:TITLE_ONLY_MAX_ITEMS]}
+    listed["scored_count"] = len(listed["papers"])
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
         "run_status": result["status"], "candidates_found": len(fresh),
