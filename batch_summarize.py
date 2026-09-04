@@ -49,6 +49,36 @@ def _write_progress(path: str | None, **fields) -> None:
     Path(path).write_text(json.dumps(fields), encoding="utf-8")
 
 
+async def _abstract_only_outcome(client, paper: dict | None, title: str,
+                                 doi: str, why: str) -> dict:
+    """본문을 못 받았을 때의 마지막 갈래 — 초록이라도 정리해서 돌려준다.
+
+    **함수로 뺀 이유**(2026-09-04). 처음엔 "PDF 링크는 있는데 받기 실패" 갈래에만
+    넣었는데, 실측에서 상위 6편 중 4편이 그 앞의 **조기 반환**에 걸렸다:
+
+        if not pdf_url:
+            return {... "detail": "arXiv ID 도 오픈액세스 PDF 링크도 없음"}
+
+    링크 자체가 없으면 초록을 볼 기회도 없이 튕겼다. 4번 논문은 초록이
+    있는데도 거기서 나가 영어 원문이 그대로 메일에 실렸다.
+    본문을 못 받는 갈래가 셋(링크 없음 / 수집 실패 / Unpaywall 도 실패)인데
+    처리가 한 곳에만 있었다 — **모이는 곳을 하나로 만든다.**
+
+    초록이 비어 있으면 OpenAlex 로 보강한다(§8-49). 그래도 없으면
+    정리를 못 만들고, 그때는 원래 실패로 돌려보낸다 — 없는 걸 지어내지 않는다.
+    """
+    abstract = ((paper or {}).get("abstract") or "").strip()
+    if not abstract and doi:
+        abstract = await server.resolve_openalex_abstract(doi)
+        if abstract:
+            print(f"  [초록] OpenAlex 에서 보강 ({len(abstract):,}자) — {title[:40]}")
+    brief = await engine.summarize_abstract(client, title, abstract) if abstract else ""
+    if brief:
+        return {"arxiv_id": "", "status": "abstract_only", "brief": brief,
+                "detail": "본문 비공개 — 초록만 확인"}
+    return {"arxiv_id": "", "status": "fetch_failed", "detail": why}
+
+
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
                           paper: dict | None = None) -> dict:
     """paper 를 주면 arXiv 밖 논문(저널 오픈액세스)도 처리한다(2026-09-02).
@@ -65,10 +95,11 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
     if not arxiv_id:
         pdf_url = (paper or {}).get("open_access_pdf")
         title = (paper or {}).get("title") or ""
-        if not pdf_url:
-            return {"arxiv_id": "", "status": "fetch_failed",
-                    "detail": "arXiv ID 도 오픈액세스 PDF 링크도 없음"}
         doi = (paper or {}).get("doi") or ""
+        if not pdf_url:
+            # 링크가 아예 없어도 초록은 볼 수 있다 — 여기서 튕기지 않는다.
+            return await _abstract_only_outcome(
+                client, paper, title, doi, "본문을 받을 링크도 초록도 없음")
         try:
             fetched = await server.fetch_pdf_from_url(
                 pdf_url, title, source_note=f"open-access: {doi or pdf_url}")
@@ -107,21 +138,9 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
                     fetched = None
             if fetched is None:
                 # Unpaywall 로도 안 되면 이 논문은 앞으로도 초록밖에 못 본다.
-                # **그러면 초록이라도 제대로 정리한다**(2026-09-04) — 잘린 초록
-                # 한 토막에 오류 문자열을 붙여 내보내는 건 요약이 아니다.
-                abstract = ((paper or {}).get("abstract") or "").strip()
-                if not abstract and doi:
-                    # S2 가 초록을 안 주는 논문이 많다 — 09-04 메일 상위 6편 중
-                    # 3편이 "(초록 없음)" 이었다. OpenAlex 에는 있었다(실측 5/7).
-                    abstract = await server.resolve_openalex_abstract(doi)
-                    if abstract:
-                        print(f"  [초록] OpenAlex 에서 보강 ({len(abstract):,}자) — {title[:40]}")
-                brief = await engine.summarize_abstract(client, title, abstract)
-                return {"arxiv_id": "", "status": "abstract_only" if brief else "fetch_failed",
-                        "brief": brief,
-                        "detail": "본문 비공개(오픈액세스 아님) — 초록만 확인"
-                                  if brief else
-                                  f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}"}
+                return await _abstract_only_outcome(
+                    client, paper, title, doi,
+                    f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}")
         arxiv_id = fetched["arxiv_id"]
         print(f"[{arxiv_id}] 오픈액세스 PDF 수집됨 ({fetched.get('text_chars', 0):,}자) — {title[:40]}")
         fetch_result = fetched
