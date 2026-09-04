@@ -787,3 +787,45 @@ def test_latex_loss_names_survive():
 def test_plain_leaves_ordinary_text_alone():
     for s in ("정밀도 0.882, AP50 0.823 [S0170].", "640×640 해상도 · 배치 16"):
         assert digest._plain(s) == s
+
+
+# ---------------------------------------------------------------- 재현 ✓ 의 실체 (2026-09-04)
+#
+# "재현을 진짜 해?" 라는 질문에 성공 3건을 열어보니:
+#   2609.02212  `fudu --help`               → CLI 사용법 출력 (2.6초)
+#   2110.15045  `python -c "import models"` → 출력 없음, exit 0 (1.3초)
+# 결과가 재현된 게 아니라 설치·임포트가 됐다는 뜻인데 라벨은 `[재현 ✓]` 였다.
+
+def _write_repro_log(tmp_path, arxiv_id, run_cmd, prefix=""):
+    import json as _json
+    body = _json.dumps({"arxiv_id": arxiv_id, "success": True,
+                        "log": [{"success": True, "stage": "run",
+                                 "plan": {"run_cmd": run_cmd}, "attempts": []}]})
+    (tmp_path / f"{arxiv_id}.log").write_text(prefix + body, encoding="utf-8")
+
+
+def test_import_only_success_is_not_called_bare_reproduction(tmp_path, monkeypatch):
+    _write_repro_log(tmp_path, "p1", 'python -c "import models"')
+    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    assert digest._verified_kind("p1") == "설치·임포트 확인"
+
+
+def test_entry_point_help_is_distinguished(tmp_path, monkeypatch):
+    _write_repro_log(tmp_path, "p2", "fudu --help")
+    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    assert digest._verified_kind("p2") == "설치·진입점 확인"
+
+
+def test_plain_text_prefix_before_json_is_tolerated(tmp_path, monkeypatch):
+    """실측(2609.02212): 로그 앞에 후보 탐색 평문이 붙어 있어 통째로 파싱하면
+    실패했고, 라벨이 조용히 `[재현 ✓]` 로 뭉뚱그려졌다."""
+    _write_repro_log(tmp_path, "p3", "fudu --help",
+                     prefix="  [계측] ⑦ 저장소 탐색: API 호출 1회\n  [후보 제외] ...\n")
+    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    assert digest._verified_kind("p3") == "설치·진입점 확인"
+
+
+def test_missing_log_adds_nothing(tmp_path, monkeypatch):
+    """모르면 덧붙이지 않는다 — 없는 근거를 만들어내지 않는다(규칙 8)."""
+    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    assert digest._verified_kind("없는논문") == ""
