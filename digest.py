@@ -34,7 +34,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-import server
+import storage
 
 _ABSTRACT_EXCERPT_CHARS = 220
 
@@ -209,7 +209,7 @@ def summary_sections(arxiv_id: str) -> dict:
     빈 요약으로 보여주지 않는다.
     """
     try:
-        with server._db() as con:
+        with storage.db() as con:
             row = con.execute(
                 "SELECT path FROM summaries WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()
@@ -279,7 +279,7 @@ def verification_label(arxiv_id: str) -> str:
     "검증할 숫자가 하나도 없었다"가 "완벽 통과"로 둔갑한다 — 따로 표기한다.
     """
     try:
-        with server._db() as con:
+        with storage.db() as con:
             row = con.execute(
                 "SELECT numbers_total, numbers_matched FROM summaries WHERE arxiv_id=?",
                 (arxiv_id,),
@@ -319,7 +319,7 @@ def coverage_label(arxiv_id: str) -> str:
     아는 척하지 않는다.
     """
     try:
-        with server._db() as con:
+        with storage.db() as con:
             row = con.execute(
                 "SELECT coverage_ratio FROM summaries WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()
@@ -392,8 +392,7 @@ def _verified_kind(arxiv_id: str) -> str:
     `docker_runner` 를 고치지 않는다(민감 모듈, 규칙 13) — 이미 로그에
     `plan.run_cmd` 가 남아 있어서 읽기만 하면 된다.
     """
-    path = Path(server.REPRO_DIR) / f"{arxiv_id}.log" if hasattr(server, "REPRO_DIR") \
-        else Path("data/repro") / f"{arxiv_id}.log"
+    path = Path(storage.REPRO_DIR) / f"{arxiv_id}.log"
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -437,11 +436,11 @@ def repro_label(arxiv_id: str) -> str:
     죽었을 수 있는 것. 앞의 둘은 저자 코드에 대한 판정이 아예 아닌데도
     "저자 코드가 안 돈다"로 읽혔다.
     """
-    marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
+    marker = storage.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
     if marker.exists():
         return "[재현 ⏳ 실행중]"
     try:
-        with server._db() as con:
+        with storage.db() as con:
             rows = con.execute(
                 "SELECT success, stage, fail_detail FROM repro_results WHERE arxiv_id=? "
                 "ORDER BY attempt",
@@ -469,7 +468,7 @@ def repro_label(arxiv_id: str) -> str:
 def _repro_label_legacy(arxiv_id: str) -> str:
     """fail_detail 컬럼이 아직 없는 DB용 폴백 — 예전 동작 그대로."""
     try:
-        with server._db() as con:
+        with storage.db() as con:
             rows = con.execute(
                 "SELECT success FROM repro_results WHERE arxiv_id=?", (arxiv_id,)
             ).fetchall()
@@ -487,7 +486,7 @@ def retraction_label(arxiv_id: str) -> str:
     않는다** — "철회 아님"이라고 쓰면 조회조차 못 한 논문을 검증된 정상으로
     보이게 만든다(CLAUDE.md 8). 위험을 알릴 때만 말한다."""
     try:
-        with server._db() as con:
+        with storage.db() as con:
             row = con.execute(
                 "SELECT is_retracted FROM papers WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()
@@ -509,7 +508,7 @@ def injection_label(arxiv_id: str) -> str:
     논문은 본문에 공격 문구를 그대로 인용하므로 정직하게 걸린다. "위험"이
     아니라 "확인 필요"로 쓴다(injection_scan.py 참고)."""
     try:
-        with server._db() as con:
+        with storage.db() as con:
             row = con.execute(
                 "SELECT injection_suspect FROM papers WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()

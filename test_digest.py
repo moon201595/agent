@@ -7,6 +7,7 @@ M2(2026-08-28)부터 digest.py가 ⑤ 검증·⑦ 재현 상태를 DB에서 읽�
 진짜 검증 결과(28/31)가 테스트에 새어 들어왔다.
 """
 
+import storage
 import sqlite3
 
 import pytest
@@ -18,8 +19,11 @@ from digest import generate_digest
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path, monkeypatch):
-    """server.DB_PATH·REPRO_DIR를 임시 경로로 돌린다. digest.py는 이 둘만
-    보므로(읽기 전용) 이것으로 프로덕션과 완전히 분리된다."""
+    """DB_PATH·REPRO_DIR를 임시 경로로 돌린다. digest.py는 이 둘만
+    보므로(읽기 전용) 이것으로 프로덕션과 완전히 분리된다.
+
+    2026-09-04: 경로 소유자가 storage 로 옮겨가 둘 다 패치한다 — digest 는
+    이제 storage 만 보고, server 쪽은 아직 server 를 보는 다른 모듈용이다."""
     db = tmp_path / "test.db"
     repro = tmp_path / "repro"
     repro.mkdir()
@@ -37,7 +41,9 @@ def isolated_db(tmp_path, monkeypatch):
         # M5: 철회 상태는 papers 에 산다.
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
     monkeypatch.setattr(server, "DB_PATH", db)
+    monkeypatch.setattr(storage, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
+    monkeypatch.setattr(storage, "REPRO_DIR", repro)
     return {"db": db, "repro": repro}
 
 
@@ -258,6 +264,7 @@ def test_digest_generation_survives_missing_db(monkeypatch, tmp_path):
     """DB 파일이 아예 없는 환경(새 클론)에서도 다이제스트 생성은 계속돼야
     한다 — 단, 통과가 아니라 "데이터 없음"으로 떨어진다."""
     monkeypatch.setattr(server, "DB_PATH", tmp_path / "does_not_exist.db")
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "does_not_exist.db")
     monkeypatch.setattr(server, "REPRO_DIR", tmp_path / "no_repro")
     text = _digest_for(_scored_paper("p1", "DB 없는 논문", 1.0))
     assert "[검증 데이터 없음]" in text
@@ -806,13 +813,13 @@ def _write_repro_log(tmp_path, arxiv_id, run_cmd, prefix=""):
 
 def test_import_only_success_is_not_called_bare_reproduction(tmp_path, monkeypatch):
     _write_repro_log(tmp_path, "p1", 'python -c "import models"')
-    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(digest.storage, "REPRO_DIR", tmp_path)
     assert digest._verified_kind("p1") == "설치·임포트 확인"
 
 
 def test_entry_point_help_is_distinguished(tmp_path, monkeypatch):
     _write_repro_log(tmp_path, "p2", "fudu --help")
-    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(digest.storage, "REPRO_DIR", tmp_path)
     assert digest._verified_kind("p2") == "설치·진입점 확인"
 
 
@@ -821,11 +828,11 @@ def test_plain_text_prefix_before_json_is_tolerated(tmp_path, monkeypatch):
     실패했고, 라벨이 조용히 `[재현 ✓]` 로 뭉뚱그려졌다."""
     _write_repro_log(tmp_path, "p3", "fudu --help",
                      prefix="  [계측] ⑦ 저장소 탐색: API 호출 1회\n  [후보 제외] ...\n")
-    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(digest.storage, "REPRO_DIR", tmp_path)
     assert digest._verified_kind("p3") == "설치·진입점 확인"
 
 
 def test_missing_log_adds_nothing(tmp_path, monkeypatch):
     """모르면 덧붙이지 않는다 — 없는 근거를 만들어내지 않는다(규칙 8)."""
-    monkeypatch.setattr(digest.server, "REPRO_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(digest.storage, "REPRO_DIR", tmp_path)
     assert digest._verified_kind("없는논문") == ""
