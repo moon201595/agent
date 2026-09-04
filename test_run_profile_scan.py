@@ -1,6 +1,7 @@
 """run_profile_scan.py 통합 테스트 — server._throttled_arxiv_get만 모킹,
 research_profile은 임시 SQLite로 실제 로직 그대로 돈다. 네트워크 없음."""
 
+import storage
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -473,6 +474,9 @@ def _seed_summary(monkeypatch, tmp_path, arxiv_ids):
             con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)",
                         (aid, "", 1, 1))
     monkeypatch.setattr(server, "DB_PATH", sdb)
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", sdb)
 
 
 def _mock_arxiv_pages(monkeypatch, papers):

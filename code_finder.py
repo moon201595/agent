@@ -39,6 +39,7 @@ import httpx
 import api_usage
 import pacing
 
+import storage
 import server
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -389,8 +390,8 @@ def find_repo_candidates(arxiv_id: str) -> dict:
     Returns:
         {arxiv_id, title, in_text: [...], github_search: [...]}
     """
-    arxiv_id = server._clean_arxiv_id(arxiv_id)
-    with server._db() as con:
+    arxiv_id = storage.clean_arxiv_id(arxiv_id)
+    with storage.db() as con:
         row = con.execute(
             "SELECT title, text_path, authors FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()

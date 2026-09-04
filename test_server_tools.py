@@ -9,6 +9,7 @@
 보다가** 우연히 찾았다. 테스트가 있었으면 더 일찍 잡혔을 것들이다.
 """
 
+import storage
 import json
 import sqlite3
 
@@ -24,6 +25,9 @@ import server
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
     monkeypatch.setattr(server, "DB_PATH", tmp_path / "t.db")
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "t.db")
     monkeypatch.setattr(server, "PDF_DIR", tmp_path / "pdfs")
     monkeypatch.setattr(server, "TEXT_DIR", tmp_path / "text")
     monkeypatch.setattr(server, "SUMMARY_DIR", tmp_path / "summaries")

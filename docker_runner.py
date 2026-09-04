@@ -37,6 +37,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import code_finder
+import storage
 import server
 
 DEFAULT_BASE_IMAGE = "python:3.11-slim"
@@ -508,7 +509,7 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
     성공 판정은 exit code 뿐이다 — 논문 수치 재현이 아니다. 각 시도는
     server.save_repro_result() 로 그대로 축적된다(⑧, 성공이든 실패든).
     """
-    arxiv_id = server._clean_arxiv_id(arxiv_id)
+    arxiv_id = storage.clean_arxiv_id(arxiv_id)
     found = code_finder.find_repo_candidates(arxiv_id)
     ordered = _rank_candidates(found)
 
@@ -586,7 +587,7 @@ def launch_background(arxiv_id: str) -> str:
     그다음은 무인으로 돈다" 패턴. 이미 성공 기록이 있으면 다시 안 돌리고,
     이미 실행 중이면(마커 파일) 중복 실행하지 않는다.
     """
-    with server._db() as con:
+    with storage.db() as con:
         rows = con.execute(
             "SELECT success FROM repro_results WHERE arxiv_id=?", (arxiv_id,)
         ).fetchall()
@@ -597,7 +598,7 @@ def launch_background(arxiv_id: str) -> str:
     marker = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.running"
     if marker.exists():
         return "이미 실행 중"
-    marker.write_text(server._now(), encoding="utf-8")
+    marker.write_text(storage.now(), encoding="utf-8")
     log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
 
     # docker_runner.py 자체의 __main__은 마커 파일을 모르므로, 마커 정리까지

@@ -40,6 +40,7 @@ import docker_runner
 import research_profile
 import run_profile_scan
 import sentence_grounding
+import storage
 import server
 import summarize_engine as engine
 import verify
@@ -109,7 +110,7 @@ def run_async(coro):
 def _fetch_review_rows() -> list[dict]:
     """⑥ 게이트가 없어져(2026-08-24) review_status로 거를 이유가 없다 —
     저장된 요약은 전부 이미 ④⑤ 끝난 것이고 곧 ⑦도 자동으로 붙는다."""
-    with server._db() as con:
+    with storage.db() as con:
         rows = con.execute(
             "SELECT s.arxiv_id, p.title, s.path, s.numbers_total, s.numbers_matched, "
             "s.created_at FROM summaries s JOIN papers p ON s.arxiv_id = p.arxiv_id "
@@ -151,7 +152,7 @@ def _prettify_summary_markdown(text: str) -> str:
     return text
 
 def _verify_detail(arxiv_id: str, summary_text: str) -> verify.VerificationReport:
-    with server._db() as con:
+    with storage.db() as con:
         row = con.execute(
             "SELECT text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()
@@ -225,7 +226,7 @@ async def _summarize_target(
     시점의 PDF 첫 줄 휴리스틱보다 신뢰도가 높음)가 생기면 계속 개선한다"는
     원칙 — arXiv 검색으로 들어온 논문은 이 값이 항상 False라 절대 안 건드림.
     """
-    with server._db() as con:
+    with storage.db() as con:
         row = con.execute("SELECT title FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     title = row["title"] if row and row["title"] else ""
     template = engine.select_template(title)
@@ -321,7 +322,7 @@ async def _run_open_access_and_summarize(doi_or_url: str, title: str, status_box
     return [arxiv_id] if ok else []
 
 def _fetch_repro_rows(arxiv_id: str) -> list[dict]:
-    with server._db() as con:
+    with storage.db() as con:
         rows = con.execute(
             "SELECT repo_url, source, confidence, success, exit_code, stage, "
             "attempt, duration_s, created_at, local_path FROM repro_results "
@@ -405,7 +406,7 @@ def _fetch_sidebar_lists() -> dict:
     이제 의미 있는 축은 review_status가 아니라 ⑦ 재현 결과다. "코드 없음"
     판정도 예전엔 "승인된 논문 중"으로 좁혔던 걸 "저장된 논문 전체"로
     넓혔다 — 승인이라는 전제 자체가 없어졌으니 좁힐 이유가 없다."""
-    with server._db() as con:
+    with storage.db() as con:
         all_papers = con.execute(
             "SELECT p.arxiv_id, p.title FROM papers p JOIN summaries s ON p.arxiv_id=s.arxiv_id "
             "ORDER BY p.title"

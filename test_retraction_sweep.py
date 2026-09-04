@@ -12,6 +12,7 @@ NULL 이었고 원인이 둘이었다:
 **선택·순서·상한** 로직만 검증한다.
 """
 
+import storage
 import asyncio
 import sqlite3
 
@@ -24,6 +25,9 @@ import server
 def db(tmp_path, monkeypatch):
     path = tmp_path / "t.db"
     monkeypatch.setattr(server, "DB_PATH", path)
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", path)
     server._init_storage()
     return path
 

@@ -9,6 +9,7 @@
 나온다. 그래서 따로 재서 나란히 보여줘야 오해가 없다.
 """
 
+import storage
 import sqlite3
 
 import pytest
@@ -68,6 +69,9 @@ def isolated_db(tmp_path, monkeypatch):
                     "PRIMARY KEY (arxiv_id, repo_url))")
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
     monkeypatch.setattr(server, "DB_PATH", db)
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
     return db
 

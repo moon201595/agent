@@ -8,6 +8,7 @@
 경로를 전혀 밟지 않는다(조용히 초록 발췌로 폴백한다). 그래서 파일을 나눴다.
 """
 
+import storage
 import sqlite3
 
 import pytest
@@ -57,6 +58,9 @@ def db_with_summary_path(tmp_path, monkeypatch):
                     "success INTEGER, PRIMARY KEY (arxiv_id, repo_url))")
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
     monkeypatch.setattr(server, "DB_PATH", db)
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
     return {"db": db, "dir": tmp_path}
 

@@ -40,6 +40,7 @@ import docker_runner
 import research_profile
 import run_profile_scan
 import sentence_grounding
+import storage
 import server
 import summarize_engine as engine
 import verify
@@ -598,7 +599,7 @@ def _launch_search_job(mode: str, value: str, top_n: int) -> None:
     meta_path.write_text(
         json.dumps({
             "pid": proc.pid, "mode": mode, "value": value, "top_n": top_n,
-            "started_at": server._now(),
+            "started_at": storage.now(),
         }),
         encoding="utf-8",
     )

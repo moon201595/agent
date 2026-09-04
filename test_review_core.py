@@ -14,6 +14,7 @@
 않는다** — 그게 분리가 실제로 된 증거다.
 """
 
+import storage
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -115,6 +116,9 @@ def test_pid_alive_rejects_non_positive_and_garbage(bad):
 def db(tmp_path, monkeypatch):
     path = tmp_path / "t.db"
     monkeypatch.setattr(server, "DB_PATH", path)
+    # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
+    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    monkeypatch.setattr(storage, "DB_PATH", path)
     server._init_storage()
     return path
 
