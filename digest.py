@@ -589,10 +589,10 @@ def _filtered_line(scan_result: dict) -> str:
 def _title_only_section(scan_result: dict) -> list[str]:
     """본문을 못 받는 논문 목록. 제목·출처·링크만 한 줄씩.
 
-    2026-09-03 실측: S2 를 붙이자 팀 표적 논문이 실제로 올라왔는데
-    (PhyHGNet 등 ★★★ 2편) **59편 중 35편(59%)이 arXiv ID 도 오픈액세스
-    PDF 도 없었다.** 그날 상위 6편 중 5편이 그런 논문이라 요약 없이
-    "처리 실패"로 나갔다.
+    **2026-09-04 개정**: 이 절은 이제 "본문을 못 받은 논문"이 아니라
+    **"관련도 순위가 밖인 논문"**이다. 하루 전에는 본문 확보 여부로 갈랐는데,
+    그러다 ★★★ 팀 표적 논문 두 편이 ★★ 여섯 편 아래에 묻혔다 — 순서가
+    거꾸로였다. 이제 자리는 관련도가 정하고 깊이만 확보한 것이 정한다.
 
     **"실패"가 아니다.** 저자가 코드를 안 올린 것을 `[재현 ✗]` 로 부르면
     안 되는 것과 같은 이유로(§8-24), 페이월 뒤에 있는 논문을 "처리 실패"로
@@ -602,8 +602,8 @@ def _title_only_section(scan_result: dict) -> list[str]:
     papers = scan_result.get("title_only_papers") or []
     if not papers:
         return []
-    lines = ["", f"■ 본문 비공개 — 제목만 확인 ({len(papers)}편)",
-             "   (arXiv 에도 없고 오픈액세스 PDF 도 없다. 기관 구독으로 볼 수 있다)"]
+    lines = ["", f"■ 그 밖에 걸린 논문 ({len(papers)}편 · 제목만)",
+             "   (관련도 순위가 위 목록 밖이라 요약은 안 했다. 제목이 눈에 들면 링크로 보면 된다)"]
     for paper in papers:
         score = paper.get("_score", {})
         lines.append(f"   [{_stars(score)}] {paper.get('title') or '(제목 없음)'}")
@@ -927,11 +927,11 @@ def _title_only_html(scan_result: dict) -> str:
     return (
         f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
         f'font-weight:600;border-top:1px solid {_LINE};padding-top:10px;'
-        f'margin-top:14px;margin-bottom:4px;">본문 비공개 — 제목만 확인 '
-        f'({len(papers)}편)</p>'
+        f'margin-top:14px;margin-bottom:4px;">그 밖에 걸린 논문 '
+        f'({len(papers)}편 · 제목만)</p>'
         f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-        f'margin:0 0 8px;">arXiv 에도 없고 오픈액세스 PDF 도 없습니다. '
-        f'기관 구독으로 볼 수 있습니다.</p>'
+        f'margin:0 0 8px;">관련도 순위가 위 목록 밖이라 요약은 안 했습니다. '
+        f'제목이 눈에 들면 링크로 보면 됩니다.</p>'
         f'<ul style="background-color:{_PAPER_BG};padding-left:18px;margin:0;">'
         + "".join(rows) + "</ul>"
     )
