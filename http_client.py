@@ -22,11 +22,15 @@ import asyncio
 import json
 import random
 import sys
+import xml.etree.ElementTree as ET
 
 import httpx
 
 import api_usage
 import pacing
+import storage
+
+ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 ARXIV_PDF = "https://arxiv.org/pdf/{arxiv_id}"
@@ -277,3 +281,34 @@ async def s2_citation_graph(arxiv_id: str, limit: int, edge: str) -> str:
         {"arxiv_id": arxiv_id, "edge": edge, "count": len(papers), "papers": papers},
         ensure_ascii=False, indent=2,
     )
+
+
+def parse_arxiv_feed(xml_text: str) -> list[dict]:
+    root = ET.fromstring(xml_text)
+    papers = []
+    for entry in root.findall("atom:entry", ATOM_NS):
+        raw_id = entry.findtext("atom:id", default="", namespaces=ATOM_NS)
+        title = " ".join(
+            (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").split()
+        )
+        abstract = " ".join(
+            (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").split()
+        )
+        authors = [
+            a.findtext("atom:name", default="", namespaces=ATOM_NS)
+            for a in entry.findall("atom:author", ATOM_NS)
+        ]
+        categories = [
+            c.attrib.get("term", "") for c in entry.findall("atom:category", ATOM_NS)
+        ]
+        papers.append(
+            {
+                "arxiv_id": storage.clean_arxiv_id(raw_id),
+                "title": title,
+                "authors": authors,
+                "published": entry.findtext("atom:published", default="", namespaces=ATOM_NS),
+                "categories": categories,
+                "abstract": abstract,
+            }
+        )
+    return papers

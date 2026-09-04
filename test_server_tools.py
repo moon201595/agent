@@ -456,3 +456,90 @@ def test_with_retry_without_cap_keeps_old_behaviour(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(server._with_retry(always_429, "테스트"))
     assert len(slept) == server.RATE_LIMIT_RETRIES
+
+
+# ---------------------------------------------------------------- OpenAlex 초록 보강 (2026-09-05)
+#
+# §8-49 로 넣은 경로인데 커버리지가 17/34 였다 — 어제 만들어 오늘 실행 경로에
+# 들어간 코드가 절반도 안 덮여 있었다. 역색인 복원이 틀리면 요약이 통째로
+# 엉뚱해지므로 여기부터 덮는다.
+
+def _openalex_resp(payload, status=200):
+    class _R:
+        status_code = status
+        headers = {}
+
+        def json(self):
+            return payload
+
+    return _R()
+
+
+def _patch_openalex(monkeypatch, resp):
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kw):
+            _Client.seen_url = url
+            return resp
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda *a, **k: _Client())
+    return _Client
+
+
+def test_openalex_abstract_rebuilds_from_inverted_index(monkeypatch):
+    """OpenAlex 는 저작권 때문에 초록을 역색인(단어→위치)으로 준다.
+    위치대로 다시 잇지 않으면 순서가 뒤죽박죽인 글이 요약으로 나간다."""
+    idx = {"Metal": [0], "surfaces": [1], "sustain": [2], "scratches": [3]}
+    _patch_openalex(monkeypatch, _openalex_resp({"abstract_inverted_index": idx}))
+    got = asyncio_run(server.resolve_openalex_abstract("10.1/x"))
+    assert got == "Metal surfaces sustain scratches"
+
+
+def test_openalex_abstract_handles_repeated_words(monkeypatch):
+    """같은 단어가 여러 위치에 나오는 게 정상이다 — 위치마다 채워야 한다."""
+    idx = {"defect": [0, 2], "and": [1]}
+    _patch_openalex(monkeypatch, _openalex_resp({"abstract_inverted_index": idx}))
+    assert asyncio_run(server.resolve_openalex_abstract("10.1/x")) == "defect and defect"
+
+
+def test_openalex_abstract_strips_doi_url_prefix(monkeypatch):
+    """DOI 가 URL 형태로 들어오는 경로가 있다 — 그대로 붙이면 404 다."""
+    cli = _patch_openalex(monkeypatch, _openalex_resp({"abstract_inverted_index": {"x": [0]}}))
+    asyncio_run(server.resolve_openalex_abstract("https://doi.org/10.1/x"))
+    assert cli.seen_url.endswith("doi:10.1/x")
+
+
+def test_openalex_abstract_returns_empty_when_absent(monkeypatch):
+    """초록이 없는 논문이 실제로 있다(PhyHGNet·2-D Ambipolar). 지어내지 않는다."""
+    _patch_openalex(monkeypatch, _openalex_resp({"abstract_inverted_index": None}))
+    assert asyncio_run(server.resolve_openalex_abstract("10.1/x")) == ""
+
+
+def test_openalex_abstract_swallows_failures(monkeypatch):
+    """초록 보강은 부가 정보다 — 실패해도 파이프라인을 세우면 안 된다."""
+    _patch_openalex(monkeypatch, _openalex_resp({}, status=404))
+    assert asyncio_run(server.resolve_openalex_abstract("10.1/x")) == ""
+
+    class _Boom:
+        async def __aenter__(self):
+            raise RuntimeError("네트워크 죽음")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda *a, **k: _Boom())
+    assert asyncio_run(server.resolve_openalex_abstract("10.1/x")) == ""
+
+
+def test_openalex_abstract_skips_empty_doi(monkeypatch):
+    """DOI 가 없으면 호출 자체를 안 한다 — 무료라도 공짜는 아니다."""
+    def boom(*a, **k):
+        raise AssertionError("DOI 없이 호출하면 안 된다")
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", boom)
+    assert asyncio_run(server.resolve_openalex_abstract("")) == ""

@@ -206,37 +206,9 @@ _s2_pacer = http_client._s2_pacer
 # 순수 HTTP 어댑터라 trend_report 같은 분석 모듈이 server 를 거칠 이유가 없다.
 _http_error_to_message = http_client.http_error_to_message
 _s2_citation_graph = http_client.s2_citation_graph
+_parse_arxiv_feed = http_client.parse_arxiv_feed
 
 
-def _parse_arxiv_feed(xml_text: str) -> list[dict]:
-    root = ET.fromstring(xml_text)
-    papers = []
-    for entry in root.findall("atom:entry", ATOM_NS):
-        raw_id = entry.findtext("atom:id", default="", namespaces=ATOM_NS)
-        title = " ".join(
-            (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").split()
-        )
-        abstract = " ".join(
-            (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").split()
-        )
-        authors = [
-            a.findtext("atom:name", default="", namespaces=ATOM_NS)
-            for a in entry.findall("atom:author", ATOM_NS)
-        ]
-        categories = [
-            c.attrib.get("term", "") for c in entry.findall("atom:category", ATOM_NS)
-        ]
-        papers.append(
-            {
-                "arxiv_id": _clean_arxiv_id(raw_id),
-                "title": title,
-                "authors": authors,
-                "published": entry.findtext("atom:published", default="", namespaces=ATOM_NS),
-                "categories": categories,
-                "abstract": abstract,
-            }
-        )
-    return papers
 
 
 # 본문이 아닌 것들. 남겨두면 네비게이션·각주의 숫자가 원문 텍스트를 오염시켜

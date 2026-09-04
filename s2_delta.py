@@ -33,7 +33,6 @@ from datetime import datetime
 
 import httpx
 
-import server
 
 # 키워드 하나당 받아올 최대 건수. S2 는 offset+limit 이 1000 을 못 넘고,
 # 관련도 순이라 뒤로 갈수록 무관해진다 — 앞쪽만 봐도 충분하다.
