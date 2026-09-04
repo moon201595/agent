@@ -28,6 +28,7 @@ M2(2026-08-28): M1이 Deep Layer(④⑤⑦)를 붙이면서 이제 논문마다 
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -483,8 +484,8 @@ def _paper_entry(idx: int, paper: dict) -> str:
         # 라벨을 절대 같이 쓰지 않는다**(규칙 8) — ⑤ 검증을 통과한 게 아니다.
         lines.append("   본문 비공개 — 초록만 보고 정리한 것이다")
         for ln in paper["abstract_brief"].strip().splitlines():
-            if ln.strip():
-                lines.append(f"     {ln.strip()}")
+            if _plain(ln):
+                lines.append(f"     {_plain(ln)}")
         lines.append("   [초록 기반 정리 · 본문 미확보 · 미검증]")
     elif deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
@@ -595,6 +596,21 @@ def _title_only_section(scan_result: dict) -> list[str]:
     return lines
 
 
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _plain(line: str) -> str:
+    """평문 메일에 마크다운이 새지 않게 한다.
+
+    2026-09-04 실측: 같은 프롬프트인데 gemini-flash-latest 는 `**무엇을 하려
+    했는가**` 로, gemini-flash-lite-latest 는 굵게 없이 답했다. 모델을 회전
+    시키니(§8-38-1) 한 메일 안에서 두 형식이 섞여 나온다. 프롬프트로
+    "굵게 쓰지 마라"를 거는 것보다 받는 쪽에서 지우는 게 확실하다 —
+    모델이 지시를 지키는지에 형식이 의존하면 안 된다.
+    """
+    return _MD_BOLD_RE.sub(r"\1", line).strip()
+
+
 def _narrative_section(scan_result: dict) -> list[str]:
     """오늘의 동향 서술. 셈 절과 **섞지 않고** 라벨을 붙인다.
 
@@ -611,7 +627,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
         return []
     text, ungrounded = story
     lines = ["", "■ 오늘의 흐름 (LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다)"]
-    lines += [f"   {ln}" for ln in text.strip().splitlines() if ln.strip()]
+    lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
     return lines
@@ -783,8 +799,8 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
         body = "".join(
             f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:2px 0;">{_esc(ln.strip())}</div>'
-            for ln in paper["abstract_brief"].strip().splitlines() if ln.strip())
+            f'margin:2px 0;">{_esc(_plain(ln))}</div>'
+            for ln in paper["abstract_brief"].strip().splitlines() if _plain(ln))
         return (
             f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'margin-top:6px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}'
@@ -936,8 +952,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         text, ungrounded = story
         paras = "".join(
             f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:3px 0;">{_esc(ln.strip())}</div>'
-            for ln in text.strip().splitlines() if ln.strip())
+            f'margin:3px 0;">{_esc(_plain(ln))}</div>'
+            for ln in text.strip().splitlines() if _plain(ln))
         warn = ""
         if ungrounded:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
