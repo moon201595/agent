@@ -841,3 +841,62 @@ def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
     assert "결함을 검출한다" in top["abstract_brief"]
     assert "식별자도 오픈액세스 링크도 없음" not in digest_text
     assert "본문 비공개 — 초록만 보고 정리한 것이다" in digest_text
+
+
+# ---------------------------------------------------------------- 본문 자리 보장 (2026-09-05)
+#
+# 09-04 메일은 상위 14편이 전부 저널이라 검증 라벨 0건·재현 라벨 0건이었다 —
+# ④⑤⑦ 이 통째로 안 돌았다. 저널 본문을 받을 무료 경로는 없다(실측: arXiv
+# preprint 0/14, OpenAlex OA 위치 1/14). 대신 순위 밖으로 밀린 arXiv 논문에
+# 자리를 보장한다.
+
+def _p(key, score, arxiv=False):
+    return {"arxiv_id": key if arxiv else None,
+            "doi": None if arxiv else key,
+            "title": f"paper {key}",
+            "_score": {"priority": score, "core_hits": [], "domain_hits": [],
+                       "venue_hit": None, "top_core_weight": 1.0}}
+
+
+def test_reserves_slots_for_papers_we_can_fully_process():
+    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7), _p("j4", 0.6)]
+    pool = top + [_p("a1", 0.55, arxiv=True), _p("a2", 0.5, arxiv=True)]
+    got = rps._reserve_full_text_slots(pool, max_items=4, reserved=2)
+
+    ids = [p.get("arxiv_id") or p.get("doi") for p in got]
+    assert len(got) == 4                       # 자리 수는 그대로
+    assert ids[:2] == ["j1", "j2"]             # 관련도 높은 건 남는다
+    assert set(ids) >= {"a1", "a2"}            # 본문 되는 둘이 들어왔다
+    assert "j4" not in ids and "j3" not in ids  # 점수 낮은 것부터 나갔다
+
+
+def test_final_order_is_still_relevance():
+    """§8-44 의 교훈 — 자리는 보장하되 **순서를 바꾸지 않는다.**"""
+    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7)]
+    pool = top + [_p("a1", 0.85, arxiv=True)]
+    got = rps._reserve_full_text_slots(pool, max_items=3, reserved=1)
+    assert [p["_score"]["priority"] for p in got] == sorted(
+        [p["_score"]["priority"] for p in got], reverse=True)
+
+
+def test_no_change_when_already_enough():
+    top = [_p("a1", 0.9, arxiv=True), _p("a2", 0.8, arxiv=True), _p("j1", 0.7)]
+    got = rps._reserve_full_text_slots(top, max_items=3, reserved=2)
+    assert got == top                          # 손대지 않는다(순서·내용 그대로)
+
+
+def test_uses_what_exists_when_pool_is_short():
+    """풀에 arXiv 논문이 하나뿐이면 하나만 넣는다 — 없는 걸 만들지 않는다."""
+    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7)]
+    pool = top + [_p("a1", 0.4, arxiv=True)]
+    got = rps._reserve_full_text_slots(pool, max_items=3, reserved=2)
+    ids = [p.get("arxiv_id") or p.get("doi") for p in got]
+    assert ids.count("a1") == 1 and len(got) == 3
+
+
+def test_synthetic_pdf_ids_do_not_count_as_full_text():
+    """`pdf-<해시>` 는 업로드 합성 ID 다 — arXiv 본문을 받을 수 있다는 뜻이 아니다."""
+    top = [_p("j1", 0.9), _p("pdf-abc", 0.8, arxiv=True)]
+    pool = top + [_p("a1", 0.5, arxiv=True)]
+    got = rps._reserve_full_text_slots(pool, max_items=2, reserved=1)
+    assert "a1" in [p.get("arxiv_id") for p in got]
