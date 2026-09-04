@@ -21,7 +21,9 @@ import sys
 from pathlib import Path
 
 import httpx
+
 import api_usage
+import http_client
 
 import sentence_grounding
 
@@ -166,8 +168,18 @@ def groq_chunk_delay() -> float:
 # 그 교훈을 배치 스크립트마다 따로 페이싱하게 두지 않고 여기 한 곳에 고정한다
 # — ①~③(arXiv/S2)의 _throttled_*_get 과 같은 발상이다. 429 상한(초과)까지만
 # 재시도한다 — 무한 재시도가 아니라 상한 있는 예외 처리다.
-RATE_LIMIT_RETRIES = 2
-RATE_LIMIT_BACKOFF = (20.0, 40.0)  # 재시도 1회차·2회차 대기(초)
+#
+# **이름을 LLM_ 으로 구분한다**(2026-09-04). 같은 이름의 상수가
+# http_client 에도 있고 값이 다르다(4 vs 2) — 한쪽을 보고 다른 쪽을 고치는
+# 사고가 나기 딱 좋은 형태였다. 실패 모드가 달라 통합은 안 하는 게 맞지만
+# (전자는 HTTP 응답 일반, 후자는 LLM 429/503 구분 + 키 로테이션),
+# **이름까지 같을 이유는 없다.**
+LLM_RATE_LIMIT_RETRIES = 2
+LLM_RATE_LIMIT_BACKOFF = (20.0, 40.0)  # 재시도 1회차·2회차 대기(초)
+
+# 옛 이름 — 외부에서 참조하는 곳이 있어 남긴다.
+RATE_LIMIT_RETRIES = LLM_RATE_LIMIT_RETRIES
+RATE_LIMIT_BACKOFF = LLM_RATE_LIMIT_BACKOFF
 
 
 def _is_rate_limited(e: Exception) -> bool:
@@ -621,7 +633,7 @@ def _retry_wait_seconds(e: Exception, attempt: int) -> float:
     백오프로 짐작하는 건 더 오래 기다리거나 또 429를 맞는 낭비다. 헤더가
     없거나 숫자가 아니면(HTTP-date 형식 등) 기존 고정 백오프로 폴백.
     지터(0~3초 무작위)를 더해 여러 청크·프로필 처리가 같은 순간 재시도로
-    다시 겹치는 것을 막는다 — server._with_retry의 지터와 같은 이유다.
+    다시 겹치는 것을 막는다 — http_client.with_retry의 지터와 같은 이유다.
     """
     wait = RATE_LIMIT_BACKOFF[attempt]
     if isinstance(e, httpx.HTTPStatusError):

@@ -8,7 +8,7 @@
 
 역산 대신 실제 호출 지점에서 센다. 호출은 전부 단일 병목을 지난다:
   summarize_engine._post_gemini / _post_groq   (LLM)
-  server._throttled_arxiv_get / _throttled_s2_get
+  http_client.throttled_arxiv_get / _throttled_s2_get
   retraction._throttled_get                    (OpenAlex / Crossref)
   code_finder.github_search                    (gh CLI)
 
@@ -23,6 +23,7 @@ Counter 갱신만 잠근다.
 
 from __future__ import annotations
 
+import http_client
 import threading
 from collections import Counter
 

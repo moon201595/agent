@@ -27,6 +27,7 @@ S2 검색은 arXiv 처럼 정확 필드 매칭이 아니라 관련도 매칭이�
 
 from __future__ import annotations
 
+import http_client
 import time
 from datetime import datetime
 
@@ -122,7 +123,7 @@ async def search_keyword_since(
         "limit": min(limit, 100),
     }
     try:
-        resp = await server._throttled_s2_get(client, params, server._s2_headers(),
+        resp = await http_client.throttled_s2_get(client, params, http_client.s2_headers(),
                                               max_wait=max_wait)
         items = resp.json().get("data") or []
     except Exception as e:  # noqa: BLE001

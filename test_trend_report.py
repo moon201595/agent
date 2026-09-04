@@ -5,6 +5,7 @@
 서술형 리뷰는 검증할 수 없는 산출물이라 넣지 않았다.
 """
 
+import storage
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -24,11 +25,9 @@ PROFILE = {
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "t.db"
-    with sqlite3.connect(path) as con:
-        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, title TEXT, "
-                    "abstract TEXT, authors TEXT, published TEXT, source TEXT)")
-        con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, created_at TEXT, "
-                    "engine TEXT, coverage_ratio REAL)")
+    # 실제 스키마를 쓴다(2026-09-04) — 손으로 다시 쓰면 실제 스키마가
+    # 바뀔 때 픽스처만 뒤처진다(§8-52). storage 가 유일한 소유자다.
+    storage.init_storage(path)
     return path
 
 
@@ -37,7 +36,8 @@ def _add(db, aid, title, days_ago, source=None, engine="gemini", coverage=1.0):
     with sqlite3.connect(db) as con:
         con.execute("INSERT OR REPLACE INTO papers (arxiv_id, title, published, source) "
                     "VALUES (?,?,?,?)", (aid, title, ts, source))
-        con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)",
+        con.execute("INSERT OR REPLACE INTO summaries "
+                    "(arxiv_id, created_at, engine, coverage_ratio) VALUES (?,?,?,?)",
                     (aid, ts, engine, coverage))
 
 

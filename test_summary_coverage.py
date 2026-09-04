@@ -60,14 +60,9 @@ def isolated_db(tmp_path, monkeypatch):
     db = tmp_path / "t.db"
     repro = tmp_path / "repro"
     repro.mkdir()
-    with sqlite3.connect(db) as con:
-        con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, path TEXT, "
-                    "numbers_total INTEGER, numbers_matched INTEGER, "
-                    "engine TEXT, coverage_ratio REAL)")
-        con.execute("CREATE TABLE repro_results (arxiv_id TEXT, repo_url TEXT, "
-                    "success INTEGER, stage TEXT, attempt INTEGER, fail_detail TEXT, "
-                    "PRIMARY KEY (arxiv_id, repo_url))")
-        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
+    # 실제 스키마를 쓴다(2026-09-04) — 손으로 다시 쓰면 실제 스키마가
+    # 바뀔 때 픽스처만 뒤처진다(§8-52). storage 가 유일한 소유자다.
+    storage.init_storage(db)
     monkeypatch.setattr(server, "DB_PATH", db)
     # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
     # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
@@ -78,7 +73,9 @@ def isolated_db(tmp_path, monkeypatch):
 
 def _seed(db, arxiv_id, *, coverage, total=40, matched=40, eng="groq"):
     with sqlite3.connect(db) as con:
-        con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?,?,?)",
+        con.execute("INSERT OR REPLACE INTO summaries "
+                    "(arxiv_id, path, numbers_total, numbers_matched, engine, coverage_ratio) "
+                    "VALUES (?,?,?,?,?,?)",
                     (arxiv_id, "", total, matched, eng, coverage))
 
 

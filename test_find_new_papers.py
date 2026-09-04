@@ -4,6 +4,7 @@ test_summarize_chunking.py와 같은 패턴(monkeypatch로 HTTP 경계만 끊고
 실제 로직은 그대로 돌린다) — asyncio.run()으로 감싸는 것도 같은 이유
 (pytest-asyncio 미설치, 기존 관례)."""
 
+import http_client
 import asyncio
 from datetime import datetime, timezone
 
@@ -36,7 +37,7 @@ def test_find_new_papers_since_defaults_to_server_side_range(monkeypatch):
     def fake_parse(_xml_text):
         return []
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
 
     async def main():
@@ -102,7 +103,7 @@ def test_find_new_papers_since_wires_collect_since_to_real_arxiv_helpers(monkeyp
     def fake_parse(_xml_text):
         return pages[starts_seen[-1]]
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
 
     async def main():

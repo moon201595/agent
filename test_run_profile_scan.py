@@ -1,6 +1,7 @@
 """run_profile_scan.py 통합 테스트 — server._throttled_arxiv_get만 모킹,
 research_profile은 임시 SQLite로 실제 로직 그대로 돈다. 네트워크 없음."""
 
+import http_client
 import storage
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -114,7 +115,7 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
     def fake_parse(_xml_text):
         return pages[starts_seen[-1]]
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
 
     async def main():
@@ -154,7 +155,7 @@ def _mock_empty_arxiv(monkeypatch):
 
         return FakeResp()
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: [])
 
 
@@ -224,7 +225,7 @@ def _mock_arxiv_three_agent_papers(monkeypatch):
 
         return FakeResp()
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _xml: papers)
 
 
@@ -466,12 +467,12 @@ def _seed_summary(monkeypatch, tmp_path, arxiv_ids):
     와 같은 이유 — 운영에선 같은 파일이지만 테스트에선 다르다)."""
     import sqlite3
     sdb = tmp_path / "server.db"
+    # 실제 스키마를 쓴다(2026-09-04, §8-52) — storage 가 유일한 소유자다.
+    storage.init_storage(sdb)
     with sqlite3.connect(sdb) as con:
-        con.execute("CREATE TABLE IF NOT EXISTS summaries ("
-                    "arxiv_id TEXT PRIMARY KEY, path TEXT, "
-                    "numbers_total INTEGER, numbers_matched INTEGER)")
         for aid in arxiv_ids:
-            con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)",
+            con.execute("INSERT OR REPLACE INTO summaries "
+                        "(arxiv_id, path, numbers_total, numbers_matched) VALUES (?,?,?,?)",
                         (aid, "", 1, 1))
     monkeypatch.setattr(server, "DB_PATH", sdb)
     # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
@@ -493,7 +494,7 @@ def _mock_arxiv_pages(monkeypatch, papers):
     def fake_parse(_xml):
         return papers if starts_seen[-1] == 0 else []
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", fake_parse)
 
 
@@ -741,7 +742,7 @@ def test_scan_profile_ranks_by_relevance_not_text_availability(tmp_path, monkeyp
 
         return FakeResp()
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
 
     result = asyncio.run(
@@ -785,7 +786,7 @@ def test_high_relevance_paper_without_text_outranks_low_relevance_with_text(tmp_
 
         return FakeResp()
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
 
     result = asyncio.run(
@@ -827,7 +828,7 @@ def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
         return {"arxiv_id": "", "status": "abstract_only",
                 "brief": "- 무엇을 하려 했는가 : 결함을 검출한다."}
 
-    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
     monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
     monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
 

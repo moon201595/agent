@@ -27,19 +27,13 @@ def isolated_db(tmp_path, monkeypatch):
     db = tmp_path / "test.db"
     repro = tmp_path / "repro"
     repro.mkdir()
-    with sqlite3.connect(db) as con:
-        con.execute("CREATE TABLE summaries (arxiv_id TEXT PRIMARY KEY, "
-                    "numbers_total INTEGER, numbers_matched INTEGER)")
-        # stage·attempt·fail_detail 은 실제 스키마에 있는데 예전 픽스처엔
-        # 없었다(2026-09-01 추가). 그 탓에 repro_label 이 여기서는 늘
-        # 구형 폴백 경로로만 돌아, 사유별 라벨이 테스트를 통과해도 실제로는
-        # 한 줄도 안 밟히는 상태였다 — test_digest_summary.py 를 따로 만든
-        # 것과 같은 종류의 함정이다.
-        con.execute("CREATE TABLE repro_results (arxiv_id TEXT, repo_url TEXT, "
-                    "success INTEGER, stage TEXT, attempt INTEGER, "
-                    "fail_detail TEXT, PRIMARY KEY (arxiv_id, repo_url))")
-        # M5: 철회 상태는 papers 에 산다.
-        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, is_retracted INTEGER)")
+    # **실제 스키마를 쓴다**(2026-09-04). 예전엔 여기서 CREATE TABLE 을 손으로
+    # 다시 썼는데, 그러면 실제 스키마가 바뀔 때 픽스처만 뒤처진다 — 2026-09-03
+    # 에 test_trend_report 가 `no such column: p.abstract` 로 깨진 사고가 정확히
+    # 그것이고, 이 파일에도 stage·attempt·fail_detail 이 빠져 있어 사유별 라벨이
+    # "통과하지만 한 줄도 안 밟히는" 상태였던 전력이 있다.
+    # storage.init_storage 를 부르면 그 어긋남이 구조적으로 불가능해진다.
+    storage.init_storage(db)
     monkeypatch.setattr(server, "DB_PATH", db)
     monkeypatch.setattr(storage, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
@@ -49,7 +43,10 @@ def isolated_db(tmp_path, monkeypatch):
 
 def _seed_verification(db, arxiv_id, total, matched):
     with sqlite3.connect(db) as con:
-        con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?)",
+        # **컬럼을 명시한다.** 위치 인자로 넣으면 스키마에 컬럼이 하나만
+        # 늘어도 깨진다 — 픽스처가 실제 스키마를 쓰게 되면서 드러난 문제다.
+        con.execute("INSERT OR REPLACE INTO summaries "
+                    "(arxiv_id, numbers_total, numbers_matched) VALUES (?,?,?)",
                     (arxiv_id, total, matched))
 
 
@@ -57,7 +54,9 @@ def _seed_repro(db, arxiv_id, repo_url, success, stage=None, attempt=1, fail_det
     """stage/fail_detail 을 안 주면 구형 행(2026-09-01 이전 29건)을 흉내낸다 —
     하위 호환 경로도 계속 테스트된다."""
     with sqlite3.connect(db) as con:
-        con.execute("INSERT OR REPLACE INTO repro_results VALUES (?,?,?,?,?,?)",
+        con.execute("INSERT OR REPLACE INTO repro_results "
+                    "(arxiv_id, repo_url, success, stage, attempt, fail_detail) "
+                    "VALUES (?,?,?,?,?,?)",
                     (arxiv_id, repo_url, int(success), stage, attempt, fail_detail))
 
 

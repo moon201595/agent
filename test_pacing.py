@@ -9,6 +9,7 @@ globals() 문자열 조회), server ×2(asyncio). 그중 하나는 문자열 키
 server 를 63% 로 올린 뒤에 착수했다 — **리팩토링은 그물이 먼저다.**
 """
 
+import http_client
 import asyncio
 import threading
 import time
@@ -219,7 +220,7 @@ def test_s2_429_widens_the_server_pacer():
 
         import asyncio
         # 재시도 대기는 0 으로 — 이 테스트가 재는 건 간격이지 백오프가 아니다
-        with mock.patch.object(server, "_rate_limit_wait", new=lambda *a, **k: 0.0):
+        with mock.patch.object(http_client, "rate_limit_wait", new=lambda *a, **k: 0.0):
             resp = asyncio.run(go())
         assert resp.status_code == 200
         assert server._s2_pacer.widened >= 1
