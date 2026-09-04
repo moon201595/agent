@@ -625,11 +625,16 @@ def test_no_broken_arxiv_none_link_anywhere():
         assert "10.1016/j.solener.2026.1" in text
 
 
-def test_title_only_papers_are_listed_not_called_failures():
-    """페이월 뒤 논문은 '처리 실패'가 아니다 — §8-24 와 같은 구분."""
+def test_out_of_rank_papers_are_listed_not_called_failures():
+    """순위 밖 논문은 '처리 실패'가 아니다 — §8-24 와 같은 구분.
+
+    2026-09-04: 절 이름이 "본문 비공개"에서 "그 밖에 걸린 논문"으로 바뀌었다.
+    가르는 기준이 본문 확보 여부에서 관련도 순위로 옮겨갔기 때문이다.
+    **주장("실패라 부르지 않는다")은 그대로다.**
+    """
     scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY]}
     text = digest.generate_digest(scan, "t")
-    assert "본문 비공개" in text
+    assert "그 밖에 걸린 논문" in text
     assert "처리 실패" not in text
     assert "PhyHGNet" in text
     # 논문이 있는데 "없습니다"로 끝나면 안 된다

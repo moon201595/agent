@@ -152,28 +152,34 @@ async def scan_profile(
     seen = _already_summarized([p.get("arxiv_id") for p in merged])
     fresh = [p for p in merged if not p.get("arxiv_id") or p.get("arxiv_id") not in seen]
 
-    # 본문을 받을 수 있는 논문과 제목만 아는 논문을 나눈다(2026-09-03 실측).
+    # **관련도 하나로 줄 세운다**(2026-09-04 개정).
     #
-    # S2 를 붙이자 팀 표적 논문이 실제로 올라왔는데(★★★ 2편), **59편 중
-    # 35편(59%)이 arXiv ID 도 오픈액세스 PDF 도 없었다.** 그런 논문이 상위
-    # 6칸을 차지하면 요약할 수 있는 논문이 밀려난다 — 실제로 그날 6편 중
-    # 5편이 본문 없이 제목만 실려 나갔다.
+    # 2026-09-03 에는 "본문을 받을 수 있나"로 먼저 갈랐다. 그런 논문이 상위
+    # 6칸을 먹고 요약 없이 나가는 걸 막으려던 것이었다. **그런데 그게 더
+    # 나쁜 걸 만들었다** — 09-04 메일 실측:
     #
-    # 그렇다고 버리지는 않는다. "이런 논문이 나왔다"는 것 자체가 정보이고
-    # (기관 구독으로 볼 수 있다), 다이제스트의 원칙이 "발견은 빠르게, 검증은
-    # 필요한 것부터 깊게"다. 다만 **자리를 나눠 준다** — Deep Layer 6칸은
-    # 처리 가능한 논문에만 쓰고, 나머지는 목록으로 따로 보여준다.
-    def _has_text_source(paper: dict) -> bool:
-        return bool(paper.get("arxiv_id") or paper.get("open_access_pdf"))
+    #   상위 6칸(요약 자리) : ★★ 여섯 편, 그중 다섯이 본문 수집 실패
+    #   맨 아래 목록        : ★★★ PhyHGNet, ★★★ 2-D Ambipolar
+    #
+    # **팀 표적 논문 두 편이 메일 맨 아래에 묻혔다.** "본문을 받을 수 있나"를
+    # "우리 분야인가"보다 먼저 놓았기 때문이다. 순서가 거꾸로였다 — 읽는
+    # 사람이 먼저 알아야 할 건 관련도지 우리 수집 사정이 아니다.
+    #
+    # 원래 걱정(본문 없는 논문이 자리만 먹는다)은 §8-41 로 사라졌다. 이제
+    # 본문을 못 받아도 초록으로 정리가 나가므로 그 칸이 비지 않는다.
+    #
+    # 렌더링 깊이만 다르다 — 본문 요약 > 초록 정리 > 제목·링크. 자리는
+    # 관련도가 정하고, 깊이는 확보한 것이 정한다.
+    def _key(paper: dict) -> str:
+        # score_and_rank 는 사본을 돌려주므로(dedupe 가 dict(paper) 를 만든다)
+        # id() 로는 못 맞춘다 — 내용 기준 키가 필요하다.
+        return (paper.get("arxiv_id") or paper.get("doi")
+                or (paper.get("title") or "").strip().lower())
 
-    processable = [p for p in fresh if _has_text_source(p)]
-    title_only = [p for p in fresh if not _has_text_source(p)]
-
-    scored = profile_scoring.score_and_rank(
-        processable, profile, top_k=profile["max_items"],
-    )
+    scored = profile_scoring.score_and_rank(fresh, profile, top_k=profile["max_items"])
+    top_keys = {_key(p) for p in scored["papers"]}
     listed = profile_scoring.score_and_rank(
-        title_only, profile, top_k=TITLE_ONLY_MAX_ITEMS,
+        [p for p in fresh if _key(p) not in top_keys], profile, top_k=TITLE_ONLY_MAX_ITEMS,
     )
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],

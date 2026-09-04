@@ -702,11 +702,16 @@ def test_weekly_review_day_is_computed_from_the_weekday():
     assert rps.is_weekly_review_day(tuesday) is False
 
 
-def test_scan_profile_splits_papers_by_text_availability(tmp_path, monkeypatch):
-    """본문을 못 받는 논문이 Deep Layer 자리를 먹지 않는다 (§8-33).
+def test_scan_profile_ranks_by_relevance_not_text_availability(tmp_path, monkeypatch):
+    """**주장이 뒤집혔다**(2026-09-04). 하루 전 이 테스트는 "본문 확보 여부로
+    가른다"였다 — 본문 없는 논문이 요약 자리를 먹는 걸 막으려던 것이었다.
 
-    2026-09-03 실측: S2 논문 59편 중 35편(59%)이 arXiv ID 도 오픈액세스 PDF 도
-    없었고, 그날 상위 6편 중 5편이 그런 논문이라 요약 없이 나갔다.
+    그런데 09-04 메일 실측에서 그게 더 나쁜 걸 만들었다: ★★★ 팀 표적 논문
+    두 편(PhyHGNet, 2-D Ambipolar)이 ★★ 여섯 편 **아래**에 묻혔다.
+    "본문을 받을 수 있나"를 "우리 분야인가"보다 먼저 놓았기 때문이다.
+
+    원래 걱정은 §8-41(초록 정리)로 사라졌다 — 본문을 못 받아도 칸이 안 빈다.
+    이제 **자리는 관련도가 정하고 깊이만 확보한 것이 정한다.**
     """
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
@@ -738,11 +743,50 @@ def test_scan_profile_splits_papers_by_text_availability(tmp_path, monkeypatch):
     result = asyncio.run(
         rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3))
 
-    # arXiv ID 나 오픈액세스 PDF 가 있는 둘만 Deep Layer 로 간다
+    # 본문 확보 여부와 무관하게 셋 다 상위 목록에 있다(max_items 안이므로)
     got = {p.get("arxiv_id") or p.get("doi") for p in result["papers"]}
-    assert got == {"a1", "10.1/oa"}
-    # 페이월 논문은 버려지지 않고 별도 목록으로 간다
-    assert [p["doi"] for p in result["title_only_papers"]] == ["10.1/paywalled"]
-    assert result["title_only_count"] == 1
-    # 후보 집계는 여전히 전부를 센다
+    assert got == {"a1", "10.1/oa", "10.1/paywalled"}
+    assert result["title_only_papers"] == []     # 순위 밖이 없다
     assert result["candidates_found"] == 3
+
+
+def test_high_relevance_paper_without_text_outranks_low_relevance_with_text(tmp_path, monkeypatch):
+    """핵심 회귀 — 09-04 메일에서 실제로 뒤집혀 있었다.
+
+    ★★★ PhyHGNet(핵심 키워드 2개, 본문 없음)이 ★★ 여섯 편(핵심 키워드 1개,
+    본문 있음) **아래**에 묻혔다. 읽는 사람이 먼저 알아야 할 건 관련도지
+    우리 수집 사정이 아니다.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    pages = {0: [
+        # 본문은 받을 수 있지만 핵심 키워드 하나(+도메인 보너스까지 얹힌다)
+        {"arxiv_id": "weak", "title": "An agent for robot hand control",
+         "abstract": "", "published": published},
+        # 본문이 없지만 핵심 키워드 둘 — 이게 위에 와야 한다
+        {"arxiv_id": None, "doi": "10.1/strong",
+         "title": "A digital twin agent for factory lines",
+         "abstract": "", "published": published},
+    ]}
+    starts_seen = []
+
+    async def fake_throttled(client, params):
+        starts_seen.append(params["start"])
+
+        class FakeResp:
+            text = "<fake/>"
+
+        return FakeResp()
+
+    monkeypatch.setattr(server, "_throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(server, "_parse_arxiv_feed", lambda _x: pages[starts_seen[-1]])
+
+    result = asyncio.run(
+        rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=3))
+
+    top = result["papers"][0]
+    assert (top.get("doi") or top.get("arxiv_id")) == "10.1/strong"
+    assert len(top["_score"]["core_hits"]) > len(result["papers"][1]["_score"]["core_hits"])
