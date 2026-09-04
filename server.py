@@ -326,8 +326,14 @@ def _s2_headers() -> dict[str, str]:
     return {"x-api-key": key} if key else {}
 
 
-async def _with_retry(attempt_fn, what: str) -> httpx.Response:
+async def _with_retry(attempt_fn, what: str, max_wait: float | None = None) -> httpx.Response:
     """①~③ 의 제한 재시도. 상한까지 시도하고 그래도 실패하면 마지막 예외를 올린다.
+
+    max_wait 를 주면 **429 대기 총합**이 그 값을 넘을 때 더 안 기다리고 포기한다.
+    2026-09-04 실측: S2 가 나쁜 날 키워드마다 30+60+120+240=450초를 다 쓰는데,
+    ③ 검색 예산(300초)을 한 키워드가 통째로 넘겨버렸다. 예산은 키워드 사이에서만
+    검사되므로 호출 안쪽에도 상한이 필요하다 — summarize_engine 의
+    ADDENDUM_MAX_WAIT 와 같은 발상이다.
 
     루프가 아니라 예외 처리다. 재시도 여부를 LLM 이 판단하지 않고, 재시도할 대상도
     바꾸지 않는다. 상한을 넘으면 조용히 넘어가지 않고 예외를 올려 호출부가
@@ -338,6 +344,7 @@ async def _with_retry(attempt_fn, what: str) -> httpx.Response:
     last: Exception | None = None
     attempt = 0          # 500·타임아웃 등
     rate_limited = 0     # 429 — 예산을 따로 센다
+    waited_total = 0.0   # max_wait 판정용 누적 대기
     while True:
         try:
             return await attempt_fn()
@@ -349,6 +356,11 @@ async def _with_retry(attempt_fn, what: str) -> httpx.Response:
                 if rate_limited >= RATE_LIMIT_RETRIES:
                     raise
                 wait = _rate_limit_wait(e, rate_limited)
+                if max_wait is not None and waited_total + wait > max_wait:
+                    print(f"  [경고] {what} 429 — 대기 상한({max_wait:.0f}초)을 넘어 "
+                          f"여기서 포기한다", file=sys.stderr)
+                    raise
+                waited_total += wait
                 rate_limited += 1
                 print(f"  [경고] {what} 429 — {wait:.0f}초 대기 후 재시도 "
                       f"({rate_limited}/{RATE_LIMIT_RETRIES})", file=sys.stderr)
@@ -388,6 +400,7 @@ async def _throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx
 
 async def _throttled_s2_get(
     client: httpx.AsyncClient, params: dict, headers: dict, url: str = S2_API,
+    max_wait: float | None = None,
 ) -> httpx.Response:
     """Semantic Scholar 호출 간 최소 간격(S2_MIN_INTERVAL)을 서버 전역에서 강제한다.
     "초당 1회, 전체 엔드포인트 합산" 이 키 등록 여부와 무관하게 적용되는 공식 한도라
@@ -412,7 +425,7 @@ async def _throttled_s2_get(
         resp.raise_for_status()
         return resp
 
-    return await _with_retry(once, "Semantic Scholar")
+    return await _with_retry(once, "Semantic Scholar", max_wait=max_wait)
 
 
 def _parse_arxiv_feed(xml_text: str) -> list[dict]:

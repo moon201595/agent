@@ -12,6 +12,8 @@
 import json
 import sqlite3
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -400,3 +402,48 @@ def test_unpaywall_without_pdf_link_is_none(monkeypatch):
     """오픈액세스 레코드는 있는데 PDF 링크가 없는 경우가 있다."""
     _mock_unpaywall(monkeypatch, {"best_oa_location": {}, "title": "T"})
     assert asyncio_run(server.resolve_unpaywall_pdf("10.1/x")) is None
+
+
+# ---------------------------------------------------------------- 재시도 대기 상한 (2026-09-04)
+
+def test_with_retry_gives_up_when_wait_budget_exceeded(monkeypatch):
+    """429 대기 총합이 상한을 넘으면 더 안 기다린다. 상한이 없으면 한 호출이
+    30+60+120+240=450초를 다 써서 ③ 검색 예산을 통째로 넘긴다(§8-34)."""
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    calls = {"n": 0}
+
+    async def always_429():
+        calls["n"] += 1
+        req = httpx.Request("GET", "http://x")
+        raise httpx.HTTPStatusError(
+            "429", request=req, response=httpx.Response(429, request=req))
+
+    monkeypatch.setattr(server.asyncio, "sleep", fake_sleep)
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(server._with_retry(always_429, "테스트", max_wait=50.0))
+
+    # 30초는 자고, 다음 대기(60초)에서 30+60 > 50 이라 포기한다
+    assert slept == [30.0]
+    assert calls["n"] == 2
+
+
+def test_with_retry_without_cap_keeps_old_behaviour(monkeypatch):
+    """상한을 안 주면 종전대로 예산(RATE_LIMIT_RETRIES)까지 간다."""
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    async def always_429():
+        req = httpx.Request("GET", "http://x")
+        raise httpx.HTTPStatusError(
+            "429", request=req, response=httpx.Response(429, request=req))
+
+    monkeypatch.setattr(server.asyncio, "sleep", fake_sleep)
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(server._with_retry(always_429, "테스트"))
+    assert len(slept) == server.RATE_LIMIT_RETRIES

@@ -99,7 +99,7 @@ class _FakeResp:
 def _stub_s2(monkeypatch, by_keyword):
     calls = []
 
-    async def fake_get(client, params, headers, url=None):
+    async def fake_get(client, params, headers, url=None, max_wait=None):
         calls.append(params["query"])
         if isinstance(by_keyword, Exception):
             raise by_keyword
@@ -129,7 +129,7 @@ def test_one_failing_keyword_does_not_kill_the_rest(monkeypatch):
     """한 키워드가 죽어도 나머지는 살아야 한다(프로필 간 실패 격리와 같은 원칙)."""
     good = {"title": "Good Paper", "publicationDate": "2026-08-30"}
 
-    async def fake_get(client, params, headers, url=None):
+    async def fake_get(client, params, headers, url=None, max_wait=None):
         if params["query"] == "bad":
             raise RuntimeError("S2 죽음")
         return _FakeResp([good])
@@ -188,3 +188,67 @@ def test_scoring_keywords_are_not_reduced():
     p = {"core_topics": ["in-sensor computing", "on-sensor computing"]}
     assert len(s2_delta.keywords_for_s2(p)) == 1
     assert len(p["core_topics"]) == 2  # 프로필은 안 건드린다
+
+
+# ---------------------------------------------------------------- ③ 검색 예산 (2026-09-04)
+#
+# "S2 가 어제도 1시간 반 넘게 검색하던데 너무 오래하는 거 아니야?"
+# Deep Layer 에는 예산이 있는데 검색에는 없었다 — 키워드마다 재시도 사슬
+# 450초가 붙어 6키워드면 최악 45분이다. arXiv 는 30초에 182편을 준다.
+
+def test_budget_stops_searching_and_reports_partial(monkeypatch):
+    clock = {"t": 0.0}
+    asked = []
+
+    async def slow_get(client, params, headers, url=None, max_wait=None):
+        asked.append(params["query"])
+        clock["t"] += 200.0            # 키워드마다 200초씩 먹는다
+        return _FakeResp([{"title": f"T{len(asked)}", "publicationDate": "2026-09-01",
+                           "externalIds": {}}])
+
+    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", slow_get)
+    monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock["t"])
+
+    since = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    got = asyncio.run(s2_delta.find_new_papers_since(
+        None, ["k1", "k2", "k3", "k4"], since, until, budget_s=300.0))
+
+    assert len(asked) == 2                     # 200초 두 번이면 예산 초과
+    assert got["status"] == "partial"          # 조용히 전체인 척하지 않는다
+    assert got["keywords_searched"] == 2
+    assert "2/4" in got["query"]
+    assert len(got["papers"]) == 2             # 거기까지 모은 건 살린다
+
+
+def test_budget_not_reached_stays_done(monkeypatch):
+    """정상인 날(6키워드 1분)에는 전혀 안 걸려야 한다."""
+    async def fast_get(client, params, headers, url=None, max_wait=None):
+        return _FakeResp([{"title": "T", "publicationDate": "2026-09-01", "externalIds": {}}])
+
+    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", fast_get)
+    since = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    got = asyncio.run(s2_delta.find_new_papers_since(None, ["k1", "k2"], since, until))
+    assert got["status"] == "done"
+    assert got["keywords_searched"] == 2
+
+
+def test_remaining_budget_is_passed_as_the_call_wait_cap(monkeypatch):
+    """한 키워드가 예산을 통째로 넘기지 못하게 — 예산은 키워드 사이에서만
+    검사되므로 호출 안쪽에도 상한이 필요하다."""
+    seen = []
+    clock = {"t": 0.0}
+
+    async def capture(client, params, headers, url=None, max_wait=None):
+        seen.append(max_wait)
+        clock["t"] += 100.0
+        return _FakeResp([])
+
+    monkeypatch.setattr(s2_delta.server, "_throttled_s2_get", capture)
+    monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock["t"])
+    since = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 9, 4, tzinfo=timezone.utc)
+    asyncio.run(s2_delta.find_new_papers_since(
+        None, ["k1", "k2"], since, until, budget_s=300.0))
+    assert seen == [300.0, 200.0]              # 남은 예산이 줄어드는 게 그대로 전달된다

@@ -27,6 +27,7 @@ S2 검색은 arXiv 처럼 정확 필드 매칭이 아니라 관련도 매칭이�
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import httpx
@@ -36,6 +37,25 @@ import server
 # 키워드 하나당 받아올 최대 건수. S2 는 offset+limit 이 1000 을 못 넘고,
 # 관련도 순이라 뒤로 갈수록 무관해진다 — 앞쪽만 봐도 충분하다.
 PER_KEYWORD_LIMIT = 100
+
+# ③ 검색에 쓸 벽시계 예산(초). Deep Layer 에는 예산이 있는데
+# (DEEP_LAYER_BUDGET_SECONDS) **검색에는 없었다** — 그래서 S2 가 나쁜 날엔
+# 검색만 45분을 먹었다(§8-34).
+#
+# 실측(2026-09-04): S2 가 사흘째 거의 모든 요청에 429 를 냈고, 키워드마다
+# 재시도 사슬(30+60+120+240 = 450초)이 붙어 6키워드면 최악 45분이다.
+# 실제로 그날 스캔이 16분 넘게 ③ 를 못 빠져나갔고, 09-03 00:44 실행은
+# 종료 기록조차 없다.
+#
+# **이 교환이 애초에 나쁘다.** arXiv 델타는 30초에 182편을 준다. 같은 창에서
+# S2 를 위해 45분을 더 쓰는 건, 얻는 것(수백 편 후보 중 최종 6편에 들지
+# 안 들지 모를 몇 편)에 비해 값이 안 맞는다. 사용자 지적이 정확했다 —
+# "거의 최근 논문 몇 개 뽑는 건데 뭐 이리 오래 걸려".
+#
+# 300초로 잡는다: S2 가 정상인 날 6키워드는 1분이면 끝나므로(실측 09-03:
+# 266편을 1분) 전혀 안 걸리고, 나쁜 날에만 잘린다. 잘려도 arXiv 결과는
+# 그대로라 다이제스트가 빈손이 되지 않는다.
+SEARCH_BUDGET_SECONDS = 300.0
 
 # S2 는 **표적 계층 키워드에만** 쓴다(기본값). 근거:
 #
@@ -83,7 +103,7 @@ def _to_paper(item: dict) -> dict | None:
 
 async def search_keyword_since(
     client: httpx.AsyncClient, keyword: str, since: datetime, until: datetime,
-    limit: int = PER_KEYWORD_LIMIT,
+    limit: int = PER_KEYWORD_LIMIT, max_wait: float | None = None,
 ) -> list[dict] | None:
     """키워드 하나로 창 안의 논문을 받는다.
 
@@ -102,7 +122,8 @@ async def search_keyword_since(
         "limit": min(limit, 100),
     }
     try:
-        resp = await server._throttled_s2_get(client, params, server._s2_headers())
+        resp = await server._throttled_s2_get(client, params, server._s2_headers(),
+                                              max_wait=max_wait)
         items = resp.json().get("data") or []
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
@@ -112,9 +133,9 @@ async def search_keyword_since(
 
 async def find_new_papers_since(
     client: httpx.AsyncClient, keywords: list[str], since: datetime, until: datetime,
-    limit: int = PER_KEYWORD_LIMIT,
+    limit: int = PER_KEYWORD_LIMIT, budget_s: float = SEARCH_BUDGET_SECONDS,
 ) -> dict:
-    """핵심 키워드 전부로 창을 훑어 합친 결과.
+    """핵심 키워드 전부로 창을 훑어 합친 결과. **시간 예산 안에서만.**
 
     arXiv 쪽 find_new_papers_since 와 **모양을 맞춘다** — 호출부가 두 소스를
     같은 방식으로 다룰 수 있어야 한다(status/papers/query).
@@ -122,12 +143,26 @@ async def find_new_papers_since(
     같은 논문이 여러 키워드에서 나오는 건 흔하다. 여기서 1차로 합치고,
     arXiv 결과와의 병합은 호출부가 selection.dedupe 로 한다 — 소스 간 병합
     로직을 두 곳에 두지 않는다.
+
+    예산에 걸리면 **거기까지 모은 것으로** 끝낸다(status="partial").
+    조용히 전체인 척하지 않는다 — 몇 개 키워드까지 봤는지 같이 돌려준다.
     """
     seen: set[str] = set()
     papers: list[dict] = []
     failed = 0
+    started = time.monotonic()
+    searched = 0
     for keyword in keywords:
-        found = await search_keyword_since(client, keyword, since, until, limit)
+        if time.monotonic() - started > budget_s:
+            print(f"  [S2] 시간 예산 {budget_s:.0f}초 초과 — 키워드 "
+                  f"{searched}/{len(keywords)}개까지 보고 멈춘다", flush=True)
+            break
+        searched += 1
+        # 남은 예산을 그대로 이 호출의 대기 상한으로 준다 — 한 키워드가
+        # 예산을 통째로 넘기지 못하게(§8-34).
+        remaining = budget_s - (time.monotonic() - started)
+        found = await search_keyword_since(client, keyword, since, until, limit,
+                                           max_wait=max(remaining, 0.0))
         if found is None:          # 실패 — 결과 0건과 구분한다
             failed += 1
             continue
@@ -141,12 +176,18 @@ async def find_new_papers_since(
 
     # 키워드가 **전부** 실패했으면 "결과 없음"과 구분해야 한다 — 전자는
     # S2 가 죽은 것이고 후자는 정말 새 논문이 없는 것이다.
-    status = "failed" if keywords and failed == len(keywords) else "done"
+    if keywords and failed == len(keywords):
+        status = "failed"
+    elif searched < len(keywords):
+        status = "partial"          # 예산에 걸려 일부만 봤다
+    else:
+        status = "done"
     return {
         "papers": papers,
         "status": status,
-        "query": f"S2 keywords×{len(keywords)} {_window(since, until)}",
+        "query": f"S2 keywords×{searched}/{len(keywords)} {_window(since, until)}",
         "keywords_failed": failed,
+        "keywords_searched": searched,
     }
 
 
