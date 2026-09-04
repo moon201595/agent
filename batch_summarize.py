@@ -77,10 +77,19 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
             # 5편 중 1편은 403, 4편은 PDF 가 아니라 초록·로그인 HTML 이 왔다.
             # 링크가 있다는 것과 받을 수 있다는 건 다르다.
             #
-            # 그래서 DOI 로 Unpaywall 에 한 번 더 묻는다 — 같은 5편으로 재보니
-            # 1편(Scientific Reports)이 nature.com 직링크로 살아났다. 20% 다.
-            # `resolve_unpaywall_pdf` 는 이미 있는데 이 경로에서만 안 쓰이고
-            # 있었다(S2 를 붙일 때 배선을 빠뜨렸다).
+            # 그래서 DOI 로 Unpaywall 에 한 번 더 묻는다. `resolve_unpaywall_pdf`
+            # 는 이미 있는데 이 경로에서만 배선이 빠져 있었다.
+            #
+            # **회수율을 처음에 20% 라고 썼는데 틀렸다(같은 날 정정).** Unpaywall 이
+            # URL 을 *돌려준다*는 것만 확인하고 그 URL 이 실제로 PDF 를 주는지는
+            # 안 봤다 — S2 필드에서 지적한 바로 그 실수를 한 층 위에서 반복한
+            # 것이다. 끝까지 받아보니 nature.com 이 그 직링크에도 HTML 을 준다
+            # (봇 차단). `oa_locations` 도 그 하나뿐이라 다른 경로가 없다.
+            # **실측 회수율은 5편 중 0편.**
+            #
+            # 그래도 남겨 둔다: 실패한 경로에서 무료 호출 하나를 더 쓸 뿐이고,
+            # 저장소(PMC·기관 리포지터리)에 사본이 있는 논문에는 실제로 듣는다.
+            # 다만 "이걸 넣었으니 해결됐다"고 세지 않는다.
             fetched = None
             if doi:
                 try:
@@ -90,7 +99,11 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
                             alt["url"], title or alt.get("title") or "",
                             source_note=f"open-access(unpaywall): {doi}")
                         print(f"  [본문] Unpaywall 로 복구 — {title[:40]}")
-                except Exception:  # noqa: BLE001 — 폴백 실패는 원래 실패로 되돌린다
+                except Exception as alt_err:  # noqa: BLE001 — 원래 실패로 되돌린다
+                    # 왜 실패했는지는 남긴다. 조용히 삼키니 "폴백이 왜 안 걸렸나"를
+                    # 로그만으로는 알 수 없었다(2026-09-04 실측 중 실제로 겪음).
+                    print(f"  [본문] Unpaywall 폴백도 실패({type(alt_err).__name__}) — "
+                          f"초록으로 간다")
                     fetched = None
             if fetched is None:
                 # Unpaywall 로도 안 되면 이 논문은 앞으로도 초록밖에 못 본다.

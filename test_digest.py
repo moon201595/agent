@@ -722,3 +722,21 @@ def test_digest_renders_without_a_narrative():
     text = digest.generate_digest(scan, "t")
     assert "오늘의 흐름" not in text
     assert "키워드별 적중 편수" in text
+
+
+def test_markdown_bold_does_not_leak_into_plain_email():
+    """모델 회전(§8-38-1) 뒤 한 메일 안에서 형식이 섞였다 — flash-latest 는
+    `**굵게**`, flash-lite 는 평문으로 답했다. 받는 쪽에서 지운다."""
+    p = _brief_paper()
+    p["abstract_brief"] = "- **무엇을 하려 했는가** : 결함을 검출한다."
+    entry = digest._paper_entry(1, p)
+    assert "**" not in entry
+    assert "무엇을 하려 했는가 : 결함을 검출한다." in entry
+
+
+def test_markdown_bold_stripped_from_narrative_too():
+    scan = _scan_with_story()
+    scan["narrative"] = ("**결함 검출**은 합성 데이터로 메우는 흐름이다.", [])
+    text = digest.generate_digest(scan, "t")
+    assert "**" not in text
+    assert "결함 검출은 합성 데이터로 메우는 흐름이다." in text
