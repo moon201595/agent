@@ -28,6 +28,7 @@ M2(2026-08-28): M1이 Deep Layer(④⑤⑦)를 붙이면서 이제 논문마다 
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -371,6 +372,57 @@ _REPRO_LABELS_BY_STAGE = {
 }
 
 
+def _verified_kind(arxiv_id: str) -> str:
+    """성공한 재현이 **실제로 무엇을 확인했는지**. 로그를 읽기만 한다.
+
+    2026-09-04 실측 — "재현을 진짜 하냐"는 질문에 성공 3건을 열어봤더니:
+
+      2609.02212  `fudu --help`          → CLI 사용법이 출력됨 (2.6초)
+      2110.15045  `python -c "import models"` → **출력 없음, exit 0** (1.3초)
+      2405.15793  같은 형태
+
+    **이건 "논문 결과가 재현됐다"가 아니다.** 설치가 되고 임포트가 되거나
+    진입점이 응답한다는 뜻이다. 그런데 라벨은 그냥 `[재현 ✓]` 였다 —
+    읽는 사람은 결과가 재현된 줄 안다.
+
+    이 프로젝트가 계속 없애 온 뭉갬과 같은 종류다(§8-23·24·33·41):
+    서로 다른 상태를 한 기호로 덮으면 안 된다. TSPulse 거짓 성공(§5)이
+    바로 이 실패였고, 규칙 7 이 막으려는 것도 정확히 이것이다.
+
+    `docker_runner` 를 고치지 않는다(민감 모듈, 규칙 13) — 이미 로그에
+    `plan.run_cmd` 가 남아 있어서 읽기만 하면 된다.
+    """
+    path = Path(server.REPRO_DIR) / f"{arxiv_id}.log" if hasattr(server, "REPRO_DIR") \
+        else Path("data/repro") / f"{arxiv_id}.log"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    # 로그 파일 앞부분은 평문이다(후보 탐색 로그 등). JSON 은 그 뒤에 붙는다 —
+    # 실측(2609.02212): 통째로 파싱하면 실패해서 라벨이 조용히 뭉뚱그려졌다.
+    data = None
+    for start in (0, raw.find("\n{")):
+        if start < 0:
+            continue
+        try:
+            data = json.loads(raw[start:])
+            break
+        except ValueError:
+            continue
+    if not isinstance(data, dict):
+        return ""
+    for attempt in data.get("log") or []:
+        if not attempt.get("success"):
+            continue
+        run_cmd = ((attempt.get("plan") or {}).get("run_cmd") or "")
+        if "--help" in run_cmd:
+            return "설치·진입점 확인"
+        if run_cmd.startswith("python -c") and "import" in run_cmd:
+            return "설치·임포트 확인"
+        return ""
+    return ""
+
+
 def repro_label(arxiv_id: str) -> str:
     """⑦ 재현 상태 라벨.
 
@@ -401,7 +453,9 @@ def repro_label(arxiv_id: str) -> str:
     if not rows:
         return "[재현 –]"
     if any(r["success"] for r in rows):
-        return "[재현 ✓]"
+        # **무엇을 확인했는지까지 말한다.** 맨 `✓` 는 "결과가 재현됐다"로 읽힌다.
+        kind = _verified_kind(arxiv_id)
+        return f"[재현 ✓ {kind}]" if kind else "[재현 ✓]"
 
     deepest = max(rows, key=lambda r: _STAGE_DEPTH.get(r["stage"], -1))
     stage, detail = deepest["stage"], deepest["fail_detail"]
