@@ -8,6 +8,22 @@
       "Bash(docker run *)",
       "Bash(docker rm *)",
       "Bash(docker rmi *)"
+    ],
+    "allow": [
+      "Bash(.venv/bin/python -m pytest)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python -m coverage report *)",
+      "Bash(.venv/bin/python -m coverage json *)",
+      "mcp__paper-harness__arxiv_search_papers",
+      "mcp__paper-harness__s2_search_papers",
+      "mcp__paper-harness__s2_get_references",
+      "mcp__paper-harness__s2_get_citations",
+      "mcp__paper-harness__get_paper_text",
+      "mcp__paper-harness__get_summary_json",
+      "mcp__paper-harness__list_stored_papers",
+      "mcp__paper-harness__hybrid_search_local_papers",
+      "mcp__paper-harness__dedupe_and_rank_papers",
+      "mcp__paper-harness__verify_summary_numbers"
     ]
   }
 }
