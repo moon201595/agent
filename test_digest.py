@@ -711,7 +711,7 @@ def _scan_with_story(ungrounded=None):
 def test_daily_digest_carries_a_narrative_not_just_counts():
     text = digest.generate_digest(_scan_with_story(), "t")
     assert "결함 검출은 합성 데이터로 메우는 흐름이 뚜렷하다." in text
-    assert "오늘의 흐름" in text
+    assert "오늘의 동향 정리" in text
     # 빈도표는 "동향"이라 부르지 않는다 — 그건 셈이다
     assert "키워드별 적중 편수" in text
 
@@ -719,7 +719,8 @@ def test_daily_digest_carries_a_narrative_not_just_counts():
 def test_narrative_is_labelled_unverified_and_separated_from_counts():
     text = digest.generate_digest(_scan_with_story(), "t")
     assert "검증되지 않았다" in text
-    assert text.index("키워드별 적중 편수") < text.index("오늘의 흐름")
+    # 셈이 먼저, 해석이 나중 — 순서가 뒤집히면 독자가 어디까지가 측정인지 못 가른다
+    assert text.index("키워드별 적중 편수") < text.index("오늘의 동향 정리")
 
 
 def test_narrative_warns_about_invented_numbers():

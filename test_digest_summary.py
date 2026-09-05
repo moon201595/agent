@@ -91,22 +91,45 @@ def _result(papers, **kw):
 
 # ------------------------------------------------------------------ 요약 본문 탑재
 
+# ---------------------------------------------------------------- 2026-09-05 개편
+#
+# 아래 테스트들의 **주장이 뒤집혔다**(규칙 9 에 따라 사유·날짜를 남긴다).
+#
+# 그전에는 논문마다 `한 줄 요약`·`방법 상세`·`실험 설정`·`핵심 결과`·`한계` 를
+# 메일에 다 실었다(§8-38 로 넓힌 것). 논문 하나가 8~24줄이라 6편이면 메일이
+# 100줄을 넘었고, 읽는 사람이 "오늘 뭐가 있었나"를 한눈에 못 봤다.
+#
+# 사용자 지적: "논문별로는 간단하게 뭐하는 논문인지만 써주고, 맨 아래에
+# 전체적인 동향 정리를 해줘야지." 맞는 구조다 — 목록은 **훑는 것**이고
+# 종합은 **읽는 것**인데 둘을 같은 밀도로 쓰면 둘 다 안 읽힌다.
+#
+# **버린 게 아니다.** 저장된 요약 파일에는 그대로 있고(`data/summaries/*.md`),
+# 메일에서만 빠진다. 검증·재현 라벨과 링크도 그대로다.
+#
+# 그래서 이 파일의 주장은 "절이 다 실린다" 에서 **"요지 한 줄이 실린다"** 로
+# 옮긴다. `summary_sections()` 가 절을 정확히 뽑는지는 여전히 테스트한다 —
+# 뽑기는 하되 메일에 안 실을 뿐이고, 그 함수가 깨지면 한 줄 요지도 못 만든다.
+
 def test_text_digest_carries_verified_summary_not_just_title(db_with_summary_path):
-    """핵심 회귀: 메일에 제목만 가고 요약이 안 실리던 문제."""
+    """핵심 회귀: 메일에 **제목만** 가던 문제. 2026-09-05 개편 뒤에도 지켜야 할
+    것은 "제목 말고 내용이 실린다" 이고, 그 내용이 이제 한 줄이라는 것만 다르다.
+
+    절 전체가 실리는지는 `test_digest_carries_method_setup_and_body_results` 가
+    `summary_sections()` 로 계속 지킨다 — 뽑기는 하되 메일에 안 실을 뿐이다.
+    """
     _seed(db_with_summary_path, "p1")
     text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "한 줄 요약 : U-Net 분할과 기하 특징으로 PCB 핀 정렬 불량을 판정한다." in text
-    assert "무엇을·어떻게 :" in text
-    assert "U-Net 분할 뒤 기하 특징을 뽑아 로지스틱 회귀로 판정했다." in text
-    assert "핵심 결과 :" in text
-    assert "0.990의 ROC-AUC" in text
-    assert "한계 :" in text
-    assert "18초" in text
+    assert "U-Net 분할과 기하 특징으로 PCB 핀 정렬 불량을 판정한다." in text
+    assert "[검증 10/10 통과]" in text          # 라벨은 그대로 남는다
+    assert "arxiv.org/abs/p1" in text          # 링크도
 
 
 def test_summary_replaces_abstract_excerpt_when_present(db_with_summary_path):
     _seed(db_with_summary_path, "p1")
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
     assert "초록 발췌" not in text
 
 
@@ -191,7 +214,10 @@ def test_trend_line_reports_counts_over_all_candidates(db_with_summary_path):
 def test_trend_line_absent_when_no_counts(db_with_summary_path):
     """구형 scan_result(집계 없음)에서도 다이제스트가 깨지지 않는다."""
     _seed(db_with_summary_path, "p1")
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
     assert "키워드별 적중 편수" not in text
 
 
@@ -212,14 +238,20 @@ def test_results_section_written_as_paragraph_is_captured(db_with_summary_path):
         "- 공개 데이터셋에서 1.000의 ROC-AUC를 기록했다 [S0168].",
         "④ 결과 : 고정 위치 베이스라인 대비 118.5%의 총 전송률 향상을 보였다.")
     _seed(db_with_summary_path, "p1", markdown=md)
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "핵심 결과 :" in text
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
+    # 절 제목은 이제 메일에 안 나온다 — 요지 한 줄만 실린다
     assert "118.5%의 총 전송률 향상" in text
 
 
 def test_bullet_form_results_still_work(db_with_summary_path):
     _seed(db_with_summary_path, "p1")
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
     assert "0.990의 ROC-AUC" in text
     assert "1.000의 ROC-AUC" in text
 
@@ -254,13 +286,14 @@ def test_digest_carries_method_setup_and_body_results(db_with_summary_path):
     **수치가 들어 있는 본문 `결과` 절(875자)을 통째로 건너뛰고** 결론의
     압축본만 실었다. 받는 사람이 결국 arXiv 를 열어야 했다."""
     _seed(db_with_summary_path, "p1", markdown=RICH_SUMMARY)
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
 
-    assert "방법 상세 :" in text
     assert "ResNet34 백본" in text
-    assert "실험 설정 :" in text
     assert "IoU, F1, ROC-AUC" in text
-    assert "핵심 결과 :" in text
+    # 절 제목은 이제 메일에 안 나온다 — 요지 한 줄만 실린다
     assert "0.990의 ROC-AUC" in text          # 근거 태그가 붙은 실제 수치
     assert "18.0초" in text
 
@@ -269,15 +302,21 @@ def test_body_results_are_preferred_over_the_conclusion_summary(db_with_summary_
     """결론 ④ 는 본문 결과를 한두 줄로 압축한 것이라, 그것만 실으면 메일에서
     수치가 거의 사라진다. 본문 절이 있으면 그쪽을 쓴다."""
     _seed(db_with_summary_path, "p1", markdown=RICH_SUMMARY)
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
     assert "처리 속도는 1장에 평균 18.0초" in text     # 본문에만 있는 문장
 
 
 def test_falls_back_to_conclusion_when_body_results_missing(db_with_summary_path):
     """본문 `결과` 절이 없는 요약도 있다 — 그때는 결론 ④ 로 떨어진다."""
     _seed(db_with_summary_path, "p1", markdown=SUMMARY_MD)   # 본문 결과 절 없음
-    text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "핵심 결과 :" in text
+    sec = digest.summary_sections("p1")
+    text = " ".join(sec.get("results", []) + sec.get("method", [])
+                    + sec.get("setup", []) + sec.get("overview", [])
+                    + [sec.get("one_liner", ""), sec.get("limits", "")])
+    # 절 제목은 이제 메일에 안 나온다 — 요지 한 줄만 실린다
     assert "0.990의 ROC-AUC" in text
 
 
