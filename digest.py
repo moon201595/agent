@@ -617,9 +617,22 @@ def _paper_entry(idx: int, paper: dict) -> str:
         # 초록 발췌로 떨어진다 — "요약 없음"을 빈 요약으로 보여주지 않는다.
         sections = summary_sections(arxiv_id)
         if sections:
+            # 요지 한 줄 → 그 아래 요약본 전체.
+            #
+            # **평문 메일에는 토글이 없다**(2026-09-05). HTML 판은 <details> 로
+            # 접어 두고 펼치면 요약본이 나오지만, 평문은 접을 수가 없다.
+            # 그렇다고 한 줄만 남기면 **HTML 을 차단한 사람만 내용이 없는 메일을
+            # 받는다** — 그건 안 된다. 평문은 길어도 다 싣는다.
             gist = _one_line_gist(paper, sections)
             if gist:
                 lines.append(f"   {_clip(gist, _GIST_CHARS)}")
+            for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
+                               ("실험 설정", "setup"), ("핵심 결과", "results")):
+                if sections.get(key):
+                    lines.append(f"   {label} :")
+                    lines += [f"     - {_plain(b)}" for b in sections[key]]
+            if sections["limits"]:
+                lines.append(f"   한계 : {_plain(sections['limits'])}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
         labels = f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}"
@@ -919,9 +932,8 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     if not sections:
         return para(_html_excerpt(paper))
 
+    # one_liner 는 <summary>(접힌 줄)에 이미 있다 — 여기서 또 쓰면 중복이다.
     out = ""
-    if sections["one_liner"]:
-        out += para(_plain(sections["one_liner"]), top=8)
     for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
                        ("실험 설정", "setup"), ("핵심 결과", "results")):
         if sections.get(key):
@@ -977,11 +989,23 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
             needs_attention = True
 
     open_attr = " open" if needs_attention else ""
+
+    # **텍스트 판과 같은 조건을 쓴다.** `== "ok"` 로 좁혔더니 deep_status 가
+    # 비어 있는 구형 결과에서 평문에는 요약이 실리고 HTML 에는 안 실렸다 —
+    # "HTML 을 차단한 사람만 다른 메일을 받는" 상황의 정반대 버전이다.
+    sections = {} if deep_status == "abstract_only" else summary_sections(arxiv_id)
+    gist = _one_line_gist(paper, sections)
+    gist_html = (f'<div style="color:{_MUTED};font-size:13px;font-weight:400;'
+                 f'margin-top:4px;">{_esc(_clip(gist, _GIST_CHARS))}</div>') if gist else ""
     return (
         f'<details{open_attr} style="background-color:{_PAPER_BG};color:{_INK};'
         f'border:1px solid {_LINE};border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
         f'<summary style="color:{_INK};font-size:15px;font-weight:600;cursor:pointer;">'
-        f'{idx}. [{_stars(score)}] {_esc(title)}</summary>'
+        f'{idx}. [{_stars(score)}] {_esc(title)}'
+        # **접힌 상태에서 보이는 한 줄**(2026-09-05). 제목만으로는 무슨 논문인지
+        # 모르고, 절을 다 펼쳐 두면 목록을 훑을 수가 없다. 제목 + 한 줄이
+        # 목록이고, 펼치면 요약본 전체가 나온다.
+        f'{gist_html}</summary>'
         f'<div style="margin-top:8px;">{chips}</div>'
         f'{detail}'
         f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'
