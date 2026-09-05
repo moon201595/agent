@@ -124,6 +124,10 @@ _SETUP_BULLETS, _SETUP_CHARS = 4, 300
 _RESULT_BULLETS, _RESULT_CHARS = 3, 500
 _LIMIT_CHARS = 350
 
+# 논문 한 편이 메일에서 차지하는 본문 길이(2026-09-05 개편).
+# 목록은 훑는 것이라 한 줄이면 된다 — 종합은 맨 아래 동향 절이 맡는다.
+_GIST_CHARS = 200
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -535,6 +539,42 @@ def paper_link(paper: dict) -> str:
     return paper.get("open_access_pdf") or ""
 
 
+def _one_line_gist(paper: dict, sections: dict) -> str:
+    """"이게 무슨 논문인가" 한 줄. 메일 본문에 논문마다 들어가는 전부다.
+
+    **2026-09-05 개편.** 그전에는 논문마다 `무엇을·어떻게`·`방법 상세`·
+    `실험 설정`·`핵심 결과`·`한계` 를 다 실었다. 논문 하나가 8~24줄이라
+    6편이면 메일이 100줄을 넘었고, **읽는 사람이 "오늘 뭐가 있었나"를
+    한눈에 못 봤다.**
+
+    사용자 지적: "논문별로는 간단하게 뭐하는 논문인지만 써주고, 맨 아래에
+    전체적인 동향 정리를 해줘야지."
+
+    맞는 구조다. 논문 목록은 **훑는 것**이고 종합은 **읽는 것**이다. 둘을
+    같은 밀도로 쓰면 둘 다 안 읽힌다. 자세한 내용은 저장된 요약 파일에
+    그대로 남아 있고 링크로 원문에 간다 — 메일에서 빠질 뿐 사라지지 않는다.
+
+    우선순위: 본문 요약의 한 줄 > 본문 요약의 첫 항목 > 초록 정리의 첫 항목.
+    """
+    if sections.get("one_liner"):
+        return _plain(sections["one_liner"])
+    if sections.get("overview"):
+        return _plain(sections["overview"][0])
+    brief = (paper.get("abstract_brief") or "").strip()
+    for line in brief.splitlines():
+        cleaned = _plain(_BULLET_RE.sub("", line.strip()))
+        if not cleaned:
+            continue
+        # "무엇을 하려 했는가 : ..." 에서 뒤쪽만 쓴다
+        for sep in (" : ", ": ", " — "):
+            if sep in cleaned:
+                cleaned = cleaned.split(sep, 1)[1].strip()
+                break
+        if cleaned:
+            return cleaned
+    return ""
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
@@ -577,15 +617,9 @@ def _paper_entry(idx: int, paper: dict) -> str:
         # 초록 발췌로 떨어진다 — "요약 없음"을 빈 요약으로 보여주지 않는다.
         sections = summary_sections(arxiv_id)
         if sections:
-            if sections["one_liner"]:
-                lines.append(f"   한 줄 요약 : {_plain(sections['one_liner'])}")
-            for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
-                               ("실험 설정", "setup"), ("핵심 결과", "results")):
-                if sections.get(key):
-                    lines.append(f"   {label} :")
-                    lines += [f"     - {_plain(b)}" for b in sections[key]]
-            if sections["limits"]:
-                lines.append(f"   한계 : {_plain(sections['limits'])}")
+            gist = _one_line_gist(paper, sections)
+            if gist:
+                lines.append(f"   {_clip(gist, _GIST_CHARS)}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
         labels = f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}"
@@ -730,7 +764,10 @@ def _narrative_section(scan_result: dict) -> list[str]:
     if not story:
         return []
     text, ungrounded = story
-    lines = ["", "■ 오늘의 흐름 (LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다)"]
+    lines = ["", "─" * 62,
+             "■ 오늘의 동향 정리",
+             "   (LLM 이 위 논문들의 제목·초록만 보고 쓴 것 — 앞의 숫자·라벨과 달리 검증되지 않았다)",
+             ""]
     lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
@@ -1065,7 +1102,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
                     f'{_esc(", ".join(ungrounded))} — 믿지 말 것</div>')
         body += (
             f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'font-weight:600;margin:14px 0 4px;">오늘의 흐름</p>'
+            f'font-weight:600;margin:18px 0 4px;">오늘의 동향 정리</p>'
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'margin:0 0 6px;">LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — '
             f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}'
