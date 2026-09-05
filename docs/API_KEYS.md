@@ -1,83 +1,117 @@
-# API 키 — 어디서 받고, 무엇에 쓰는가
+# API 키 — 무엇을 받아야 하는가
 
-작성 2026-09-05 · paper-harness
+작성 2026-09-05 · paper-harness · **실측 근거 포함**
 
-## 먼저: 지금 막힌 곳은 "검색"이 아니라 "본문 확보"다
+## 결론 먼저
 
-| 단계 | 상태 |
+**"최신 논문 찾기 → 요약 → 동향 보고"까지는 지금 있는 키로 이미 된다.**
+추가로 받을 키는 목적에 따라 갈린다.
+
+| 원하는 것 | 필요한 키 | 상태 |
+|---|---|---|
+| 최신 논문 찾기 | 없음(arXiv 무키) + `S2_API_KEY` | **이미 있음** |
+| 초록 기반 요약 | `GOOGLE_API_KEY` | **이미 있음** |
+| 동향 보고·리뷰 | `GOOGLE_API_KEY` | **이미 있음** |
+| 메일 발송 | `SMTP_USER`/`SMTP_PASSWORD` | **이미 있음** |
+| 하루 요약 편수 늘리기 | `GOOGLE_API_KEY2`, `_3` … | **추가 발급 권장** |
+| **저널 본문**(수치 검증·코드 재현용) | Elsevier·IEEE | **기관 구독 필요** |
+
+---
+
+## 1. 지금 바로 받으면 좋은 것 (무료, 5분)
+
+### 1-1. Gemini 키 추가 — 가장 효과 큼
+
+- **링크:** https://aistudio.google.com/apikey
+- **왜:** 요약이 전부 이 키로 돈다. 무료 한도에 걸리면(429) 그날 요약이 멈춘다.
+  **키 이름을 `GOOGLE_API_KEY2`, `GOOGLE_API_KEY3` 으로 `.env` 에 넣기만 하면
+  코드가 자동으로 회전한다** — 다른 설정 필요 없다.
+- **주의:** 429(키별 한도)에는 회전이 듣지만 503(모델 혼잡)에는 안 듣는다.
+  503 은 이미 `gemini-flash-lite` 로 모델을 바꿔 대응하고 있다.
+
+### 1-2. CORE — 무료, 기대값은 낮음
+
+- **링크:** https://core.ac.uk/services/api → 계정 등록 후 키 발급
+- **왜:** 저자가 자기 홈페이지·기관 저장소에 올린 원문(green OA) 애그리게이터.
+- **기대:** 응용공학은 green OA 가 희박해 소폭. **무료라 붙여볼 값은 있다.**
+
+---
+
+## 2. 이미 쓰고 있는 키
+
+| 용도 | 환경변수 | 발급처 |
+|---|---|---|
+| 요약 생성(주력) | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey |
+| 요약 폴백 | `GROQ_API_KEY` | https://console.groq.com/keys |
+| 저널 검색 | `S2_API_KEY` | https://www.semanticscholar.org/product/api |
+| 초록 보강·철회 확인 | `OPENALEX_API_KEY` (무키도 동작) | https://openalex.org |
+| 오픈액세스 PDF 조회 | `UNPAYWALL_EMAIL` (키 불필요) | https://unpaywall.org/products/api |
+| 메일 발송 | `SMTP_USER` / `SMTP_PASSWORD` | 사내 SMTP 또는 Gmail 앱 비밀번호 |
+
+키가 필요 없는 것: arXiv API, Crossref, Europe PMC.
+
+---
+
+## 3. 저널 본문 — 기관 구독이 있어야 한다 (실측으로 확인)
+
+### 무엇을 재봤나
+
+무료 경로 **여섯 개**를 전부 실측했다. 전멸이다.
+
+| 경로 | 회수율 |
 |---|---|
-| ③ 검색 | **정상.** 후보 435건에서 PhyHGNet·2-D Ambipolar 같은 팀 표적이 실제로 걸린다 |
-| **본문 확보** | **막힘.** 저널 논문 회수율 0% (무료 경로 다섯 개 전부) |
-| ④ 요약 | 본문 있으면 전체 요약, 없으면 초록 정리로 대체 |
-| ⑤ 수치 검증 | **본문 있는 논문만** 가능 — 최근 메일에서 2편만 `[검증 23/23]` |
-| ⑦ 코드 재현 | 본문·저장소 있는 것만 판정 |
+| S2 `openAccessPdf` | 0/5 (링크는 있으나 HTML 반환) |
+| Unpaywall | 0/5 |
+| OpenAlex 오픈액세스 위치 | 1/14 (그마저 출판사 봇 차단) |
+| arXiv preprint 역검색 | 0/14 |
+| Europe PMC | 0/12 |
+| **Elsevier API 키 없이 호출** | **0/7** — 아래 참고 |
 
-검색어를 더 늘리거나 소스를 더 붙여도 이 문제는 안 풀린다.
-**찾은 논문의 본문을 못 받는 것**이 병목이다.
+### Elsevier 를 직접 찔러본 결과
 
----
+Crossref 에 출판사가 등록해둔 TDM 링크가 **8/12편**에 있었다(무료·무키로 조회 가능).
+그 링크를 키 없이 호출했다:
 
-## 1. 이미 쓰고 있는 키 (전부 무료)
+```
+파라미터 없이   → HTTP 200 · 1,866B   (제목·저널·DOI 만. 초록도 본문도 없음)
+view=FULL      → HTTP 401 AUTHENTICATION_ERROR: Invalid API Key
+```
 
-| 용도 | 환경변수 | 발급처 | 비고 |
-|---|---|---|---|
-| ④ 요약 생성 (주력) | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey | Gemini 무료 티어. 키 여러 개면 `GOOGLE_API_KEY2`, `_3` … 로 추가하면 429 때 자동 회전 |
-| ④ 요약 폴백 | `GROQ_API_KEY` | https://console.groq.com/keys | Gemini 가 죽은 날 대체 |
-| ③ 검색 (저널) | `S2_API_KEY` | https://www.semanticscholar.org/product/api#api-key-form | Semantic Scholar. 없어도 동작하나 한도가 빡빡함 |
-| 초록 보강·철회 확인 | `OPENALEX_API_KEY` | https://openalex.org (무키 polite pool 가능) | 사실상 메일 주소만 있으면 됨 |
-| 오픈액세스 PDF 조회 | `UNPAYWALL_EMAIL` | 키 불필요 — 메일 주소만 | https://unpaywall.org/products/api |
-| 메일 발송 | `SMTP_USER` / `SMTP_PASSWORD` | 사내 SMTP 또는 Gmail 앱 비밀번호 | |
+그리고 대상 Elsevier 논문 **7편 전부 `openaccess=0`**(구독 전용)이었다.
+→ **키 + 기관 구독 없이는 본문이 안 온다는 것이 확인됐다.**
 
----
+### 받으려면
 
-## 2. 본문 확보를 위해 **새로 필요한** 키
+| | 링크 | 전제 |
+|---|---|---|
+| **Elsevier** (막힌 논문 5/12) | https://dev.elsevier.com/ | **KETI ScienceDirect 구독 + 기관 IP** |
+| **IEEE** (4/12) | https://developer.ieee.org/ | **KETI IEEE IEL 구독** |
 
-### 2-1. Elsevier — 최우선 (막힌 논문의 5/12)
+대상 저널: Measurement · Solar Energy · Applied Soft Computing ·
+Engineering Applications of AI · Advanced Engineering Informatics · Displays ·
+Journal of Water Process Engineering · IEEE Electron Device Letters ·
+IEEE Instrumentation & Measurement Magazine
 
-- **발급:** https://dev.elsevier.com/ → "I want an API Key" → 자가등록(수 분)
-- **약관:** https://dev.elsevier.com/api_service_agreement.html
-- **쿼터 표:** https://dev.elsevier.com/api_key_settings.html
-- **용도:** ScienceDirect Article (Full-Text) Retrieval API —
-  `https://api.elsevier.com/content/article/doi/{DOI}` 로 본문 XML 수신
-- **대상 저널:** Measurement · Solar Energy · Applied Soft Computing ·
-  Engineering Applications of AI · Advanced Engineering Informatics ·
-  Displays · Journal of Water Process Engineering
-- **전제:** **기관(KETI) ScienceDirect 구독 + 기관 IP 에서 호출.**
-  키만으로는 본문이 안 온다. 원격이면 InstToken 이 필요하다.
+**먼저 할 일:** `docs/LIBRARIAN_REQUEST.md` 를 사서에게 보내 구독 여부를 확인.
+그 답이 나오기 전에는 키를 받아도 소용이 없다(키만으로는 401 이다).
 
-### 2-2. IEEE — 차순위 (막힌 논문의 4/12)
+### 규칙 1 판단이 필요하다
 
-- **발급:** https://developer.ieee.org/
-- **용도:** IEEE Xplore API — 구독(IEL) 있으면 본문, 없으면 메타데이터+초록만
-- **대상:** IEEE Electron Device Letters · IEEE Instrumentation & Measurement
-  Magazine · ICIP 등
-- **전제:** **기관 IEL 구독.**
-
-### 2-3. CORE — 무료, 기대값은 낮음
-
-- **발급:** https://core.ac.uk/services/api (계정 등록 후 키 발급, 무료)
-- **용도:** 저자 자가보관(green OA) 원문 애그리게이터
-- **기대:** 응용공학은 green OA 자체가 희박해 추가 회수는 소폭 예상.
-  **무료라 붙여볼 가치는 있다.**
+CLAUDE.md 규칙 1 은 "유료 API·유료 티어를 도입하지 않으며 해법으로 제안하지도
+않는다" 이다. Elsevier·IEEE 는 **API 자체는 무료**지만 **기관 구독(유료)을 전제**한다.
+새 지출도 결제수단 등록도 없지만 규칙 문언과는 부딪힌다 — **사람이 정할 일이다.**
 
 ---
 
-## 3. 판단이 필요한 지점 (CLAUDE.md 규칙 1)
+## 4. 본문 없이도 되는 것 / 안 되는 것
 
-규칙 1 은 "유료 API·유료 티어·유료 서비스 도입을 절대 하지 않으며,
-**해법으로 제안하지도 않는다**" 이다.
+| 기능 | 본문 필요? |
+|---|---|
+| 논문 찾기·랭킹 | 아니오 |
+| 무슨 논문인지 한 줄 요약 | 아니오(초록으로 충분) |
+| 동향 보고·리뷰 | 아니오 |
+| **수치 검증**(`[검증 27/27 통과]`) | **예** |
+| **코드 재현**(`[재현 …]`) | **예** |
 
-Elsevier·IEEE TDM API 는 **API 자체는 무료**지만 **기관 구독(유료)을 전제**한다.
-새 지출도 결제수단 등록도 없고 KETI 가 이미 내고 있는 구독을 쓰는 것이지만,
-규칙 문언과는 부딪힌다. **사람이 정할 일이다.**
-
-- 규칙을 그대로 두면 → 저널 본문은 포기하고 초록 기반으로 간다(지금 상태).
-- 규칙을 다듬으면 → "새 지출 없이 기관이 이미 보유한 구독을 쓰는 것은 허용"
-  같은 문구로 갈라낼 수 있다. 규칙 4 를 고칠 때와 같은 종류의 결정이다.
-
-## 4. 순서
-
-1. **사서에게 구독 여부 확인** — `docs/LIBRARIAN_REQUEST.md` 를 그대로 보내면 된다.
-2. 구독이 있으면 → 규칙 1 판단 → Elsevier 키 발급 → 막힌 5편으로 회수율 실측.
-3. 병행으로 CORE 키 발급 후 14편 재조회(무료라 규칙 1 무관).
-4. 그래도 안 뚫리는 논문은 본문을 포기하고 초록 + 인용 신호로 간다.
+즉 **구독이 없어도 메일은 정상 동작한다.** 저널 논문에서 검증·재현 라벨이
+비는 것뿐이다.
