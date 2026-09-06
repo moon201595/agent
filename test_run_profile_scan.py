@@ -539,6 +539,99 @@ def test_unsummarized_backlog_still_competes(tmp_path, monkeypatch):
     assert result["already_seen_count"] == 0
 
 
+def _ranked(*specs):
+    """(id, priority, core_hits) 로 순위 목록을 만든다."""
+    return [{"arxiv_id": a, "title": a,
+             "_score": {"priority": pr, "core_hits": list(hits)}}
+            for a, pr, hits in specs]
+
+
+def test_one_keyword_cannot_take_every_slot():
+    """**실측 회귀**(2026-09-06). 채점을 고쳐 상위 6칸을 전부 본문 확보된 ★★
+    논문으로 만들었더니, 그 6편이 **전부 같은 키워드**('defect detection')였다.
+    한 키워드가 한 창에 26편을 데려오기 때문이다. 매일 한 주제만 담긴 메일은
+    "이 분야가 어디로 가는가"를 못 말한다."""
+    ranked = _ranked(*[(f"d{i}", 0.98 - i * 0.001, ["defect detection"]) for i in range(8)],
+                     *[(f"r{i}", 0.70 - i * 0.001, ["robot learning"]) for i in range(3)])
+    out = rps._spread_keywords(ranked, max_items=6)[:6]
+    kinds = [p["_score"]["core_hits"][0] for p in out]
+    assert kinds.count("defect detection") == 3        # 절반까지만
+    assert kinds.count("robot learning") == 3
+
+
+def test_spread_invents_no_diversity_that_is_not_there():
+    """다른 키워드가 없으면 상한을 넘겨서라도 채운다 — 없는 다양성을
+    지어내려고 자리를 비우지 않는다."""
+    ranked = _ranked(*[(f"d{i}", 0.9 - i * 0.01, ["defect detection"]) for i in range(6)])
+    out = rps._spread_keywords(ranked, max_items=6)
+    assert [p["arxiv_id"] for p in out] == [f"d{i}" for i in range(6)]
+
+
+def test_spread_keeps_relative_order_within_a_keyword():
+    """뒤로 미룬 논문끼리의 순서는 그대로다 — 순위를 다시 매기지 않는다."""
+    ranked = _ranked(*[(f"d{i}", 0.9 - i * 0.01, ["defect detection"]) for i in range(5)],
+                     ("r0", 0.5, ["robot learning"]))
+    out = rps._spread_keywords(ranked, max_items=4)
+    assert [p["arxiv_id"] for p in out] == ["d0", "d1", "r0", "d2", "d3", "d4"]
+
+
+def _journal_paper(doi, title="A journal paper"):
+    """S2 경유 저널 논문 — arxiv_id 가 **없다**(실측 2026-09-06: 후보 478편 중 222편)."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"arxiv_id": None, "doi": doi, "title": title,
+            "abstract": "an agent", "published": ts}
+
+
+def test_journal_paper_shown_yesterday_is_dropped_today(tmp_path, monkeypatch):
+    """**래칫 회귀 테스트**(2026-09-06). 저널 논문은 본문을 못 받아 요약이
+    저장되지 않는다. `_already_summarized` 는 summaries 를 보므로 그런 논문을
+    영원히 못 거른다 — 실측으로 09-04 미리보기와 09-06 메일의 상위 3편이
+    같았다(PhyHGNet · 2-D Ambipolar · Beech Sawn Timber).
+
+    이 테스트가 지키는 것: **어제 내용 자리로 나간 논문은 오늘 후보가 아니다**,
+    arxiv_id 가 있든 없든.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])          # 요약은 하나도 없다
+    j1 = _journal_paper("10.1016/j.solener.2026.114822", "An agent journal one")
+    j2 = _journal_paper("10.1109/LED.2026.3714911", "An agent journal two")
+    _mock_arxiv_pages(monkeypatch, [j1, j2])
+
+    async def scan():
+        return await rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=2)
+
+    first = asyncio.run(scan())
+    assert len(first["papers"]) == 2                  # 첫날은 둘 다 나간다
+
+    rp.mark_shown(db_path, "team_ai", [j1])
+
+    second = asyncio.run(scan())
+    titles = [p["title"] for p in second["papers"]]
+    assert titles == ["An agent journal two"]         # 내보낸 쪽만 빠진다
+
+
+def test_scan_and_digest_records_only_the_content_slots(tmp_path, monkeypatch):
+    """제목만 실린 논문은 소비하지 않는다 — 내일 본문이 열리면 제대로 실릴
+    자격이 있다. 소비하면 그 기회를 뺏는다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    shown = _journal_paper("10.1/shown", "An agent shown")
+    footnote = _journal_paper("10.1/footnote", "An agent footnote")
+
+    rp.mark_shown(db_path, "team_ai", [shown])
+    keys = rp.already_shown(db_path, "team_ai")
+    assert rp.paper_key(shown) in keys
+    assert rp.paper_key(footnote) not in keys
+
+
+def test_paper_key_falls_back_doi_then_title():
+    """arxiv_id → doi → 정규화 제목. 저널 논문에 안정된 신원을 준다."""
+    assert rp.paper_key({"arxiv_id": "2609.01"}) == "2609.01"
+    assert rp.paper_key({"doi": "10.1/A"}) == "doi:10.1/a"
+    assert rp.paper_key({"title": " Deep  Nets "}) == "title:deep nets"
+
+
 def test_digest_reports_already_seen_count(tmp_path, monkeypatch):
     """후보 수가 왜 줄었는지 메일에서 설명이 돼야 한다."""
     import digest

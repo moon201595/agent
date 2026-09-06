@@ -121,6 +121,16 @@ def init_db(db_path: Path) -> None:
         run_cols = {row[1] for row in con.execute("PRAGMA table_info(search_runs)")}
         if "topic_signature" not in run_cols:
             con.execute("ALTER TABLE search_runs ADD COLUMN topic_signature TEXT")
+        # 2026-09-06: 다이제스트에 **내용 자리로** 실린 논문을 기록한다.
+        # 왜 필요한지는 mark_shown() 의 주석에 있다.
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS profile_shown ("
+            " profile_id TEXT NOT NULL,"
+            " paper_key  TEXT NOT NULL,"
+            " title      TEXT,"
+            " shown_at   TEXT NOT NULL,"
+            " PRIMARY KEY (profile_id, paper_key))"
+        )
 
 
 def _now() -> str:
@@ -208,6 +218,65 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
         "exclude": by_kind["exclude"], "venues": [v["venue"] for v in venue_rows],
         "core_weights": core_weights,
     }
+
+
+def paper_key(paper: dict) -> str:
+    """논문 한 편을 프로필 안에서 식별하는 키.
+
+    arxiv_id 를 못 쓰는 이유: S2 경유 저널 논문은 arxiv_id 가 **없다**
+    (실측 2026-09-06: 후보 478편 중 222편). DOI → 정규화 제목 순으로 내려간다.
+    """
+    aid = (paper.get("arxiv_id") or "").strip()
+    if aid:
+        return aid
+    doi = (paper.get("doi") or "").strip().lower()
+    if doi:
+        return f"doi:{doi}"
+    return "title:" + " ".join((paper.get("title") or "").lower().split())
+
+
+def mark_shown(db_path: Path, profile_id: str, papers: list[dict]) -> None:
+    """이 논문들을 "이미 내보냈다"로 기록한다.
+
+    **왜 필요한가**(2026-09-06). 중복 발송을 막는 필터가 하나뿐이었고
+    (`run_profile_scan._already_summarized`) 그건 `summaries` 테이블을 본다.
+    그런데 저널 논문은 본문을 못 받아 요약이 저장되지 않는다 — 초록만
+    정리한 갈래는 `_abstract_only_outcome` 이 `arxiv_id: ""` 를 돌려주므로
+    **아무 기록도 남지 않는다.** 그래서:
+
+      · arXiv 논문은 요약되면서 소비돼 다음 날 후보에서 빠지고
+      · 저널 논문은 영원히 소비되지 않아 **매일 같은 순위로 다시 나간다**
+
+    실측: 09-04 미리보기와 09-06 실제 메일의 **상위 3편이 동일**했다
+    (PhyHGNet · 2-D Ambipolar · Beech Sawn Timber). 게다가 매일 같은 초록을
+    Gemini 로 다시 정리하고 있었다 — 무료 한도를 그대로 태우는 낭비다.
+
+    `_already_summarized` 의 원래 설계 의도는 "상위권이 소비되면서 뒤가
+    올라온다"였다(그 docstring). 저널 논문에는 소비될 길이 없었던 것이고,
+    여기서 그 길을 만든다.
+
+    **제목만 실린 논문은 기록하지 않는다.** 그건 각주고, 내일 본문이
+    열리면 제대로 실릴 자격이 있다 — 소비하면 그 기회를 뺏는다.
+    """
+    if not papers:
+        return
+    init_db(db_path)
+    now = _now()
+    with sqlite3.connect(db_path) as con:
+        con.executemany(
+            "INSERT INTO profile_shown (profile_id, paper_key, title, shown_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(profile_id, paper_key) DO NOTHING",
+            [(profile_id, paper_key(p), (p.get("title") or "")[:300], now)
+             for p in papers],
+        )
+
+
+def already_shown(db_path: Path, profile_id: str) -> set[str]:
+    """이 프로필이 이미 내보낸 논문 키들."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        return {r[0] for r in con.execute(
+            "SELECT paper_key FROM profile_shown WHERE profile_id=?", (profile_id,))}
 
 
 def add_recipient(db_path: Path, profile_id: str, email: str, active: bool = True) -> None:

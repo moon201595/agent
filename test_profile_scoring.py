@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from profile_scoring import Weights, recency_score, score_and_rank, score_paper
 
 PROFILE = {
@@ -288,11 +290,136 @@ def test_domain_bonus_must_not_cancel_the_tier_gap():
            score_paper(trend_with_domain, profile)["priority"]
 
 
+def test_one_target_hit_beats_two_trend_hits():
+    """**실측 회귀**(2026-09-06). 별점은 계층(최댓값)을 보는데 순위는 합을
+    봐서, 동향어 두 개(0.6+0.6=1.2)가 표적어 하나(1.0)를 이겼다. 그 결과
+    상위 6칸이 전부 ★ 이 되고 팀 표적 분야가 메일에서 사라졌다.
+
+    순위와 별점이 같은 것을 봐야 한다 — 안 그러면 "★★ 인데 8위"가 생긴다.
+    """
+    profile = {"core_topics": ["defect detection", "robot learning",
+                               "vision-language-action"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "robot learning": 0.6,
+                                "vision-language-action": 0.6}}
+    target = _paper_with("a defect detection method")
+    two_trends = _paper_with("robot learning with a vision-language-action policy")
+
+    assert score_paper(target, profile)["priority"] > \
+           score_paper(two_trends, profile)["priority"]
+
+
+def test_breadth_still_separates_within_a_tier():
+    """계층이 이겨야 한다고 폭을 죽이면 안 된다 — 같은 계층 안에서는
+    두 개념을 다룬 논문이 하나만 다룬 논문보다 위다."""
+    profile = {"core_topics": ["robot learning", "vision-language-action"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"robot learning": 0.6, "vision-language-action": 0.6}}
+    one = _paper_with("robot learning from demonstrations")
+    two = _paper_with("robot learning with a vision-language-action policy")
+
+    assert score_paper(two, profile)["priority"] > score_paper(one, profile)["priority"]
+
+
+def test_full_text_only_breaks_ties_never_crosses_tiers():
+    """**실측 회귀**(2026-09-06). 핵심 키워드 하나가 한 창에 26편을 데려오면
+    그 26편의 relevance 가 **글자 그대로 같다**(후보 478편 실측: 상위 10편이
+    전부 0.933). 관련도로는 더 못 가르므로 동점 가르개가 필요하다.
+
+    그런데 §8-44 의 교훈 — 본문 확보 여부로 **먼저 가르면** 팀 표적 논문이
+    메일 맨 아래에 묻힌다 — 을 어기면 안 된다. 그래서 이 신호는 관련도가
+    같을 때만 움직여야 한다. 이 테스트가 그 경계를 지킨다.
+    """
+    profile = {"core_topics": ["defect detection", "robot learning"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "robot learning": 0.6}}
+    same = "a defect detection method"
+    with_text = score_paper({**_paper_with(same), "arxiv_id": "2609.1"}, profile)
+    without = score_paper({**_paper_with(same), "arxiv_id": None}, profile)
+    assert with_text["priority"] > without["priority"]        # 동점은 가른다
+
+    # 계층은 못 넘는다 — 본문 있는 동향어 논문이 본문 없는 표적어 논문을 못 이긴다.
+    trend_with_text = score_paper(
+        {**_paper_with("robot learning from demonstrations"), "arxiv_id": "2609.2"}, profile)
+    assert trend_with_text["priority"] < without["priority"]
+
+
+def test_full_text_is_smaller_than_the_domain_bonus():
+    """우리 도메인 낱말이 걸린 저널 논문은 본문 있는 arXiv 논문을 이겨야 한다 —
+    관련도 신호가 수집 사정보다 위라는 순서를 산수로 못박는다."""
+    w = Weights()
+    assert w.full_text < w.domain_hit
+    assert w.full_text > w.recency * (1 - 0.5 ** (7 / w.recency_half_life_days))
+
+
 def test_domain_weight_is_strictly_below_the_tier_gap():
     """산수로 못박는다 — 파라미터를 손대도 이 관계가 깨지면 안 된다."""
     w = Weights()
-    tier_gap = (1.0 - 0.6) / profile_scoring.CORE_WEIGHT_FOR_FULL_SCORE
+    # 격차 = "표적어 1개"(1.0×BASE) − "동향어 2개"(0.6×1.0). 산식이 바뀌었으므로
+    # 상수가 아니라 **실제 점수 두 개의 차이**로 잰다 — 그래야 다음에 산식을
+    # 손대도 이 관계가 자동으로 다시 검사된다.
+    profile = {"core_topics": ["defect detection", "robot learning",
+                               "vision-language-action"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0, "robot learning": 0.6,
+                                "vision-language-action": 0.6}}
+    hi = score_paper(_paper_with("a defect detection method"), profile)
+    lo = score_paper(_paper_with("robot learning with a vision-language-action policy"),
+                     profile)
+    tier_gap = hi["priority"] - lo["priority"]
+    assert tier_gap == pytest.approx(0.2, abs=1e-6)   # 옛 공식의 격차와 같다
     assert w.domain_hit < tier_gap
+
+
+def test_containing_keyword_absorbs_the_shorter_one():
+    """**실측 회귀**(2026-09-06). core_topics 에 'defect detection' 과
+    'micro defect detection' 이 둘 다 있으면, 논문이 "micro defect detection"
+    한 번만 써도 적중이 2개가 되어 relevance 가 0.5 → 1.0 으로 뛴다.
+
+    그 차이(+0.500)는 계층 차이(+0.200)나 도메인 가점(+0.200)보다 크고,
+    7일 창에서 최신성이 낼 수 있는 최대 차이(+0.022)의 23배다. 실제로
+    2026-09-06 메일의 1위(PhyHGNet, priority 1.133 ★★★)가 이것이었다.
+    """
+    profile = {"core_topics": ["defect detection", "micro defect detection"],
+               "core_weights": {"defect detection": 1.0, "micro defect detection": 1.0}}
+    paper = {"title": "Physics guided micro defect detection in PV imaging", "abstract": ""}
+    hits, total, top = profile_scoring.core_hits_with_weight(paper, profile)
+    assert hits == ["micro defect detection"]     # 긴 쪽만 남는다
+    assert total == 1.0                            # 2.0 이 아니다
+
+    # **공식이 아니라 관계를 못박는다** — 한 문구만 쓴 논문이 진짜로 두 개념을
+    # 다룬 논문과 같은 점수를 받으면 안 된다. 산식이 바뀌어도 이건 유지돼야 한다.
+    two = {"core_topics": ["defect detection", "surface inspection"],
+           "core_weights": {"defect detection": 1.0, "surface inspection": 1.0}}
+    genuine = {"title": "surface inspection with defect detection", "abstract": ""}
+    assert (profile_scoring.score_paper(paper, profile)["priority"]
+            < profile_scoring.score_paper(genuine, two)["priority"])
+
+
+def test_genuinely_distinct_concepts_still_count_twice():
+    """흡수는 **포함관계일 때만**이다. 서로 다른 개념 둘은 그대로 2적중이고,
+    그건 부풀림이 아니라 진짜 신호다 — 이걸 같이 죽이면 고친 게 아니다."""
+    profile = {"core_topics": ["in-sensor computing", "neuromorphic"],
+               "core_weights": {"in-sensor computing": 1.0, "neuromorphic": 0.6}}
+    paper = {"title": "Optoelectronic memories for in-sensor computing",
+             "abstract": "a neuromorphic vision device"}
+    hits, total, top = profile_scoring.core_hits_with_weight(paper, profile)
+    assert set(hits) == {"in-sensor computing", "neuromorphic"}
+    assert total == 1.6
+    assert top == 1.0
+
+
+def test_absorption_keeps_the_heavier_weight_when_tiers_differ():
+    """긴 쪽이 가벼워도 흡수는 문자열 포함관계로 판정한다 — 그래야
+    "같은 문구를 두 번 세지 않는다"는 규칙이 가중치 설정과 무관하게 성립한다.
+    """
+    profile = {"core_topics": ["defect detection", "few-shot defect detection"],
+               "core_weights": {"defect detection": 1.0,
+                                "few-shot defect detection": 0.6}}
+    paper = {"title": "A few-shot defect detection benchmark", "abstract": ""}
+    hits, total, _ = profile_scoring.core_hits_with_weight(paper, profile)
+    assert hits == ["few-shot defect detection"]
+    assert total == 0.6
 
 
 def test_top_core_weight_distinguishes_target_from_multiple_trend_hits():

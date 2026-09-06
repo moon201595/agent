@@ -108,6 +108,36 @@ def venue_hit(paper: dict, profile_venues: list[str]) -> bool | None:
 # 기본값이 되는 세계에서는 **어떤 1개인지**가 유일하게 남은 정보다.
 CORE_WEIGHT_FOR_FULL_SCORE = 2.0
 
+# ── 2026-09-06: 순위도 별점과 같은 것을 본다
+#
+# 위 상한(가중치 **합** 2.0)에는 구멍이 있었다. 합으로 재면 **동향어 두 개
+# (0.6+0.6=1.2)가 표적어 하나(1.0)를 이긴다.** digest._stars 는 이미 이걸
+# 알고 있어서 별점만은 최댓값(top_core_weight)으로 매기는데, 순위는 여전히
+# 합이 정했다 — 같은 질문에 두 자가 서로 다른 답을 하고 있었다.
+#
+# 실측(2026-09-06, 후보 478편). 포함관계 이중계수를 고치자 이 결함이 그대로
+# 드러났다. 상위 6칸이 **전부 ★** 이 됐다 — 로보틱스 VLA 논문들이 동향어를
+# 두 개씩 맞혀 0.72~0.74 를 받고, 표적어 defect detection 논문(0.637)이
+# 8위로 밀렸다. 팀 표적 분야가 메일에서 통째로 사라진 것이다.
+# (2026-08-31 에 도메인 가점을 0.4→0.1 로 낮춘 것도 같은 증상이었다:
+#  "표적어인 defect detection 논문이 동향어 논문보다 아래에 있었다".
+#  그때는 도메인 가점이 범인이었고, 이번엔 합 자체가 범인이다.)
+#
+# 그래서 relevance 를 **계층(최댓값) × 폭(2적중이냐)** 으로 나눈다:
+#
+#     relevance = top_core_weight × (BASE + (1-BASE) × min(적중수-1, 1))
+#
+#   표적어 1개  1.00 × 0.8 = 0.80      동향어 1개  0.60 × 0.8 = 0.48
+#   표적어 2개  1.00 × 1.0 = 1.00      동향어 2개  0.60 × 1.0 = 0.60
+#
+# BASE=0.8 은 임의값이 아니다. "표적어 1개"와 "동향어 2개"의 격차가
+# 0.80-0.60 = **0.20** 이 되도록 고른 값이고, 이건 옛 공식의 계층 격차
+# (1.0-0.6)/2.0 = 0.20 과 정확히 같다 — 그래서 그 격차 위에 세워진
+# _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP(0.1)이 손대지 않고 그대로 유효하다.
+#
+# 폭을 2에서 자르는 것은 옛 상한과 같다. 3개 맞혀도 2개와 같게 본다.
+_BREADTH_BASE = 0.8
+
 # 도메인 가점은 몇 건까지만 센다. 상한이 없으면 도메인 낱말을 여럿 스치는 논문이
 # 핵심 적중 없이도 위로 올라온다(핵심 상한과 같은 이유).
 DOMAIN_HITS_CAP = 2
@@ -164,14 +194,63 @@ def _passes_polysemy_guard(keyword: str, text: str) -> bool:
 # 계층을 뛰어넘는 신호가 아니다.
 _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP = 0.1
 
+# ── 본문 확보 가능성 (2026-09-06)
+#
+# **왜 필요한가.** 위 두 고침(포함관계 흡수 · 계층 우선)을 적용하고 후보
+# 478편을 다시 줄 세우니 상위 10편이 **전부 정확히 0.933 동점**이었다.
+# 핵심 키워드 하나('defect detection')가 한 창에 26편을 데려오는데, 그
+# 26편은 relevance 가 글자 그대로 같은 값이라 관련도로는 더 못 가른다.
+# 그 26편의 94%가 저널이라 메일이 저널 벽이 된다.
+#
+# 동점을 가를 신호가 필요하고, 공짜이면서 **위조 불가능하게 판정되는**
+# 것은 하나다 — 본문을 받을 수 있나(arXiv ID 또는 오픈액세스 PDF 링크).
+# 이건 그 논문으로 ④요약·⑤검증·⑦재현이 돌 수 있느냐와 같은 말이고,
+# 읽는 사람이 받는 것의 깊이를 직접 정한다.
+#
+# **§8-44 의 교훈을 어기지 않는다.** 그때 실패한 건 본문 확보 여부로
+# **먼저 갈라버린 것**이었다("읽는 사람이 먼저 알아야 할 건 관련도지 우리
+# 수집 사정이 아니다"). 여기서는 갈래가 아니라 **동점 가르개**다 — 계층
+# 격차(0.2)의 1/4 이라 관련도가 다르면 절대 못 뒤집고, 관련도가 같을 때만
+# 움직인다. 도메인 가점(0.1)보다도 작다: 우리 도메인 낱말이 걸린 저널
+# 논문은 여전히 본문 있는 arXiv 논문을 이긴다.
+#
+# 창 안에서 최신성이 낼 수 있는 최대 차이(0.022)보다는 크게 잡는다 —
+# 안 그러면 사흘의 나이 차가 이 신호를 덮어 아무것도 안 가른다.
+_FULL_TEXT_MUST_BE_A_TIEBREAKER_ONLY = 0.05
+
 
 @dataclass
 class Weights:
     core_topic: float = 1.0     # relevance(0~1)에 곱함
     domain_hit: float = _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP
+    full_text: float = _FULL_TEXT_MUST_BE_A_TIEBREAKER_ONLY
     venue_hit: float = 0.3      # venue 매칭 시 고정 가점
     recency: float = 0.15       # recency_score(0~1)에 곱함
     recency_half_life_days: float = 30.0
+
+
+def has_full_text_route(paper: dict) -> bool:
+    """본문을 받을 길이 있나 — arXiv ID 또는 오픈액세스 PDF 링크.
+
+    `pdf-<해시>` 는 사람이 직접 올린 파일의 합성 ID 라 검색 후보에는 안
+    나오지만, 나와도 본문이 이미 있다는 뜻이므로 True 가 맞다.
+    """
+    return bool((paper.get("arxiv_id") or "").strip()
+                or (paper.get("open_access_pdf") or "").strip())
+
+
+def _drop_subsumed(hits: list[str]) -> list[str]:
+    """긴 적중에 그대로 들어 있는 짧은 적중을 뺀다.
+
+    'micro defect detection' 이 걸렸으면 'defect detection' 은 같은 문구를
+    다시 센 것이다. 순서는 유지한다 — 호출부가 "왜 걸렸나" 줄을 이 순서로
+    찍는다. 흡수 판정은 **키워드 문자열끼리** 본다(본문이 아니라). 짧은 쪽이
+    본문의 **다른 자리에도** 따로 나왔을 수는 있지만, 그걸 구분하려면
+    매칭 위치를 추적해야 하고 그 복잡도가 얻는 것보다 크다 — 그리고 안전한
+    쪽으로 틀린다(점수를 부풀리지 않는 쪽).
+    """
+    return [h for h in hits
+            if not any(h != o and _keyword_pattern(h).search(o) for o in hits)]
 
 
 def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float, float]:
@@ -183,19 +262,30 @@ def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float,
 
     점수 계산과 분리해 둔 이유: 다이제스트의 동향 집계(어떤 키워드가 이번
     창에서 몇 편 걸렸나)가 순위와 무관하게 같은 판정을 써야 하기 때문이다.
+
+    **한 문구가 두 키워드에 걸리면 한 번만 센다**(2026-09-06). core_topics
+    안에 포함관계가 있으면 — 실제로 'defect detection' ⊂ 'micro defect
+    detection' — 논문이 "micro defect detection" 한 번만 써도 적중이 2개가
+    된다. 개념은 하나인데 적중은 둘이고, 그 차이가 총점에서 **+0.500** 이다
+    (relevance 0.5 → 1.0). 계층 차이(+0.200)나 도메인 가점(+0.200)보다 크고,
+    7일 창 안에서 최신성이 낼 수 있는 최대 차이(+0.022)의 23배다.
+
+    실측(2026-09-06, 후보 478편): 2적중 이상 13편 중 1편이 이 부풀림이었고,
+    그 1편이 **랭킹 1위**였다(PhyHGNet, priority 1.133 ★★★). 저장된 논문
+    108편에서는 0건이라 안 보였는데 — 복합어를 쓰는 쪽이 본문을 못 받는
+    저널이라 애초에 저장 테이블에 안 들어오기 때문이다.
+
+    trend_report._subsumed 가 'large language' 를 'large language models' 에
+    흡수시키는 것과 **같은 규칙**이다. 같은 판정을 두 곳에서 다르게 하고
+    있었다.
     """
     text = _paper_text(paper)
     weights = profile.get("core_weights") or {}
-    hits, total, top = [], 0.0, 0.0
-    for kw in profile.get("core_topics", []):
-        if not _keyword_pattern(kw).search(text):
-            continue
-        if not _passes_polysemy_guard(kw, text):
-            continue
-        w = float(weights.get(kw, 1.0))
-        hits.append(kw)
-        total += w
-        top = max(top, w)
+    matched = [kw for kw in profile.get("core_topics", [])
+               if _keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)]
+    hits = _drop_subsumed(matched)
+    total = sum(float(weights.get(kw, 1.0)) for kw in hits)
+    top = max((float(weights.get(kw, 1.0)) for kw in hits), default=0.0)
     return hits, total, top
 
 
@@ -211,7 +301,8 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     if exclude_hits:
         return {"priority": 0.0, "excluded": True, "exclude_hits": exclude_hits,
                 "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
-                "domain_hits": [], "venue_hit": None, "recency": None}
+                "domain_hits": [], "venue_hit": None, "recency": None,
+                "full_text": has_full_text_route(paper)}
 
     core_topics = profile.get("core_topics", [])
     core_hits, core_weight, top_core_weight = core_hits_with_weight(paper, profile)
@@ -222,16 +313,21 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         # 걸러졌다"를 구분할 수 있게 excluded=False로 둔다).
         return {"priority": 0.0, "excluded": False, "exclude_hits": [],
                 "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
-                "domain_hits": [], "venue_hit": None, "recency": None}
+                "domain_hits": [], "venue_hit": None, "recency": None,
+                "full_text": has_full_text_route(paper)}
 
     domain_hits = _find_hits(text, profile.get("target_domain", []))
+    full_text = has_full_text_route(paper)
     v_hit = venue_hit(paper, profile.get("venues", []))
     recency = recency_score(paper.get("published"), weights.recency_half_life_days)
 
-    relevance = (min(core_weight, CORE_WEIGHT_FOR_FULL_SCORE) / CORE_WEIGHT_FOR_FULL_SCORE
+    relevance = (top_core_weight * (_BREADTH_BASE
+                                    + (1.0 - _BREADTH_BASE) * min(len(core_hits) - 1, 1))
                  if core_topics else 0.0)
     priority = relevance * weights.core_topic
     priority += min(len(domain_hits), DOMAIN_HITS_CAP) * weights.domain_hit
+    if full_text:
+        priority += weights.full_text
     if v_hit:
         priority += weights.venue_hit
     if recency is not None:
@@ -248,7 +344,7 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         "exclude_hits": [], "core_hits": core_hits,
         "core_weight": round(core_weight, 4),
         "top_core_weight": round(top_core_weight, 4), "domain_hits": domain_hits,
-        "venue_hit": v_hit, "recency": recency,
+        "venue_hit": v_hit, "recency": recency, "full_text": full_text,
     }
 
 
