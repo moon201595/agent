@@ -124,17 +124,38 @@ def _key(paper: dict) -> str:
 
 # 한 키워드가 상위 목록에서 차지할 수 있는 자리의 상한 비율.
 # max_items=6 이면 3칸 — 절반이다.
+#
+# **이 숫자는 근거 없는 초기값이다**(2026-09-06 지적을 받고 명시한다).
+# 이 파일과 profile_scoring 의 다른 상수들은 전부 실측이나 역산 근거를 갖는다 —
+# `_BREADTH_BASE=0.8` 은 옛 계층 격차 0.20 을 재현하도록 역산했고,
+# `DOMAIN_HITS_CAP`·최신성 반감기는 실측 분포에서 나왔다. 0.5 는 "절반이니까"
+# 외에 근거가 없다. §8-62 에 종결 조건을 적어 뒀다: 며칠 운행해서 실제로 몇
+# 편이 뒤로 밀리는지, 밀린 자리를 다른 키워드가 채우는지 아니면 빈 채로
+# 관련도 낮은 논문이 올라오는지 보고 정한다.
 KEYWORD_SLOT_SHARE = 0.5
 
 
 def _primary_keyword(paper: dict) -> str:
     """이 논문을 대표하는 핵심 키워드 — 가장 무거운 적중.
 
-    여러 개를 맞힌 논문은 그중 제일 무거운 것 하나로 센다. 동률이면
-    core_hits 의 첫 번째다(그 순서는 core_topics 순서이므로 프로필 안에서
-    안정적이다).
+    판정은 `profile_scoring.score_paper` 가 한다(가중치를 아는 곳이 거기뿐이다).
+    여기서는 읽기만 한다.
+
+    **처음엔 여기서 `hits[0]` 로 때웠고 그건 틀렸다**(2026-09-06 지적).
+    `core_hits` 는 가중치 순이 아니라 `core_topics` 순이라, 표적어를 맞힌
+    논문이 동향어 이름으로 세어졌다 — `["embodied AI", "defect detection"]`
+    이면 embodied AI 로 잡혀 `defect detection` 의 자리 상한이 안 깎인다.
+    자리 상한의 목적이 "수확량 큰 키워드가 독식하지 못하게"인데, 그 키워드가
+    안 세어지면 목적이 빈다. **문서가 코드보다 강한 주장을 하고 있었다.**
+
+    `primary_hit` 이 없는 구형·수기 `_score` 는 `core_hits` 첫 번째로 떨어진다
+    (하위 호환 — 그 경우 정확히 옛 동작이다).
     """
-    hits = (paper.get("_score") or {}).get("core_hits") or []
+    score = paper.get("_score") or {}
+    primary = score.get("primary_hit")
+    if primary is not None:
+        return primary
+    hits = score.get("core_hits") or []
     return hits[0] if hits else ""
 
 
