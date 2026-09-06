@@ -122,6 +122,58 @@ def _key(paper: dict) -> str:
             or (paper.get("title") or "").strip().lower())
 
 
+# 한 키워드가 상위 목록에서 차지할 수 있는 자리의 상한 비율.
+# max_items=6 이면 3칸 — 절반이다.
+KEYWORD_SLOT_SHARE = 0.5
+
+
+def _primary_keyword(paper: dict) -> str:
+    """이 논문을 대표하는 핵심 키워드 — 가장 무거운 적중.
+
+    여러 개를 맞힌 논문은 그중 제일 무거운 것 하나로 센다. 동률이면
+    core_hits 의 첫 번째다(그 순서는 core_topics 순서이므로 프로필 안에서
+    안정적이다).
+    """
+    hits = (paper.get("_score") or {}).get("core_hits") or []
+    return hits[0] if hits else ""
+
+
+def _spread_keywords(ranked: list[dict], max_items: int,
+                     share: float = KEYWORD_SLOT_SHARE) -> list[dict]:
+    """한 키워드가 상위 목록을 독식하지 못하게 뒤로 미룬다. 순위 자체는
+    안 바꾼다 — 상한을 넘은 논문을 **목록 뒤로 보낼 뿐**이라, 다른 키워드가
+    모자라면 그대로 다시 올라온다(없는 다양성을 지어내지 않는다).
+
+    **왜**(2026-09-06). 채점을 세 번 고쳐 상위 6칸을 전부 본문 확보된 ★★
+    논문으로 만들었는데, 그 6편이 **전부 같은 키워드**('defect detection')
+    였다. 그 키워드 하나가 한 창에 26편을 데려오고 나머지 26개 키워드는
+    가중치가 낮아 구조적으로 그 아래다. 그러면 메일이 매일 한 주제만 담고,
+    "이 분야가 어디로 가는가"(CLAUDE.md 목적 절)를 못 말한다.
+
+    **규칙 7 을 어기지 않는다.** 무엇이 좋은 논문인지 판단하지 않는다 —
+    같은 키워드가 몇 칸을 먹었는지 **세기만** 한다. LLM 도, 임의 판정도 없다.
+
+    §8-44 와도 다르다. 그때 실패한 건 관련도가 **다른** 논문들을 수집
+    사정으로 뒤집은 것이었다. 여기서 뒤로 가는 논문은 앞에 남는 같은 키워드
+    논문들과 관련도가 사실상 같다(실측: 상위 10편이 전부 0.983±0.008).
+    """
+    cap = max(1, int(max_items * share))
+    used: dict[str, int] = {}
+    keep, deferred = [], []
+    for paper in ranked:
+        kw = _primary_keyword(paper)
+        if kw and len(keep) < max_items and used.get(kw, 0) >= cap:
+            deferred.append(paper)
+            continue
+        used[kw] = used.get(kw, 0) + 1
+        keep.append(paper)
+    if deferred:
+        moved = len(deferred)
+        print(f"  [다양성] 한 키워드가 상위 {max_items}칸 중 {cap}칸을 넘지 않게 "
+              f"{moved}편을 뒤로 미뤘다")
+    return keep + deferred
+
+
 def _reserve_full_text_slots(ranked: list[dict], max_items: int,
                              reserved: int = FULL_TEXT_RESERVED) -> list[dict]:
     """관련도로 줄 세운 **전체 목록**에서 상위 max_items 를 고르되,
@@ -227,8 +279,18 @@ async def scan_profile(
 
     # 이미 요약된 논문은 후보에서 뺀다(§8-26) — 창이 겹치므로 안 빼면 어제
     # 메일에 나간 논문이 오늘 또 나간다. 이 필터가 겹침의 비용을 0 으로 만든다.
+    #
+    # **그 필터 하나로는 저널 논문을 못 막는다**(2026-09-06). `summaries` 를
+    # 보는데 저널 논문은 본문을 못 받아 요약이 저장되지 않고, arxiv_id 도
+    # 없어서 조회 대상에조차 안 든다 — 아래 `not p.get("arxiv_id")` 절이
+    # 그런 논문을 **무조건 통과**시킨다. 그래서 09-04 와 09-06 메일의 상위
+    # 3편이 같았다. 두 번째 필터가 그 구멍을 막는다(research_profile.
+    # mark_shown 주석에 실측이 있다).
     seen = _already_summarized([p.get("arxiv_id") for p in merged])
-    fresh = [p for p in merged if not p.get("arxiv_id") or p.get("arxiv_id") not in seen]
+    shown = research_profile.already_shown(db_path, profile_id)
+    fresh = [p for p in merged
+             if (not p.get("arxiv_id") or p.get("arxiv_id") not in seen)
+             and research_profile.paper_key(p) not in shown]
 
     # **관련도 하나로 줄 세운다**(2026-09-04 개정).
     #
@@ -251,7 +313,7 @@ async def scan_profile(
     # **한 번만 채점한다.** 상위 목록도 "그 밖에" 목록도 같은 순위에서 자른다 —
     # 따로 채점하면 두 목록의 기준이 갈릴 수 있다.
     scored = profile_scoring.score_and_rank(fresh, profile)
-    ranked = scored["papers"]
+    ranked = _spread_keywords(scored["papers"], profile["max_items"])
     scored["papers"] = _reserve_full_text_slots(ranked, profile["max_items"])
     top_keys = {_key(p) for p in scored["papers"]}
     listed = {"papers": [p for p in ranked if _key(p) not in top_keys][:TITLE_ONLY_MAX_ITEMS]}
@@ -468,6 +530,11 @@ async def scan_and_digest(
         except Exception as e:  # noqa: BLE001
             print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
     research_profile.save_digest(db_path, profile_id, digest_text)
+
+    # 내용 자리로 실린 논문을 소비 처리한다 — 내일 후보에서 빠진다.
+    # **다이제스트를 저장한 뒤에** 한다: 앞 단계에서 예외가 나면 메일이
+    # 안 나가는데, 그때 소비 처리까지 해버리면 그 논문은 영영 안 나간다.
+    research_profile.mark_shown(db_path, profile_id, result.get("papers") or [])
 
     run_scope.__exit__(None, None, None)
     result["api_calls"] = run_scope.snapshot()
