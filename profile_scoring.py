@@ -282,7 +282,7 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         return {"priority": 0.0, "excluded": True, "exclude_hits": exclude_hits,
                 "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
                 "domain_hits": [], "venue_hit": None, "recency": None,
-                "full_text": has_full_text_route(paper)}
+                "full_text": has_full_text_route(paper), "primary_hit": ""}
 
     core_topics = profile.get("core_topics", [])
     core_hits, core_weight, top_core_weight = core_hits_with_weight(paper, profile)
@@ -294,10 +294,23 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         return {"priority": 0.0, "excluded": False, "exclude_hits": [],
                 "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
                 "domain_hits": [], "venue_hit": None, "recency": None,
-                "full_text": has_full_text_route(paper)}
+                "full_text": has_full_text_route(paper), "primary_hit": ""}
 
     domain_hits = _find_hits(text, profile.get("target_domain", []))
     full_text = has_full_text_route(paper)
+
+    # 이 논문을 **대표하는** 키워드 — 가장 무거운 적중. 동률이면 core_hits 의
+    # 첫 번째(=core_topics 순서라 프로필 안에서 안정적이다).
+    #
+    # 여기서 정하는 이유: 이걸 쓰는 쪽(run_profile_scan._spread_keywords 의
+    # 자리 상한)은 프로필 가중치를 안 갖고 있다. 처음엔 거기서 `hits[0]` 로
+    # 때웠는데 그러면 **표적어를 맞힌 논문이 동향어 이름으로 세어진다** —
+    # `["embodied AI", "defect detection"]` 이면 embodied AI 로 잡혀
+    # defect detection 의 자리 상한이 안 깎인다. 가중치를 아는 곳은 여기뿐이라
+    # 여기서 정해서 내려보낸다.
+    core_weights = profile.get("core_weights") or {}
+    primary_hit = max(core_hits, key=lambda k: float(core_weights.get(k, 1.0)),
+                      default="")
     v_hit = venue_hit(paper, profile.get("venues", []))
     recency = recency_score(paper.get("published"), weights.recency_half_life_days)
 
@@ -323,6 +336,7 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         "core_weight": round(core_weight, 4),
         "top_core_weight": round(top_core_weight, 4), "domain_hits": domain_hits,
         "venue_hit": v_hit, "recency": recency, "full_text": full_text,
+        "primary_hit": primary_hit,
     }
 
 

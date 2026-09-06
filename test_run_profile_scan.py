@@ -565,6 +565,34 @@ def test_one_keyword_cannot_take_every_slot():
     assert kinds.count("robot learning") == 3
 
 
+def test_spread_counts_the_heaviest_keyword_not_the_first():
+    """`_spread_keywords` 는 `primary_hit` 을 쓴다 — 표적어를 맞힌 논문이
+    동향어 이름으로 세어지면 그 표적어의 상한이 안 깎인다(2026-09-06 지적).
+    """
+    def q(key, pr, hits, primary):
+        return {"arxiv_id": key, "title": key,
+                "_score": {"priority": pr, "core_hits": list(hits), "primary_hit": primary}}
+    # 넷 다 defect detection 이 표적어지만 core_hits 첫 번째는 제각각이다.
+    ranked = [q("p0", 0.9, ["defect detection"], "defect detection"),
+              q("p1", 0.8, ["embodied AI", "defect detection"], "defect detection"),
+              q("p2", 0.7, ["NPU", "defect detection"], "defect detection"),
+              q("p3", 0.6, ["robot learning"], "robot learning")]
+    out = rps._spread_keywords(ranked, max_items=4)[:4]
+    ids = [x["arxiv_id"] for x in out]
+    assert ids[:2] == ["p0", "p1"]        # 상한 2칸(4의 절반)까지
+    assert ids[2] == "p3"                 # p2 는 상한에 걸려 뒤로
+    assert ids[3] == "p2"
+
+
+def test_spread_falls_back_to_first_hit_for_old_scores():
+    """`primary_hit` 이 없는 구형·수기 `_score` 는 옛 동작(첫 번째 적중)으로
+    떨어진다 — 하위 호환."""
+    old = {"arxiv_id": "x", "title": "x",
+           "_score": {"priority": 0.9, "core_hits": ["defect detection"]}}
+    assert rps._primary_keyword(old) == "defect detection"
+    assert rps._primary_keyword({"_score": {"priority": 0.1}}) == ""
+
+
 def test_spread_invents_no_diversity_that_is_not_there():
     """다른 키워드가 없으면 상한을 넘겨서라도 채운다 — 없는 다양성을
     지어내려고 자리를 비우지 않는다."""

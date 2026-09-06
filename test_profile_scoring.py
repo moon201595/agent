@@ -321,6 +321,36 @@ def test_breadth_still_separates_within_a_tier():
     assert score_paper(two, profile)["priority"] > score_paper(one, profile)["priority"]
 
 
+def test_primary_hit_is_the_heaviest_not_the_first():
+    """**지적 회귀**(2026-09-06). 자리 상한(`_spread_keywords`)이 논문을 어느
+    키워드로 세느냐를 정하는 값이다. `core_hits` 는 가중치 순이 아니라
+    `core_topics` 순이라, 첫 번째를 쓰면 표적어를 맞힌 논문이 동향어 이름으로
+    세어져 **수확량 큰 표적어의 상한이 안 깎인다.**
+    """
+    profile = {"core_topics": ["embodied AI", "defect detection"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"embodied AI": 0.35, "defect detection": 1.0}}
+    s = score_paper(_paper_with("embodied AI for defect detection"), profile)
+    assert s["core_hits"] == ["embodied AI", "defect detection"]   # 목록 순서는 그대로
+    assert s["primary_hit"] == "defect detection"                  # 대표는 무거운 쪽
+
+
+def test_primary_hit_ties_break_on_list_order():
+    """동률이면 core_topics 순서 — 프로필 안에서 안정적이어야 자리 상한이
+    실행마다 흔들리지 않는다."""
+    profile = {"core_topics": ["surface inspection", "defect detection"],
+               "target_domain": [], "exclude": [],
+               "core_weights": {"surface inspection": 1.0, "defect detection": 1.0}}
+    s = score_paper(_paper_with("surface inspection and defect detection"), profile)
+    assert s["primary_hit"] == "surface inspection"
+
+
+def test_papers_with_no_core_hit_have_no_primary():
+    profile = {"core_topics": ["defect detection"], "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0}}
+    assert score_paper(_paper_with("an unrelated paper"), profile)["primary_hit"] == ""
+
+
 def test_full_text_route_is_reported_but_does_not_score():
     """**동점 가르개(+0.05)를 넣었다가 뺐다**(2026-09-06, 같은 날).
 
