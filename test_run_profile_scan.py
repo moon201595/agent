@@ -609,6 +609,73 @@ def test_spread_keeps_relative_order_within_a_keyword():
     assert [p["arxiv_id"] for p in out] == ["d0", "d1", "r0", "d2", "d3", "d4"]
 
 
+def test_arxiv_failure_does_not_kill_the_day(tmp_path, monkeypatch):
+    """**실측 회귀**(2026-09-06). S2 절의 주석은 원래부터 "arXiv 가 실패해도
+    S2 는 시도한다 — 한 소스가 죽었다고 그날을 통째로 버리지 않는다. 반대도
+    같다" 였는데 **코드는 그렇게 안 돼 있었다.** arXiv 실패는 raise 로 나갔고
+    S2 쪽은 try/except 가 아예 없었다. 실제로 arXiv 429 가 4회 재시도 끝에
+    포기하자 스캔 전체가 죽고 메일이 안 나갔다.
+
+    메일이 안 오는 날은 "무언가 고장났다"로 읽어야 하는데(_deliver 주석),
+    그 신호를 일시적 429 에 태우면 진짜 고장과 구분이 안 된다.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("arXiv API 429")
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+
+    async def s2_ok(client, keywords, since, until, *a, **kw):
+        return {"papers": [_journal_paper("10.1/j1", "An agent journal")],
+                "status": "done", "query": "S2 keywords×1"}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+
+    result = asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+    assert [p["title"] for p in result["papers"]] == ["An agent journal"]
+    assert result["run_status"] == "failed"       # arXiv 가 죽은 건 숨기지 않는다
+    assert result["s2_count"] == 1
+
+
+def test_s2_failure_does_not_kill_the_day(tmp_path, monkeypatch):
+    """반대 방향도 같아야 한다 — 대칭이 아니면 주석이 또 거짓말이 된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("S2 500")
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", boom)
+
+    result = asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+    assert [p["arxiv_id"] for p in result["papers"]] == ["p1"]
+    assert result["s2_status"] == "failed"
+    assert result["run_status"] == "done"
+
+
+def test_both_sources_failing_is_raised(tmp_path, monkeypatch):
+    """둘 다 죽은 날은 올린다 — 그건 일시적 혼잡이 아니라 우리가 아무것도
+    못 본 것이고, 그런 날의 "논문 0편" 메일은 "조용한 날"과 구분이 안 돼
+    거짓말이 된다(규칙 8)."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("죽음")
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", boom)
+
+    with pytest.raises(RuntimeError, match="검색 소스가 전부 실패"):
+        asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+
+
 def _journal_paper(doi, title="A journal paper"):
     """S2 경유 저널 논문 — arxiv_id 가 **없다**(실측 2026-09-06: 후보 478편 중 222편)."""
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

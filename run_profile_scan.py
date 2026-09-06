@@ -261,22 +261,38 @@ async def scan_profile(
     since = research_profile.next_since(db_path, profile_id, signature=signature)
     query = _arxiv_query_from_core_topics(profile["core_topics"])
 
+    # **한 소스가 죽어도 그날을 통째로 버리지 않는다**(2026-09-06 에 실제로
+    # 그렇게 만들었다). 바로 아래 S2 절의 주석이 원래부터 그렇게 적혀 있었는데
+    # **코드는 그렇게 안 돼 있었다** — arXiv 실패는 여기서 `raise` 로 나갔고
+    # S2 쪽은 try/except 가 아예 없었다. 실측으로 확인했다: arXiv 가 429 를
+    # 4회 재시도 끝에 포기하자 스캔 전체가 죽고 메일이 안 나갔다.
+    #
+    # 메일이 안 오는 날은 "새 논문이 없었다"가 아니라 "무언가 고장났다"로
+    # 읽어야 한다(_deliver 주석). 그 신호를 일시적인 429 에 태우면 신호가
+    # 못 쓰게 된다 — 진짜 고장과 구분이 안 된다.
+    arxiv_papers: list[dict] = []
+    arxiv_status = "failed"
+    until = datetime.now(timezone.utc)
+    arxiv_error: str | None = None
     try:
         result = await find_new_papers.find_new_papers_since(
             client, query, since, page_size=page_size, max_pages=max_pages,
         )
-    except Exception as e:  # noqa: BLE001 — 실패도 search_runs에 남기고 다시 올린다
+    except Exception as e:  # noqa: BLE001 — 실패도 search_runs 에 남기고 계속 간다
+        arxiv_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         research_profile.record_run(
-            db_path, profile_id, "arxiv", query, since, datetime.now(timezone.utc),
+            db_path, profile_id, "arxiv", query, since, until,
             "failed", 0, error_detail=str(e), signature=signature,
         )
-        raise
-
-    until = datetime.fromisoformat(result["until"])
-    research_profile.record_run(
-        db_path, profile_id, "arxiv", result["query"], since, until,
-        result["status"], len(result["papers"]), signature=signature,
-    )
+        print(f"  [경고] arXiv 검색 실패 — S2 만으로 이어간다: {arxiv_error}")
+    else:
+        arxiv_papers = result["papers"]
+        arxiv_status = result["status"]
+        until = datetime.fromisoformat(result["until"])
+        research_profile.record_run(
+            db_path, profile_id, "arxiv", result["query"], since, until,
+            arxiv_status, len(arxiv_papers), signature=signature,
+        )
 
     # ── 두 번째 소스: Semantic Scholar (2026-09-02)
     #
@@ -294,19 +310,36 @@ async def scan_profile(
     s2_status = "skipped"
     s2_keywords = s2_delta.keywords_for_s2(profile)
     if s2_keywords:
-        s2_result = await s2_delta.find_new_papers_since(
-            client, s2_keywords, since, until,
-        )
-        s2_papers = s2_result["papers"]
-        s2_status = s2_result["status"]
-        research_profile.record_run(
-            db_path, profile_id, "s2", s2_result["query"], since, until,
-            s2_status, len(s2_papers), signature=signature,
-        )
-        print(f"  [S2] 키워드 {len(s2_keywords)}개 → {len(s2_papers)}편 "
-              f"(arXiv 밖 {sum(1 for x in s2_papers if not x.get('arxiv_id'))}편)")
+        try:
+            s2_result = await s2_delta.find_new_papers_since(
+                client, s2_keywords, since, until,
+            )
+        except Exception as e:  # noqa: BLE001 — arXiv 쪽과 대칭이어야 한다
+            s2_status = "failed"
+            research_profile.record_run(
+                db_path, profile_id, "s2", f"S2 keywords×{len(s2_keywords)}", since, until,
+                "failed", 0, error_detail=str(e), signature=signature,
+            )
+            print(f"  [경고] S2 검색 실패 — arXiv 만으로 이어간다: "
+                  f"{type(e).__name__}: {str(e).splitlines()[0][:150]}")
+        else:
+            s2_papers = s2_result["papers"]
+            s2_status = s2_result["status"]
+            research_profile.record_run(
+                db_path, profile_id, "s2", s2_result["query"], since, until,
+                s2_status, len(s2_papers), signature=signature,
+            )
+            print(f"  [S2] 키워드 {len(s2_keywords)}개 → {len(s2_papers)}편 "
+                  f"(arXiv 밖 {sum(1 for x in s2_papers if not x.get('arxiv_id'))}편)")
 
-    merged = selection.dedupe(result["papers"] + s2_papers)
+    # **둘 다 죽었으면 그때는 올린다.** 그건 일시적 혼잡이 아니라 우리가
+    # 아무것도 못 본 것이고, 그런 날의 "논문 0편" 메일은 "조용한 날"과
+    # 구분이 안 돼 거짓말이 된다(규칙 8). 메일이 안 오는 것이 정직한 신호다.
+    if arxiv_status == "failed" and s2_status in ("failed", "skipped"):
+        raise RuntimeError(
+            f"검색 소스가 전부 실패했다 — arXiv: {arxiv_error} / S2: {s2_status}")
+
+    merged = selection.dedupe(arxiv_papers + s2_papers)
 
     # 이미 요약된 논문은 후보에서 뺀다(§8-26) — 창이 겹치므로 안 빼면 어제
     # 메일에 나간 논문이 오늘 또 나간다. 이 필터가 겹침의 비용을 0 으로 만든다.
@@ -353,12 +386,12 @@ async def scan_profile(
     listed["scored_count"] = len(listed["papers"])
     scored["reserve"] = rest        # Deep Layer 가 수집에 실패한 자리를 이걸로 메운다
     return {
-        "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
-        "run_status": result["status"], "candidates_found": len(fresh),
+        "profile_id": profile_id, "since": since.isoformat(), "until": until.isoformat(),
+        "run_status": arxiv_status, "candidates_found": len(fresh),
         "title_only_papers": listed["papers"],
         "title_only_count": listed["scored_count"],
         "retrieved_count": len(merged), "already_seen_count": len(seen),
-        "arxiv_count": len(result["papers"]), "s2_count": len(s2_papers),
+        "arxiv_count": len(arxiv_papers), "s2_count": len(s2_papers),
         "s2_status": s2_status,
         **scored,
     }
