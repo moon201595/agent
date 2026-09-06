@@ -227,9 +227,22 @@ def paper_key(paper: dict) -> str:
     (실측 2026-09-06: 후보 478편 중 222편). DOI → 정규화 제목 순으로 내려간다.
     """
     aid = (paper.get("arxiv_id") or "").strip()
+    doi = (paper.get("doi") or "").strip().lower()
+    # **합성 ID(`pdf-<해시>`)보다 DOI 가 먼저다**(2026-09-06, 실측으로 잡았다).
+    # 그건 본문을 받은 **뒤에야** 생기는 저장용 ID다 — 검색 결과로 도착할 때
+    # 그 논문은 `arxiv_id=None` + DOI 를 갖는다. 처리 직후의 모습으로 기록하면
+    # 기록된 키는 `pdf-c8bbaedce8` 인데 다음 날 조회하는 키는
+    # `doi:10.1007/...` 이라 **안 맞는다.**
+    #
+    # 실측: 오픈액세스 저널 논문 GED-YOLOv5 가 06:40 실행과 10:53 실행에서
+    # 연속으로 1번 자리에 나왔다. 소비 기록이 있는데도 안 걸러진 것이다 —
+    # 이 필터가 막으려던 바로 그 논문(본문이 실제로 열리는 저널)에 구멍이
+    # 나 있었다. 게다가 본문을 다시 받고 요약을 다시 만들어 무료 한도까지
+    # 태웠다(같은 논문의 검증 결과가 41/44 → 49/51 로 달라졌다).
+    if aid.startswith("pdf-") and doi:
+        return f"doi:{doi}"
     if aid:
         return aid
-    doi = (paper.get("doi") or "").strip().lower()
     if doi:
         return f"doi:{doi}"
     return "title:" + " ".join((paper.get("title") or "").lower().split())
