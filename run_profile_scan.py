@@ -174,42 +174,52 @@ def _spread_keywords(ranked: list[dict], max_items: int,
     return keep + deferred
 
 
-def _reserve_full_text_slots(ranked: list[dict], max_items: int,
-                             reserved: int = FULL_TEXT_RESERVED) -> list[dict]:
-    """관련도로 줄 세운 **전체 목록**에서 상위 max_items 를 고르되,
-    본문을 받을 수 있는 논문에 최소 `reserved` 자리를 보장한다.
+def _eligible_for_content(ranked: list[dict],
+                          max_items: int) -> tuple[list[dict], list[dict]]:
+    """내용 자리(번호가 붙는 상위 목록)의 **자격**을 가른다.
+    returns (자격 있는 논문 — 아직 안 자른 상태, 자격 없는 나머지).
 
-    **채점을 다시 하지 않는다.** 여분을 따로 채점하면 프로필이 없거나 다른
-    가중치를 쓸 때 결과가 갈린다 — 실제로 그렇게 짰다가 테스트에서 교체가
-    통째로 안 일어났다. 이미 매겨진 순위 하나만 본다.
+    **자르지 않는다.** 자르기 전에 `_spread_keywords` 가 한 번 더 손대야
+    하기 때문이다. 처음엔 여기서 max_items 로 잘랐는데, 그러면 문지기가
+    다양성 제한을 되돌린다 — 실측으로 defect detection 이 3칸 상한을 넘어
+    6칸 중 4칸을 먹었다. 순서는 **자격 → 다양성 → 자르기** 여야 한다.
 
-    모자라면 **가장 낮은 점수의 비-arXiv** 를 **가장 높은 점수의 arXiv** 로
-    바꾸고, 마지막에 다시 관련도로 정렬한다 — 읽는 순서는 그대로 관련도다
-    (§8-44 의 교훈: 자리는 보장하되 순서는 안 바꾼다).
+    **2026-09-06 에 "자리 보장"에서 "문지기"로 바꿨다.** 그전에는 본문 되는
+    논문에 최소 2칸만 보장하고 나머지는 관련도대로 뒀는데, 실측이 그걸
+    못 버티게 했다:
 
-    풀에 arXiv 논문이 모자라면 있는 만큼만 넣는다. 없는 걸 만들지 않는다.
+      · 후보 478편 중 arXiv 밖이 222편, 그중 오픈액세스 링크가 있는 건 78편(35%)
+      · 그 링크를 **실제로 열어보니 20편 중 6편(30%)만** PDF 를 줬다
+      · 출판사별로 깨끗이 갈린다 — Springer·Wiley·Elsevier·SSRN·IOP **0/12**
+        (링크는 주는데 열면 HTML 로그인 페이지이거나 403),
+        소형·지역 OA 저널 **6/8**
+
+    즉 저널 222편 중 본문이 실제로 열리는 건 열 편 남짓이다. 나머지는
+    내용 자리를 먹고 "처리 실패" 한 줄을 싣는다 — 09-04·09-06 메일이 그랬다.
+    자리를 먹은 만큼 요약·검증·재현이 붙은 논문이 밀려난다.
+
+    **§8-44 와 다른 점.** 그때 실패한 건 본문 확보 여부로 갈라 놓고도
+    **자리를 받은 논문들 역시 본문을 못 받아서**(상위 6칸 중 5편 수집 실패)
+    아무것도 나아지지 않은 것이었다. 원인은 갈래 자체가 아니라 판정이
+    `open_access_pdf` **링크 유무**여서 30% 짜리 신호를 100% 로 믿은 데
+    있었다. 이제 그 위에 Deep Layer 의 실제 수집 결과로 한 번 더 거른다
+    (scan_and_digest 의 백필) — 링크를 믿는 게 아니라 받아본 결과를 믿는다.
+
+    **밀려난 논문은 사라지지 않는다.** 제목·링크 한 줄로 각주에 남고,
+    키워드 편수 집계와 동향 서술에는 그대로 들어간다 — "동향을 놓치지
+    않는다"(CLAUDE.md 목적 절)는 거기서 지켜지고, 값은 한 줄이다.
     """
-    def has_full_text(paper: dict) -> bool:
-        aid = paper.get("arxiv_id") or ""
-        return bool(aid) and not str(aid).startswith("pdf-")
-
-    top = ranked[:max_items]
-    have = sum(1 for p in top if has_full_text(p))
-    if have >= reserved:
-        return top
-
-    spare = [p for p in ranked[max_items:] if has_full_text(p)]
-    droppable = sorted((p for p in top if not has_full_text(p)),
-                       key=lambda p: p["_score"]["priority"])
-    swaps = min(reserved - have, len(spare), len(droppable))
-    if not swaps:
-        return top
-
-    out = {_key(p) for p in droppable[:swaps]}
-    merged = [p for p in top if _key(p) not in out] + spare[:swaps]
-    print(f"  [자리] 본문 확보 가능한 논문 {swaps}편을 상위 목록에 넣었다 "
-          f"(⑤ 검증·⑦ 재현이 돌 수 있게)")
-    return sorted(merged, key=lambda p: -p["_score"]["priority"])
+    eligible, dropped = [], []
+    for paper in ranked:
+        (eligible if profile_scoring.has_full_text_route(paper) else dropped).append(paper)
+    if len(eligible) < max_items and dropped:
+        # 본문 되는 논문이 모자란 날은 빈 자리를 남기지 않는다 — 관련도 순으로
+        # 채운다. 매일 오는 메일 자체가 파이프라인 생존 신호다(_deliver 주석).
+        need = max_items - len(eligible)
+        eligible = sorted(eligible + dropped[:need],
+                          key=lambda x: -x["_score"]["priority"])
+        dropped = dropped[need:]
+    return eligible, dropped
 
 
 async def scan_profile(
@@ -312,12 +322,15 @@ async def scan_profile(
     # 관련도가 정하고, 깊이는 확보한 것이 정한다.
     # **한 번만 채점한다.** 상위 목록도 "그 밖에" 목록도 같은 순위에서 자른다 —
     # 따로 채점하면 두 목록의 기준이 갈릴 수 있다.
+    # 자격 → 다양성 → 자르기. 이 순서여야 한다(각 함수 주석에 사유가 있다).
     scored = profile_scoring.score_and_rank(fresh, profile)
-    ranked = _spread_keywords(scored["papers"], profile["max_items"])
-    scored["papers"] = _reserve_full_text_slots(ranked, profile["max_items"])
-    top_keys = {_key(p) for p in scored["papers"]}
-    listed = {"papers": [p for p in ranked if _key(p) not in top_keys][:TITLE_ONLY_MAX_ITEMS]}
+    eligible, dropped = _eligible_for_content(scored["papers"], profile["max_items"])
+    eligible = _spread_keywords(eligible, profile["max_items"])
+    scored["papers"] = eligible[:profile["max_items"]]
+    rest = eligible[profile["max_items"]:] + dropped
+    listed = {"papers": rest[:TITLE_ONLY_MAX_ITEMS]}
     listed["scored_count"] = len(listed["papers"])
+    scored["reserve"] = rest        # Deep Layer 가 수집에 실패한 자리를 이걸로 메운다
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": result["until"],
         "run_status": result["status"], "candidates_found": len(fresh),
@@ -406,7 +419,29 @@ async def scan_and_digest(
     # 잘라놓은 목록이라 별도 상한을 두지 않는다.
     deep_started = time.monotonic()
     deferred: list[dict] = []
-    for paper in result["papers"]:
+
+    # **수집에 실패한 논문은 내용 자리를 내놓는다**(2026-09-06).
+    #
+    # 문지기(_full_text_slots)는 `open_access_pdf` **링크 유무**로 판정하는데
+    # 그 링크는 실측 30% 만 실제 PDF 를 준다(대형 출판사 0/12). 링크만 믿으면
+    # 09-04·09-06 메일처럼 "처리 실패" 가 번호 붙은 자리를 차지한다.
+    # 그래서 받아본 뒤 한 번 더 거른다 — 실패하면 그 자리를 다음 후보에게
+    # 넘기고, 실패한 논문은 각주(제목만)로 내려간다.
+    #
+    # `abstract_only` 는 실패가 아니다(§8-33 과 같은 구분) — 초록 정리라는
+    # 읽을 내용이 실제로 있으므로 자리를 지킨다. 다만 본문 요약보다 얕다는
+    # 것은 다이제스트 라벨이 이미 말한다.
+    #
+    # **새 지휘자 계층이 아니다**(규칙 6). 같은 루프에 후보 목록을 조금 더
+    # 길게 줄 뿐이고, ⑦ 트리거는 여전히 _process_paper 가 소유한다(규칙 5).
+    max_items = len(result["papers"])
+    queue = list(result["papers"]) + list(result.get("reserve") or [])
+    content: list[dict] = []
+    demoted: list[dict] = []
+    for paper in queue:
+        if len(content) >= max_items:
+            demoted.append(paper)
+            continue
         arxiv_id = paper.get("arxiv_id")
         # arXiv 밖 논문(S2 경유 저널)은 arxiv_id 가 없다 — 오픈액세스 PDF
         # 링크가 있으면 _process_paper 가 그 경로로 본문을 받는다(2026-09-02).
@@ -422,6 +457,7 @@ async def scan_and_digest(
         # 모이는 지점을 먼저 만들라는 교훈이 또 걸렸다.
         if arxiv_id and _summary_exists(arxiv_id):
             paper["deep_status"] = "skipped: 이미 요약 저장됨"
+            content.append(paper)          # 요약이 이미 있으니 보여줄 내용도 있다
             continue
         # 예산은 **논문을 시작하기 전에** 본다. 처리 중간에 끊으면 요약을
         # 반쯤 만들고 버리게 되고, 그 호출은 이미 무료 한도를 쓴 뒤다.
@@ -441,6 +477,7 @@ async def scan_and_digest(
             paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
             paper["api_calls"] = paper_scope.snapshot()
             print(f"  [계측] {arxiv_id} (실패): {paper_scope.format_summary()}")
+            demoted.append(paper)
             continue
         # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
         if outcome.get("status") == "done":
@@ -461,6 +498,18 @@ async def scan_and_digest(
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
         paper["api_calls"] = paper_scope.snapshot()
         print(f"  [계측] {arxiv_id}: {paper_scope.format_summary()}")
+        (demoted if paper["deep_status"].startswith("failed") else content).append(paper)
+
+    # 자리를 못 채웠거나 내놓은 논문을 정리한다.
+    dropped = len(result["papers"]) - len([p for p in content if p in result["papers"]])
+    if demoted:
+        print(f"  [자리] 본문 수집에 실패한 {len(demoted)}편을 각주로 내렸다 — "
+              f"내용 자리는 {len(content)}/{max_items}편")
+    result["papers"] = content
+    result["title_only_papers"] = (
+        demoted + [p for p in (result.get("title_only_papers") or [])
+                   if p not in demoted and p not in content])[:TITLE_ONLY_MAX_ITEMS]
+    result["title_only_count"] = len(result["title_only_papers"])
 
     # S2 tldr(M6) — Deep 처리가 실패한 논문은 우리 요약이 없어 초록 발췌만
     # 남는데, S2 의 한 줄 요약이 그보다 읽기 낫다. 배치 1회라 호출 비용이
