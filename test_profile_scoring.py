@@ -321,35 +321,37 @@ def test_breadth_still_separates_within_a_tier():
     assert score_paper(two, profile)["priority"] > score_paper(one, profile)["priority"]
 
 
-def test_full_text_only_breaks_ties_never_crosses_tiers():
-    """**실측 회귀**(2026-09-06). 핵심 키워드 하나가 한 창에 26편을 데려오면
-    그 26편의 relevance 가 **글자 그대로 같다**(후보 478편 실측: 상위 10편이
-    전부 0.933). 관련도로는 더 못 가르므로 동점 가르개가 필요하다.
+def test_full_text_route_is_reported_but_does_not_score():
+    """**동점 가르개(+0.05)를 넣었다가 뺐다**(2026-09-06, 같은 날).
 
-    그런데 §8-44 의 교훈 — 본문 확보 여부로 **먼저 가르면** 팀 표적 논문이
-    메일 맨 아래에 묻힌다 — 을 어기면 안 된다. 그래서 이 신호는 관련도가
-    같을 때만 움직여야 한다. 이 테스트가 그 경계를 지킨다.
+    처음엔 관련도 동점(실측: 상위 10편이 전부 0.933)을 가르려고 점수에 넣었다.
+    그런데 자리 배분을 `run_profile_scan._full_text_slots` 가 문지기로 처리하게
+    되면서, 내용 자리에 오는 논문은 **전부** 이 조건을 만족하게 됐다 — 가르개가
+    가를 게 없어진 것이다. 아무것도 안 하는 항을 남기지 않는다.
+
+    판정 자체는 남는다: 문지기가 이 함수를 쓰고, score_paper 출력의 `full_text`
+    키로 사람이 볼 수 있다. 이 테스트가 "점수에 안 들어간다 + 판정은 보인다"를
+    같이 못박는다.
     """
-    profile = {"core_topics": ["defect detection", "robot learning"],
-               "target_domain": [], "exclude": [],
-               "core_weights": {"defect detection": 1.0, "robot learning": 0.6}}
+    profile = {"core_topics": ["defect detection"], "target_domain": [], "exclude": [],
+               "core_weights": {"defect detection": 1.0}}
     same = "a defect detection method"
     with_text = score_paper({**_paper_with(same), "arxiv_id": "2609.1"}, profile)
     without = score_paper({**_paper_with(same), "arxiv_id": None}, profile)
-    assert with_text["priority"] > without["priority"]        # 동점은 가른다
 
-    # 계층은 못 넘는다 — 본문 있는 동향어 논문이 본문 없는 표적어 논문을 못 이긴다.
-    trend_with_text = score_paper(
-        {**_paper_with("robot learning from demonstrations"), "arxiv_id": "2609.2"}, profile)
-    assert trend_with_text["priority"] < without["priority"]
+    assert with_text["priority"] == without["priority"]   # 점수는 같다
+    assert with_text["full_text"] is True                 # 판정은 보인다
+    assert without["full_text"] is False
 
 
-def test_full_text_is_smaller_than_the_domain_bonus():
-    """우리 도메인 낱말이 걸린 저널 논문은 본문 있는 arXiv 논문을 이겨야 한다 —
-    관련도 신호가 수집 사정보다 위라는 순서를 산수로 못박는다."""
-    w = Weights()
-    assert w.full_text < w.domain_hit
-    assert w.full_text > w.recency * (1 - 0.5 ** (7 / w.recency_half_life_days))
+def test_full_text_route_accepts_arxiv_or_open_access_link():
+    """저널이라고 무조건 아니라고 하지 않는다 — 소형 OA 저널은 실측 6/8 로
+    실제 PDF 를 준다(2026-09-06, 표본 20편)."""
+    assert profile_scoring.has_full_text_route({"arxiv_id": "2609.1"}) is True
+    assert profile_scoring.has_full_text_route(
+        {"arxiv_id": None, "open_access_pdf": "https://dergipark.org.tr/x.pdf"}) is True
+    assert profile_scoring.has_full_text_route(
+        {"arxiv_id": None, "doi": "10.1016/j.x"}) is False
 
 
 def test_domain_weight_is_strictly_below_the_tier_gap():

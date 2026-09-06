@@ -281,8 +281,13 @@ def test_deep_layer_isolates_failure_of_one_paper(tmp_path, monkeypatch):
     assert calls == ["p1", "p2", "p3"]  # p2 실패에도 p3가 처리됨
     statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
     assert statuses["p1"] == "ok"
-    assert statuses["p2"].startswith("failed:")
-    assert "테스트 예외" in statuses["p2"]
+    # 2026-09-06: 수집에 실패한 논문은 **내용 자리를 내놓고 각주로 내려간다.**
+    # 예전엔 실패한 채로 번호 붙은 자리에 남아 "처리 실패" 한 줄을 실었다.
+    # 실패 사유를 기록한다는 계약은 그대로이고, 실리는 자리만 바뀌었다.
+    assert "p2" not in statuses
+    demoted = {p["arxiv_id"]: p["deep_status"] for p in result["title_only_papers"]}
+    assert demoted["p2"].startswith("failed:")
+    assert "테스트 예외" in demoted["p2"]
     assert statuses["p3"] == "ok"
 
 
@@ -354,7 +359,8 @@ def test_deep_layer_records_fetch_failed_dict_as_failure(tmp_path, monkeypatch):
     result, _digest_text = _run_scan_and_digest(db_path)
 
     statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
-    assert statuses["p1"].startswith("failed:")
+    demoted = {p["arxiv_id"]: p["deep_status"] for p in result["title_only_papers"]}
+    assert demoted["p1"].startswith("failed:")   # 각주로 내려간다(2026-09-06)
     assert statuses["p2"] == "ok"
 
 
@@ -789,7 +795,11 @@ def test_weekly_review_failure_does_not_break_the_digest(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
     _r, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
-    assert "오늘의 신규 논문" in text or "새로 걸린 논문이 없습니다" in text
+    # 세 갈래 중 하나는 반드시 있다 — 논문이 실렸거나, 후보가 없었거나,
+    # 본문을 받을 수 있는 논문이 없었거나(2026-09-06 문지기가 생긴 뒤의 갈래).
+    assert ("오늘의 신규 논문" in text or "새로 걸린 논문이 없습니다" in text
+            or "본문을 받을 수 있는 신규 논문은 없었습니다" in text)
+    assert "주간" not in text          # 실패한 부가 정보는 안 붙는다
 
 
 def test_weekly_review_day_is_computed_from_the_weekday():
@@ -936,60 +946,81 @@ def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
     assert "본문 비공개 — 초록만 보고 정리한 것이다" in digest_text
 
 
-# ---------------------------------------------------------------- 본문 자리 보장 (2026-09-05)
+# ---------------------------------------------------------------- 본문 문지기 (2026-09-06)
 #
-# 09-04 메일은 상위 14편이 전부 저널이라 검증 라벨 0건·재현 라벨 0건이었다 —
-# ④⑤⑦ 이 통째로 안 돌았다. 저널 본문을 받을 무료 경로는 없다(실측: arXiv
-# preprint 0/14, OpenAlex OA 위치 1/14). 대신 순위 밖으로 밀린 arXiv 논문에
-# 자리를 보장한다.
+# **"자리 보장"에서 "문지기"로 바꿨다.** 2026-09-05 에는 본문 되는 논문에
+# 최소 2칸만 보장했는데, 실측이 그 절충을 못 버티게 했다:
+#
+#   · 후보 478편 중 arXiv 밖 222편, 그중 오픈액세스 링크 있음 78편(35%)
+#   · 그 링크를 실제로 열어보니 20편 중 **6편(30%)** 만 PDF 를 줬다
+#   · 출판사별로 갈린다 — Springer·Wiley·Elsevier·SSRN·IOP **0/12**
+#     (링크는 주는데 열면 HTML 로그인 페이지이거나 403),
+#     소형·지역 OA 저널 **6/8**
+#
+# 즉 저널 222편 중 본문이 실제로 열리는 건 열 편 남짓이고, 나머지는 자리를
+# 먹고 "처리 실패" 한 줄을 싣는다. 아래 테스트들은 옛 예약 계약(최소 2칸)을
+# **더 강한 계약**(본문 되는 논문만 내용 자리)으로 갈아끼운 것이다 —
+# 완화가 아니라 강화다(규칙 9, 사유·날짜 기록).
 
-def _p(key, score, arxiv=False):
+def _p(key, score, arxiv=False, oa=None):
     return {"arxiv_id": key if arxiv else None,
             "doi": None if arxiv else key,
+            "open_access_pdf": oa,
             "title": f"paper {key}",
             "_score": {"priority": score, "core_hits": [], "domain_hits": [],
                        "venue_hit": None, "top_core_weight": 1.0}}
 
 
-def test_reserves_slots_for_papers_we_can_fully_process():
-    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7), _p("j4", 0.6)]
-    pool = top + [_p("a1", 0.55, arxiv=True), _p("a2", 0.5, arxiv=True)]
-    got = rps._reserve_full_text_slots(pool, max_items=4, reserved=2)
-
-    ids = [p.get("arxiv_id") or p.get("doi") for p in got]
-    assert len(got) == 4                       # 자리 수는 그대로
-    assert ids[:2] == ["j1", "j2"]             # 관련도 높은 건 남는다
-    assert set(ids) >= {"a1", "a2"}            # 본문 되는 둘이 들어왔다
-    assert "j4" not in ids and "j3" not in ids  # 점수 낮은 것부터 나갔다
+def test_only_papers_we_can_fetch_are_eligible_for_content_slots():
+    """09-04·09-06 메일이 이걸로 망가졌다 — 본문 못 받는 저널이 번호 붙은
+    자리를 먹고 "처리 실패" 를 실었다."""
+    ranked = [_p("j1", 0.9), _p("j2", 0.8), _p("a1", 0.7, arxiv=True),
+              _p("j3", 0.6), _p("a2", 0.5, arxiv=True)]
+    top, rest = rps._eligible_for_content(ranked, max_items=2)
+    assert [x["arxiv_id"] for x in top] == ["a1", "a2"]
+    assert {x["doi"] for x in rest} == {"j1", "j2", "j3"}
 
 
-def test_final_order_is_still_relevance():
-    """§8-44 의 교훈 — 자리는 보장하되 **순서를 바꾸지 않는다.**"""
-    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7)]
-    pool = top + [_p("a1", 0.85, arxiv=True)]
-    got = rps._reserve_full_text_slots(pool, max_items=3, reserved=1)
-    assert [p["_score"]["priority"] for p in got] == sorted(
-        [p["_score"]["priority"] for p in got], reverse=True)
+def test_gate_runs_before_the_keyword_spread():
+    """**실측 회귀**(2026-09-06). 처음엔 다양성 → 문지기 순으로 불렀는데,
+    문지기가 전체 목록에서 자격자를 다시 뽑으면서 다양성 제한을 되돌렸다 —
+    3칸 상한인 'defect detection' 이 6칸 중 4칸을 먹었다.
+    순서는 **자격 → 다양성 → 자르기** 다."""
+    def q(key, score, kw):
+        return {"arxiv_id": key, "doi": None, "open_access_pdf": None,
+                "title": key, "_score": {"priority": score, "core_hits": [kw],
+                                         "domain_hits": [], "venue_hit": None,
+                                         "top_core_weight": 1.0}}
+    ranked = ([q(f"d{i}", 0.9 - i * 0.001, "defect detection") for i in range(6)]
+              + [q(f"s{i}", 0.8 - i * 0.001, "surface inspection") for i in range(3)])
+    eligible, _dropped = rps._eligible_for_content(ranked, 4)
+    top = rps._spread_keywords(eligible, 4)[:4]
+    kinds = [x["_score"]["core_hits"][0] for x in top]
+    assert kinds.count("defect detection") == 2      # 4칸의 절반까지만
+    assert kinds.count("surface inspection") == 2
 
 
-def test_no_change_when_already_enough():
-    top = [_p("a1", 0.9, arxiv=True), _p("a2", 0.8, arxiv=True), _p("j1", 0.7)]
-    got = rps._reserve_full_text_slots(top, max_items=3, reserved=2)
-    assert got == top                          # 손대지 않는다(순서·내용 그대로)
+def test_open_access_link_counts_as_a_route():
+    """저널이라고 무조건 빼지 않는다 — 소형 OA 저널은 실측 6/8 로 열린다."""
+    ranked = [_p("oa1", 0.9, oa="https://dergipark.org.tr/x.pdf"), _p("j1", 0.8)]
+    top, rest = rps._eligible_for_content(ranked, max_items=1)
+    assert top[0]["doi"] == "oa1"
+    assert rest[0]["doi"] == "j1"
 
 
-def test_uses_what_exists_when_pool_is_short():
-    """풀에 arXiv 논문이 하나뿐이면 하나만 넣는다 — 없는 걸 만들지 않는다."""
-    top = [_p("j1", 0.9), _p("j2", 0.8), _p("j3", 0.7)]
-    pool = top + [_p("a1", 0.4, arxiv=True)]
-    got = rps._reserve_full_text_slots(pool, max_items=3, reserved=2)
-    ids = [p.get("arxiv_id") or p.get("doi") for p in got]
-    assert ids.count("a1") == 1 and len(got) == 3
+def test_order_inside_the_slots_is_still_relevance():
+    """§8-44 의 교훈 — 자리는 걸러도 **순서는 관련도 그대로**."""
+    ranked = [_p("a1", 0.9, arxiv=True), _p("j1", 0.85), _p("a2", 0.8, arxiv=True)]
+    top, _rest = rps._eligible_for_content(ranked, max_items=2)
+    assert [x["_score"]["priority"] for x in top] == [0.9, 0.8]
 
 
-def test_synthetic_pdf_ids_do_not_count_as_full_text():
-    """`pdf-<해시>` 는 업로드 합성 ID 다 — arXiv 본문을 받을 수 있다는 뜻이 아니다."""
-    top = [_p("j1", 0.9), _p("pdf-abc", 0.8, arxiv=True)]
-    pool = top + [_p("a1", 0.5, arxiv=True)]
-    got = rps._reserve_full_text_slots(pool, max_items=2, reserved=1)
-    assert "a1" in [p.get("arxiv_id") for p in got]
+def test_empty_slots_are_filled_rather_than_left_blank():
+    """본문 되는 논문이 모자란 날은 관련도 순으로 채운다 — 매일 오는 메일
+    자체가 파이프라인 생존 신호다(_deliver 주석). 빈 메일을 만들지 않는다."""
+    ranked = [_p("j1", 0.9), _p("j2", 0.8), _p("a1", 0.3, arxiv=True)]
+    top, rest = rps._eligible_for_content(ranked, max_items=3)
+    assert len(top) == 3
+    assert [x["_score"]["priority"] for x in top] == [0.9, 0.8, 0.3]
+    assert rest == []
+

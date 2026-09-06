@@ -194,36 +194,10 @@ def _passes_polysemy_guard(keyword: str, text: str) -> bool:
 # 계층을 뛰어넘는 신호가 아니다.
 _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP = 0.1
 
-# ── 본문 확보 가능성 (2026-09-06)
-#
-# **왜 필요한가.** 위 두 고침(포함관계 흡수 · 계층 우선)을 적용하고 후보
-# 478편을 다시 줄 세우니 상위 10편이 **전부 정확히 0.933 동점**이었다.
-# 핵심 키워드 하나('defect detection')가 한 창에 26편을 데려오는데, 그
-# 26편은 relevance 가 글자 그대로 같은 값이라 관련도로는 더 못 가른다.
-# 그 26편의 94%가 저널이라 메일이 저널 벽이 된다.
-#
-# 동점을 가를 신호가 필요하고, 공짜이면서 **위조 불가능하게 판정되는**
-# 것은 하나다 — 본문을 받을 수 있나(arXiv ID 또는 오픈액세스 PDF 링크).
-# 이건 그 논문으로 ④요약·⑤검증·⑦재현이 돌 수 있느냐와 같은 말이고,
-# 읽는 사람이 받는 것의 깊이를 직접 정한다.
-#
-# **§8-44 의 교훈을 어기지 않는다.** 그때 실패한 건 본문 확보 여부로
-# **먼저 갈라버린 것**이었다("읽는 사람이 먼저 알아야 할 건 관련도지 우리
-# 수집 사정이 아니다"). 여기서는 갈래가 아니라 **동점 가르개**다 — 계층
-# 격차(0.2)의 1/4 이라 관련도가 다르면 절대 못 뒤집고, 관련도가 같을 때만
-# 움직인다. 도메인 가점(0.1)보다도 작다: 우리 도메인 낱말이 걸린 저널
-# 논문은 여전히 본문 있는 arXiv 논문을 이긴다.
-#
-# 창 안에서 최신성이 낼 수 있는 최대 차이(0.022)보다는 크게 잡는다 —
-# 안 그러면 사흘의 나이 차가 이 신호를 덮어 아무것도 안 가른다.
-_FULL_TEXT_MUST_BE_A_TIEBREAKER_ONLY = 0.05
-
-
 @dataclass
 class Weights:
     core_topic: float = 1.0     # relevance(0~1)에 곱함
     domain_hit: float = _DOMAIN_MUST_BE_SMALLER_THAN_TIER_GAP
-    full_text: float = _FULL_TEXT_MUST_BE_A_TIEBREAKER_ONLY
     venue_hit: float = 0.3      # venue 매칭 시 고정 가점
     recency: float = 0.15       # recency_score(0~1)에 곱함
     recency_half_life_days: float = 30.0
@@ -231,6 +205,12 @@ class Weights:
 
 def has_full_text_route(paper: dict) -> bool:
     """본문을 받을 길이 있나 — arXiv ID 또는 오픈액세스 PDF 링크.
+
+    **점수에는 안 들어간다.** 잠깐 동점 가르개(+0.05)로 넣었다가 뺐다
+    (2026-09-06). 자리 배분을 `run_profile_scan._full_text_slots` 가 아예
+    문지기로 처리하게 되면서, 내용 자리에 오는 논문은 전부 이 조건을
+    만족한다 — 가르개가 가를 게 없어졌다. 아무것도 안 하는 항을 남기지
+    않는다. 판정 결과는 score_paper 출력의 `full_text` 키로 그대로 보인다.
 
     `pdf-<해시>` 는 사람이 직접 올린 파일의 합성 ID 라 검색 후보에는 안
     나오지만, 나와도 본문이 이미 있다는 뜻이므로 True 가 맞다.
@@ -326,8 +306,6 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
                  if core_topics else 0.0)
     priority = relevance * weights.core_topic
     priority += min(len(domain_hits), DOMAIN_HITS_CAP) * weights.domain_hit
-    if full_text:
-        priority += weights.full_text
     if v_hit:
         priority += weights.venue_hit
     if recency is not None:
