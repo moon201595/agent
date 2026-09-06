@@ -733,6 +733,23 @@ def test_paper_key_falls_back_doi_then_title():
     assert rp.paper_key({"title": " Deep  Nets "}) == "title:deep nets"
 
 
+def test_paper_key_prefers_doi_over_the_synthetic_pdf_id():
+    """**실측 회귀**(2026-09-06). `pdf-<해시>` 는 본문을 받은 **뒤에야** 생기는
+    저장용 ID 다. 검색 결과로 도착할 때 그 논문은 `arxiv_id=None` + DOI 를
+    갖는데, 처리 직후의 모습으로 기록하면 두 키가 안 맞아 필터가 뚫린다.
+
+    실측으로 오픈액세스 저널 논문이 두 실행 연속 1번 자리에 나왔다 —
+    이 필터가 막으려던 **바로 그 논문**(본문이 실제로 열리는 저널)에 구멍이
+    나 있었다. 게다가 본문을 다시 받고 요약을 다시 만들어 무료 한도도 태웠다.
+    """
+    arriving = {"arxiv_id": None, "doi": "10.1007/s11760-026-05625-7"}
+    after_processing = {"arxiv_id": "pdf-c8bbaedce8", "doi": "10.1007/s11760-026-05625-7"}
+    assert rp.paper_key(after_processing) == rp.paper_key(arriving)
+
+    # DOI 가 없는 직접 업로드 PDF 는 합성 ID 가 유일한 신원이다 — 그건 그대로 쓴다.
+    assert rp.paper_key({"arxiv_id": "pdf-abc", "doi": None}) == "pdf-abc"
+
+
 def test_digest_reports_already_seen_count(tmp_path, monkeypatch):
     """후보 수가 왜 줄었는지 메일에서 설명이 돼야 한다."""
     import digest
