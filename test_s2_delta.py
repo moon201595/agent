@@ -276,7 +276,11 @@ class _PagedResp:
         self._items, self._total = items, total
 
     def json(self):
-        return {"data": self._items, "total": self._total}
+        # total=None 은 "S2 가 안 알려줬다" — 그때는 페이지가 덜 찼는지로만 본다.
+        out = {"data": self._items}
+        if self._total is not None:
+            out["total"] = self._total
+        return out
 
 
 def _paged_stub(monkeypatch, pages, total):
@@ -364,3 +368,83 @@ def test_first_page_failure_is_still_none_not_empty(monkeypatch):
     got = asyncio.run(s2_delta.search_keyword_since(
         None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
     assert got is None
+
+
+# ------------------------------------------- 페이지네이션이 만든 결함 세 건 (2026-09-07)
+#
+# 위 페이지네이션을 넣으면서 생긴 것들이다. 외부 검토(Codex)가 짚었고 코드로
+# 대조해 셋 다 사실임을 확인했다. 기존 테스트 25개가 전부 통과했다는 건
+# **아무도 이 세 가지를 지키고 있지 않았다**는 뜻이다.
+
+
+def test_time_budget_is_not_reused_by_every_page(monkeypatch):
+    """**호출 수를 늘리면서 생긴 회귀.** max_wait 를 페이지마다 그대로 넘기면
+    3페이지가 각자 전체 예산을 쓸 수 있어 SEARCH_BUDGET_SECONDS 가 전체
+    검색 시간을 못 막는다 — S2 가 나쁜 날 45분을 먹던 그 문제(§8-34)로 돌아간다.
+    """
+    waits = []
+    clock = [1000.0]
+    monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock[0])
+
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        waits.append(max_wait)
+        clock[0] += 12.0          # 페이지 하나가 12초를 먹었다
+        return _PagedResp(_items(100), 500)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00"), max_wait=30.0))
+
+    # 30초 예산으로 12초짜리 페이지를 돌면 3페이지째는 6초만 남는다.
+    # 예전처럼 매 페이지에 30 을 그대로 주면 총 90초를 쓸 수 있었다.
+    assert waits == [30.0, 18.0, 6.0]
+    assert got.truncated is True      # 상한까지 받고도 남았다
+
+
+def test_exact_page_multiple_is_not_called_truncated(monkeypatch):
+    """total 이 정확히 3페이지면 **다 본 것**이다. 이걸 잘렸다고 하면 래칫이
+    영원히 안 넘어가 같은 창을 매일 다시 조회한다(비용 원칙에도 어긋난다)."""
+    offsets = _paged_stub(monkeypatch, [_items(100)] * 3, total=300)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert len(offsets) == 3
+    assert len(got.papers) == 300
+    assert got.truncated is False
+
+
+def test_known_total_avoids_an_extra_empty_page(monkeypatch):
+    """total=200 이면 2페이지로 끝난다 — 빈 3페이지를 확인하려고 무료 호출을
+    한 번 더 쓰지 않는다."""
+    offsets = _paged_stub(monkeypatch, [_items(100), _items(100, start=100), []], total=200)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert offsets == [0, 100]
+    assert got.truncated is False
+
+
+def test_title_less_items_do_not_fake_truncation(monkeypatch):
+    """total 은 S2 **원시** 건수이고 papers 는 제목 없는 항목을 뺀 목록이다.
+    둘을 비교하면 제목 없는 항목 하나 때문에 다 훑은 창이 '잘렸다'가 된다."""
+    items = _items(11) + [{"title": "", "publicationDate": "2026-08-30"}]
+
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        return _PagedResp(items, 12)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert len(got.papers) == 11        # 제목 없는 것은 버리되
+    assert got.truncated is False       # 그게 잘림은 아니다
+
+
+def test_unknown_total_with_full_pages_stays_conservative(monkeypatch):
+    """total 을 모르는데 3페이지가 다 찼으면 남았는지 알 수 없다 —
+    그때는 '다 봤다'고 하지 않는 쪽이 맞다."""
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        return _PagedResp(_items(100), None)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert got.total is None
+    assert got.truncated is True

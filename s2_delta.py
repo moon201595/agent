@@ -147,12 +147,23 @@ async def search_keyword_since(
     한다(scan_all_profiles 의 프로필 간 실패 격리와 같은 원칙)."""
     page_size = min(limit, 100)
     papers: list[dict] = []
+    fetched = 0                # **원시** 건수. total 과 비교할 대상은 이쪽이다.
     total: int | None = None
     truncated = False
+    # max_wait 는 이 키워드에 남은 전체 대기 예산이다. 페이지마다 그대로 넘기면
+    # 3페이지가 각자 전체 예산을 쓸 수 있어 SEARCH_BUDGET_SECONDS 가 전체 검색
+    # 시간을 못 막는다 — 호출 수를 늘리면서 생긴 문제라, 기한 하나를 잡고
+    # 페이지마다 남은 만큼만 준다.
+    deadline = None if max_wait is None else time.monotonic() + max_wait
     for page in range(max_pages):
         offset = page * page_size
         if offset + page_size > S2_OFFSET_CEILING:
             truncated = True       # API 상한에 걸렸다 — 여기서 멈추되 숨기지 않는다
+            break
+        remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+        if page and remaining is not None and remaining <= 0:
+            # 예산이 끝났다. 남은 게 있는지 모르므로 "다 봤다"고 하지 않는다.
+            truncated = True
             break
         params = {
             "query": keyword,
@@ -164,7 +175,7 @@ async def search_keyword_since(
             params["offset"] = offset
         try:
             resp = await http_client.throttled_s2_get(client, params, http_client.s2_headers(),
-                                                  max_wait=max_wait)
+                                                  max_wait=remaining if page else max_wait)
             payload = resp.json()
         except Exception as e:  # noqa: BLE001
             if papers:
@@ -176,16 +187,21 @@ async def search_keyword_since(
             print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
             return None
         items = payload.get("data") or []
+        fetched += len(items)
         if total is None and isinstance(payload.get("total"), int):
             total = payload["total"]
+        # 제목 없는 항목은 버린다(스코어링도 다이제스트도 못 한다). **버린 것까지
+        # 세서** total 과 비교해야 한다 — 필터 후 건수로 비교하면 제목 없는 항목
+        # 하나 때문에 다 훑은 창이 "잘렸다"가 되고, 래칫이 헛돌아 같은 창을
+        # 계속 다시 본다.
         papers += [p for p in (_to_paper(i) for i in items) if p]
+        if total is not None and offset + len(items) >= total:
+            break                  # 전체 건수를 다 받았다 — 빈 페이지를 또 부르지 않는다
         if len(items) < page_size:
             break                  # 창을 다 훑었다
     else:
-        # 페이지 상한을 다 쓰고도 마지막 페이지가 가득 찼다 = 더 남았다.
-        truncated = True
-    if total is not None and len(papers) < total and not truncated:
-        # 응답이 전체 건수를 알려줬는데 그보다 적게 가져왔다면 남은 것이 있다.
+        # 페이지 상한을 다 쓰고도 끝을 못 봤다 = 더 남았을 수 있다.
+        # (total 로 끝을 확인했으면 위에서 break 로 빠져나가 여기 안 온다.)
         truncated = True
     return KeywordSearch(papers, total, truncated)
 
