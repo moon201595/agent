@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -656,6 +657,18 @@ async def scan_and_digest(
     return result, digest_text
 
 
+# 발송 결과 문자열은 _deliver 가 소유한다. 바깥에서 실패를 판별할 때
+# 이 접두사로만 본다 — 문자열이 흩어지면 "실패했는데 성공으로 읽는" 사고가
+# 난다(2026-09-07, ⑨ 종료코드 전파).
+DELIVERY_FAILED_PREFIX = "발송 실패"
+DELIVERY_NO_RECIPIENT = "수신자 없음 — 발송 안 함"
+
+
+def delivery_failed(message: str | None) -> bool:
+    """발송이 **실패**했는가. 수신자가 없는 것은 설정 상태지 실패가 아니다."""
+    return bool(message) and str(message).startswith(DELIVERY_FAILED_PREFIX)
+
+
 def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> str:
     """다이제스트를 그 프로필의 수신자에게 보낸다. returns 사람이 읽을 상태 한 줄.
 
@@ -672,7 +685,7 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
 
     recipients = research_profile.get_recipients(db_path, profile_id)
     if not recipients:
-        return "수신자 없음 — 발송 안 함"
+        return DELIVERY_NO_RECIPIENT
     profile = research_profile.get_profile(db_path, profile_id)
     name = profile["name"] if profile else profile_id
     try:
@@ -681,7 +694,7 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             digest_text, f"[HARNESS Daily] {name}", recipients, digest_html,
         )
     except Exception as e:  # noqa: BLE001
-        return f"발송 실패: {str(e).splitlines()[0][:200]}"
+        return f"{DELIVERY_FAILED_PREFIX}: {str(e).splitlines()[0][:200]}"
     return f"발송 완료 → {len(recipients)}명"
 
 
@@ -717,7 +730,31 @@ async def scan_all_profiles(
     return summary
 
 
-def main() -> None:
+def _exit_code(summary: dict) -> int:
+    """cron 이 읽을 종료코드. 0 = 그날 할 일을 다 했다.
+
+    **왜 필요한가**(2026-09-07, ⑨): run_daily_scan.sh 가 status 를 로그에만
+    찍고 항상 0 으로 끝나서 **실패한 날과 성공한 날을 바깥에서 구분할 수
+    없었다.** 이 시스템은 "매일 오는 메일 자체가 파이프라인이 살아 있다는
+    증거"라는 전제 위에 서 있는데(M8), 그 전제는 메일이 안 나간 날을 누군가
+    알아챌 때만 성립한다. cron 종료코드가 그 신호다.
+
+    실패로 치는 것: 프로필 스캔 예외(status=='error'), 발송 실패,
+    그리고 **--all 인데 프로필이 하나도 없는 것** — cron 이 매일 도는데
+    아무 일도 안 했다면 그건 조용한 날이 아니라 설정이 비어 있는 것이다.
+    수신자가 없는 프로필은 실패가 아니다(의도된 설정 상태).
+    """
+    if not summary:
+        return 1
+    for entry in summary.values():
+        if entry.get("status") != "ok":
+            return 1
+        if delivery_failed(entry.get("delivery")):
+            return 1
+    return 0
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="프로필(들)로 delta 검색 + 스코어링 + 다이제스트를 돌린다")
     parser.add_argument("profile_id", nargs="?", help="생략하고 --all을 주면 전체 프로필 순회")
     parser.add_argument("--all", action="store_true", help="등록된 프로필 전체를 순회(cron이 쓰는 모드)")
@@ -743,7 +780,13 @@ def main() -> None:
         # cron 로그(crontab 리다이렉트)에 그대로 남는 출력 — 사람이 나중에
         # 로그 파일만 보고도 그날 무슨 일이 있었는지 알 수 있어야 한다.
         print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return
+        code = _exit_code(summary)
+        if code:
+            failed = [pid for pid, e in summary.items()
+                      if e.get("status") != "ok" or delivery_failed(e.get("delivery"))]
+            print(f"[실패] {', '.join(failed) or '등록된 프로필 없음'} — "
+                  f"종료코드 {code}", file=sys.stderr)
+        return code
 
     async def _run() -> tuple[dict, str]:
         async with httpx.AsyncClient() as client:
@@ -760,8 +803,12 @@ def main() -> None:
         # --all 경로와 **같은 함수**를 쓴다(M8) — 발송 로직이 두 벌이면 한쪽만
         # 고치고 다른 쪽을 놓치는 사고가 난다(⑦ 트리거를 docker_runner.py 한
         # 곳에 모은 것과 같은 이유).
-        print(_deliver(db_path, args.profile_id, result, digest_text))
+        message = _deliver(db_path, args.profile_id, result, digest_text)
+        print(message)
+        if delivery_failed(message):
+            return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
