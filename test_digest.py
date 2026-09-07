@@ -623,28 +623,88 @@ def test_paper_link_uses_doi_when_not_arxiv():
     assert digest.paper_link({}) == ""
 
 
+def test_abstract_only_paper_stays_inside_its_own_toggle():
+    """**실측 회귀**(2026-09-07). `_paper_entry_html` 맨 위의 조기 반환이 이
+    갈래를 가로채 `<details>` 도 제목도 번호도 링크도 없는 벌거벗은 div 를
+    돌려줬다. 실제 메일에서 2번 논문의 초록 정리가 **1번 상자 밖에** 붙었고
+    번호가 1 → 3 으로 건너뛰었다 — 사용자가 "저건 보강용이냐"고 물은 게 이것.
+
+    평문 판은 처음부터 분기라 멀쩡했다. HTML 판만 깨져 있었다.
+    """
+    paper = {"arxiv_id": None, "doi": "10.1/x", "title": "초록만 있는 논문",
+             "deep_status": "abstract_only",
+             "abstract_brief": "- 무엇을 하려 했는가: 결함을 검출한다.\n- 어떻게 했는가: YOLO 를 썼다.",
+             "_score": {"priority": 0.9, "core_hits": ["defect detection"],
+                        "domain_hits": [], "venue_hit": None, "top_core_weight": 1.0}}
+    html = digest._paper_entry_html(2, paper)
+
+    assert html.startswith("<details")           # 상자 안에 있다
+    assert html.rstrip().endswith("</details>")  # 밖으로 안 샌다
+    assert "2. [" in html                        # 번호가 있다
+    assert "초록만 있는 논문" in html              # 제목이 있다
+    assert "doi.org/10.1/x" in html              # 링크가 있다
+    assert "결함을 검출한다" in html               # 내용도 그대로
+    assert "초록 기반 정리" in html                # 라벨은 붙되
+    assert "검증" not in html.split("결함을")[0]   # 검증 라벨은 안 붙는다(규칙 8)
+
+
+def test_narrative_headings_are_emphasised_in_html():
+    """**사용자 지적**(2026-09-07): 동향 정리의 소제목이 본문과 같은 크기라
+    네 절이 한 덩어리로 보였다. 글의 뼈대가 안 보이면 훑을 수가 없다.
+
+    소제목 판정은 trend_report._NARRATIVE_PROMPT 가 시킨 문구와의 문자열
+    대조다 — LLM 이 "■ " 를 붙일 때도 안 붙일 때도 있어 장식은 떼고 본다.
+    """
+    assert digest._is_narrative_heading("■ 오늘 눈에 띄는 것")
+    assert digest._is_narrative_heading("갈래")
+    assert digest._is_narrative_heading("   우리 분야와 만나는 지점  ")
+    assert not digest._is_narrative_heading("첫째, 비전-언어-액션 모델의 흐름이 뚜렷하다.")
+
+    scan = {"papers": [], "candidates_found": 3,
+            "narrative": ("갈래\n첫째, 결함 검출 흐름이 뚜렷하다.", [])}
+    html = digest.generate_digest_html(scan, "t")
+    heading = [ln for ln in html.split("<div") if "갈래" in ln][0]
+    body = [ln for ln in html.split("<div") if "첫째," in ln][0]
+    assert "font-weight:700" in heading
+    assert "font-weight:700" not in body       # 본문까지 굵어지면 뼈대가 안 보인다
+
+
 def test_no_broken_arxiv_none_link_anywhere():
-    """핵심 회귀: 어떤 렌더 경로에서도 /abs/None 이 나오면 안 된다."""
-    scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY]}
+    """핵심 회귀: 어떤 렌더 경로에서도 /abs/None 이 나오면 안 된다.
+
+    2026-09-07: "그 밖에 걸린 논문" 절이 빠지면서 검사 대상을 그 절에서
+    **내용 자리**로 옮겼다. 지키는 주장은 그대로다 — arXiv 밖 논문에
+    arxiv.org/abs/None 을 찍지 않는다.
+    """
+    scan = {"papers": [_TITLE_ONLY], "candidates_found": 9}
     for text in (digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")):
         assert "abs/None" not in text
         assert "10.1016/j.solener.2026.1" in text
 
 
-def test_out_of_rank_papers_are_listed_not_called_failures():
-    """순위 밖 논문은 '처리 실패'가 아니다 — §8-24 와 같은 구분.
+def test_out_of_rank_papers_are_no_longer_listed():
+    """**계약이 바뀌었다**(2026-09-07, 사용자 지시: "있어서 뭐해 저거").
 
-    2026-09-04: 절 이름이 "본문 비공개"에서 "그 밖에 걸린 논문"으로 바뀌었다.
-    가르는 기준이 본문 확보 여부에서 관련도 순위로 옮겨갔기 때문이다.
-    **주장("실패라 부르지 않는다")은 그대로다.**
+    전에는 순위 밖 논문 8편을 제목·키워드·링크로 나열했고, 이 테스트는
+    그것을 "처리 실패"라 부르지 않는지 지켰다(§8-24 와 같은 구분).
+    실측으로 그 목록이 09-06 발송분에서 **8편 전부 ★ 하나**였다 — 제목 말고는
+    정보가 없으면서 메일 길이의 상당 부분을 먹었다.
+
+    **동향을 놓치는 게 아니다.** 그 논문들은 여전히 키워드 편수 집계에 들어가고
+    `title_only_papers` 로 trend_report.narrative 에 전달돼 서술에 이름으로
+    나온다. 이 테스트는 이제 그 두 가지를 같이 못박는다 — 목록은 빠졌지만
+    데이터는 그대로 흐른다.
     """
-    scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY]}
+    scan = {"papers": [], "candidates_found": 9, "title_only_papers": [_TITLE_ONLY],
+            "core_hit_counts": {"defect detection": 4}}
     text = digest.generate_digest(scan, "t")
-    assert "그 밖에 걸린 논문" in text
-    assert "처리 실패" not in text
-    assert "PhyHGNet" in text
-    # 논문이 있는데 "없습니다"로 끝나면 안 된다
-    assert "오늘은 새로 걸린 논문이 없습니다" not in text
+    html = digest.generate_digest_html(scan, "t")
+    for out in (text, html):
+        assert "그 밖에 걸린 논문" not in out
+        assert "PhyHGNet" not in out          # 제목 나열이 사라졌다
+        assert "처리 실패" not in out          # 그렇다고 실패라 부르지도 않는다
+    # 편수 집계에는 그대로 남는다 — 그 논문들이 메일에서 사라진 게 아니다.
+    assert "defect detection 4" in text
 
 
 def test_empty_scan_still_reports_nothing_found():

@@ -686,34 +686,20 @@ def _filtered_line(scan_result: dict) -> str:
     return ", ".join(parts)
 
 
-def _title_only_section(scan_result: dict) -> list[str]:
-    """본문을 못 받는 논문 목록. 제목·출처·링크만 한 줄씩.
-
-    **2026-09-04 개정**: 이 절은 이제 "본문을 못 받은 논문"이 아니라
-    **"관련도 순위가 밖인 논문"**이다. 하루 전에는 본문 확보 여부로 갈랐는데,
-    그러다 ★★★ 팀 표적 논문 두 편이 ★★ 여섯 편 아래에 묻혔다 — 순서가
-    거꾸로였다. 이제 자리는 관련도가 정하고 깊이만 확보한 것이 정한다.
-
-    **"실패"가 아니다.** 저자가 코드를 안 올린 것을 `[재현 ✗]` 로 부르면
-    안 되는 것과 같은 이유로(§8-24), 페이월 뒤에 있는 논문을 "처리 실패"로
-    부르면 안 된다 — 우리 쪽이 고장난 게 아니다. 기관 구독으로 볼 수 있는
-    논문이니 **제목과 링크를 주는 것 자체가 정보**다.
-    """
-    papers = scan_result.get("title_only_papers") or []
-    if not papers:
-        return []
-    lines = ["", f"■ 그 밖에 걸린 논문 ({len(papers)}편 · 제목만)",
-             "   (관련도 순위가 위 목록 밖이라 요약은 안 했다. 제목이 눈에 들면 링크로 보면 된다)"]
-    for paper in papers:
-        score = paper.get("_score", {})
-        lines.append(f"   [{_stars(score)}] {paper.get('title') or '(제목 없음)'}")
-        why = _why_matched(score)
-        venue = (paper.get("venue") or "").strip()
-        lines.append(f"        {why}" + (f" / {venue}" if venue else ""))
-        link = paper_link(paper)
-        if link:
-            lines.append(f"        {link}")
-    return lines
+# ── "그 밖에 걸린 논문" 절을 뺐다 (2026-09-07, 사용자 지시: "있어서 뭐해 저거")
+#
+# 관련도 순위 밖 논문 8편을 제목·키워드·링크만 한 줄씩 붙이던 절이었다.
+# 뺀 근거는 그 목록이 실제로 무엇이었는지다 — 09-06 발송분 8편 전부가
+# ★ 한 개(=동향어만 맞힌 논문)였고, 제목 말고는 아무 정보가 없었다.
+# 메일 길이의 상당 부분을 먹으면서 "이 분야가 어디로 가는가"에는 기여하지
+# 않았다.
+#
+# **동향을 놓치는 게 아니다.** 그 논문들은 그대로 살아 있다:
+#   · 키워드별 적중 편수 집계 — 후보 전체를 세므로 편수는 그대로 나온다
+#   · 오늘의 동향 정리 — trend_report.narrative 가 이 목록까지 받아서 쓰고,
+#     실제로 09-06 서술이 각주에 있던 ZETA·HINT·RoboTok 을 이름으로 언급했다
+# 즉 제목 나열이 사라졌을 뿐 그 논문들이 메일에서 사라진 게 아니다.
+# `title_only_papers` 는 계속 만들어져 서술 입력으로 쓰인다 — 렌더링만 뺐다.
 
 
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -820,10 +806,6 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     else:
         lines += [f"■ 본문을 받을 수 있는 신규 논문은 없었습니다 (전체 후보 {candidates}건 중).", ""]
 
-    lines += _title_only_section(scan_result)
-    if lines and lines[-1] != "":
-        lines.append("")
-
     trend = _trend_line(scan_result)
     if trend:
         lines += [f"■ 이번 창의 키워드별 적중 편수 (후보 {candidates}건 기준)",
@@ -924,6 +906,31 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
                 f'margin-top:8px;">{_esc(label)}</div>'
                 f'<ul style="margin:4px 0 0;padding-left:18px;">{lis}</ul>')
 
+    # 초록 기반 정리는 **여기서** 만든다(2026-09-07).
+    #
+    # 전에는 `_paper_entry_html` 맨 위의 **조기 반환**이 이 갈래를 통째로
+    # 가로챘고, 그 반환값에는 `<details>` 도 `<summary>` 도 제목도 번호도
+    # 링크도 없었다. 그래서 실제 메일에서 초록 기반 논문의 본문이 **앞 논문
+    # 상자 밖에 벌거벗은 채로** 붙었고, 번호가 1 → 3 으로 건너뛰었다.
+    # 사용자가 "맨 위 논문 아래 있는 저건 보강용이냐"고 물은 게 이것이다 —
+    # 2번 논문의 내용이 1번에 붙은 것처럼 보였다.
+    #
+    # 평문 판(`_paper_entry`)은 처음부터 **분기**로 짜여 있어 멀쩡했다.
+    # HTML 판만 조기 반환이라 깨졌다 — "HTML 을 차단한 사람만 다른 메일을
+    # 받는다"의 정반대 버전이다.
+    #
+    # **이 코드베이스에서 조기 반환이 같은 병을 낸 네 번째다**(§8-50 에서
+    # batch_summarize 둘, §8-57 에서 run_profile_scan 하나). 같은 결말로 가는
+    # 길이 여럿이면 모이는 지점을 먼저 만들라는 교훈이 또 걸렸다.
+    brief = (paper.get("abstract_brief") or "").strip()
+    if deep_status == "abstract_only" and brief:
+        body = "".join(
+            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'margin:2px 0;">{_esc(_plain(ln))}</div>'
+            for ln in brief.splitlines() if _plain(ln))
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin-top:8px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}')
+
     if deep_status.startswith("failed"):
         tldr = paper.get("s2_tldr")
         return para(tldr) if tldr else para(_html_excerpt(paper))
@@ -950,17 +957,11 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     deep_status = str(paper.get("deep_status") or "")
 
     if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
-        body = "".join(
-            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:2px 0;">{_esc(_plain(ln))}</div>'
-            for ln in paper["abstract_brief"].strip().splitlines() if _plain(ln))
-        return (
-            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'margin-top:6px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}'
-            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'margin-top:4px;">[초록 기반 정리 · 본문 미확보 · 미검증]</div>')
-
-    if deep_status.startswith("failed"):
+        # 검증·재현 라벨을 절대 같이 쓰지 않는다(규칙 8) — ⑤ 를 통과한 게 아니다.
+        chips = _status_chip("초록 기반 정리 · 본문 미확보 · 미검증", flagged=False)
+        detail = ""
+        needs_attention = False
+    elif deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
         chips = _status_chip("미검증 · 초록 기반", flagged=True)
         detail = f'<div style="color:{_FLAG_INK};font-size:13px;">처리 실패: {_esc(reason)}</div>'
@@ -1018,37 +1019,32 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     )
 
 
-def _title_only_html(scan_result: dict) -> str:
-    """본문 비공개 논문 목록의 HTML 판. 근거는 _title_only_section 주석 참고."""
-    papers = scan_result.get("title_only_papers") or []
-    if not papers:
-        return ""
-    rows = []
-    for paper in papers:
-        score = paper.get("_score", {})
-        link = paper_link(paper)
-        title = _esc(paper.get("title") or "(제목 없음)")
-        if link:
-            title = (f'<a href="{_esc(link)}" style="color:{_NAVY};'
-                     f'text-decoration:none;">{title}</a>')
-        venue = (paper.get("venue") or "").strip()
-        meta = _esc(_why_matched(score)) + (f" / {_esc(venue)}" if venue else "")
-        rows.append(
-            f'<li style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin-bottom:6px;">{_esc(_stars(score))} {title}'
-            f'<br><span style="color:{_MUTED};font-size:12px;">{meta}</span></li>'
-        )
-    return (
-        f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-        f'font-weight:600;border-top:1px solid {_LINE};padding-top:10px;'
-        f'margin-top:14px;margin-bottom:4px;">그 밖에 걸린 논문 '
-        f'({len(papers)}편 · 제목만)</p>'
-        f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-        f'margin:0 0 8px;">관련도 순위가 위 목록 밖이라 요약은 안 했습니다. '
-        f'제목이 눈에 들면 링크로 보면 됩니다.</p>'
-        f'<ul style="background-color:{_PAPER_BG};padding-left:18px;margin:0;">'
-        + "".join(rows) + "</ul>"
-    )
+# 동향 서술의 소제목 — trend_report._NARRATIVE_PROMPT 가 시키는 네 개 그대로다.
+# LLM 이 "■ " 를 붙일 때도 있고 안 붙일 때도 있어서(실측: 09-06 두 실행이
+# 서로 달랐다) 앞의 장식을 떼고 대조한다. 프롬프트가 정한 문구와 **문자열
+# 대조**만 하므로 판정이 아니다(규칙 7).
+_NARRATIVE_HEADINGS = frozenset({
+    "오늘 눈에 띄는 것", "갈래", "우리 분야와 만나는 지점", "아직 밖에 있지만 넘어올 것",
+})
+_HEADING_ORNAMENT_RE = re.compile(r"^[■□▪●•\-*#\s]+|[:：\s]+$")
+
+
+def _is_narrative_heading(line: str) -> bool:
+    return _HEADING_ORNAMENT_RE.sub("", line.strip()) in _NARRATIVE_HEADINGS
+
+
+def _narrative_line_html(line: str) -> str:
+    """서술 한 줄을 HTML 로. 소제목이면 굵게 키우고 위에 여백을 준다.
+
+    2026-09-07 사용자 지적: 소제목이 본문과 같은 크기·굵기라 네 절이 한 덩어리로
+    보였다. 글의 뼈대가 안 보이면 "그래서 무슨 일이 벌어지나"를 훑을 수가 없다.
+    """
+    text = _plain(line)
+    if _is_narrative_heading(line):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
+                f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
+    return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+            f'margin:3px 0;">{_esc(text)}</div>')
 
 
 def generate_digest_html(scan_result: dict, profile_name: str) -> str:
@@ -1101,8 +1097,6 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'(전체 후보 {candidates}건 중).</p>'
         )
 
-    body += _title_only_html(scan_result)
-
     trend = _trend_line(scan_result)
     if trend:
         body += (
@@ -1115,10 +1109,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
-        paras = "".join(
-            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:3px 0;">{_esc(_plain(ln))}</div>'
-            for ln in text.strip().splitlines() if _plain(ln))
+        paras = "".join(_narrative_line_html(ln)
+                        for ln in text.strip().splitlines() if _plain(ln))
         warn = ""
         if ungrounded:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
