@@ -1292,6 +1292,25 @@ TSPulse 실측에서 확인한, placeholder print 가 exit 0 을 내 거짓 통�
 
 ---
 
+### AGENTS.md 도입 — 두 도구가 같은 사실을 보게 함 (2026-09-07)
+
+이 저장소를 Claude Code 와 Codex 가 함께 만지게 되면서, Codex 쪽은 CLAUDE.md 를
+읽지 않는다는 문제가 생겼다. Codex·Cursor 계열이 자동으로 읽는 것은 `AGENTS.md`
+다. 규칙을 두 벌로 복사하면 곧 어긋나므로, 역할을 갈랐다.
+
+- `AGENTS.md` — **사실**. 스택, 실제로 통하는 명령, 모듈 지도, 커밋 관행, 안 건드릴 곳,
+  과거에 틀렸던 함정. AGENTS.md 를 읽는 모든 도구가 본다.
+- `CLAUDE.md` — **판단 규칙**. 비용 원칙·설계 원칙·정직성 규칙·작업 규율·마일스톤.
+  맨 위에서 `@AGENTS.md` 로 사실 파일을 import 한다. 충돌 시 CLAUDE.md 가 우선한다.
+- Claude ↔ Codex 역할 분담은 둘 다에 쓰지 않는다 — `~/.claude/CLAUDE.md`(사용자 전역) 몫이다.
+
+작성하면서 실측으로 갈린 것 두 가지. 일반적인 Python 템플릿이 권하는 `uv`·Ruff·mypy 는
+이 저장소에 **없다** — `.venv` + `pytest` 단독이고 린터·타입체커·`pyproject.toml` 이
+없다. 그리고 `pytest --cov` 도 안 된다(`pytest-cov` 미설치, `coverage` 7.16.0 을 직접
+쓴다). 확인 없이 템플릿을 적었으면 두 에이전트 다 "커버리지 돌렸다"는 잘못된 완료
+판정을 했을 것이다. 커밋 관행도 Conventional Commits 가 아니라 한국어 서술형 한 줄에
+`main` 직접 커밋이라는 실제를 적었다.
+
 ## 8. 미해결 (우선순위)
 
 1. ~~**논문 1편 실제 왕복**~~ — 2026-07-30 완료. §5 참고.
