@@ -1179,3 +1179,60 @@ def test_empty_slots_are_filled_rather_than_left_blank():
     assert [x["_score"]["priority"] for x in top] == [0.9, 0.8, 0.3]
     assert rest == []
 
+
+
+# ------------------------------------------- ⑨ 종료코드 전파 (2026-09-07)
+#
+# run_daily_scan.sh 가 status 를 로그에만 찍고 마지막 줄이 `|| true` 라 **항상
+# 0 으로 끝났다** — 실패한 날과 성공한 날을 바깥에서 구분할 수 없었다.
+# 이 시스템은 "매일 오는 메일이 파이프라인이 살아 있다는 증거"라는 전제 위에
+# 서 있는데(M8), 그 전제는 메일이 안 나간 날을 누군가 알아챌 때만 성립한다.
+
+
+def test_all_ok_exits_zero():
+    assert rps._exit_code({"team_ai": {"status": "ok", "delivery": "발송 완료 → 1명"}}) == 0
+
+
+def test_profile_error_exits_nonzero():
+    """프로필 하나가 예외로 죽으면 그날은 성공이 아니다."""
+    assert rps._exit_code({"a": {"status": "ok"}, "b": {"status": "error"}}) != 0
+
+
+def test_delivery_failure_exits_nonzero():
+    """스캔은 됐는데 메일이 안 나갔다 — 사람 화면에는 아무것도 안 온 날이다."""
+    assert rps._exit_code({"a": {"status": "ok", "delivery": "발송 실패: SMTP 죽음"}}) != 0
+
+
+def test_no_recipient_is_not_a_failure():
+    """수신자를 안 넣은 건 설정 상태지 고장이 아니다 — 매일 경보를 울리면
+    경보 자체가 무시된다."""
+    assert rps._exit_code({"a": {"status": "ok",
+                                 "delivery": rps.DELIVERY_NO_RECIPIENT}}) == 0
+
+
+def test_empty_summary_exits_nonzero():
+    """cron 이 매일 도는데 아무 일도 안 했다면 조용한 날이 아니라 설정이 비었다."""
+    assert rps._exit_code({}) != 0
+
+
+def test_delivery_failed_reads_only_the_owned_prefix():
+    assert rps.delivery_failed("발송 실패: SMTP 죽음")
+    assert not rps.delivery_failed("발송 완료 → 2명")
+    assert not rps.delivery_failed(None)
+    assert not rps.delivery_failed("")
+
+
+def test_scan_all_records_the_delivery_message_verbatim(tmp_path, monkeypatch):
+    """실패 판별은 _deliver 가 만든 문자열로만 한다 — summary 에 그대로 남아야
+    cron 로그에서 사람이 같은 근거를 본다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_empty_arxiv(monkeypatch)
+    monkeypatch.setattr(rps, "_deliver", lambda *a: "발송 실패: SMTP 죽음")
+
+    async def run():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2, send=True)
+
+    summary = asyncio.run(run())
+    assert summary["team_ai"]["delivery"] == "발송 실패: SMTP 죽음"
+    assert rps._exit_code(summary) != 0
