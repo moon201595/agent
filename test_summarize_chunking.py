@@ -34,11 +34,11 @@ def test_short_paper_single_call_no_addendum(monkeypatch):
     paper = _make_paper(5)  # 짧아서 청크 1개로 끝나야 함
 
     async def main():
-        return await engine._summarize_chunked(
+        return (await engine._summarize_chunked(
             client=None, paper_text=paper, template="템플릿",
             call_single=engine.call_gemini, call_addendum=engine.call_gemini_addendum,
             chunk_size=100000, max_chunks=4, chunk_delay=0.0, label="Gemini",
-        )
+        ))[0]
 
     result = asyncio.run(main())
     assert len(calls) == 1  # 보충 호출 없음
@@ -61,11 +61,11 @@ def test_long_paper_triggers_addendum_calls(monkeypatch):
     paper = _make_paper(200)
 
     async def main():
-        return await engine._summarize_chunked(
+        return (await engine._summarize_chunked(
             client=None, paper_text=paper, template="템플릿",
             call_single=engine.call_gemini, call_addendum=engine.call_gemini_addendum,
             chunk_size=500, max_chunks=4, chunk_delay=0.01, label="Gemini",
-        )
+        ))[0]
 
     result = asyncio.run(main())
     assert len(calls) > 1  # 청크 1(본문) + 보충 청크 여러 번
@@ -88,11 +88,11 @@ def test_addendum_no_content_is_not_appended(monkeypatch):
     paper = _make_paper(200)
 
     async def main():
-        return await engine._summarize_chunked(
+        return (await engine._summarize_chunked(
             client=None, paper_text=paper, template="템플릿",
             call_single=engine.call_gemini, call_addendum=engine.call_gemini_addendum,
             chunk_size=500, max_chunks=3, chunk_delay=0.0, label="Gemini",
-        )
+        ))[0]
 
     result = asyncio.run(main())
     assert len(calls) > 1  # 보충 호출은 실제로 갔다
@@ -112,11 +112,11 @@ def test_mid_chunk_failure_preserves_partial_result(monkeypatch):
     paper = _make_paper(200)
 
     async def main():
-        return await engine._summarize_chunked(
+        return (await engine._summarize_chunked(
             client=None, paper_text=paper, template="템플릿",
             call_single=engine.call_gemini, call_addendum=engine.call_gemini_addendum,
             chunk_size=500, max_chunks=4, chunk_delay=0.0, label="Gemini",
-        )
+        ))[0]
 
     result = asyncio.run(main())
     assert result == "### 기본정보\n- 제목 : 테스트"  # 청크 1 결과는 보존됨
@@ -136,11 +136,11 @@ def test_sentence_ids_are_globally_continuous_across_chunks(monkeypatch):
     paper = _make_paper(200)
 
     async def main():
-        return await engine._summarize_chunked(
+        return (await engine._summarize_chunked(
             client=None, paper_text=paper, template="템플릿",
             call_single=engine.call_gemini, call_addendum=engine.call_gemini_addendum,
             chunk_size=500, max_chunks=4, chunk_delay=0.0, label="Gemini",
-        )
+        ))[0]
 
     asyncio.run(main())
     assert len(prompts) >= 2

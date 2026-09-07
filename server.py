@@ -445,8 +445,12 @@ class SaveSummaryInput(BaseModel):
     arxiv_id: str = Field(..., description="요약 대상 논문의 arXiv ID (fetch_paper 선행 필요)")
     markdown: str = Field(..., min_length=1, description="템플릿 형식을 따른 요약 마크다운 전문")
     engine: str | None = Field(default=None,
-                               description="이 요약을 만든 엔진('gemini'|'groq'). 주면 "
-                                           "원문 커버리지를 같이 계산해 저장한다")
+                               description="이 요약을 만든 엔진('gemini'|'groq')")
+    coverage: float | None = Field(default=None, ge=0.0, le=1.0,
+                                   description="실제로 LLM 에 들어간 청크 기준의 원문 "
+                                               "커버리지 실측값. summarize() 가 돌려준 값을 "
+                                               "그대로 넘긴다. 없으면 엔진 설정의 계획 상한을 "
+                                               "'planned' 로 구분해 저장한다")
 
 
 class HybridSearchInput(BaseModel):
@@ -1210,10 +1214,18 @@ async def save_summary(params: SaveSummaryInput) -> str:
     # 아는 지점이 여기라, 신규 저장 경로 전부(batch_summarize 배치·review_app
     # 재생성·PDF 업로드)가 이 함수 하나를 지나므로 여기 한 곳만 True 로 준다.
     report = verify_numbers(params.markdown, source, expect_grounded=True)
-    # 엔진을 모르면 커버리지도 모른다 — 1.0 으로 넘겨짚지 않고 NULL 로 둔다
-    # (CLAUDE.md 8: 미실측을 측정값처럼 쓰지 않는다).
-    coverage = (summarize_engine.coverage_ratio(source, params.engine)
-                if params.engine else None)
+    # 커버리지는 **뜻과 함께** 저장한다(2026-09-07, §8-70).
+    #   · 호출부가 실측값을 주면 그대로 'measured'.
+    #   · 엔진만 알면 그 설정의 계획 상한을 'planned' 로 — 실제로 다 봤다는
+    #     뜻이 아니다. 중간 청크가 실패해 끊긴 요약도 이 값은 1.0 이 나온다.
+    #   · 둘 다 없으면 NULL. 1.0 으로 넘겨짚지 않는다(규칙 8).
+    if params.coverage is not None:
+        coverage, coverage_kind = float(params.coverage), "measured"
+    elif params.engine:
+        coverage = summarize_engine.planned_coverage_ratio(source, params.engine)
+        coverage_kind = "planned"
+    else:
+        coverage, coverage_kind = None, None
 
     out_path = SUMMARY_DIR / f"{arxiv_id.replace('/', '_')}.md"
     out_path.write_text(params.markdown, encoding="utf-8")
@@ -1225,10 +1237,11 @@ async def save_summary(params: SaveSummaryInput) -> str:
         con.execute(
             """INSERT OR REPLACE INTO summaries
                (arxiv_id, path, numbers_total, numbers_matched, created_at,
-                review_status, review_note, reviewed_at, engine, coverage_ratio)
-               VALUES (?,?,?,?,?,'pending',NULL,NULL,?,?)""",
+                review_status, review_note, reviewed_at, engine, coverage_ratio,
+                coverage_kind)
+               VALUES (?,?,?,?,?,'pending',NULL,NULL,?,?,?)""",
             (arxiv_id, str(out_path), report.total, report.matched, _now(),
-             params.engine, coverage),
+             params.engine, coverage, coverage_kind),
         )
     return json.dumps(
         {"saved_path": str(out_path), "verification": report.to_dict()},

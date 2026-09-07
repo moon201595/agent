@@ -896,3 +896,87 @@ def test_missing_log_adds_nothing(tmp_path, monkeypatch):
     """모르면 덧붙이지 않는다 — 없는 근거를 만들어내지 않는다(규칙 8)."""
     monkeypatch.setattr(digest.storage, "REPRO_DIR", tmp_path)
     assert digest._verified_kind("없는논문") == ""
+
+
+# ------------------------------------------- ⑥ 주간 리뷰가 HTML 에도 (§8-70, 2026-09-07)
+
+_WEEKLY_SAMPLE = "\n".join([
+    "■ 주간 동향 리뷰",
+    "",
+    "처리한 논문 12편 (지난주 9편)",
+    "  출처 : arxiv 10편 · open-access 2편",
+    "  ⚠ 원문을 다 못 본 요약 2편 (최저 40%) — Groq 폴백 영향(§8-25)",
+    "",
+    "▶ 주제별 편수 (지난주 대비)",
+    "   defect detection 5  (3→5, +2)",
+    "   ※ core_topics 에 없어서 검색·점수·추이 어디에도 안 잡히는 말들이다.",
+    "",
+    "─" * 60,
+    "▶ 서술 (LLM 이 이번 주 논문의 제목·초록만 보고 쓴 것)",
+    "   결함 검출 쪽으로 무게가 옮겨 갔다.",
+]) + "\n"
+
+
+def test_weekly_review_reaches_the_html_mail():
+    """**§8-70 의 결함**: 주간 리뷰가 평문 판에만 있었다.
+
+    run_profile_scan 이 digest_text 에 문자열로 이어붙였는데 _deliver 는 HTML 을
+    result 로 **다시 만든다** — result 에 그 값이 없으니 HTML 에는 절이 통째로
+    빠졌다. 메일은 multipart/alternative 고 Gmail 은 HTML 을 보여주므로,
+    2026-09-07 에 처음 돌아간 주간 리뷰는 실행됐지만 화면에 닿지 않았다.
+    """
+    scan = {"papers": [], "candidates_found": 3, "weekly_review": _WEEKLY_SAMPLE}
+    html = digest.generate_digest_html(scan, "t")
+    assert "주간 동향 리뷰" in html
+    assert "처리한 논문 12편" in html
+    assert "defect detection 5" in html
+    assert "결함 검출 쪽으로 무게가 옮겨 갔다." in html
+
+
+def test_weekly_review_plain_and_html_carry_the_same_content():
+    """평문/HTML 불일치가 이 코드베이스에서 반복된 결함이다(§8-57, §8-67, §8-70).
+
+    두 렌더러가 같은 `weekly_review` 하나를 읽는지 내용으로 확인한다.
+    """
+    scan = {"papers": [], "candidates_found": 3, "weekly_review": _WEEKLY_SAMPLE}
+    text = digest.generate_digest(scan, "t")
+    html = digest.generate_digest_html(scan, "t")
+    for needle in ("주간 동향 리뷰", "처리한 논문 12편", "defect detection 5",
+                   "결함 검출 쪽으로 무게가 옮겨 갔다."):
+        assert needle in text, needle
+        assert needle in html, needle
+
+
+def test_weekly_review_absent_renders_nothing():
+    """주 1회만 채워진다 — 없는 날 빈 절이 생기면 안 된다."""
+    scan = {"papers": [], "candidates_found": 3}
+    assert digest._weekly_review_html(scan) == ""
+    assert digest._weekly_review_lines(scan) == []
+    assert "주간 동향 리뷰" not in digest.generate_digest_html(scan, "t")
+    for empty in ("", "   \n"):
+        assert digest._weekly_review_html({"weekly_review": empty}) == ""
+
+
+def test_weekly_review_html_keeps_the_section_skeleton():
+    """뼈대가 안 보이면 훑을 수가 없다(§8-69 와 같은 이유).
+
+    ■ 큰 제목과 ▶ 절 제목은 굵게, ※ 각주는 흐리게, ⚠ 경고는 빨갛게.
+    본문 줄까지 굵어지면 뼈대가 다시 안 보이므로 그건 굵지 않아야 한다.
+    """
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_SAMPLE})
+    def block(needle):
+        return [b for b in html.split("<div") if needle in b][0]
+    assert "font-weight:700" in block("주간 동향 리뷰")
+    assert "font-weight:700" in block("주제별 편수")
+    assert "font-weight:700" not in block("처리한 논문 12편")
+    assert "#B00020" in block("원문을 다 못 본 요약")        # 경고는 빨강
+    assert "font-size:11px" in block("core_topics 에 없어서")  # 각주는 작게
+
+
+def test_weekly_review_html_escapes_and_stays_inline():
+    """이메일 HTML 규칙: 외부 리소스 없음, 특수문자는 이스케이프."""
+    html = digest._weekly_review_html({"weekly_review": "▶ <script>alert(1)</script>\n"})
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    for banned in ("http://", "https://", "<link", "<style"):
+        assert banned not in digest._weekly_review_html({"weekly_review": _WEEKLY_SAMPLE})

@@ -235,12 +235,16 @@ async def _summarize_target(
     # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
     paper_text = server.read_full_text(arxiv_id)
     status_box.write(f"④ [{arxiv_id}] 요약 생성 중...")
-    summary, used_engine = await engine.summarize(client, paper_text, template)
-    status_box.write(f"④ [{arxiv_id}] 완료 — {used_engine} 사용")
+    summary, used_engine, coverage = await engine.summarize(client, paper_text, template)
+    status_box.write(f"④ [{arxiv_id}] 완료 — {used_engine} 사용 (원문 {coverage * 100:.0f}% 실측)")
 
+    # 엔진과 실측 커버리지를 같이 넘긴다(2026-09-07, §8-70). 이 경로는 그전까지
+    # 둘 다 안 넘겨서 저장된 요약의 커버리지가 통째로 NULL 이었다 —
+    # 같은 파이프라인인데 batch_summarize 로 만든 것만 값이 있었다.
     status_box.write(f"⑤ [{arxiv_id}] 검증 + 저장 중...")
     save_result = json.loads(
-        await server.save_summary(server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=summary))
+        await server.save_summary(server.SaveSummaryInput(
+            arxiv_id=arxiv_id, markdown=summary, engine=used_engine, coverage=coverage))
     )
     v = save_result.get("verification", {})
     status_box.write(
