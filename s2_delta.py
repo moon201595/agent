@@ -33,10 +33,26 @@ from datetime import datetime
 
 import httpx
 
+from dataclasses import dataclass
 
-# 키워드 하나당 받아올 최대 건수. S2 는 offset+limit 이 1000 을 못 넘고,
-# 관련도 순이라 뒤로 갈수록 무관해진다 — 앞쪽만 봐도 충분하다.
+
+# 한 번에 받아올 건수(= S2 의 페이지 크기). S2 는 limit 상한이 100 이다.
 PER_KEYWORD_LIMIT = 100
+
+# 키워드당 최대 페이지 수(2026-09-07, §8-70). 그전에는 페이지 개념이 아예 없어
+# **101번째가 있는지 확인하지도 않고 "done" 으로 기록**했다 — done 은 래칫을
+# 전진시키므로(research_profile.next_window_start) 그 창의 나머지 논문은 다시는
+# 조회되지 않는다. 조용히 잃는 경로였다.
+#
+# 그렇다고 끝까지 넘기지는 않는다. 페이지 하나가 호출 하나이고 S2 는 429 를
+# 잘 낸다(§8-34). 3페이지 = 키워드당 최대 300편이면, 실측(09-03: 6키워드
+# 266편)의 창 전체보다 크다 — 정상적인 날에는 첫 페이지에서 끝난다. 상한에
+# 걸려 못 본 게 남으면 그건 **truncated 로 표시해 status 를 partial 로 만든다**
+# — 다음 실행이 같은 창을 다시 본다. 못 본 것을 봤다고 하지 않는 게 요점이다.
+MAX_PAGES_PER_KEYWORD = 3
+
+# S2 는 offset+limit 이 1000 을 못 넘는다. 넘기면 400 이 온다.
+S2_OFFSET_CEILING = 1000
 
 # ③ 검색에 쓸 벽시계 예산(초). Deep Layer 에는 예산이 있는데
 # (DEEP_LAYER_BUDGET_SECONDS) **검색에는 없었다** — 그래서 S2 가 나쁜 날엔
@@ -101,10 +117,24 @@ def _to_paper(item: dict) -> dict | None:
     }
 
 
+@dataclass
+class KeywordSearch:
+    """키워드 하나 조회의 결과 전부.
+
+    리스트만 돌려주면 "다 봤다"와 "상한에 걸려 여기까지"를 구분할 수 없다 —
+    그 구분이 없어서 §8-70 의 거짓 done 이 생겼다. 값이 셋이 되면 이름을
+    붙인다(trend_report.ReferenceScan 과 같은 이유).
+    """
+    papers: list[dict]
+    total: int | None       # S2 가 알려준 창 안 전체 건수 (모르면 None)
+    truncated: bool         # 더 있는데 상한·예산으로 못 가져왔다
+
+
 async def search_keyword_since(
     client: httpx.AsyncClient, keyword: str, since: datetime, until: datetime,
     limit: int = PER_KEYWORD_LIMIT, max_wait: float | None = None,
-) -> list[dict] | None:
+    max_pages: int = MAX_PAGES_PER_KEYWORD,
+) -> KeywordSearch | None:
     """키워드 하나로 창 안의 논문을 받는다.
 
     **None(실패)과 빈 리스트(결과 없음)를 구분해서 돌려준다.** 둘을 같게
@@ -115,20 +145,49 @@ async def search_keyword_since(
 
     실패해도 예외를 올리지 않는다 — 한 키워드가 죽어도 나머지는 살아야
     한다(scan_all_profiles 의 프로필 간 실패 격리와 같은 원칙)."""
-    params = {
-        "query": keyword,
-        "publicationDateOrYear": _window(since, until),
-        "fields": _FIELDS,
-        "limit": min(limit, 100),
-    }
-    try:
-        resp = await http_client.throttled_s2_get(client, params, http_client.s2_headers(),
-                                              max_wait=max_wait)
-        items = resp.json().get("data") or []
-    except Exception as e:  # noqa: BLE001
-        print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
-        return None
-    return [p for p in (_to_paper(i) for i in items) if p]
+    page_size = min(limit, 100)
+    papers: list[dict] = []
+    total: int | None = None
+    truncated = False
+    for page in range(max_pages):
+        offset = page * page_size
+        if offset + page_size > S2_OFFSET_CEILING:
+            truncated = True       # API 상한에 걸렸다 — 여기서 멈추되 숨기지 않는다
+            break
+        params = {
+            "query": keyword,
+            "publicationDateOrYear": _window(since, until),
+            "fields": _FIELDS,
+            "limit": page_size,
+        }
+        if offset:
+            params["offset"] = offset
+        try:
+            resp = await http_client.throttled_s2_get(client, params, http_client.s2_headers(),
+                                                  max_wait=max_wait)
+            payload = resp.json()
+        except Exception as e:  # noqa: BLE001
+            if papers:
+                # 첫 페이지는 받았고 뒤에서 죽었다 — 받은 것은 살리되 "다 봤다"고
+                # 하지 않는다. 전부 버리면 성한 결과까지 잃는다.
+                print(f"  [경고] S2 검색 실패({keyword}, {page + 1}쪽): {type(e).__name__} "
+                      f"— 앞 {len(papers)}편은 살린다")
+                return KeywordSearch(papers, total, truncated=True)
+            print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
+            return None
+        items = payload.get("data") or []
+        if total is None and isinstance(payload.get("total"), int):
+            total = payload["total"]
+        papers += [p for p in (_to_paper(i) for i in items) if p]
+        if len(items) < page_size:
+            break                  # 창을 다 훑었다
+    else:
+        # 페이지 상한을 다 쓰고도 마지막 페이지가 가득 찼다 = 더 남았다.
+        truncated = True
+    if total is not None and len(papers) < total and not truncated:
+        # 응답이 전체 건수를 알려줬는데 그보다 적게 가져왔다면 남은 것이 있다.
+        truncated = True
+    return KeywordSearch(papers, total, truncated)
 
 
 async def find_new_papers_since(
@@ -150,6 +209,7 @@ async def find_new_papers_since(
     seen: set[str] = set()
     papers: list[dict] = []
     failed = 0
+    truncated = 0
     started = time.monotonic()
     searched = 0
     for keyword in keywords:
@@ -166,7 +226,12 @@ async def find_new_papers_since(
         if found is None:          # 실패 — 결과 0건과 구분한다
             failed += 1
             continue
-        for paper in found:
+        if found.truncated:
+            truncated += 1
+            print(f"  [S2] '{keyword}' 는 상한까지 받고도 남았다"
+                  f"{f' (전체 {found.total}편)' if found.total else ''}"
+                  f" — 이 실행은 partial 로 기록한다", flush=True)
+        for paper in found.papers:
             key = (paper.get("arxiv_id") or paper.get("doi")
                    or paper["title"].lower())
             if key in seen:
@@ -176,10 +241,16 @@ async def find_new_papers_since(
 
     # 키워드가 **전부** 실패했으면 "결과 없음"과 구분해야 한다 — 전자는
     # S2 가 죽은 것이고 후자는 정말 새 논문이 없는 것이다.
+    #
+    # 2026-09-07 §8-70 고침: `failed` 가 partial 조건에 없어서 **6개 중 5개가
+    # 실패해도 searched == 6 이면 done** 이었다. done 은 래칫을 전진시키므로
+    # (research_profile.next_window_start 가 status=='done' 일 때만 window_to 를
+    # 커서로 쓴다) 그 창의 나머지 논문은 다시 조회되지 않는다 — 조용히 잃었다.
+    # 잘린 키워드(truncated)도 같은 이유로 done 이 아니다.
     if keywords and failed == len(keywords):
         status = "failed"
-    elif searched < len(keywords):
-        status = "partial"          # 예산에 걸려 일부만 봤다
+    elif searched < len(keywords) or failed or truncated:
+        status = "partial"          # 예산·실패·상한 중 하나로 다 못 봤다
     else:
         status = "done"
     return {
@@ -188,6 +259,7 @@ async def find_new_papers_since(
         "query": f"S2 keywords×{searched}/{len(keywords)} {_window(since, until)}",
         "keywords_failed": failed,
         "keywords_searched": searched,
+        "keywords_truncated": truncated,
     }
 
 
