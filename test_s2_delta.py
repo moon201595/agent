@@ -89,11 +89,14 @@ def test_profile_without_weights_uses_all_keywords():
 
 
 class _FakeResp:
-    def __init__(self, items):
+    def __init__(self, items, total=None):
         self._items = items
+        # 실제 S2 응답은 total 을 준다 — 남은 게 있는지 판단하는 근거다.
+        # 안 주면 None: "모른다"이고, 그때는 페이지가 덜 찼는지로만 본다.
+        self._total = len(items) if total is None else total
 
     def json(self):
-        return {"data": self._items}
+        return {"data": self._items, "total": self._total}
 
 
 def _stub_s2(monkeypatch, by_keyword):
@@ -139,7 +142,12 @@ def test_one_failing_keyword_does_not_kill_the_rest(monkeypatch):
         None, ["bad", "good"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
     assert len(out["papers"]) == 1
     assert out["keywords_failed"] == 1
-    assert out["status"] == "done"
+    # **계약이 바뀌었다**(2026-09-07, §8-70). 예전에는 이 경우가 "done" 이었다.
+    # 그런데 done 은 래칫을 전진시킨다(research_profile.next_window_start 가
+    # status=='done' 일 때만 window_to 를 다음 커서로 쓴다) — 6개 중 5개가
+    # 실패해도 done 이면 그 창의 나머지 논문은 **다시는 조회되지 않는다**.
+    # 실패한 키워드가 하나라도 있으면 다 본 게 아니다.
+    assert out["status"] == "partial"
 
 
 def test_all_keywords_failing_is_reported_as_failed_not_empty(monkeypatch):
@@ -252,3 +260,107 @@ def test_remaining_budget_is_passed_as_the_call_wait_cap(monkeypatch):
     asyncio.run(s2_delta.find_new_papers_since(
         None, ["k1", "k2"], since, until, budget_s=300.0))
     assert seen == [300.0, 200.0]              # 남은 예산이 줄어드는 게 그대로 전달된다
+
+
+# ------------------------------------------- 페이지네이션 · 잘림 보고 (§8-70, 2026-09-07)
+#
+# 그전에는 키워드당 100건을 1회 조회하고 **101번째가 있는지 확인하지 않은 채**
+# "done" 으로 기록했다. done 은 래칫을 전진시키므로 그 창의 나머지는 다시
+# 조회되지 않는다 — 조용히 잃는 경로였다.
+
+
+class _PagedResp:
+    """페이지마다 다른 묶음을 주는 가짜 응답."""
+
+    def __init__(self, items, total):
+        self._items, self._total = items, total
+
+    def json(self):
+        return {"data": self._items, "total": self._total}
+
+
+def _paged_stub(monkeypatch, pages, total):
+    """pages: 페이지 번호 → 아이템 목록. 호출된 offset 을 기록한다."""
+    seen_offsets = []
+
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        offset = params.get("offset", 0)
+        seen_offsets.append(offset)
+        page = offset // params["limit"]
+        return _PagedResp(pages[page] if page < len(pages) else [], total)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    return seen_offsets
+
+
+def _items(n, start=0):
+    return [{"title": f"Paper {i}", "publicationDate": "2026-08-30",
+             "externalIds": {"DOI": f"10.1/{i}"}} for i in range(start, start + n)]
+
+
+def test_second_page_is_fetched_when_the_first_is_full(monkeypatch):
+    """100건이 꽉 차서 돌아오면 101번째가 있을 수 있다 — 확인하지 않고
+    '다 봤다'고 기록하던 것이 §8-70 의 지적이다."""
+    offsets = _paged_stub(monkeypatch, [_items(100), _items(30, start=100)], total=130)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert offsets == [0, 100]
+    assert len(got.papers) == 130
+    assert got.truncated is False        # 창을 다 훑었다
+    assert got.total == 130
+
+
+def test_single_short_page_makes_no_second_call(monkeypatch):
+    """정상적인 날에는 첫 페이지에서 끝난다 — 공짜 호출을 늘리지 않는다."""
+    offsets = _paged_stub(monkeypatch, [_items(12)], total=12)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert offsets == [0]
+    assert got.truncated is False
+
+
+def test_page_cap_reports_truncation_instead_of_pretending_done(monkeypatch):
+    """상한(3페이지)을 다 쓰고도 남으면 **못 본 것이 있다고 말한다.**
+    비용 원칙상 끝까지 넘기지는 않는다 — 대신 숨기지 않는다."""
+    offsets = _paged_stub(monkeypatch, [_items(100)] * 5, total=500)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert len(offsets) == s2_delta.MAX_PAGES_PER_KEYWORD
+    assert got.truncated is True
+
+
+def test_truncated_keyword_makes_the_run_partial(monkeypatch):
+    """잘린 키워드가 하나라도 있으면 done 이 아니다 — done 은 래칫을
+    전진시켜 그 창을 영영 안 보게 만든다."""
+    _paged_stub(monkeypatch, [_items(100)] * 5, total=500)
+    out = asyncio.run(s2_delta.find_new_papers_since(
+        None, ["k"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert out["status"] == "partial"
+    assert out["keywords_truncated"] == 1
+
+
+def test_failure_after_a_good_page_keeps_what_we_got(monkeypatch):
+    """뒤 페이지가 죽었다고 앞 페이지까지 버리면 성한 결과를 잃는다.
+    받은 것은 살리되 '다 봤다'고는 하지 않는다."""
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        if params.get("offset"):
+            raise RuntimeError("S2 죽음")
+        return _PagedResp(_items(100), 400)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert len(got.papers) == 100
+    assert got.truncated is True
+
+
+def test_first_page_failure_is_still_none_not_empty(monkeypatch):
+    """첫 페이지부터 죽으면 '실패'다 — '결과 0건'과 구분해야 한다.
+    이 구분은 이 모듈이 처음부터 지켜온 것이다."""
+    async def fake_get(client, params, headers, url=None, max_wait=None):
+        raise RuntimeError("S2 죽음")
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", fake_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert got is None
