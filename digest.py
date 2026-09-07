@@ -759,6 +759,80 @@ def _plain(line: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+# ---------------------------------------------------------------- 서술이 부른 논문
+#
+# 2026-09-07 §8-68 에서 "그 밖에 걸린 논문" 목록을 뺐다. 그 논문들은 여전히
+# `title_only_papers` 로 서술 입력에 들어가고, 실제로 09-06 서술은 각주에
+# 있던 ZETA·HINT·RoboTok 을 **이름으로** 불렀다. 그런데 목록이 없으니
+# **읽는 사람이 그 논문에 갈 방법이 사라졌다** — 내가 목록을 빼면서 만든
+# 결함이다.
+#
+# 되살리는 건 목록이 아니라 **링크**다. 서술이 부른 것만 붙인다. 판정은
+# 문자열 대조이고(규칙 7 이 허용하는 위조 불가능한 대조) LLM 을 다시 부르지
+# 않는다. 부르지 않은 논문은 안 붙는다 — 목록을 뺀 이유가 그대로 유지된다.
+
+# 제목 앞머리의 약칭(예: "ZETA: Zero-shot ..." 의 ZETA). 서술은 보통 이걸로
+# 논문을 부른다. 두 글자 이하는 흔한 단어와 부딪히므로 안 쓴다.
+_ACRONYM_RE = re.compile(r"^([A-Za-z][A-Za-z0-9\-]{2,19})\s*[:：]")
+
+
+def _mention_keys(title: str) -> list[str]:
+    """이 논문을 서술에서 찾을 때 쓸 열쇠들. 긴 것부터."""
+    title = (title or "").strip()
+    if not title:
+        return []
+    keys = [title]
+    m = _ACRONYM_RE.match(title)
+    if m:
+        token = m.group(1)
+        # 대문자가 하나라도 있어야 약칭으로 본다 — "Towards: ..." 같은 평범한
+        # 머리말이 흔한 단어와 매칭되는 것을 막는다.
+        if any(c.isupper() for c in token):
+            keys.append(token)
+    return keys
+
+
+def _is_mentioned(title: str, narrative_text: str) -> bool:
+    """서술이 이 논문을 이름으로 불렀는가. 순수 문자열 대조."""
+    if not narrative_text:
+        return False
+    for key in _mention_keys(title):
+        if len(key) > 24:
+            # 제목 전체는 서술에 그대로 나오는 일이 드물지만, 나오면 확실하다.
+            if key.lower() in narrative_text.lower():
+                return True
+            continue
+        # 약칭은 단어 경계로 본다. 대소문자를 구분한다 — 'HINT' 와 'hint' 는
+        # 다른 것이고, 구분을 풀면 평범한 문장이 논문 이름으로 오인된다.
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(key)}(?![A-Za-z0-9])", narrative_text):
+            return True
+    return False
+
+
+def mentioned_papers(scan_result: dict) -> list[dict]:
+    """서술이 이름으로 부른 논문 중 **본문에 상자가 없는 것**.
+
+    내용 자리에 실린 논문(`papers`)은 이미 번호·제목·링크를 갖고 있으므로
+    여기 또 넣지 않는다. 목록에서 빠진 `title_only_papers` 만 대상이다.
+    """
+    story = scan_result.get("narrative")
+    if not story:
+        return []
+    text = story[0] if isinstance(story, (tuple, list)) else str(story)
+    shown_ids = {p.get("arxiv_id") or p.get("doi") or (p.get("title") or "").lower()
+                 for p in (scan_result.get("papers") or [])}
+    out = []
+    for paper in scan_result.get("title_only_papers") or []:
+        key = (paper.get("arxiv_id") or paper.get("doi")
+               or (paper.get("title") or "").lower())
+        if key in shown_ids:
+            continue
+        if _is_mentioned(paper.get("title") or "", text):
+            out.append(paper)
+            shown_ids.add(key)
+    return out
+
+
 def _narrative_section(scan_result: dict) -> list[str]:
     """오늘의 동향 서술. 셈 절과 **섞지 않고** 라벨을 붙인다.
 
@@ -781,6 +855,14 @@ def _narrative_section(scan_result: dict) -> list[str]:
     lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
+
+    named = mentioned_papers(scan_result)
+    if named:
+        lines += ["", "   ▸ 위에서 이름으로 부른 논문"]
+        for paper in named:
+            url = paper_link(paper)
+            title = (paper.get("title") or "").strip()
+            lines.append(f"      · {title}" + (f" — {url}" if url else ""))
     return lines
 
 
@@ -1206,12 +1288,28 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
                     f'margin-top:4px;">⚠ 원문에 없는 숫자가 섞여 있다: '
                     f'{_esc(", ".join(ungrounded))} — 믿지 말 것</div>')
+        # 서술이 이름으로 부른 논문에 링크를 붙인다(2026-09-07, §8-68 이 만든
+        # 결함). 목록을 되살리는 게 아니라 **부른 것만** 붙인다 — 평문 판과
+        # 같은 판정(mentioned_papers)을 쓰므로 두 판이 갈라지지 않는다.
+        named = ""
+        for paper in mentioned_papers(scan_result):
+            url = paper_link(paper)
+            title = _esc((paper.get("title") or "").strip())
+            label = (f'<a href="{_esc(url)}" style="color:{_NAVY};">{title}</a>'
+                     if url else title)
+            named += (f'<div style="background-color:{_PAPER_BG};color:{_INK};'
+                      f'font-size:12px;margin:2px 0;padding-left:10px;">· {label}</div>')
+        if named:
+            named = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};'
+                     f'font-size:12px;margin:10px 0 2px;">위에서 이름으로 부른 논문</div>'
+                     f'{named}')
+
         body += (
             f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
             f'font-weight:600;margin:18px 0 4px;">오늘의 동향 정리</p>'
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'margin:0 0 6px;">LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — '
-            f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}'
+            f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}{named}'
         )
 
     body += _weekly_review_html(scan_result)
