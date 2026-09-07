@@ -1368,3 +1368,30 @@ def test_candidate_key_matches_profile_shown(tmp_path):
 
     assert _candidates(db_path)[0]["paper_key"] == rp.paper_key(paper)
     assert rp.paper_key(paper) in rp.already_shown(db_path, "team_ai")
+
+
+def test_arxiv_parser_records_where_the_paper_came_from():
+    """**라이브 실행이 잡았다**(2026-09-07). 후보 515편 중 arXiv 96편의
+    source 가 빈 문자열이었다 — S2 경로(s2_delta._to_paper)만 "s2" 를 달고
+    왔고 arXiv 파서는 아무것도 안 달았다. "어디서 왔나"는 후보 테이블을
+    만든 이유 중 하나다.
+
+    후보 기록 쪽에서 arxiv_id 유무로 **추론**해 채울 수도 있지만 그러지
+    않는다 — 아는 곳에서 사실로 적는다. 그래서 이 테스트는 스캔 경로가
+    아니라 진짜 파서를 부른다(스캔 테스트는 파서를 목으로 바꾼다).
+    """
+    feed = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2609.01234v1</id>
+    <title>An agent paper</title>
+    <summary>초록</summary>
+    <published>2026-09-01T00:00:00Z</published>
+    <author><name>홍길동</name></author>
+    <category term="cs.AI"/>
+  </entry>
+</feed>"""
+    papers = http_client.parse_arxiv_feed(feed)
+    assert len(papers) == 1
+    assert papers[0]["source"] == "arxiv"
+    assert papers[0]["arxiv_id"] == "2609.01234"

@@ -448,3 +448,49 @@ def test_unknown_total_with_full_pages_stays_conservative(monkeypatch):
         None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
     assert got.total is None
     assert got.truncated is True
+
+
+def test_truncation_says_which_cause(monkeypatch):
+    """**라이브 실행이 잡은 결함**(2026-09-07 23:29). 로그가 "상한까지 받고도
+    남았다"라고 말했는데 실제로는 429 재시도(30+60+120초)로 시간 예산이 끝난
+    것이었다. 원인이 다르면 처방이 다르다 — 페이지 상한은 우리가 정한 값이고
+    예산 소진은 S2 가 나쁜 날이다. 안 가르면 로그를 읽고 엉뚱한 걸 고친다.
+    """
+    # (a) 페이지 상한
+    _paged_stub(monkeypatch, [_items(100)] * 5, total=900)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert (got.truncated, got.reason) == (True, "page_cap")
+
+    # (b) 시간 예산 소진 — 첫 페이지를 받는 동안 예산이 끝난다
+    clock = [1000.0]
+    monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock[0])
+
+    async def slow_get(client, params, headers, url=None, max_wait=None):
+        clock[0] += 40.0
+        return _PagedResp(_items(100), 900)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", slow_get)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00"), max_wait=30.0))
+    assert (got.truncated, got.reason) == (True, "budget")
+    assert len(got.papers) == 100          # 받은 것은 살린다
+
+    # (c) 뒤 페이지 실패
+    async def flaky(client, params, headers, url=None, max_wait=None):
+        if params.get("offset"):
+            raise RuntimeError("S2 죽음")
+        return _PagedResp(_items(100), 900)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", flaky)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert (got.truncated, got.reason) == (True, "page_failure")
+
+
+def test_complete_window_has_no_reason(monkeypatch):
+    """다 봤으면 잘림도 사유도 없다."""
+    _paged_stub(monkeypatch, [_items(12)], total=12)
+    got = asyncio.run(s2_delta.search_keyword_since(
+        None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert got.truncated is False and got.reason is None

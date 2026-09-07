@@ -127,7 +127,13 @@ class KeywordSearch:
     """
     papers: list[dict]
     total: int | None       # S2 가 알려준 창 안 전체 건수 (모르면 None)
-    truncated: bool         # 더 있는데 상한·예산으로 못 가져왔다
+    truncated: bool         # 더 있는데 못 가져왔다
+    # **왜** 못 가져왔나. 2026-09-07 라이브 실행에서 잡았다 — 로그가
+    # "상한까지 받고도 남았다"라고 말했는데 실제로는 429 재시도(30+60+120초)로
+    # 시간 예산이 끝난 것이었다. 원인이 다르면 처방도 다르다(페이지 상한은
+    # 우리가 정한 값이고, 예산 소진은 S2 가 나쁜 날이다). 안 가른 채로 두면
+    # 로그를 읽고 엉뚱한 걸 고치게 된다.
+    reason: str | None = None   # 'page_cap' | 'budget' | 'offset_ceiling' | 'page_failure' 
 
 
 async def search_keyword_since(
@@ -158,13 +164,12 @@ async def search_keyword_since(
     for page in range(max_pages):
         offset = page * page_size
         if offset + page_size > S2_OFFSET_CEILING:
-            truncated = True       # API 상한에 걸렸다 — 여기서 멈추되 숨기지 않는다
-            break
+            # S2 가 offset+limit 1000 을 넘기면 400 을 준다. 우리 상한이 아니다.
+            return KeywordSearch(papers, total, True, "offset_ceiling")
         remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
         if page and remaining is not None and remaining <= 0:
             # 예산이 끝났다. 남은 게 있는지 모르므로 "다 봤다"고 하지 않는다.
-            truncated = True
-            break
+            return KeywordSearch(papers, total, True, "budget")
         params = {
             "query": keyword,
             "publicationDateOrYear": _window(since, until),
@@ -183,7 +188,7 @@ async def search_keyword_since(
                 # 하지 않는다. 전부 버리면 성한 결과까지 잃는다.
                 print(f"  [경고] S2 검색 실패({keyword}, {page + 1}쪽): {type(e).__name__} "
                       f"— 앞 {len(papers)}편은 살린다")
-                return KeywordSearch(papers, total, truncated=True)
+                return KeywordSearch(papers, total, True, "page_failure")
             print(f"  [경고] S2 검색 실패({keyword}): {type(e).__name__}")
             return None
         items = payload.get("data") or []
@@ -202,7 +207,7 @@ async def search_keyword_since(
     else:
         # 페이지 상한을 다 쓰고도 끝을 못 봤다 = 더 남았을 수 있다.
         # (total 로 끝을 확인했으면 위에서 break 로 빠져나가 여기 안 온다.)
-        truncated = True
+        return KeywordSearch(papers, total, True, "page_cap")
     return KeywordSearch(papers, total, truncated)
 
 
@@ -244,8 +249,14 @@ async def find_new_papers_since(
             continue
         if found.truncated:
             truncated += 1
-            print(f"  [S2] '{keyword}' 는 상한까지 받고도 남았다"
-                  f"{f' (전체 {found.total}편)' if found.total else ''}"
+            why = {
+                "page_cap": f"페이지 상한({MAX_PAGES_PER_KEYWORD}쪽)까지 받고도 남았다",
+                "budget": "시간 예산이 끝나 남은 쪽을 못 받았다",
+                "offset_ceiling": "S2 offset 상한(1000)에 걸렸다",
+                "page_failure": "뒤 페이지가 실패해 앞쪽만 살렸다",
+            }.get(found.reason, "다 받지 못했다")
+            print(f"  [S2] '{keyword}' — {why}"
+                  f"{f' (전체 {found.total}편 중 {len(found.papers)}편)' if found.total else ''}"
                   f" — 이 실행은 partial 로 기록한다", flush=True)
         for paper in found.papers:
             key = (paper.get("arxiv_id") or paper.get("doi")

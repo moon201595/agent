@@ -309,6 +309,11 @@ def parse_arxiv_feed(xml_text: str) -> list[dict]:
                 "published": entry.findtext("atom:published", default="", namespaces=ATOM_NS),
                 "categories": categories,
                 "abstract": abstract,
+                # 어디서 온 논문인가. S2 경로(s2_delta._to_paper)는 처음부터
+                # "s2" 를 달고 왔는데 이쪽은 아무것도 안 달아서, ① 후보 기록의
+                # source 가 arXiv 논문 96편에서 빈 문자열이었다(2026-09-07
+                # 라이브 실행에서 실측). 추론으로 채우지 않고 아는 곳에서 적는다.
+                "source": "arxiv",
             }
         )
     return papers
