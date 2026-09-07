@@ -980,3 +980,81 @@ def test_weekly_review_html_escapes_and_stays_inline():
     assert "&lt;script&gt;" in html
     for banned in ("http://", "https://", "<link", "<style"):
         assert banned not in digest._weekly_review_html({"weekly_review": _WEEKLY_SAMPLE})
+
+
+# ------------------------------------------- 서술이 부른 논문에 링크 (§8-68 이 만든 결함)
+#
+# 2026-09-07 에 "그 밖에 걸린 논문" 목록을 뺐다. 그 논문들은 여전히 서술
+# 입력으로 흐르고 실제로 이름이 불렸는데(09-06: ZETA·HINT·RoboTok), 목록이
+# 없으니 **읽는 사람이 그 논문에 갈 방법이 사라졌다.** 목록을 되살리는 게
+# 아니라 서술이 부른 것에만 링크를 붙인다.
+
+_ZETA = {"title": "ZETA: Zero-shot Efficient Transfer for Anomaly detection",
+         "arxiv_id": "2609.00111",
+         "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [],
+                    "venue_hit": None, "top_core_weight": 1.0}}
+
+
+def _story(text):
+    return {"papers": [], "candidates_found": 5, "title_only_papers": [_ZETA, _TITLE_ONLY],
+            "narrative": (text, [])}
+
+
+def test_named_paper_gets_a_link_in_both_renderers():
+    """서술이 ZETA 를 이름으로 불렀으면 거기로 갈 수 있어야 한다."""
+    scan = _story("갈래\nZETA 는 제로샷 이상탐지를 표방한다.")
+    assert [p["title"] for p in digest.mentioned_papers(scan)] == [_ZETA["title"]]
+
+    text = digest.generate_digest(scan, "t")
+    html = digest.generate_digest_html(scan, "t")
+    assert "이름으로 부른 논문" in text and "이름으로 부른 논문" in html
+    assert "https://arxiv.org/abs/2609.00111" in text
+    assert 'href="https://arxiv.org/abs/2609.00111"' in html
+
+
+def test_unmentioned_papers_do_not_come_back_as_a_list():
+    """목록을 뺀 이유(★ 하나짜리 8편이 메일 길이만 먹었다)는 그대로 유지된다 —
+    부르지 않은 논문은 안 붙는다."""
+    scan = _story("갈래\n오늘은 결함 검출 쪽이 두드러진다.")
+    assert digest.mentioned_papers(scan) == []
+    assert "이름으로 부른 논문" not in digest.generate_digest(scan, "t")
+
+
+def test_acronym_match_is_case_sensitive():
+    """'HINT' 와 'hint' 는 다르다. 구분을 풀면 평범한 문장이 논문 이름으로
+    오인돼 엉뚱한 링크가 붙는다."""
+    hint = {"title": "HINT: Hierarchical Inference", "arxiv_id": "2609.00222"}
+    scan = {"papers": [], "candidates_found": 1, "title_only_papers": [hint],
+            "narrative": ("이 논문은 좋은 hint 를 준다.", [])}
+    assert digest.mentioned_papers(scan) == []
+
+
+def test_full_title_mention_also_counts():
+    scan = _story("PhyHGNet: Physics guided micro defect detection 이 대표적이다.")
+    assert [p["title"] for p in digest.mentioned_papers(scan)] == [_TITLE_ONLY["title"]]
+
+
+def test_paper_already_in_the_body_is_not_repeated():
+    """내용 자리에 실린 논문은 이미 번호·제목·링크를 갖고 있다."""
+    scan = {"papers": [_ZETA], "candidates_found": 5, "title_only_papers": [_ZETA],
+            "narrative": ("ZETA 가 눈에 띈다.", [])}
+    assert digest.mentioned_papers(scan) == []
+
+
+def test_journal_paper_gets_a_doi_link_not_abs_none():
+    """arXiv 밖 논문에 arxiv.org/abs/None 을 찍지 않는다 — 이 저장소의 회귀."""
+    scan = _story("PhyHGNet 이 대표적이다.")
+    for out in (digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")):
+        assert "abs/None" not in out
+        assert "doi.org/10.1016/j.solener.2026.1" in out
+
+
+def test_common_word_prefix_is_not_treated_as_an_acronym():
+    """'Towards: ...' 같은 평범한 머리말이 흔한 단어와 매칭되면 안 된다."""
+    assert digest._mention_keys("towards: better detection") == ["towards: better detection"]
+    assert "ZETA" in digest._mention_keys("ZETA: Zero-shot")
+
+
+def test_no_narrative_means_no_section():
+    scan = {"papers": [], "candidates_found": 1, "title_only_papers": [_ZETA]}
+    assert digest.mentioned_papers(scan) == []
