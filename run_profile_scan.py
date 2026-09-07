@@ -620,18 +620,25 @@ async def scan_and_digest(
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
 
-    digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
-
     # 주간 동향 리뷰는 **주 1회만** 붙인다(월요일). 매일 붙이면 어제와 거의
     # 같은 표가 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
     # 실패해도 다이제스트를 막지 않는다 — 부가 정보다.
+    #
+    # 2026-09-07 §8-70 고침: 예전에는 여기서 `digest_text` 에 문자열로
+    # 이어붙였다. 그런데 _deliver 는 HTML 을 `result` 로 **다시 만들기**
+    # 때문에 HTML 메일에는 이 절이 통째로 빠져 있었다 — 메일은
+    # multipart/alternative 이고 Gmail 은 HTML 을 보여주므로, 2026-09-07 에
+    # 처음 돌아간 주간 리뷰는 실행은 됐지만 사용자 화면에 닿지 않았다.
+    # 이제 `result` 에 넣는다. 평문·HTML 두 렌더러가 같은 값을 읽으므로
+    # 렌더링 위치가 갈라져도 입력은 하나다(§8-67 의 교훈).
     if profile and is_weekly_review_day():
         try:
-            review = await trend_report.build(db_path, profile, client=client)
-            digest_text = digest_text.rstrip() + "\n\n" + review
+            result["weekly_review"] = await trend_report.build(db_path, profile, client=client)
             print("  [동향] 주간 리뷰를 다이제스트에 붙였다")
         except Exception as e:  # noqa: BLE001
             print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
+
+    digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
 
     # 내용 자리로 실린 논문을 소비 처리한다 — 내일 후보에서 빠진다.

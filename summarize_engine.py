@@ -695,7 +695,7 @@ async def _summarize_chunked(
     client: httpx.AsyncClient, paper_text: str, template: str,
     call_single, call_addendum, chunk_size: int, max_chunks: int,
     chunk_delay, label: str, on_progress=None,
-) -> str:
+) -> tuple[str, float]:
     """첫 청크로 전체 템플릿을 채운 뒤, 남은 청크들로 "추가 결과·추가
     한계점"만 보충한다 — 긴 논문이라고 뒷부분을 조용히 안 보고 넘어가지
     않는다. 청크 처리 중 하나가 실패하면 그 뒤는 포기하고 지금까지 만든
@@ -719,6 +719,12 @@ async def _summarize_chunked(
     chunks, _sentences = sentence_grounding.build_tagged_chunks(paper_text, chunk_size, max_chunks)
     if not chunks:
         chunks = [""]
+    # **실제로 본 청크만 센다**(2026-09-07, §8-70). 예전에는 커버리지를
+    # 저장 시점에 `coverage_ratio(원문, 엔진)` 으로 **다시 계산**했는데, 그
+    # 함수는 "이 설정이면 몇 문장을 덮나"라는 계획값이라 아래 break 로 중간에
+    # 포기한 경우에도 1.0 이 나왔다 — 재지 않은 값을 잰 값이라 부르고 있었다
+    # (규칙 8 위반). 소비한 청크는 이 루프만 안다. 그래서 여기서 센다.
+    consumed = [chunks[0]]
     if on_progress:
         on_progress(label, 1, len(chunks))
     summary = await _call_with_rate_limit_retry(
@@ -749,13 +755,37 @@ async def _summarize_chunked(
             print(f"  [경고] {label} 청크 {chunk_num} 처리 실패({e}) — 이 이후 구간은 건너뜀",
                   file=sys.stderr)
             break
+        # 응답을 받은 청크만 소비로 친다. 예외로 빠지면 이 줄에 못 온다.
+        # "추가 내용 없음"으로 답한 청크는 **본 것**이다 — 읽고 새 내용이
+        # 없다고 판단한 것이므로 안 본 구간과 구분해야 한다.
+        consumed.append(chunk_text)
         if _ADDENDUM_NO_CONTENT not in addendum:
             summary += f"\n\n{addendum}"
-    return summary
+    return summary, _seen_ratio(consumed, _sentences)
 
 
-def coverage_ratio(paper_text: str, engine_name: str) -> float:
-    """그 엔진의 청크 설정으로 **원문 문장의 몇 할을 실제로 봤는가** (0.0~1.0).
+def _seen_ratio(consumed_chunks: list[str], sentences: list) -> float:
+    """실제로 LLM 에 들어간 청크들이 원문 문장의 몇 할인가 (0.0~1.0).
+
+    **이게 실측이다.** 태그 [S번호] 를 세므로 위조가 불가능하고(규칙 7),
+    중간에 실패해 끊긴 경우 그 지점까지만 센다.
+    """
+    if not sentences:
+        return 1.0
+    seen = sum(len(sentence_grounding._TAG_RE.findall(c)) for c in consumed_chunks)
+    return min(seen / len(sentences), 1.0)
+
+
+def planned_coverage_ratio(paper_text: str, engine_name: str) -> float:
+    """그 엔진의 청크 설정이면 원문 문장의 몇 할을 **덮을 수 있나** (0.0~1.0).
+
+    **이름이 바뀌었다**(2026-09-07, §8-70). 예전 이름은 `coverage_ratio` 였고
+    docstring 은 "실제로 봤는가"라고 주장했는데, 인자가 (원문, 엔진) 뿐이라
+    **어느 청크가 성공했는지를 받을 방법이 아예 없었다.** 청크 2 이후가
+    실패해 부분 요약이 나온 경우에도 1.0 을 돌려줬다. 재지 않은 값을 잰 값이라
+    부르는 것이므로 규칙 8 위반이다. 실측은 `_seen_ratio` 가 하고, 이 함수는
+    "설정상 상한"이라는 자기 이름대로만 쓴다 — 저장할 때 실측과 구분해서
+    남긴다(summaries.coverage_kind).
 
     왜 필요한가(§8-25, 2026-08-31 실측): Groq 경로는 청크 상한
     (GROQ_MAX_CHUNKS=32 × 3000자 ≈ 96,000자)에 걸리면 그 뒤를 통째로 안 본다.
@@ -783,7 +813,11 @@ def coverage_ratio(paper_text: str, engine_name: str) -> float:
 async def summarize(
     client: httpx.AsyncClient, paper_text: str, template: str, on_progress=None,
 ) -> tuple[str, str]:
-    """returns (summary_markdown, engine_name)
+    """returns (summary_markdown, engine_name, coverage_ratio)
+
+    coverage_ratio 는 **실제로 LLM 에 들어간 청크** 기준의 실측값이다
+    (2026-09-07, §8-70). 중간 청크가 실패해 끊기면 그 지점까지만 센다 —
+    예전처럼 저장 시점에 계획값을 다시 계산하지 않는다.
 
     Gemini·Groq 둘 다 청크로 전문을 읽는다(2026-08-06, "둘 다 되게 하자"
     요청 반영) — 청크 크기·상한·간격만 다르다. Groq는 TPM 한도가 빠듯해서
@@ -796,18 +830,18 @@ async def summarize(
     이걸로 진행률 화면을 채운다.
     """
     try:
-        summary = await _summarize_chunked(
+        summary, coverage = await _summarize_chunked(
             client, paper_text, template, call_gemini, call_gemini_addendum,
             CHUNK_SIZE, MAX_CHUNKS, GEMINI_CHUNK_DELAY, "Gemini", on_progress,
         )
-        return summary, "gemini"
+        return summary, "gemini", coverage
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] Gemini 실패({e}) → Groq로 전환", file=sys.stderr)
     try:
-        summary = await _summarize_chunked(
+        summary, coverage = await _summarize_chunked(
             client, paper_text, template, call_groq, call_groq_addendum,
             GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, groq_chunk_delay, "Groq", on_progress,
         )
-        return summary, "groq"
+        return summary, "groq", coverage
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Gemini·Groq 둘 다 실패: {e}") from e

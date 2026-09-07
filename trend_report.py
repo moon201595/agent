@@ -356,7 +356,7 @@ def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]
         con.row_factory = sqlite3.Row
         return con.execute(
             "SELECT p.arxiv_id, p.title, p.abstract, p.authors, p.published, p.source, "
-            "s.engine, s.coverage_ratio "
+            "s.engine, s.coverage_ratio, s.coverage_kind "
             "FROM papers p JOIN summaries s ON s.arxiv_id = p.arxiv_id "
             "WHERE s.created_at >= ? AND s.created_at < ? ORDER BY s.created_at",
             (start.isoformat(), end.isoformat()),
@@ -426,11 +426,23 @@ def engine_mix(rows: list[sqlite3.Row]) -> Counter:
     return mix
 
 
-def partial_coverage(rows: list[sqlite3.Row], below: float = 0.98) -> list[tuple[str, float]]:
-    """원문을 다 못 본 요약들. Groq 폴백 날에만 생긴다(§8-25)."""
+def partial_coverage(rows: list[sqlite3.Row], below: float = 0.98,
+                     measured_only: bool = True) -> list[tuple[str, float]]:
+    """원문을 다 못 본 요약들. Groq 폴백 날에만 생긴다(§8-25).
+
+    measured_only=True 면 **실측값만** 센다(2026-09-07, §8-70). 'planned' 는
+    그 엔진 설정의 상한일 뿐 실제로 못 봤다는 근거가 아니므로, 여기 섞으면
+    "원문을 다 못 본 요약 N편"이라는 셈 자체가 실측이 아니게 된다.
+    """
     out = []
+    keys = set()
     for row in rows:
+        if not keys:
+            keys = set(row.keys())
         ratio = row["coverage_ratio"]
+        kind = row["coverage_kind"] if "coverage_kind" in keys else None
+        if measured_only and kind != "measured":
+            continue
         if ratio is not None and ratio < below:
             out.append((row["title"], float(ratio)))
     return sorted(out, key=lambda x: x[1])

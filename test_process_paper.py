@@ -41,7 +41,8 @@ def stub_pipeline(monkeypatch):
 
     async def fake_summarize(client, text, template, on_progress=None):
         calls["summarize"].append(template)
-        return "### 결론\n① 한 줄 요약 : 요약본", "gemini"
+        # (요약, 엔진, **실측 커버리지**) — 2026-09-07 §8-70 로 반환이 하나 늘었다.
+        return "### 결론\n① 한 줄 요약 : 요약본", "gemini", 1.0
 
     async def fake_save(params):
         calls["save"].append((params.arxiv_id, params.engine))

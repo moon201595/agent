@@ -160,12 +160,15 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
     template = engine.select_template(fetch_result.get("title", ""))
 
     print(f"[{arxiv_id}] 요약 생성 중...")
-    summary, used_engine = await engine.summarize(client, paper_text, template, on_progress=on_progress)
-    print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자)")
+    summary, used_engine, coverage = await engine.summarize(
+        client, paper_text, template, on_progress=on_progress)
+    print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자, 원문 {coverage * 100:.0f}% 실측)")
 
+    # coverage 는 **실제로 들어간 청크** 기준 실측값이다(2026-09-07, §8-70).
+    # 저장 시점에 다시 계산하면 어느 청크가 성공했는지를 모른다.
     save_result = json.loads(
         await server.save_summary(server.SaveSummaryInput(
-            arxiv_id=arxiv_id, markdown=summary, engine=used_engine))
+            arxiv_id=arxiv_id, markdown=summary, engine=used_engine, coverage=coverage))
     )
     verification = save_result.get("verification", {})
 

@@ -31,14 +31,19 @@ def db(tmp_path):
     return path
 
 
-def _add(db, aid, title, days_ago, source=None, engine="gemini", coverage=1.0):
+def _add(db, aid, title, days_ago, source=None, engine="gemini", coverage=1.0,
+         coverage_kind="measured"):
+    """coverage_kind 기본값이 'measured' 인 이유(2026-09-07, §8-70): 주간 리뷰의
+    "원문을 다 못 본 요약 N편"은 실측만 센다. 'planned' 는 그 엔진 설정의
+    상한이라 실제로 못 봤다는 근거가 아니다."""
     ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
     with sqlite3.connect(db) as con:
         con.execute("INSERT OR REPLACE INTO papers (arxiv_id, title, published, source) "
                     "VALUES (?,?,?,?)", (aid, title, ts, source))
         con.execute("INSERT OR REPLACE INTO summaries "
-                    "(arxiv_id, created_at, engine, coverage_ratio) VALUES (?,?,?,?)",
-                    (aid, ts, engine, coverage))
+                    "(arxiv_id, created_at, engine, coverage_ratio, coverage_kind) "
+                    "VALUES (?,?,?,?,?)",
+                    (aid, ts, engine, coverage, coverage_kind))
 
 
 def _build(db):
@@ -78,6 +83,17 @@ def test_partial_coverage_is_surfaced(db):
     text = _build(db)
     assert "원문을 다 못 본 요약 1편" in text
     assert "40%" in text
+
+
+def test_planned_coverage_is_not_counted_as_a_short_read(db):
+    """**§8-70 정정**(2026-09-07). 'planned' 는 그 엔진 설정의 **상한**이지
+    "이만큼밖에 못 봤다"는 실측이 아니다. 이걸 같이 세면 "원문을 다 못 본
+    요약 N편"이라는 셈 자체가 실측이 아니게 된다(규칙 8).
+    """
+    _add(db, "a", "defect detection", 1, engine="groq", coverage=0.40,
+         coverage_kind="planned")
+    text = _build(db)
+    assert "원문을 다 못 본 요약" not in text
 
 
 def test_title_only_matching_avoids_body_noise(db):

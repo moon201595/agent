@@ -914,6 +914,49 @@ def test_weekly_review_failure_does_not_break_the_digest(tmp_path, monkeypatch):
     assert "주간" not in text          # 실패한 부가 정보는 안 붙는다
 
 
+def test_weekly_review_lands_in_the_result_so_html_mail_gets_it(tmp_path, monkeypatch):
+    """**§8-70 회귀**(2026-09-07). 예전에는 주간 리뷰를 `digest_text` 에 문자열로
+    이어붙였는데, _deliver 는 HTML 을 `result` 로 **다시 만든다** — 그래서 절이
+    HTML 메일에만 통째로 없었다. 메일은 multipart/alternative 고 Gmail 은 HTML 을
+    보여주므로 사용자 화면에 닿은 적이 없다.
+
+    이 테스트가 지키는 것은 "평문에 있다"가 아니라 **"배달되는 두 판 모두에
+    있다"** 이다 — 그게 그때 놓친 주장이다.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def fake_review(db, profile, client=None, days=7, with_references=True):
+        return "■ 주간 동향 리뷰\n\n처리한 논문 12편 (지난주 9편)\n"
+
+    monkeypatch.setattr(rps.trend_report, "build", fake_review)
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
+
+    result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+
+    assert "처리한 논문 12편" in result.get("weekly_review", "")
+    assert "처리한 논문 12편" in text                       # 평문 판
+    html = rps.digest.generate_digest_html(result, "team_ai")
+    assert "처리한 논문 12편" in html                       # _deliver 가 보내는 판
+    assert "주간 동향 리뷰" in html
+
+
+def test_weekly_review_missing_leaves_both_renderers_clean(tmp_path, monkeypatch):
+    """리뷰 요일이 아니면 두 판 어디에도 빈 절이 생기지 않는다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: False)
+
+    result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert "weekly_review" not in result
+    assert "주간 동향 리뷰" not in text
+    assert "주간 동향 리뷰" not in rps.digest.generate_digest_html(result, "team_ai")
+
+
 def test_weekly_review_day_is_computed_from_the_weekday():
     from datetime import datetime as _dt, timezone as _tz
     monday = _dt(2026, 9, 7, tzinfo=_tz.utc)      # 월요일

@@ -325,7 +325,8 @@ def coverage_label(arxiv_id: str) -> str:
     try:
         with storage.db() as con:
             row = con.execute(
-                "SELECT coverage_ratio FROM summaries WHERE arxiv_id=?", (arxiv_id,)
+                "SELECT coverage_ratio, coverage_kind FROM summaries WHERE arxiv_id=?",
+                (arxiv_id,),
             ).fetchone()
     except sqlite3.Error:
         return ""
@@ -334,6 +335,16 @@ def coverage_label(arxiv_id: str) -> str:
     ratio = float(row["coverage_ratio"])
     if ratio >= _COVERAGE_WARN_BELOW:
         return ""
+    # 값의 뜻을 같이 말한다(2026-09-07, §8-70). 'planned' 는 그 엔진 설정의
+    # 상한이라 실제로 그만큼 봤다는 보장이 없다 — 실측과 같은 말투로 쓰면
+    # 재지 않은 값을 잰 값이라 부르는 게 된다(규칙 8).
+    # 'measured' 만 실측 말투를 쓴다. 'planned' 와 NULL(2026-09-07 이전에
+    # 저장된 행 — 전부 계획값으로 계산됐다)은 "그 설정의 상한"이지 실제로
+    # 그만큼 봤다는 근거가 아니다. 여기서 말투를 안 가르면 예전 거짓말이
+    # 레거시 행을 통해 그대로 이어진다(규칙 8).
+    kind = row["coverage_kind"] if "coverage_kind" in row.keys() else None
+    if kind != "measured":
+        return f"⚠ 원문 {ratio * 100:.0f}%까지만 볼 수 있는 설정 (실측 아님)"
     return f"⚠ 원문 {ratio * 100:.0f}%만 반영"
 
 
@@ -783,8 +794,14 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     candidates = scan_result.get("candidates_found", 0)
 
     title_only = scan_result.get("title_only_papers") or []
+    empty = not papers and not title_only
 
-    if not papers and not title_only:
+    # **조기 반환을 쓰지 않는다.** 빈 다이제스트 갈래가 `return` 으로 빠져나가면
+    # 뒤에 붙는 절(⑥ 주간 리뷰 등)을 그 갈래만 못 받는다 — 이 코드베이스에서
+    # 조기 반환이 같은 병을 낸 게 §8-50 둘, §8-57 하나, §8-67 하나였다.
+    # 갈래는 내용만 정하고 출구는 하나로 모은다(2026-09-07, §8-70 고치며).
+    lines = [header, ""]
+    if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
         # 그 답이 메일 안에 없었다. 걸러진 내역을 여기에도 붙인다.
@@ -795,10 +812,8 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         if candidates == 0 and not reason:
             body += ("\n검색 자체가 0건이었습니다 — arXiv 색인이 며칠 뒤처지므로 "
                      "최근 며칠은 다음 실행에서 다시 조회합니다.")
-        return f"{header}\n\n{body}\n"
-
-    lines = [header, ""]
-    if papers:
+        lines.append(body)
+    elif papers:
         lines += [f"■ 오늘의 신규 논문 {len(papers)}편 (전체 후보 {candidates}건 중)", ""]
         for i, paper in enumerate(papers, start=1):
             lines.append(_paper_entry(i, paper))
@@ -806,17 +821,25 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     else:
         lines += [f"■ 본문을 받을 수 있는 신규 논문은 없었습니다 (전체 후보 {candidates}건 중).", ""]
 
-    trend = _trend_line(scan_result)
-    if trend:
-        lines += [f"■ 이번 창의 키워드별 적중 편수 (후보 {candidates}건 기준)",
-                  f"   {trend}"]
-    lines += _narrative_section(scan_result)
-    if lines and lines[-1] != "":
-        lines.append("")
+    # 빈 갈래는 아래 절들을 안 받는다 — 걸러진 내역은 위 본문에 이미 들어갔고,
+    # 논문이 0편이면 키워드 편수·서술도 실을 것이 없다. 예전 조기 반환이
+    # 만들던 출력과 같게 유지한다.
+    if not empty:
+        trend = _trend_line(scan_result)
+        if trend:
+            lines += [f"■ 이번 창의 키워드별 적중 편수 (후보 {candidates}건 기준)",
+                      f"   {trend}"]
+        lines += _narrative_section(scan_result)
+        if lines and lines[-1] != "":
+            lines.append("")
 
-    filtered = _filtered_line(scan_result)
-    if filtered:
-        lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
+        filtered = _filtered_line(scan_result)
+        if filtered:
+            lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
+
+    # ⑥ 주간 리뷰는 맨 아래에 붙는다(주 1회). **모든 갈래가 여기로 모인다** —
+    # HTML 판도 같은 `weekly_review` 하나를 읽는다.
+    lines += _weekly_review_lines(scan_result)
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1047,6 +1070,73 @@ def _narrative_line_html(line: str) -> str:
             f'margin:3px 0;">{_esc(text)}</div>')
 
 
+# ---------------------------------------------------------------- ⑥ 주간 리뷰
+#
+# 2026-09-07 §8-70: 주간 리뷰가 **평문 판에만** 있었다. run_profile_scan 이
+# `digest_text` 에 문자열로 이어붙였고, _deliver 는 HTML 을 `result` 로 다시
+# 만드는데 `result` 에는 그 값이 없었다. 메일은 multipart/alternative 이고
+# Gmail 은 HTML 을 보여주므로 **사용자 화면에는 절 하나가 통째로 없었다** —
+# §8-57 과 같은 종류의 평문/HTML 불일치다.
+#
+# 고침은 이 코드베이스가 이미 배운 교훈대로다(§8-67 "모이는 지점을 먼저
+# 만들라"): 이어붙이기를 없애고 `scan_result["weekly_review"]` 하나를
+# 평문·HTML 두 렌더러가 같이 읽는다. 렌더링 위치가 갈라져도 입력은 하나다.
+#
+# 여기서 하는 일은 trend_report.format_report 가 만든 줄 모양을 그대로
+# 옮기는 것뿐이다 — 판정도 재계산도 하지 않는다(규칙 7).
+_WEEKLY_NOTE_PREFIX = "※"
+_WEEKLY_WARN_PREFIX = "⚠"
+
+
+def _weekly_line_html(line: str) -> str:
+    """주간 리뷰 한 줄을 HTML 로. 줄 모양은 trend_report.format_report 가 정한다.
+
+    ■ 큰 제목 · ▶ 절 제목 · ※ 각주 · ⚠ 경고 · ─── 구분선 · 그 밖은 본문.
+    들여쓰기는 HTML 에서 공백이 접히므로 padding-left 로 옮긴다.
+    """
+    raw = line.rstrip()
+    text = _plain(raw)
+    if not text:
+        return ""
+    stripped = text.strip()
+    if set(stripped) == {"─"}:
+        return (f'<div style="border-top:1px solid {_LINE};margin:12px 0 0;'
+                f'font-size:1px;line-height:1px;">&nbsp;</div>')
+    if stripped.startswith("■"):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
+                f'font-weight:700;margin:20px 0 6px;border-top:1px solid {_LINE};'
+                f'padding-top:12px;">{_esc(stripped.lstrip("■ "))}</div>')
+    if stripped.startswith("▶"):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                f'font-weight:700;margin:12px 0 3px;">{_esc(stripped.lstrip("▶ "))}</div>')
+    if stripped.startswith(_WEEKLY_WARN_PREFIX):
+        return (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
+                f'margin:3px 0;">{_esc(stripped)}</div>')
+    if stripped.startswith(_WEEKLY_NOTE_PREFIX):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
+                f'margin:4px 0 2px;padding-left:8px;">{_esc(stripped)}</div>')
+    indent = len(raw) - len(raw.lstrip(" "))
+    pad = min(indent, 12) * 2
+    return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:12px;'
+            f'margin:2px 0;padding-left:{pad}px;">{_esc(stripped)}</div>')
+
+
+def _weekly_review_html(scan_result: dict) -> str:
+    """⑥ 주간 리뷰를 HTML 로. 없으면 빈 문자열 — 주 1회만 채워진다."""
+    review = scan_result.get("weekly_review")
+    if not review or not str(review).strip():
+        return ""
+    return "".join(_weekly_line_html(ln) for ln in str(review).splitlines())
+
+
+def _weekly_review_lines(scan_result: dict) -> list[str]:
+    """⑥ 주간 리뷰를 평문 다이제스트 맨 아래에 붙일 줄들."""
+    review = scan_result.get("weekly_review")
+    if not review or not str(review).strip():
+        return []
+    return ["", str(review).strip()]
+
+
 def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     """텍스트판과 같은 입력으로 HTML 본문을 만든다. generate_digest()는
     그대로 두고(plain part 로 계속 쓴다) 이건 html part 전용이다.
@@ -1123,6 +1213,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'margin:0 0 6px;">LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — '
             f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}'
         )
+
+    body += _weekly_review_html(scan_result)
 
     filtered = _filtered_line(scan_result)
     footer = ""

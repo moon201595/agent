@@ -1228,10 +1228,12 @@ def render_review_tab():
                         async with httpx.AsyncClient() as client:
                             return await engine.summarize(client, paper_text, template)
 
-                    new_summary, used_engine = run_async(_regen())
+                    new_summary, used_engine, coverage = run_async(_regen())
                     run_async(
                         server.save_summary(
-                            server.SaveSummaryInput(arxiv_id=arxiv_id, markdown=new_summary)
+                            server.SaveSummaryInput(
+                                arxiv_id=arxiv_id, markdown=new_summary,
+                                engine=used_engine, coverage=coverage)
                         )
                     )
                     repro_msg = docker_runner.launch_background(arxiv_id)

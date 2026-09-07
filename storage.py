@@ -148,6 +148,15 @@ def init_storage(db_path=None) -> None:
             con.execute("ALTER TABLE summaries ADD COLUMN engine TEXT")
         if "coverage_ratio" not in existing_s:
             con.execute("ALTER TABLE summaries ADD COLUMN coverage_ratio REAL")
+        # 그 값이 **실측인지 계획 상한인지**(2026-09-07, §8-70). 예전에는 둘을
+        # 한 컬럼에 섞어 넣고 전부 "실제로 본 비율"이라 불렀는데, 저장 시점의
+        # 재계산은 어느 청크가 성공했는지를 모르므로 중간에 끊긴 요약도 1.0 이
+        # 나왔다(규칙 8 위반). 값의 뜻이 둘이면 뜻도 같이 저장한다.
+        #   'measured' — 실제 소비한 청크로 잰 값(summarize 가 돌려준 것)
+        #   'planned'  — 그 엔진 설정의 상한. 실제로 다 봤다는 뜻이 아니다.
+        #   NULL       — 모름(구형 요약, 엔진 미기록)
+        if "coverage_kind" not in existing_s:
+            con.execute("ALTER TABLE summaries ADD COLUMN coverage_kind TEXT")
 
         # ① 하이브리드 검색(2026-08-06)용 임베딩 캐시. 논문 텍스트(제목+초록)가
         # 바뀌지 않는 한 임베딩도 안 바뀌므로, 검색할 때마다 다시 계산하지
