@@ -4,6 +4,7 @@ research_profile은 임시 SQLite로 실제 로직 그대로 돈다. 네트워�
 import http_client
 import storage
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1236,3 +1237,134 @@ def test_scan_all_records_the_delivery_message_verbatim(tmp_path, monkeypatch):
     summary = asyncio.run(run())
     assert summary["team_ai"]["delivery"] == "발송 실패: SMTP 죽음"
     assert rps._exit_code(summary) != 0
+
+
+# ------------------------------------------- ① 선택 이전 후보 기록 (2026-09-07)
+#
+# 그전까지 후보는 그 실행의 메모리에만 있었다. 다이제스트에 실린 논문만
+# 흔적이 남고 밀린 논문은 사라져서 "왜 이 논문이 안 뽑혔나", "저 저널 논문은
+# 언제 처음 보였나", "채점 규칙을 바꾸면 뭐가 달라지나"에 답할 수 없었다.
+
+
+def _candidates(db_path, **kw):
+    return rp.list_candidates(db_path, "team_ai", **kw)
+
+
+def test_candidates_are_recorded_before_selection(tmp_path, monkeypatch):
+    """내용 자리에 못 든 논문도 남는다 — 그게 이 테이블의 이유다.
+
+    창(7일) 밖 논문은 delta 검색이 이미 거르므로 여기 안 온다. 기준은
+    "후보로 걸린 것이 전부 남는가"이지 "넣은 것이 전부 남는가"가 아니다.
+    """
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in range(1, 7)])
+
+    result, _text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+
+    rows = _candidates(db_path)
+    assert len(rows) >= result["candidates_found"] > 0
+    counts = rp.candidate_outcome_counts(db_path, "team_ai")
+    assert sum(counts.values()) == len(rows)
+
+    # 다이제스트에 실린 논문은 반드시 기록에 있다 — 화면과 기록이 어긋나면
+    # 기록으로 아무것도 설명할 수 없다.
+    recorded = {row["paper_key"] for row in rows}
+    for paper in result["papers"] + (result.get("title_only_papers") or []):
+        assert rp.paper_key(paper) in recorded
+
+
+def test_scoring_dropouts_are_recorded_with_their_score(tmp_path, monkeypatch):
+    """score_and_rank 는 제외어에 걸렸거나 키워드를 하나도 못 맞힌 논문을
+    `continue` 로 버려서 **어느 목록에도 안 남는다.** "왜 이 논문이 안
+    뽑혔나"가 바로 이들을 묻는 질문이므로 점수와 함께 남긴다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    unrelated = {"arxiv_id": "z1", "title": "Marine biology of coral reefs",
+                 "abstract": "", "published": _agent_paper("x", 1)["published"]}
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1), unrelated])
+
+    result, _text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+
+    assert all(p.get("arxiv_id") != "z1" for p in result["papers"])   # 안 뽑혔고
+    rows = {row["arxiv_id"]: row for row in _candidates(db_path)}
+    assert "z1" in rows                                               # 그래도 남았다
+    assert rows["z1"]["outcome"] == rp.OUTCOME_DROPPED
+    assert rows["z1"]["score"] is not None                            # 점수까지
+
+
+def test_recorded_candidate_keeps_the_metadata_that_costs_a_call_to_get_again(tmp_path, monkeypatch):
+    """citation_count·venue 는 검색 응답에만 있다 — 후보로 걸린 순간이
+    그 값을 공짜로 갖는 유일한 시점이다(비용 원칙)."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.record_candidates(db_path, "team_ai", [{
+        "title": "PhyHGNet", "doi": "10.1016/x", "venue": "Solar Energy",
+        "published": "2026-09-01T00:00:00Z", "citation_count": 12, "source": "s2",
+        "abstract": "초록", "_score": {"priority": 1.13},
+    }], rp.OUTCOME_TITLE_ONLY)
+
+    row = _candidates(db_path)[0]
+    assert row["venue"] == "Solar Energy"
+    assert row["citation_count"] == 12
+    assert row["doi"] == "10.1016/x"
+    assert row["source"] == "s2"
+    assert abs(row["score"] - 1.13) < 1e-9
+    assert row["published"] == "2026-09-01T00:00:00Z"
+
+
+def test_first_seen_survives_a_second_sighting(tmp_path):
+    """"언제 처음 보였나"가 신규 판단의 근거다 — 다시 걸렸다고 덮어쓰면 안 된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    paper = {"title": "T", "doi": "10.1/x", "source": "s2"}
+    rp.record_candidates(db_path, "team_ai", [paper], rp.OUTCOME_RESERVE)
+    first = _candidates(db_path)[0]["first_seen"]
+
+    rp.record_candidates(db_path, "team_ai", [paper], rp.OUTCOME_CONTENT)
+    row = _candidates(db_path)[0]
+    assert row["first_seen"] == first          # 처음 본 날은 그대로
+    assert row["outcome"] == rp.OUTCOME_CONTENT  # 결말은 갱신된다
+    assert len(_candidates(db_path)) == 1        # 같은 논문이 두 줄이 되지 않는다
+
+
+def test_zero_score_candidate_is_kept_for_analysis(tmp_path):
+    """0점 후보를 버리면 "왜 안 뽑혔나"를 영영 못 본다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.record_candidates(db_path, "team_ai", [
+        {"title": "무관한 논문", "doi": "10.1/z", "_score": {"priority": 0.0}},
+    ], rp.OUTCOME_DROPPED)
+    row = _candidates(db_path, outcome=rp.OUTCOME_DROPPED)[0]
+    assert row["score"] == 0.0
+    assert row["title"] == "무관한 논문"
+
+
+def test_recording_failure_does_not_break_the_scan(tmp_path, monkeypatch):
+    """관측이 배달을 막으면 주객이 전도된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("디스크 꽉 참")
+
+    monkeypatch.setattr(rps.research_profile, "record_candidates", boom)
+    result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert text                                  # 다이제스트는 그대로 나온다
+    assert "candidates_found" in result
+
+
+def test_candidate_key_matches_profile_shown(tmp_path):
+    """두 테이블이 같은 논문을 다른 이름으로 부르면 조인이 안 된다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    paper = {"title": "T", "doi": "10.1/x", "arxiv_id": None}
+    rp.record_candidates(db_path, "team_ai", [paper], rp.OUTCOME_CONTENT)
+    rp.mark_shown(db_path, "team_ai", [paper])
+
+    assert _candidates(db_path)[0]["paper_key"] == rp.paper_key(paper)
+    assert rp.paper_key(paper) in rp.already_shown(db_path, "team_ai")

@@ -386,6 +386,54 @@ async def scan_profile(
     listed = {"papers": rest[:TITLE_ONLY_MAX_ITEMS]}
     listed["scored_count"] = len(listed["papers"])
     scored["reserve"] = rest        # Deep Layer 가 수집에 실패한 자리를 이걸로 메운다
+
+    # ① **선택 이전의 후보를 남긴다**(2026-09-07, 외부 검토서 §182).
+    #
+    # 그전까지 후보는 이 실행의 메모리에만 있었다 — 다이제스트에 실린 논문만
+    # 흔적이 남고 밀린 논문은 사라졌다. 그래서 "왜 이 논문이 안 뽑혔나",
+    # "저 저널 논문은 언제 처음 보였나", "채점 규칙을 바꾸면 뭐가 달라지나"에
+    # 답할 수 없었다. citation_count·venue 는 검색 응답에만 있어서 나중에
+    # 다시 받으려면 호출이 또 든다 — 지금이 공짜로 갖는 유일한 시점이다.
+    #
+    # **기록이 스캔을 막지 않는다.** 이건 관측이지 파이프라인이 아니다.
+    # 버킷은 겹친다 — `dropped` 는 `rest` 에, `rest` 의 앞부분은 `listed` 에
+    # 들어 있다. **먼저 오는 결말이 이긴다**: 각주로 실제로 실린 논문을
+    # "자격 미달"로 덮어쓰면 기록이 화면과 어긋난다.
+    fresh_keys = {research_profile.paper_key(p) for p in fresh}
+    buckets = [
+        (scored["papers"], research_profile.OUTCOME_CONTENT),
+        (listed["papers"], research_profile.OUTCOME_TITLE_ONLY),
+        (rest, research_profile.OUTCOME_RESERVE),
+        (dropped, research_profile.OUTCOME_DROPPED),
+        # **채점에서 조용히 사라진 후보**. score_and_rank 는 제외어에 걸렸거나
+        # 핵심 키워드를 하나도 못 맞힌 논문을 `continue` 로 버린다 — 어느
+        # 목록에도 안 남는다. "왜 이 논문이 안 뽑혔나"가 바로 이들을 묻는
+        # 질문이므로, 여기서 점수를 다시 매겨 남긴다. 채점은 전부 로컬이라
+        # 공짜다(네트워크·LLM 없음).
+        ([{**p, "_score": profile_scoring.score_paper(p, profile)} for p in fresh],
+         research_profile.OUTCOME_DROPPED),
+        ([p for p in merged
+          if research_profile.paper_key(p) not in fresh_keys],
+         research_profile.OUTCOME_FILTERED),
+    ]
+    try:
+        recorded, claimed = 0, set()
+        for papers, outcome in buckets:
+            batch = []
+            for paper in papers:
+                key = research_profile.paper_key(paper)
+                if key in claimed:
+                    continue
+                claimed.add(key)
+                batch.append(paper)
+            recorded += research_profile.record_candidates(
+                db_path, profile_id, batch, outcome,
+                signature=signature, window=(since, until),
+            )
+        print(f"  [후보] {recorded}편을 선택 이전 모습으로 기록했다")
+    except Exception as e:  # noqa: BLE001 — 관측 실패가 배달을 막으면 안 된다
+        print(f"  [후보] 기록 실패(무시): {type(e).__name__}: {e}")
+
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": until.isoformat(),
         "run_status": arxiv_status, "candidates_found": len(fresh),

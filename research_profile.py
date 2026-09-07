@@ -132,6 +132,48 @@ def init_db(db_path: Path) -> None:
             " PRIMARY KEY (profile_id, paper_key))"
         )
 
+        # ① 검색 후보를 **선택 이전에** 저장한다(2026-09-07, 외부 검토서 §182).
+        #
+        # 그전까지 후보는 그 실행의 메모리에만 있었다. 다이제스트에 실린
+        # 논문만 papers/summaries 에 남고, 걸렸다가 밀린 논문은 흔적이 없다.
+        # 그래서 답할 수 없던 질문들이 있다 — "왜 이 논문이 안 뽑혔나",
+        # "이번 주에 후보로는 몇 편이 걸렸나", "저 저널 논문은 언제 처음
+        # 보였나". 재채점도 못 한다. 채점 규칙을 바꿔도 **같은 후보 집합**이
+        # 없으면 전후 비교가 안 된다.
+        #
+        # 테이블 **하나만** 만든다. 검토서는 관계 6개를 제안했지만 이 레포는
+        # 결함 하나가 요구할 때 테이블 하나씩 늘려 왔다(규칙 6·12).
+        # 이 하나가 ①(발표일 기준 집계) ④(저널 보존) ⑧(venue·citation 보존)
+        # 과 "0점 후보 분석"을 동시에 연다.
+        #
+        # 키는 profile_shown 과 **같은 paper_key** 다 — 같은 논문을 두 테이블이
+        # 다른 이름으로 부르면 조인이 안 된다(§8-64 에서 겪은 그 문제다).
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS search_candidates ("
+            " profile_id     TEXT NOT NULL,"
+            " paper_key      TEXT NOT NULL,"
+            " title          TEXT,"
+            " abstract       TEXT,"
+            " source         TEXT,"          # 'arxiv' | 's2' — 어디서 왔나
+            " arxiv_id       TEXT,"
+            " doi            TEXT,"
+            " venue          TEXT,"
+            " published      TEXT,"          # 발표일 (① 발표일 기준 집계)
+            " citation_count INTEGER,"       # ⑧ 보존 — 나중에 다시 못 받는다
+            " score          REAL,"          # 채점 결과 (0점 후보도 남는다)
+            " outcome        TEXT,"          # 아래 OUTCOME_* 참고
+            " signature      TEXT,"          # 그때의 키워드 지문 = 채점 설정 버전
+            " window_from    TEXT,"
+            " window_to      TEXT,"
+            " first_seen     TEXT NOT NULL," # 처음 후보로 걸린 날
+            " last_seen      TEXT NOT NULL,"
+            " PRIMARY KEY (profile_id, paper_key))"
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_seen "
+                    "ON search_candidates (profile_id, last_seen)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_published "
+                    "ON search_candidates (profile_id, published)")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -363,6 +405,103 @@ def next_since(db_path: Path, profile_id: str, source: str = "arxiv",
     # 색인 지연만큼은 무조건 되돌아본다 — 지난 실행이 "다 봤다"고 기록한
     # 구간이라도 그때는 아직 색인 전이었을 수 있다(§8-26).
     return min(cursor, now - timedelta(days=REINDEX_SAFETY_DAYS))
+
+
+# ① 후보 기록의 결말. 다이제스트의 어느 자리로 갔는지, 혹은 왜 안 갔는지.
+OUTCOME_CONTENT = "content"          # 내용 자리 — 요약/초록 정리가 실렸다
+OUTCOME_TITLE_ONLY = "title_only"    # 각주 자리 (렌더링은 §8-68 로 빠졌다)
+OUTCOME_RESERVE = "reserve"          # 순위 안에는 들었으나 자리 밖
+OUTCOME_DROPPED = "dropped"          # 채점에서 자격 미달 (0점 후보 포함)
+OUTCOME_FILTERED = "filtered"        # 이미 요약됐거나 이미 보여준 논문
+
+
+def record_candidates(
+    db_path: Path, profile_id: str, papers: list[dict], outcome: str,
+    signature: str | None = None,
+    window: tuple[datetime, datetime] | None = None,
+) -> int:
+    """후보를 **선택 이전의 모습 그대로** 남긴다. returns 기록한 편수.
+
+    같은 논문이 다음 날 또 걸리면 last_seen 과 outcome 만 갱신하고
+    **first_seen 은 지키다** — "언제 처음 보였나"가 신규 판단의 근거다.
+
+    citation_count·venue 를 여기서 보존하는 이유: 그 값은 검색 응답에만 있고
+    나중에 다시 받으려면 API 호출이 또 든다(비용 원칙). 후보로 걸린 순간이
+    그 값을 공짜로 갖는 유일한 시점이다.
+
+    기록 실패가 스캔을 막지 않는다 — 이건 관측이지 파이프라인이 아니다.
+    """
+    if not papers:
+        return 0
+    init_db(db_path)
+    now = _now()
+    w_from = window[0].isoformat() if window else None
+    w_to = window[1].isoformat() if window else None
+    rows = []
+    for paper in papers:
+        score = (paper.get("_score") or {}).get("priority")
+        rows.append((
+            profile_id, paper_key(paper), paper.get("title") or "",
+            paper.get("abstract") or "", paper.get("source") or "",
+            paper.get("arxiv_id"), paper.get("doi"), paper.get("venue") or "",
+            paper.get("published"), paper.get("citation_count"),
+            float(score) if score is not None else None,
+            outcome, signature, w_from, w_to, now, now,
+        ))
+    with sqlite3.connect(db_path) as con:
+        con.executemany(
+            "INSERT INTO search_candidates (profile_id, paper_key, title, abstract, "
+            " source, arxiv_id, doi, venue, published, citation_count, score, outcome, "
+            " signature, window_from, window_to, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(profile_id, paper_key) DO UPDATE SET "
+            " title=excluded.title, abstract=excluded.abstract, source=excluded.source, "
+            " arxiv_id=COALESCE(excluded.arxiv_id, search_candidates.arxiv_id), "
+            " doi=COALESCE(excluded.doi, search_candidates.doi), "
+            " venue=excluded.venue, published=excluded.published, "
+            " citation_count=COALESCE(excluded.citation_count, search_candidates.citation_count), "
+            " score=excluded.score, outcome=excluded.outcome, signature=excluded.signature, "
+            " window_from=excluded.window_from, window_to=excluded.window_to, "
+            " last_seen=excluded.last_seen",
+            rows,
+        )
+    return len(rows)
+
+
+def list_candidates(
+    db_path: Path, profile_id: str, outcome: str | None = None,
+    since: datetime | None = None, limit: int = 500,
+) -> list[sqlite3.Row]:
+    """기록된 후보. since 는 **발표일**이 아니라 마지막으로 걸린 날 기준이다."""
+    init_db(db_path)
+    sql = "SELECT * FROM search_candidates WHERE profile_id=?"
+    args: list = [profile_id]
+    if outcome:
+        sql += " AND outcome=?"
+        args.append(outcome)
+    if since:
+        sql += " AND last_seen>=?"
+        args.append(since.isoformat())
+    sql += " ORDER BY score DESC NULLS LAST, last_seen DESC LIMIT ?"
+    args.append(limit)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        return list(con.execute(sql, args))
+
+
+def candidate_outcome_counts(
+    db_path: Path, profile_id: str, since: datetime | None = None,
+) -> dict[str, int]:
+    """결말별 편수. "몇 편이 걸렸고 그중 몇 편이 실렸나"를 세는 데 쓴다."""
+    init_db(db_path)
+    sql = "SELECT outcome, COUNT(*) AS n FROM search_candidates WHERE profile_id=?"
+    args: list = [profile_id]
+    if since:
+        sql += " AND last_seen>=?"
+        args.append(since.isoformat())
+    sql += " GROUP BY outcome"
+    with sqlite3.connect(db_path) as con:
+        return {row[0] or "(미기록)": row[1] for row in con.execute(sql, args)}
 
 
 def record_run(
