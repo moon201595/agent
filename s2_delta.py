@@ -241,7 +241,9 @@ async def find_new_papers_since(
     seen: set[str] = set()
     papers: list[dict] = []
     failed = 0
-    truncated = 0
+    truncated = 0      # 잘린 키워드 전체 (기록용)
+    capped = 0         # 그중 **우리가 정한 페이지 상한**에 걸린 것
+    blocked = 0        # 그중 예산·실패·offset 상한 — 사고로 못 본 것
     started = time.monotonic()
     searched = 0
     for keyword in keywords:
@@ -260,15 +262,30 @@ async def find_new_papers_since(
             continue
         if found.truncated:
             truncated += 1
+            # **우리가 정한 상한에 걸린 것과 사고로 못 본 것을 가른다**
+            # (2026-09-08, §8-78 ②). 페이지 상한은 우리가 고른 정책이다 —
+            # 관련도 순 앞쪽 300편이면 충분하다고 판단해 그렇게 정했고,
+            # 실측에서 가장 많은 키워드도 218편으로 그 아래였다.
+            #
+            # 그걸 partial 로 남기면 **창이 안 전진해 다음 날 같은 창을 다시
+            # 훑고 또 상한에 걸린다.** 볼 생각도 없는 논문 때문에 호출만 매일
+            # 늘어난다. 예산 소진·페이지 실패·offset 상한은 사고이므로 그대로
+            # partial 이다 — 그건 우리가 고른 것이 아니다.
+            if found.reason == "page_cap":
+                capped += 1
+            else:
+                blocked += 1
             why = {
-                "page_cap": f"페이지 상한({MAX_PAGES_PER_KEYWORD}쪽)까지 받고도 남았다",
+                "page_cap": f"페이지 상한({MAX_PAGES_PER_KEYWORD}쪽)까지 받았다 — 우리가 정한 범위다",
                 "budget": "시간 예산이 끝나 남은 쪽을 못 받았다",
                 "offset_ceiling": "S2 offset 상한(1000)에 걸렸다",
                 "page_failure": "뒤 페이지가 실패해 앞쪽만 살렸다",
             }.get(found.reason, "다 받지 못했다")
+            tail = ("범위대로 받았으므로 창은 전진한다" if found.reason == "page_cap"
+                    else "이 실행은 partial 로 기록한다")
             print(f"  [S2] '{keyword}' — {why}"
                   f"{f' (전체 {found.total}편 중 {len(found.papers)}편)' if found.total else ''}"
-                  f" — 이 실행은 partial 로 기록한다", flush=True)
+                  f" — {tail}", flush=True)
         for paper in found.papers:
             key = (paper.get("arxiv_id") or paper.get("doi")
                    or paper["title"].lower())
@@ -288,19 +305,30 @@ async def find_new_papers_since(
     # MAX_PAGES_PER_KEYWORD 주석 참고. S2 의 status 는 커서 계산에 안 쓰이고,
     # 5일 안전 창이 최근 구간을 어차피 다시 훑는다. **그래도 정직하게 남긴다** —
     # 기록이 사실과 달라지면 나중에 그 기록으로 아무것도 설명할 수 없기 때문이다.
+    #
+    # **2026-09-08 §8-78 ②**: 페이지 상한(page_cap)은 partial 로 세지 않는다.
+    # 그건 사고가 아니라 우리가 고른 범위이고, partial 로 남기면 창이 영원히
+    # 안 전진한다. 대신 `keywords_capped` 로 남겨 기록에서 사라지지 않게 한다 —
+    # `done` 은 "우리가 보기로 한 범위를 다 봤다"이지 "세계의 모든 논문을
+    # 확인했다"가 아니다.
     if keywords and failed == len(keywords):
         status = "failed"
-    elif searched < len(keywords) or failed or truncated:
-        status = "partial"          # 예산·실패·상한 중 하나로 다 못 봤다
+    elif searched < len(keywords) or failed or blocked:
+        status = "partial"          # 예산·실패·offset 상한 — 사고로 못 봤다
     else:
         status = "done"
     return {
         "papers": papers,
         "status": status,
-        "query": f"S2 keywords×{searched}/{len(keywords)} {_window(since, until)}",
+        # 상한에 걸린 키워드가 있으면 기록에 남긴다 — status 가 done 이어도
+        # "무엇을 안 봤는지"가 search_runs 에서 보여야 한다.
+        "query": (f"S2 keywords×{searched}/{len(keywords)} {_window(since, until)}"
+                  + (f" capped×{capped}" if capped else "")),
         "keywords_failed": failed,
         "keywords_searched": searched,
         "keywords_truncated": truncated,
+        "keywords_capped": capped,
+        "keywords_blocked": blocked,
     }
 
 
