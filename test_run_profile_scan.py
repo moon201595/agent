@@ -1592,3 +1592,68 @@ def test_backfill_marks_old_summaries_as_delivered(tmp_path, monkeypatch):
     assert n == 2
     assert len(rp.already_shown(db_path, "team_ai")) == 2
     assert rp.backfill_shown_from_summaries(db_path, "team_ai") == 0   # 두 번 불러도 안전
+
+
+def test_skipped_s2_does_not_hold_the_window(tmp_path, monkeypatch):
+    """**§8-78 ①.** S2 커서를 무조건 합치면, 가중치를 낮춰 S2 를 끈 프로필에서
+    **옛 커서가 영원히 남아 arXiv 창을 끈다** — 그 소스는 앞으로 갱신되지
+    않으므로 커서가 늙기만 한다. 이번 실행에서 실제로 질의할 소스만 센다."""
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    now = datetime.now(timezone.utc)
+
+    # arXiv 는 어제까지 다 봤고, S2 는 30일 전에서 멈춘 뒤 다시 안 돌았다.
+    _seed_run(db_path, "arxiv", "done", now - timedelta(days=40), now - timedelta(days=1),
+              (now - timedelta(days=1)).isoformat())
+    _seed_run(db_path, "s2", "partial", now - timedelta(days=40), now - timedelta(days=30),
+              (now - timedelta(days=30)).isoformat())
+
+    seen = {}
+
+    async def spy_arxiv(client, query, since, **kw):
+        seen["since"] = since
+        return {"status": "done", "papers": [], "pages_used": 1, "query": query,
+                "until": datetime.now(timezone.utc).isoformat()}
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
+    # **S2 를 끈다** — 이 프로필은 이번 실행에서 S2 를 질의하지 않는다.
+    monkeypatch.setattr(rps.s2_delta, "keywords_for_s2", lambda profile, **kw: [])
+
+    asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+
+    age = (datetime.now(timezone.utc) - seen["since"]).days
+    assert age <= 7, f"질의도 안 하는 S2 커서가 창을 {age}일로 끌었다"
+
+
+def test_active_s2_still_holds_the_window(tmp_path, monkeypatch):
+    """반대로 S2 를 실제로 질의하는 날은 그 커서를 따라가야 한다 — §8-76 의 요지."""
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    now = datetime.now(timezone.utc)
+    _seed_run(db_path, "arxiv", "done", now - timedelta(days=40), now - timedelta(days=1),
+              (now - timedelta(days=1)).isoformat())
+    _seed_run(db_path, "s2", "partial", now - timedelta(days=40), now - timedelta(days=30),
+              (now - timedelta(days=30)).isoformat())
+
+    seen = {}
+
+    async def spy_arxiv(client, query, since, **kw):
+        seen["since"] = since
+        return {"status": "done", "papers": [], "pages_used": 1, "query": query,
+                "until": datetime.now(timezone.utc).isoformat()}
+
+    async def no_s2(client, keywords, since, until, **kw):
+        return {"papers": [], "status": "done", "query": "q",
+                "keywords_failed": 0, "keywords_searched": 1, "keywords_truncated": 0}
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
+    monkeypatch.setattr(rps.s2_delta, "keywords_for_s2", lambda profile, **kw: ["defect detection"])
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", no_s2)
+
+    asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+    age = (datetime.now(timezone.utc) - seen["since"]).days
+    assert age >= 29, f"질의하는 S2 가 뒤처졌는데 창이 안 따라갔다({age}일)"

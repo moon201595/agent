@@ -268,15 +268,24 @@ async def scan_profile(
     # (REINDEX_SAFETY_DAYS)이 최근 구간을 다시 훑어 우연히 덮어 줬을 뿐이고,
     # S2 장애가 5일보다 길어지면 그 구간의 논문은 실제로 사라진다.
     #
-    # 비용을 먼저 쟀다(2026-09-08, 과거 search_runs 33회 재생):
-    # 실제로 창이 늘어났을 실행은 **2회뿐이고 최대 +8.2시간**이다. 나머지는
-    # 안전 창이 이미 덮고 있어 변화가 없다. 검색량이 유의미하게 늘지 않는다.
+    # 비용을 먼저 쟀다(2026-09-08, 과거 search_runs 재생): S2 이력이 있는
+    # 구간에서 실제 창 증가는 2회·최대 +8.2시간이었다. **다만 이 값은 S2 이력이
+    # 있는 경우만 잰 것이다**(외부 검토 지적) — 이력이 없으면 next_since 가
+    # 7일 규칙으로 떨어져 더 길어질 수 있다. 자세한 것은 PROGRESS §8-78.
     #
     # min 을 쓰는 이유: 커서는 "여기까지는 봤다"는 뜻이므로 **덜 본 쪽**을
     # 따라가야 못 본 구간이 안 생긴다.
+    #
+    # **다만 이번 실행에서 실제로 질의할 소스만 센다**(2026-09-08, §8-78 ①).
+    # S2 커서를 무조건 합치면, 가중치를 낮춰 S2 를 끄거나 키워드가 비어
+    # 건너뛰는 프로필에서 **옛 S2 커서가 영원히 남아 arXiv 창을 끈다** —
+    # 그 소스는 앞으로 갱신되지 않으므로 커서가 늙기만 한다. 검토의 재현에서
+    # 30일 전 S2 이력이 정상 arXiv 창을 30일로 늘렸다.
+    s2_keywords = s2_delta.keywords_for_s2(profile)
+    sources = ["arxiv"] + (["s2"] if s2_keywords else [])
     since = min(
-        research_profile.next_since(db_path, profile_id, "arxiv", signature=signature),
-        research_profile.next_since(db_path, profile_id, "s2", signature=signature),
+        research_profile.next_since(db_path, profile_id, src, signature=signature)
+        for src in sources
     )
     query = _arxiv_query_from_core_topics(profile["core_topics"])
 
@@ -327,7 +336,8 @@ async def scan_profile(
     # 버리지 않는다. 반대도 같다.
     s2_papers: list[dict] = []
     s2_status = "skipped"
-    s2_keywords = s2_delta.keywords_for_s2(profile)
+    # s2_keywords 는 위 창 계산에서 이미 구했다 — 같은 값을 두 번 계산하면
+    # 한쪽만 바뀌었을 때 창과 실제 질의가 어긋난다.
     if s2_keywords:
         try:
             s2_result = await s2_delta.find_new_papers_since(
