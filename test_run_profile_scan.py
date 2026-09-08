@@ -510,20 +510,32 @@ def _agent_paper(aid, days_ago):
     return {"arxiv_id": aid, "title": f"An agent paper {aid}", "abstract": "", "published": ts}
 
 
-def test_already_summarized_papers_are_dropped_before_ranking(tmp_path, monkeypatch):
-    """실측 배경(2026-09-01): 색인 지연 때문에 매 실행이 최근 며칠을 다시
-    조회하게 됐다(REINDEX_SAFETY_DAYS). 이미 요약한 논문을 안 빼면 어제
-    메일에 나간 논문이 오늘 또 나간다."""
+def test_delivered_papers_are_dropped_before_ranking(tmp_path, monkeypatch):
+    """**계약이 바뀌었다**(2026-09-08, §8-77). 소비의 기준이 "요약됐다"에서
+    **"배달됐다"**로 옮겨졌다.
+
+    원래 실측 배경(2026-09-01)은 그대로다 — 색인 지연 때문에 매 실행이 최근
+    며칠을 다시 조회하므로(REINDEX_SAFETY_DAYS) 이미 나간 논문을 안 빼면
+    어제 메일의 논문이 오늘 또 나간다. **다만 "요약됨"을 그 기준으로 쓰면
+    발송이 실패한 날 그 논문은 요약만 남고 메일은 못 탄 채 후보에서도 빠져
+    영영 안 나간다.** 그래서 배달 기록(`profile_shown`)만 본다.
+    """
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     _seed_summary(monkeypatch, tmp_path, ["p1", "p3"])
     _mock_arxiv_pages(monkeypatch, [_agent_paper(f"p{i}", i) for i in (1, 2, 3, 4)])
 
+    # 요약만 있고 배달 기록이 없으면 **후보로 남는다** — 예전에는 빠졌다.
     async def main():
         return await rps.scan_profile(db_path, "team_ai", None, page_size=50, max_pages=2)
 
     result = asyncio.run(main())
+    assert [p["arxiv_id"] for p in result["papers"]] == ["p1", "p2", "p3", "p4"]
 
+    # 배달 기록을 넣으면 그때 빠진다.
+    rp.mark_shown(db_path, "team_ai", [{"arxiv_id": "p1", "title": "An agent paper p1"},
+                                       {"arxiv_id": "p3", "title": "An agent paper p3"}])
+    result = asyncio.run(main())
     assert [p["arxiv_id"] for p in result["papers"]] == ["p2", "p4"]
     assert result["already_seen_count"] == 2
     assert result["retrieved_count"] == 4      # arXiv 가 준 원본 건수
@@ -1497,3 +1509,86 @@ def test_scan_uses_the_combined_window(tmp_path, monkeypatch):
     monkeypatch.setattr(rps.research_profile, "next_since", spy)
     asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
     assert "arxiv" in seen and "s2" in seen, f"본 소스: {seen}"
+
+
+# ------------------------------------------- §8-77 발송 실패 시 소비 (2026-09-08)
+#
+# `mark_shown` 이 scan_and_digest 안에서 불리고 메일은 그 뒤 _deliver 가 보냈다.
+# _deliver 는 SMTP 실패를 예외로 안 올리고 문자열만 돌려주며 되돌리는 코드가
+# 없어서, **메일이 안 나간 날에도 그날 논문은 소비돼 다음 다이제스트에서 영영
+# 빠졌다.** 소비의 기준을 "배달됐다"로 옮겨 고쳤다.
+
+
+def test_failed_delivery_leaves_papers_for_tomorrow(tmp_path, monkeypatch):
+    """**§8-77 의 핵심.** SMTP 가 죽은 날의 논문은 내일 다시 나갈 기회를 가져야 한다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+    monkeypatch.setattr(rps, "_deliver", lambda *a: "발송 실패: SMTP 죽음")
+    # 소비 게이트 자체를 본다 — 그날 내용 자리에 무엇이 들어갔는지(스코어링
+    # 결과)에 테스트가 흔들리면 안 된다.
+    calls = []
+    monkeypatch.setattr(rps.research_profile, "mark_shown",
+                        lambda db, pid, papers: calls.append(papers))
+
+    async def run():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2, send=True)
+
+    summary = asyncio.run(run())
+    assert rps.delivery_failed(summary["team_ai"]["delivery"])
+    assert calls == [], "발송이 실패했는데 소비 처리를 했다"
+
+
+def test_successful_delivery_consumes_the_papers(tmp_path, monkeypatch):
+    """성공한 날은 소비해야 한다 — 안 그러면 내일 같은 논문이 또 나간다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+    monkeypatch.setattr(rps, "_deliver", lambda *a: "발송 완료 → 1명")
+    calls = []
+    monkeypatch.setattr(rps.research_profile, "mark_shown",
+                        lambda db, pid, papers: calls.append(papers))
+
+    async def run():
+        return await rps.scan_all_profiles(db_path, None, max_pages=2, send=True)
+
+    summary = asyncio.run(run())
+    assert summary["team_ai"]["delivery"] == "발송 완료 → 1명"
+    assert len(calls) == 1, "발송에 성공했는데 소비 처리를 안 했다"
+
+
+def test_scan_without_send_does_not_consume(tmp_path, monkeypatch):
+    """review_app 의 수동 스캔은 메일을 안 보낸다. 화면에서 본 것과 메일로 받은
+    것은 다르고, 이 기록의 이름은 "내보냈다"이다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert rp.already_shown(db_path, "team_ai") == set()
+
+
+def test_backfill_marks_old_summaries_as_delivered(tmp_path, monkeypatch):
+    """**이행 장치.** 소비 기준을 옮기면 예전에 요약만 되고 배달 기록이 없는
+    논문이 한꺼번에 되살아난다. 실측(2026-09-08): 요약 132편 중 기록 없는 것이
+    101편이고 그중 9편이 최근 5일 창에 들어와 내일 메일에 다시 나갈 참이었다.
+    그 논문들은 실제로는 이미 나갔고 기록만 없던 것이라 소급해 채운다."""
+    import sqlite3 as _sq
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    with _sq.connect(db_path) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS papers (arxiv_id TEXT PRIMARY KEY, title TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS summaries (arxiv_id TEXT PRIMARY KEY, path TEXT)")
+        con.execute("INSERT INTO papers VALUES ('p1','A'), ('p2','B')")
+        con.execute("INSERT INTO summaries VALUES ('p1',''), ('p2','')")
+
+    assert rp.already_shown(db_path, "team_ai") == set()
+    n = rp.backfill_shown_from_summaries(db_path, "team_ai")
+    assert n == 2
+    assert len(rp.already_shown(db_path, "team_ai")) == 2
+    assert rp.backfill_shown_from_summaries(db_path, "team_ai") == 0   # 두 번 불러도 안전

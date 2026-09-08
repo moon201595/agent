@@ -370,10 +370,21 @@ async def scan_profile(
     # 3편이 같았다. 두 번째 필터가 그 구멍을 막는다(research_profile.
     # mark_shown 주석에 실측이 있다).
     seen = _already_summarized([p.get("arxiv_id") for p in merged])
+    # **소비의 기준은 "배달됐다" 하나다**(2026-09-08, §8-77).
+    #
+    # 예전에는 `seen`(=이미 요약됨)으로도 후보에서 뺐다. 그건 "요약됐다 =
+    # 배달됐다"를 전제한 것인데, 발송이 실패한 날 그 전제가 깨진다 —
+    # 요약은 남고 메일은 안 갔는데 다음 날 후보에서도 빠져 **영영 안 나간다.**
+    # 이제 `profile_shown`(배달 기록) 하나로만 뺀다.
+    #
+    # 요약이 이미 있는 논문이 다시 후보가 되어도 **LLM 을 다시 부르지 않는다** —
+    # `_summary_exists` 가 Deep Layer 재처리를 막고, 그 논문은 기존 요약을
+    # 달고 내용 자리에 들어간다. 즉 되살아나는 비용은 사실상 0 이다.
+    #
+    # 이 변경 전에 `backfill_shown_from_summaries` 로 예전 요약을 소급
+    # 기록했다(101편). 안 그러면 이미 나간 논문이 한꺼번에 되살아난다.
     shown = research_profile.already_shown(db_path, profile_id)
-    fresh = [p for p in merged
-             if (not p.get("arxiv_id") or p.get("arxiv_id") not in seen)
-             and research_profile.paper_key(p) not in shown]
+    fresh = [p for p in merged if research_profile.paper_key(p) not in shown]
 
     # **관련도 하나로 줄 세운다**(2026-09-04 개정).
     #
@@ -721,10 +732,17 @@ async def scan_and_digest(
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
 
-    # 내용 자리로 실린 논문을 소비 처리한다 — 내일 후보에서 빠진다.
-    # **다이제스트를 저장한 뒤에** 한다: 앞 단계에서 예외가 나면 메일이
-    # 안 나가는데, 그때 소비 처리까지 해버리면 그 논문은 영영 안 나간다.
-    research_profile.mark_shown(db_path, profile_id, result.get("papers") or [])
+    # **소비 처리는 여기서 하지 않는다**(2026-09-08, §8-77).
+    #
+    # 예전에는 여기서 `mark_shown` 을 불렀다. 주석은 "다이제스트를 저장한 뒤에
+    # 한다 — 앞 단계에서 예외가 나면 메일이 안 나가는데 그때 소비 처리까지
+    # 해버리면 그 논문은 영영 안 나간다"고 적혀 있었다. **의도는 맞는데 막는
+    # 범위가 스캔 실패까지였다** — 발송은 `scan_all_profiles` 가 이 함수를
+    # 끝낸 뒤에 하므로, SMTP 가 죽은 날에도 논문은 이미 소비돼 있었다.
+    #
+    # 이제 **배달에 성공한 뒤에만** 소비 처리한다(scan_all_profiles·main 참고).
+    # 발송하지 않는 경로(review_app 의 수동 스캔)는 소비하지 않는다 — 화면에서
+    # 본 것과 메일로 받은 것은 다르고, 이 기록의 이름은 "내보냈다"이다.
 
     run_scope.__exit__(None, None, None)
     result["api_calls"] = run_scope.snapshot()
@@ -802,7 +820,13 @@ async def scan_all_profiles(
                 "scored_count": result["scored_count"],
             }
             if send:
-                entry["delivery"] = _deliver(db_path, profile_id, result, digest_text)
+                message = _deliver(db_path, profile_id, result, digest_text)
+                entry["delivery"] = message
+                # **배달에 성공한 날만 소비 처리한다**(§8-77). 실패하면 그 논문은
+                # 내일 후보로 남아 다시 나갈 기회를 갖는다.
+                if not delivery_failed(message):
+                    research_profile.mark_shown(
+                        db_path, profile_id, result.get("papers") or [])
             summary[profile_id] = entry
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
@@ -886,6 +910,8 @@ def main() -> int:
         print(message)
         if delivery_failed(message):
             return 1
+        # --all 경로와 같은 규칙 — 배달에 성공한 뒤에만 소비 처리한다(§8-77).
+        research_profile.mark_shown(db_path, args.profile_id, result.get("papers") or [])
     return 0
 
 
