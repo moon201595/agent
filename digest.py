@@ -782,12 +782,21 @@ def _mention_keys(title: str) -> list[str]:
     if not title:
         return []
     keys = [title]
+    head = title.split(":")[0].split("：")[0].strip()
+    # 콜론 앞이 여러 낱말이면 그 구절도 열쇠다 — 프롬프트가 "제목 앞부분을
+    # 그대로 인용"하라고 하므로 서술이 `Deep Microcompression은…` 처럼 쓴다.
+    # 짧은 구절은 흔한 말과 부딪히므로 12자 이상·2낱말 이상만 받는다.
+    if head != title and len(head) >= 12 and len(head.split()) >= 2:
+        keys.append(head)
     m = _ACRONYM_RE.match(title)
     if m:
         token = m.group(1)
-        # 대문자가 하나라도 있어야 약칭으로 본다 — "Towards: ..." 같은 평범한
-        # 머리말이 흔한 단어와 매칭되는 것을 막는다.
-        if any(c.isupper() for c in token):
+        # **대문자 두 개 이상**이어야 약칭으로 본다(2026-09-08 정정).
+        # 그전엔 "하나라도"였는데 그러면 `Towards: Better Detection` 의
+        # "Towards" 가 통과해 평범한 문장의 "Towards efficient inference" 에
+        # `(논문 1)` 이 붙었다 — 외부 검토가 재현했다. 주석은 막는다고
+        # 말하고 있었지만 코드가 안 막고 있었다.
+        if sum(1 for c in token if c.isupper()) >= 2:
             keys.append(token)
     return keys
 
@@ -1150,13 +1159,24 @@ def _is_narrative_heading(line: str) -> bool:
 # 갈래를 나누는데 그 표시가 본문과 같은 굵기라 갈래가 안 보였고, 편수 증감이
 # `(0→6, +6)` 처럼 숫자로만 있어 늘었는지 줄었는지 눈으로 안 잡혔다.
 
-# 서술이 갈래를 여는 말. LLM 이 쓰는 말투가 고정돼 있어 대조로 잡힌다.
-_ENUM_RE = re.compile(r"^(첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째)([,.·:]?)")
+# 서술이 갈래를 여는 말.
+#
+# **2026-09-08 실측으로 넓혔다.** 처음엔 "첫째|둘째|셋째"만 잡았는데, 같은
+# 프롬프트로 만든 두 글을 재보니 하나는 "첫 번째는"으로 썼고 다른 하나는
+# 아예 안 썼다 — 이 규칙이 실제 출력에서 **한 번도 발화하지 않았다.**
+# 프롬프트로 "첫째,"를 쓰라고 지시하되(형식은 그쪽에서 강제한다) 받는 쪽은
+# 변이를 견디게 넓힌다. 모델이 지시를 지키는지에 표시가 의존하면 안 된다
+# — `_plain()` 이 마크다운을 지우는 것과 같은 이유다.
+_ENUM_RE = re.compile(
+    r"^(첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째"
+    r"|첫\s?번째|두\s?번째|세\s?번째|네\s?번째|다섯\s?번째|여섯\s?번째|일곱\s?번째)"
+    r"([,.·:]?)")
 
 # 편수 증감. **`(3→5, +2)` 형태 안에서만** 잡는다. `[+-]\d+` 를 통째로 잡으면
 # 서술에 나오는 지수 표기(`10^-3`)나 하이픈 붙은 이름까지 물들인다 —
 # 색이 뜻을 잃는다.
-_DELTA_RE = re.compile(r"(→\s*\d+,\s*)([+\-−]\d+)")
+# 뒤에 숫자·소수점·지수가 이어지면 그건 증감이 아니다(`+2e-3` 의 `+2`).
+_DELTA_RE = re.compile(r"(→\s*\d+,\s*)([+\-−]\d+)(?![\d.eE])")
 
 _UP_COLOR = "#0B7A3B"     # 늘어난 것
 _DOWN_COLOR = "#B00020"   # 줄어든 것
@@ -1171,6 +1191,9 @@ def _colour_delta(escaped: str) -> str:
     """`+2` 는 초록, `-3` 은 빨강. 숫자를 바꾸지 않고 색만 입힌다."""
     def paint(m):
         head, token = m.group(1), m.group(2)
+        # `(1→1, +0)` 은 **변화 없음**이다. 초록으로 칠하면 늘어난 것처럼 보인다.
+        if token.lstrip("+-−") == "0":
+            return m.group(0)
         colour = _DOWN_COLOR if token[0] in "-−" else _UP_COLOR
         return f'{head}<span style="color:{colour};font-weight:600;">{token}</span>'
     return _DELTA_RE.sub(paint, escaped)
@@ -1178,6 +1201,10 @@ def _colour_delta(escaped: str) -> str:
 
 def _emphasise_label(escaped: str) -> str:
     """`출처 : ...`, `엔진 : ...` 처럼 앞에 라벨이 붙은 줄은 라벨만 굵게."""
+    # 갈래 표시로 시작하는 줄은 라벨이 아니다 — `첫째, 압축 : …` 을 라벨로
+    # 보면 `<strong>첫째, 압축</strong>` 이 돼 설명까지 굵어진다(외부 검토).
+    if _ENUM_RE.match(escaped):
+        return escaped
     head, sep, rest = escaped.partition(" : ")
     if sep and len(head) <= 12 and head.strip():
         return f"<strong>{head}</strong>{sep}{rest}"
@@ -1191,10 +1218,14 @@ def numbered_mentions(scan_result: dict) -> list[tuple[str, int]]:
     (2026-09-08 사용자 요청). 판정은 §8-68 고침과 **같은 함수**(_mention_keys)를
     쓴다 — 두 곳이 다른 규칙으로 논문을 찾으면 한쪽만 맞는 일이 생긴다.
     """
-    out: list[tuple[str, int]] = []
+    owners: dict[str, set[int]] = {}
     for i, paper in enumerate(scan_result.get("papers") or [], start=1):
         for key in _mention_keys(paper.get("title") or ""):
-            out.append((key, i))
+            owners.setdefault(key, set()).add(i)
+    # **두 논문이 같은 이름을 쓰면 그 이름은 버린다**(2026-09-08). 등장 순서를
+    # 논문 식별 근거로 삼으면 첫 번째 언급에 1번, 두 번째에 2번이 붙는데
+    # 그건 근거 없는 배정이다 — 모르면 안 붙이는 쪽이 맞다.
+    out = [(k, next(iter(v))) for k, v in owners.items() if len(v) == 1]
     return sorted(out, key=lambda kv: -len(kv[0]))
 
 
@@ -1207,17 +1238,26 @@ def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
     if not text or not mentions:
         return text
     done: set[int] = set()
-    for key, num in mentions:
+    taken: list[tuple[int, int]] = []     # 이미 어떤 논문이 차지한 구간
+    inserts: list[tuple[int, int]] = []
+    for key, num in mentions:             # 긴 이름부터 — 긴 쪽이 구간을 먼저 잡는다
         if num in done or len(key) < 3:
             continue
         pattern = (re.escape(key) if len(key) > 24
                    else rf"(?<![A-Za-z0-9]){re.escape(key)}(?![A-Za-z0-9])")
         flags = re.IGNORECASE if len(key) > 24 else 0
-        m = re.search(pattern + r"(?!\s*\(논문)", text, flags)
-        if not m:
-            continue
-        text = f"{text[:m.end()]} (논문 {num}){text[m.end():]}"
-        done.add(num)
+        for m in re.finditer(pattern + r"(?!\s*\(논문)", text, flags):
+            # **이미 잡힌 구간 안이면 건너뛴다**(2026-09-08). 안 그러면
+            # `HINT++: Better` 안의 `HINT` 가 다른 논문으로 잡혀
+            # `HINT (논문 1)++: Better (논문 2)` 가 된다 — 외부 검토가 재현했다.
+            if any(m.start() < e and m.end() > s for s, e in taken):
+                continue
+            taken.append((m.start(), m.end()))
+            inserts.append((m.end(), num))
+            done.add(num)
+            break
+    for pos, num in sorted(inserts, reverse=True):   # 뒤에서부터 넣어야 위치가 안 밀린다
+        text = f"{text[:pos]} (논문 {num}){text[pos:]}"
     return text
 
 
@@ -1243,7 +1283,10 @@ def _narrative_line_html(line: str) -> str:
     보였다. 글의 뼈대가 안 보이면 "그래서 무슨 일이 벌어지나"를 훑을 수가 없다.
     """
     text = _plain(line)
-    if _is_narrative_heading(line):
+    # **정규화한 뒤 판정한다**(2026-09-08 정정). 원래 줄로 보면 `**갈래**` 가
+    # 화면엔 "갈래"로 나오는데 소제목 강조만 빠졌다 — 주간 렌더러는 정규화
+    # 뒤에 보고 있어 같은 글이 두 곳에서 다르게 보였다.
+    if _is_narrative_heading(text):
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
                 f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
     return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
@@ -1282,6 +1325,14 @@ def _weekly_line_html(line: str) -> str:
     if set(stripped) == {"─"}:
         return (f'<div style="border-top:1px solid {_LINE};margin:12px 0 0;'
                 f'font-size:1px;line-height:1px;">&nbsp;</div>')
+    # **서술 소제목을 ■ 분기보다 먼저 본다**(2026-09-08 정정). format_report 는
+    # 서술 소제목도 `   ■ 갈래` 로 내보내는데, ■ 분기가 먼저 걸려 주간 리뷰
+    # 제목과 같은 15px + 상단 구분선이 붙었다 — 같은 내용의 계층이 장식 하나에
+    # 따라 달라졌다. 외부 검토가 잡았다.
+    if _is_narrative_heading(stripped):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                f'font-weight:700;margin:12px 0 3px;">'
+                f'{_esc(_HEADING_ORNAMENT_RE.sub("", stripped))}</div>')
     if stripped.startswith("■"):
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
                 f'font-weight:700;margin:20px 0 6px;border-top:1px solid {_LINE};'
@@ -1295,12 +1346,6 @@ def _weekly_line_html(line: str) -> str:
     if stripped.startswith(_WEEKLY_NOTE_PREFIX):
         return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
                 f'margin:4px 0 2px;padding-left:8px;">{_esc(stripped)}</div>')
-    # 주간 리뷰 안의 **서술 소제목**도 굵게(2026-09-08). 일일 동향 정리는
-    # §8-69 에서 이미 굵어졌는데 주간 리뷰에 실리는 같은 글은 그대로였다 —
-    # 판정은 같은 함수(_is_narrative_heading)를 쓴다.
-    if _is_narrative_heading(stripped):
-        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-                f'font-weight:700;margin:12px 0 3px;">{_esc(stripped)}</div>')
     indent = len(raw) - len(raw.lstrip(" "))
     pad = min(indent, 12) * 2
     body = _colour_delta(_emphasise_enum(_emphasise_label(_esc(stripped))))

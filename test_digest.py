@@ -1191,3 +1191,138 @@ def test_zero_summaries_falls_back_to_the_old_sentence():
         scan = {"papers": [], "candidates_found": 1, "narrative_summaries": value,
                 "narrative": ("갈래\n첫째, 흐름이다.", [])}
         assert digest.narrative_source_label(scan).startswith("LLM 이 제목·초록만")
+
+
+# ------------------------------------------- 서식이 조용히 사라지지 않는가 (2026-09-08 실측)
+#
+# **실측 배경.** 동향 서술에 원문 요약을 넣었더니 LLM 이 소제목을 문장에 녹였다
+# ("오늘 눈에 띄는 것은 ~이다"). digest 는 소제목을 문구 대조로 찾으므로
+# 굵게 처리가 통째로 사라졌다 — A/B 실측에서 소제목 인식 0/4, 굵어진 곳 1회.
+# 같은 실측에서 갈래 표시도 두 판 모두 0회였다: LLM 이 "첫 번째는"으로 쓰는데
+# 정규식은 "첫째"만 잡았다. **모델이 지시를 지키는지에 표시가 의존하면 안 된다.**
+
+_NARRATIVE_WELL_FORMED = "\n".join([
+    "■ 오늘 눈에 띄는 것",
+    "VLA-Precision 이 눈에 띈다.",
+    "■ 갈래",
+    "첫째, 신뢰성을 높이는 흐름이다.",
+    "둘째, 경량화 흐름이다.",
+    "■ 우리 분야와 만나는 지점",
+    "온디바이스 배포와 이어진다.",
+])
+
+# 1차 실측에서 실제로 나온 깨진 형태 — 소제목이 문장에 녹았다.
+_NARRATIVE_MERGED = "\n".join([
+    "오늘 눈에 띄는 것은 VLA-Precision 이다.",
+    "갈래 첫 번째는 신뢰성을 높이는 흐름이다.",
+])
+
+
+def test_enum_marker_survives_the_other_wording():
+    """실측: 같은 프롬프트로 만든 글이 '첫째,' 대신 '첫 번째는' 을 썼다.
+    받는 쪽이 변이를 견뎌야 한다 — _plain() 이 마크다운을 지우는 것과 같은 이유다."""
+    for line in ("첫째, 흐름이다.", "첫 번째는 흐름이다.", "두 번째는 흐름이다.",
+                 "셋째, 흐름이다.", "세 번째는 흐름이다."):
+        assert digest._ENUM_RE.match(line), line
+    assert not digest._ENUM_RE.match("첫 인상은 좋았다.")
+
+
+def test_well_formed_narrative_gets_its_skeleton():
+    html = digest.generate_digest_html(
+        {"papers": [], "candidates_found": 1, "narrative": (_NARRATIVE_WELL_FORMED, [])}, "t")
+    assert html.count("font-weight:700") >= 3      # 소제목 세 개
+    assert html.count("<strong>") == 2             # 갈래 표시 두 개
+
+
+def test_merged_headings_lose_the_skeleton_and_that_is_visible():
+    """소제목이 문장에 녹으면 뼈대가 사라진다 — 이건 프롬프트가 막아야 하는
+    것이고, 렌더링이 조용히 성공한 척하지 않는다는 것을 못박는다."""
+    lines = [l for l in _NARRATIVE_MERGED.splitlines() if l.strip()]
+    assert not any(digest._is_narrative_heading(l) for l in lines)
+    # 다만 갈래 표시는 줄 앞에 있으면 넓힌 정규식이 잡는다
+    assert digest._ENUM_RE.match("첫 번째는 신뢰성을 높이는 흐름이다.")
+
+
+# ------------------------------------------- 외부 검토가 잡은 여섯 구멍 (2026-09-08)
+#
+# 서식 작업과 논문 번호 주석이 만든 것들이다. **"조용히 사라지는 것"보다
+# "잘못 붙는 것"이 더 나쁘다** — 없는 근거를 화면에 만들어 내기 때문이다.
+
+
+def test_common_word_is_not_an_acronym():
+    """`Towards: Better Detection` 의 "Towards" 가 약칭으로 인정돼 평범한 문장
+    "Towards efficient inference" 에 (논문 1) 이 붙었다. 주석은 막는다고
+    말하고 있었지만 코드가 안 막고 있었다 — 대문자 두 개 이상을 요구한다."""
+    assert "Towards" not in digest._mention_keys("Towards: Better Detection")
+    assert "ZETA" in digest._mention_keys("ZETA: Zero-shot")
+    assert "FailureSpot" in digest._mention_keys("FailureSpot: Detection")
+    assert "VLA-Precision" in digest._mention_keys("VLA-Precision: Asymmetric")
+
+    mentions = digest.numbered_mentions({"papers": [{"arxiv_id": "1",
+                                                     "title": "Towards: Better Detection"}]})
+    assert "(논문" not in digest.annotate_numbers("Towards efficient inference 흐름이 있다.", mentions)
+
+
+def test_overlapping_names_do_not_split_a_title():
+    """`HINT` 와 `HINT++` 가 같이 있으면 뒤 논문의 제목이
+    `HINT (논문 1)++: … (논문 2)` 로 쪼개졌다 — 이미 잡힌 구간을 보호한다."""
+    papers = [{"arxiv_id": "1", "title": "HINT: Hierarchical"},
+              {"arxiv_id": "2", "title": "HINT++: Better"}]
+    out = digest.annotate_numbers("HINT++: Better 가 있다.", digest.numbered_mentions({"papers": papers}))
+    assert out.count("(논문") == 1
+    assert "HINT (논문" not in out
+
+
+def test_ambiguous_acronym_is_dropped_rather_than_guessed():
+    """두 논문이 같은 약칭을 쓰면 등장 순서로 배정할 근거가 없다 — 안 붙인다."""
+    papers = [{"arxiv_id": "1", "title": "ABCD: First"}, {"arxiv_id": "2", "title": "ABCD: Second"}]
+    keys = dict(digest.numbered_mentions({"papers": papers}))
+    assert "ABCD" not in keys
+    assert "ABCD: First" in keys        # 전체 제목은 서로 다르므로 남는다
+
+
+def test_title_prefix_quotation_still_gets_a_number():
+    """프롬프트가 "제목 앞부분을 그대로 인용"하라고 하는데 렌더러가 전체 제목과
+    단일 토큰 약칭만 찾아서, 프롬프트를 지켜도 번호가 안 붙었다."""
+    papers = [{"arxiv_id": "1",
+               "title": "Deep Microcompression: Structured Pruning and Bit-packed Quantization"}]
+    out = digest.annotate_numbers("Deep Microcompression은 겨냥한다.",
+                                  digest.numbered_mentions({"papers": papers}))
+    assert "Deep Microcompression (논문 1)" in out
+    # 짧은 머리말은 흔한 말과 부딪히므로 열쇠로 쓰지 않는다
+    assert "Fast Net" not in digest._mention_keys("Fast Net: Something")
+
+
+def test_weekly_narrative_heading_is_not_promoted_to_a_report_title():
+    """format_report 는 서술 소제목도 `   ■ 갈래` 로 내보낸다. ■ 분기가 먼저
+    걸려 주간 리뷰 제목과 같은 15px + 구분선이 붙었다 — 같은 내용의 계층이
+    장식 하나에 따라 달라졌다."""
+    sub = digest._weekly_line_html("   ■ 갈래")
+    assert "font-size:13px" in sub and "border-top" not in sub
+    title = digest._weekly_line_html("■ 주간 동향 리뷰")
+    assert "font-size:15px" in title and "border-top" in title
+
+
+def test_zero_delta_is_not_painted_green():
+    """`(1→1, +0)` 은 변화 없음이다. 초록으로 칠하면 늘어난 것처럼 보인다."""
+    assert "<span" not in digest._colour_delta("robot 1  (1→1, +0)")
+
+
+def test_exponent_after_a_delta_is_left_alone():
+    assert "<span" not in digest._colour_delta("입력 →5, +2e-3 이다")
+    assert "<span" not in digest._colour_delta("값 →5, +2.5 이다")
+
+
+def test_heading_is_judged_after_markdown_is_stripped():
+    """`**갈래**` 는 화면엔 "갈래"로 나오는데 강조만 빠졌다 — 주간 렌더러는
+    정규화 뒤에 보고 있어 같은 글이 두 곳에서 다르게 보였다."""
+    html = digest.generate_digest_html(
+        {"papers": [], "candidates_found": 1, "narrative": ("**갈래**\n첫째, 흐름이다.", [])}, "t")
+    heading = [b for b in html.split("<div") if "갈래" in b][0]
+    assert "font-weight:700" in heading
+
+
+def test_enum_line_is_not_mistaken_for_a_label():
+    """`첫째, 압축 : …` 을 라벨로 보면 설명까지 굵어진다."""
+    out = digest._emphasise_label(digest._esc("첫째, 압축 : 이런 흐름이다"))
+    assert "<strong>" not in out
