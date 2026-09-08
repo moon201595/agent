@@ -1058,3 +1058,101 @@ def test_common_word_prefix_is_not_treated_as_an_acronym():
 def test_no_narrative_means_no_section():
     scan = {"papers": [], "candidates_found": 1, "title_only_papers": [_ZETA]}
     assert digest.mentioned_papers(scan) == []
+
+
+# ------------------------------------------- 가독성 서식 (2026-09-08 사용자 요청)
+#
+# 실물 메일을 보고 나온 요청이다. 서술이 "첫째/둘째/셋째"로 갈래를 나누는데
+# 그 표시가 본문과 같은 굵기라 갈래가 안 보였고, 편수 증감이 숫자로만 있어
+# 늘었는지 줄었는지 눈에 안 잡혔다. 전부 문자열 대조라 판정이 아니다(규칙 7).
+
+_WEEKLY_FMT = "\n".join([
+    "■ 주간 동향 리뷰",
+    "처리한 논문 67편 (지난주 14편)",
+    "  출처 : arXiv 65편 · 저널(오픈액세스) 2편",
+    "  엔진 : gemini 53편 · groq 2편",
+    "▶ 주제별 편수 (지난주 대비)",
+    "   vision-language-action 6  (0→6, +6)",
+    "   defect detection 2  (5→2, -3)",
+    "▶ 서술 (LLM 이 쓴 것)",
+    "   갈래",
+    "   첫째, 지식 증류 흐름이다.",
+    "   오류율은 1.67 × 10^-3 이었고 pi_0-FAST 를 썼다.",
+])
+
+
+def _block(html, needle):
+    return [b for b in html.split("<div") if needle in b][0]
+
+
+def test_enumeration_markers_are_bold():
+    """서술이 갈래를 여는 '첫째/둘째'가 본문과 같은 굵기면 갈래가 안 보인다."""
+    scan = {"papers": [], "candidates_found": 1,
+            "narrative": ("첫째, 결함 검출 흐름이다.\n둘째, 경량화 흐름이다.", [])}
+    html = digest.generate_digest_html(scan, "t")
+    assert "<strong>첫째,</strong>" in html
+    assert "<strong>둘째,</strong>" in html
+    # 뒤 본문까지 굵어지면 안 된다
+    assert "<strong>첫째, 결함" not in html
+
+
+def test_delta_is_green_when_up_and_red_when_down():
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_FMT})
+    up = _block(html, "vision-language-action")
+    down = _block(html, "defect detection")
+    assert "#0B7A3B" in up and "+6" in up
+    assert "#B00020" in down and "-3" in down
+
+
+def test_delta_colour_does_not_touch_exponents_or_names():
+    """`10^-3` 이나 `pi_0-FAST` 까지 물들이면 색이 뜻을 잃는다.
+    `(N→M, ±K)` 형태 안에서만 칠한다."""
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_FMT})
+    line = _block(html, "오류율")
+    assert "<span" not in line
+    assert "10^-3" in line and "pi_0-FAST" in line
+
+
+def test_source_and_engine_labels_are_bold():
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_FMT})
+    assert "<strong>출처</strong>" in _block(html, "출처")
+    assert "<strong>엔진</strong>" in _block(html, "엔진")
+
+
+def test_weekly_narrative_headings_are_bold_too():
+    """일일 동향 정리는 §8-69 에서 굵어졌는데 주간 리뷰에 실리는 같은 글은
+    그대로였다 — 판정은 같은 함수를 쓴다."""
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_FMT})
+    assert "font-weight:700" in _block(html, "갈래")
+    assert "font-weight:700" not in _block(html, "첫째")
+
+
+def test_narrative_points_back_to_the_numbered_paper():
+    """"이 동향 정리가 어디서 왔나"를 읽는 사람이 바로 알 수 있어야 한다."""
+    papers = [
+        {"arxiv_id": "1", "title": "First paper",
+         "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}},
+        {"arxiv_id": "2", "title": "FailureSpot: Timestamp-Level Failure Detection",
+         "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}},
+    ]
+    scan = {"papers": papers, "candidates_found": 9,
+            "narrative": ("갈래\n첫째, FailureSpot 이 대표적이다.", [])}
+    for out in (digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")):
+        assert "FailureSpot (논문 2)" in out
+
+
+def test_number_annotation_marks_each_paper_once():
+    """같은 논문이 문단마다 나오면 번호가 도배된다."""
+    papers = [{"arxiv_id": "1", "title": "FailureSpot: Detection",
+               "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}]
+    text = "FailureSpot 이 있다.\n다시 FailureSpot 을 본다.\n또 FailureSpot 이다."
+    out = digest.annotate_numbers(text, digest.numbered_mentions({"papers": papers}))
+    assert out.count("(논문 1)") == 1
+
+
+def test_unmentioned_paper_gets_no_number():
+    papers = [{"arxiv_id": "1", "title": "Something Else Entirely",
+               "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}]
+    scan = {"papers": papers, "candidates_found": 1,
+            "narrative": ("갈래\n첫째, 다른 이야기다.", [])}
+    assert "(논문" not in digest.generate_digest(scan, "t")
