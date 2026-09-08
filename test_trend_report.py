@@ -687,3 +687,24 @@ def test_same_paper_in_both_lists_is_counted_once():
     assert corpus.count("[원문 요약 · 결과]") == 1
     assert enriched == 1
     assert used == 4          # 목록 자체는 손대지 않는다 — 요약만 한 번 붙인다
+
+
+def test_prompt_demands_the_shape_digest_renders():
+    """**프롬프트와 렌더링이 같은 형식을 말해야 한다.** 2026-09-08 실측:
+    요약을 넣자 LLM 이 소제목을 문장에 녹여 굵게 처리가 통째로 사라졌다
+    (소제목 인식 0/4). 프롬프트가 형식을 강제하도록 고쳤고, 이 테스트가
+    그 지시가 프롬프트에 남아 있는지 지킨다.
+
+    digest 쪽 인식은 test_digest.py 가 지킨다 — 두 파일이 같은 문구를 본다.
+    """
+    import digest
+
+    prompt = trend_report._NARRATIVE_PROMPT
+    assert "형식(반드시 지킨다)" in prompt
+    assert "한 줄에 단독으로" in prompt
+    assert '"첫째,"' in prompt
+
+    # 프롬프트가 지시하는 네 소제목을 digest 가 전부 소제목으로 인식하는가
+    for heading in digest._NARRATIVE_HEADINGS:
+        assert heading in prompt, f"프롬프트가 '{heading}' 을 지시하지 않는다"
+        assert digest._is_narrative_heading(f"■ {heading}")
