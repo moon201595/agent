@@ -333,14 +333,57 @@ def test_page_cap_reports_truncation_instead_of_pretending_done(monkeypatch):
     assert got.truncated is True
 
 
-def test_truncated_keyword_makes_the_run_partial(monkeypatch):
-    """잘린 키워드가 하나라도 있으면 done 이 아니다 — done 은 래칫을
-    전진시켜 그 창을 영영 안 보게 만든다."""
+def test_page_cap_is_recorded_but_does_not_make_the_run_partial(monkeypatch):
+    """**계약이 바뀌었다**(2026-09-08, §8-78 ②). 페이지 상한은 **우리가 정한
+    범위**다 — 관련도 순 앞쪽 300편이면 충분하다고 판단해 그렇게 정했고,
+    실측에서 가장 많은 키워드도 218편으로 그 아래였다.
+
+    그걸 partial 로 남기면 창이 안 전진해 **다음 날 같은 창을 다시 훑고 또
+    상한에 걸린다** — 볼 생각도 없는 논문 때문에 호출만 매일 늘어난다.
+    대신 `keywords_capped` 와 query 문자열로 남겨 기록에서 사라지지 않게 한다.
+    `done` 은 "우리가 보기로 한 범위를 다 봤다"이지 "세계의 모든 논문을
+    확인했다"가 아니다.
+    """
     _paged_stub(monkeypatch, [_items(100)] * 5, total=500)
     out = asyncio.run(s2_delta.find_new_papers_since(
         None, ["k"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert out["status"] == "done"
+    assert out["keywords_truncated"] == 1      # 잘린 사실은 그대로 남는다
+    assert out["keywords_capped"] == 1
+    assert out["keywords_blocked"] == 0
+    assert "capped×1" in out["query"]          # search_runs 기록에서도 보인다
+
+
+def test_budget_truncation_still_makes_the_run_partial(monkeypatch):
+    """예산 소진은 **사고**다 — 우리가 고른 것이 아니므로 창을 붙잡아야 한다."""
+    clock = [1000.0]
+    monkeypatch.setattr(s2_delta.time, "monotonic", lambda: clock[0])
+
+    async def slow_get(client, params, headers, url=None, max_wait=None):
+        clock[0] += 40.0
+        return _PagedResp(_items(100), 900)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", slow_get)
+    out = asyncio.run(s2_delta.find_new_papers_since(
+        None, ["k"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00"),
+        budget_s=30.0))
     assert out["status"] == "partial"
-    assert out["keywords_truncated"] == 1
+    assert out["keywords_blocked"] == 1
+    assert out["keywords_capped"] == 0
+
+
+def test_page_failure_still_makes_the_run_partial(monkeypatch):
+    """뒤 페이지 실패도 사고다."""
+    async def flaky(client, params, headers, url=None, max_wait=None):
+        if params.get("offset"):
+            raise RuntimeError("S2 죽음")
+        return _PagedResp(_items(100), 900)
+
+    monkeypatch.setattr(s2_delta.http_client, "throttled_s2_get", flaky)
+    out = asyncio.run(s2_delta.find_new_papers_since(
+        None, ["k"], _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
+    assert out["status"] == "partial"
+    assert out["keywords_blocked"] == 1
 
 
 def test_failure_after_a_good_page_keeps_what_we_got(monkeypatch):
