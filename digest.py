@@ -852,6 +852,9 @@ def _narrative_section(scan_result: dict) -> list[str]:
              "■ 오늘의 동향 정리",
              "   (LLM 이 위 논문들의 제목·초록만 보고 쓴 것 — 앞의 숫자·라벨과 달리 검증되지 않았다)",
              ""]
+    # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
+    # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
+    text = annotate_numbers(text, numbered_mentions(scan_result))
     lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
@@ -1138,6 +1141,86 @@ def _is_narrative_heading(line: str) -> bool:
     return _HEADING_ORNAMENT_RE.sub("", line.strip()) in _NARRATIVE_HEADINGS
 
 
+# ---------------------------------------------------------------- 가독성 보조 (2026-09-08)
+#
+# 사용자 요청 다섯 가지를 한 곳에 모은다. 전부 **문자열 대조**이고 무엇이 좋은
+# 논문인가 같은 판단을 하지 않는다(규칙 7). LLM 을 다시 부르지도 않는다.
+#
+# 실물 메일을 보고 나온 요청이라 근거가 분명하다 — 서술이 "첫째/둘째/셋째"로
+# 갈래를 나누는데 그 표시가 본문과 같은 굵기라 갈래가 안 보였고, 편수 증감이
+# `(0→6, +6)` 처럼 숫자로만 있어 늘었는지 줄었는지 눈으로 안 잡혔다.
+
+# 서술이 갈래를 여는 말. LLM 이 쓰는 말투가 고정돼 있어 대조로 잡힌다.
+_ENUM_RE = re.compile(r"^(첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째)([,.·:]?)")
+
+# 편수 증감. **`(3→5, +2)` 형태 안에서만** 잡는다. `[+-]\d+` 를 통째로 잡으면
+# 서술에 나오는 지수 표기(`10^-3`)나 하이픈 붙은 이름까지 물들인다 —
+# 색이 뜻을 잃는다.
+_DELTA_RE = re.compile(r"(→\s*\d+,\s*)([+\-−]\d+)")
+
+_UP_COLOR = "#0B7A3B"     # 늘어난 것
+_DOWN_COLOR = "#B00020"   # 줄어든 것
+
+
+def _emphasise_enum(escaped: str) -> str:
+    """이스케이프된 본문에서 '첫째,' 같은 갈래 표시를 굵게."""
+    return _ENUM_RE.sub(lambda m: f"<strong>{m.group(1)}{m.group(2)}</strong>", escaped)
+
+
+def _colour_delta(escaped: str) -> str:
+    """`+2` 는 초록, `-3` 은 빨강. 숫자를 바꾸지 않고 색만 입힌다."""
+    def paint(m):
+        head, token = m.group(1), m.group(2)
+        colour = _DOWN_COLOR if token[0] in "-−" else _UP_COLOR
+        return f'{head}<span style="color:{colour};font-weight:600;">{token}</span>'
+    return _DELTA_RE.sub(paint, escaped)
+
+
+def _emphasise_label(escaped: str) -> str:
+    """`출처 : ...`, `엔진 : ...` 처럼 앞에 라벨이 붙은 줄은 라벨만 굵게."""
+    head, sep, rest = escaped.partition(" : ")
+    if sep and len(head) <= 12 and head.strip():
+        return f"<strong>{head}</strong>{sep}{rest}"
+    return escaped
+
+
+def numbered_mentions(scan_result: dict) -> list[tuple[str, int]]:
+    """서술이 부른 이름 → 메일에 실린 논문 번호. 긴 이름부터 본다.
+
+    "이 동향 정리가 어디서 왔나"를 읽는 사람이 바로 알 수 있게 하려는 것이다
+    (2026-09-08 사용자 요청). 판정은 §8-68 고침과 **같은 함수**(_mention_keys)를
+    쓴다 — 두 곳이 다른 규칙으로 논문을 찾으면 한쪽만 맞는 일이 생긴다.
+    """
+    out: list[tuple[str, int]] = []
+    for i, paper in enumerate(scan_result.get("papers") or [], start=1):
+        for key in _mention_keys(paper.get("title") or ""):
+            out.append((key, i))
+    return sorted(out, key=lambda kv: -len(kv[0]))
+
+
+def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
+    """서술 안에서 부른 논문 뒤에 `(논문 3)` 을 붙인다. 원문을 안 지운다.
+
+    한 번 붙은 이름은 다시 안 붙인다 — 같은 논문이 문단마다 나오면 번호가
+    도배된다. 이미 번호가 붙은 자리는 건너뛴다.
+    """
+    if not text or not mentions:
+        return text
+    done: set[int] = set()
+    for key, num in mentions:
+        if num in done or len(key) < 3:
+            continue
+        pattern = (re.escape(key) if len(key) > 24
+                   else rf"(?<![A-Za-z0-9]){re.escape(key)}(?![A-Za-z0-9])")
+        flags = re.IGNORECASE if len(key) > 24 else 0
+        m = re.search(pattern + r"(?!\s*\(논문)", text, flags)
+        if not m:
+            continue
+        text = f"{text[:m.end()]} (논문 {num}){text[m.end():]}"
+        done.add(num)
+    return text
+
+
 def _narrative_line_html(line: str) -> str:
     """서술 한 줄을 HTML 로. 소제목이면 굵게 키우고 위에 여백을 준다.
 
@@ -1149,7 +1232,7 @@ def _narrative_line_html(line: str) -> str:
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
                 f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
     return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:3px 0;">{_esc(text)}</div>')
+            f'margin:3px 0;">{_emphasise_enum(_esc(text))}</div>')
 
 
 # ---------------------------------------------------------------- ⑥ 주간 리뷰
@@ -1197,10 +1280,17 @@ def _weekly_line_html(line: str) -> str:
     if stripped.startswith(_WEEKLY_NOTE_PREFIX):
         return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
                 f'margin:4px 0 2px;padding-left:8px;">{_esc(stripped)}</div>')
+    # 주간 리뷰 안의 **서술 소제목**도 굵게(2026-09-08). 일일 동향 정리는
+    # §8-69 에서 이미 굵어졌는데 주간 리뷰에 실리는 같은 글은 그대로였다 —
+    # 판정은 같은 함수(_is_narrative_heading)를 쓴다.
+    if _is_narrative_heading(stripped):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                f'font-weight:700;margin:12px 0 3px;">{_esc(stripped)}</div>')
     indent = len(raw) - len(raw.lstrip(" "))
     pad = min(indent, 12) * 2
+    body = _colour_delta(_emphasise_enum(_emphasise_label(_esc(stripped))))
     return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:12px;'
-            f'margin:2px 0;padding-left:{pad}px;">{_esc(stripped)}</div>')
+            f'margin:2px 0;padding-left:{pad}px;">{body}</div>')
 
 
 def _weekly_review_html(scan_result: dict) -> str:
@@ -1281,6 +1371,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
+        text = annotate_numbers(text, numbered_mentions(scan_result))
         paras = "".join(_narrative_line_html(ln)
                         for ln in text.strip().splitlines() if _plain(ln))
         warn = ""
