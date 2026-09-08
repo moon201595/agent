@@ -19,32 +19,72 @@ import re
 
 import verify
 
-_SECTION_RE = re.compile(r"^### (.+?)\s*$", re.MULTILINE)
-_BULLET_RE = re.compile(r"^\s*(?:[-*]|[①②③④⑤⑥⑦⑧⑨])\s*(.+)$")
+# 제목 줄. **깊이를 문서가 정한다** — 아래 parse_sections 참고.
+_HEADING_RE = re.compile(r"^\s{0,3}(#{2,6})\s+(.+?)\s*$")
+_HEADING_DEPTH_RE = re.compile(r"^\s{0,3}(#{2,6})\s+\S", re.MULTILINE)
+_BULLET_RE = re.compile(r"^\s*(?:[-*•·–—]|[0-9]+[.)]|[①②③④⑤⑥⑦⑧⑨])\s*(.+)$")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+# 절 이름 별칭. 프롬프트가 시킨 이름을 모델이 조금씩 바꿔 쓴다.
+_SECTION_ALIASES = {
+    "핵심 결과": "결과", "주요 결과": "결과", "실험 결과": "결과",
+    "한계": "논문의 한계점", "한계점": "논문의 한계점",
+    "개요": "연구 개요", "방법": "방법 상세", "실험 셋업": "실험 설정",
+}
+
+
+def _canonical(title: str) -> str:
+    name = _BOLD_RE.sub(r"\1", title).strip().strip("*_`").strip()
+    name = re.sub(r"^[0-9]+[.)]\s*", "", name).strip()
+    return _SECTION_ALIASES.get(name, name)
 
 
 def parse_sections(markdown: str) -> dict[str, list[str]]:
-    """"### 제목" 기준으로 절을 나누고, 각 절 안의 불릿 줄(들여쓰기 무관하게
-    "-"/"①"류로 시작하는 줄)을 평평한 리스트로 모은다. "※"로 시작하는
-    템플릿 작성 안내문(예: "이 절에는 수치를 쓰지 않는다")은 실제 내용이
-    아니라서 제외한다.
+    """제목 기준으로 절을 나누고 각 절의 내용을 평평한 리스트로 모은다.
+    "※"로 시작하는 템플릿 작성 안내문은 실제 내용이 아니라서 제외한다.
+
+    **2026-09-08 정정 — digest 와 같은 규칙을 쓴다.** 그전에는 `^### ` 하나만
+    보고 제목을 원문 그대로 담았다. 그래서 `### **결과**` 는 키가 `**결과**` 라
+    조회에 안 걸리고 `## 결과` 는 절 자체를 못 봤다. 같은 날 digest 만 고쳐서
+    **두 경로가 갈렸다** — 메일에는 보이는 절이 동향 입력(`trend_report.
+    result_excerpts`)에서는 빠지는 상태였다.
+
+    절의 깊이는 **문서에 나오는 가장 얕은 제목**으로 정한다. `###` 안의
+    `####` 하위 제목까지 절로 올리면 부모 절이 비어 버린다(실측:
+    `pdf-f9518e4d9d`).
+
+    불릿이 하나도 없으면 **산문을 그대로 항목으로 쓴다.** 형식이 다르다고
+    내용을 버리지 않는다 — 그 논문의 결과가 통째로 사라지던 실제 사례가 있다.
     """
+    levels = [len(m.group(1)) for m in _HEADING_DEPTH_RE.finditer(markdown)]
+    if not levels:
+        return {}
+    top = min(levels)
+
     sections: dict[str, list[str]] = {}
-    matches = list(_SECTION_RE.finditer(markdown))
-    for i, m in enumerate(matches):
-        heading = m.group(1).strip()
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
-        body = markdown[start:end]
-        bullets: list[str] = []
-        for line in body.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("※"):
-                continue
-            bm = _BULLET_RE.match(line)
-            if bm:
-                bullets.append(bm.group(1).strip())
-        sections[heading] = bullets
+    current, body = None, []
+
+    def flush():
+        if current is None or current in sections:
+            return
+        bullets = [_BOLD_RE.sub(r"\1", m.group(1)).strip()
+                   for m in (_BULLET_RE.match(l) for l in body) if m]
+        if not bullets:
+            bullets = [_BOLD_RE.sub(r"\1", l.strip()) for l in body
+                       if l.strip() and not _HEADING_RE.match(l)]
+        sections[current] = bullets
+
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("※"):
+            continue
+        m = _HEADING_RE.match(line)
+        if m and len(m.group(1)) == top:
+            flush()
+            current, body = _canonical(m.group(2)), []
+        elif current is not None:
+            body.append(line)
+    flush()
     return sections
 
 
