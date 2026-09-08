@@ -504,6 +504,35 @@ def candidate_outcome_counts(
         return {row[0] or "(미기록)": row[1] for row in con.execute(sql, args)}
 
 
+def backfill_shown_from_summaries(db_path: Path, profile_id: str,
+                                  summaries_db: Path | None = None) -> int:
+    """이미 요약된 논문을 "내보냈다"로 소급 기록한다. returns 새로 넣은 편수.
+
+    **왜 필요한가**(2026-09-08, §8-77 고치며). 소비 기준을 "요약됨"에서
+    "배달됨"으로 옮기면, 예전에 요약만 되고 `profile_shown` 기록이 없는 논문이
+    한꺼번에 후보로 되살아난다. 실측: 요약 132편 중 기록 없는 것이 101편이고
+    그중 9편이 최근 5일 창에 들어와 **내일 메일에 다시 나갈 참이었다.**
+
+    그 논문들은 실제로는 이미 나갔다 — `profile_shown` 이 2026-09-06 에야
+    생겨서 그 이전 발송이 기록되지 않았을 뿐이다. 그래서 되살리는 게 아니라
+    **없던 기록을 채우는 것**이 사실에 맞다.
+
+    한 번만 의미가 있고 두 번 불러도 안전하다(이미 있는 키는 그대로 둔다).
+    """
+    init_db(db_path)
+    src = summaries_db or db_path
+    with sqlite3.connect(src) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT p.arxiv_id, p.title FROM summaries s "
+            "JOIN papers p ON p.arxiv_id = s.arxiv_id"
+        ).fetchall()
+    before = len(already_shown(db_path, profile_id))
+    mark_shown(db_path, profile_id,
+               [{"arxiv_id": r["arxiv_id"], "title": r["title"]} for r in rows])
+    return len(already_shown(db_path, profile_id)) - before
+
+
 def record_run(
     db_path: Path, profile_id: str, source: str, query: str,
     window_from: datetime, window_to: datetime, status: str,
