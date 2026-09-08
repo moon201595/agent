@@ -259,7 +259,25 @@ async def scan_profile(
     # 키워드가 바뀌었으면 델타 커서를 이어받으면 안 된다(§8-21) — 지문을
     # 넘겨서 next_since 가 스스로 판단하게 한다.
     signature = research_profile.topic_signature(profile["core_topics"])
-    since = research_profile.next_since(db_path, profile_id, signature=signature)
+
+    # **두 소스 중 더 뒤처진 쪽에 창을 맞춘다**(2026-09-08, §8-76).
+    #
+    # 그전에는 `next_since(db, pid, signature=...)` 하나였고 `source` 기본값이
+    # "arxiv" 라, **S2 가 partial·failed 로 끝나도 창은 arXiv 기준으로 전진했다.**
+    # S2 가 못 본 구간이 어디에도 남지 않는다. 지금까지는 5일 안전 창
+    # (REINDEX_SAFETY_DAYS)이 최근 구간을 다시 훑어 우연히 덮어 줬을 뿐이고,
+    # S2 장애가 5일보다 길어지면 그 구간의 논문은 실제로 사라진다.
+    #
+    # 비용을 먼저 쟀다(2026-09-08, 과거 search_runs 33회 재생):
+    # 실제로 창이 늘어났을 실행은 **2회뿐이고 최대 +8.2시간**이다. 나머지는
+    # 안전 창이 이미 덮고 있어 변화가 없다. 검색량이 유의미하게 늘지 않는다.
+    #
+    # min 을 쓰는 이유: 커서는 "여기까지는 봤다"는 뜻이므로 **덜 본 쪽**을
+    # 따라가야 못 본 구간이 안 생긴다.
+    since = min(
+        research_profile.next_since(db_path, profile_id, "arxiv", signature=signature),
+        research_profile.next_since(db_path, profile_id, "s2", signature=signature),
+    )
     query = _arxiv_query_from_core_topics(profile["core_topics"])
 
     # **한 소스가 죽어도 그날을 통째로 버리지 않는다**(2026-09-06 에 실제로

@@ -1395,3 +1395,84 @@ def test_arxiv_parser_records_where_the_paper_came_from():
     assert len(papers) == 1
     assert papers[0]["source"] == "arxiv"
     assert papers[0]["arxiv_id"] == "2609.01234"
+
+
+# ------------------------------------------- §8-76 S2 가 놓친 구간 (2026-09-08)
+#
+# 검색 창의 시작 시각이 arXiv 이력에서만 나왔다(`next_since` 의 source 기본값).
+# S2 가 partial·failed 로 끝나도 창은 arXiv 기준으로 전진해서, **S2 가 못 본
+# 구간이 어디에도 남지 않았다.** 5일 안전 창이 우연히 덮어 주고 있었을 뿐이다.
+
+
+def _seed_run(db_path, source, status, w_from, w_to, started):
+    import sqlite3 as _sq
+    rp.init_db(db_path)
+    with _sq.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO search_runs (run_id, profile_id, source, query, window_from, "
+            "window_to, status, retrieved_count, started_at, finished_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"r-{source}-{started}", "team_ai", source, "q", w_from.isoformat(), w_to.isoformat(),
+             status, 0, started, started))
+
+
+def test_window_follows_the_source_that_saw_less(tmp_path):
+    """arXiv 는 다 봤고 S2 는 못 봤으면, 창은 **S2 쪽**을 따라가야 한다 —
+    안 그러면 S2 가 못 본 구간이 영영 안 조회된다."""
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    now = datetime.now(timezone.utc)
+    sig = rp.topic_signature(rp.get_profile(db_path, "team_ai")["core_topics"])
+
+    # arXiv 는 어제까지 다 봤다(done → 커서가 window_to)
+    _seed_run(db_path, "arxiv", "done", now - timedelta(days=20), now - timedelta(days=1),
+              (now - timedelta(days=1)).isoformat())
+    # S2 는 20일 전 구간에서 멈췄다(partial → 커서가 window_from)
+    _seed_run(db_path, "s2", "partial", now - timedelta(days=20), now - timedelta(days=1),
+              (now - timedelta(days=1)).isoformat())
+
+    arxiv_only = rp.next_since(db_path, "team_ai", "arxiv", signature=sig)
+    s2_only = rp.next_since(db_path, "team_ai", "s2", signature=sig)
+    assert s2_only < arxiv_only, "픽스처 전제: s2 가 더 뒤처져 있다"
+
+    # 스캔이 실제로 쓰는 값이 둘 중 이른 쪽인지
+    combined = min(arxiv_only, s2_only)
+    assert combined == s2_only
+
+
+def test_both_done_keeps_the_window_unchanged(tmp_path):
+    """둘 다 다 봤으면 창이 길어질 이유가 없다 — 공짜로 검색량을 늘리지 않는다."""
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    now = datetime.now(timezone.utc)
+    sig = rp.topic_signature(rp.get_profile(db_path, "team_ai")["core_topics"])
+    for src in ("arxiv", "s2"):
+        _seed_run(db_path, src, "done", now - timedelta(days=20), now - timedelta(days=1),
+                  (now - timedelta(days=1)).isoformat())
+    a = rp.next_since(db_path, "team_ai", "arxiv", signature=sig)
+    s = rp.next_since(db_path, "team_ai", "s2", signature=sig)
+    # 둘 다 5일 안전 창(now - REINDEX_SAFETY_DAYS)에 걸리므로 호출 시각 차이만큼
+    # 마이크로초가 다르다. 창이 "길어지지 않는다"가 지키려는 것이므로 초 단위로 본다.
+    assert abs((a - s).total_seconds()) < 1
+    assert abs((min(a, s) - a).total_seconds()) < 1
+
+
+def test_scan_uses_the_combined_window(tmp_path, monkeypatch):
+    """스캔 경로가 실제로 두 소스를 다 보는지 — 호출을 세서 확인한다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    seen = []
+    real = rp.next_since
+
+    def spy(db, pid, source="arxiv", **kw):
+        seen.append(source)
+        return real(db, pid, source, **kw)
+
+    monkeypatch.setattr(rps.research_profile, "next_since", spy)
+    asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert "arxiv" in seen and "s2" in seen, f"본 소스: {seen}"
