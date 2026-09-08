@@ -504,6 +504,20 @@ def candidate_outcome_counts(
         return {row[0] or "(미기록)": row[1] for row in con.execute(sql, args)}
 
 
+def _doi_from_source(source: str | None) -> str | None:
+    """`papers.source` 에 적힌 출처 문자열에서 DOI 만 꺼낸다.
+
+    형태는 `open-access: 10.1234/xyz` 또는 `manual-pdf: ...` 다. DOI 가 아닌
+    출처(arxiv, 파일명 등)면 None — 아니면 제목 키로 떨어지므로 억지로 만들지 않는다.
+    """
+    text = (source or "").strip()
+    for prefix in ("open-access:", "manual-pdf:"):
+        if text.startswith(prefix):
+            rest = text[len(prefix):].strip()
+            return rest if rest.startswith("10.") else None
+    return None
+
+
 def backfill_shown_from_summaries(db_path: Path, profile_id: str,
                                   summaries_db: Path | None = None) -> int:
     """이미 요약된 논문을 "내보냈다"로 소급 기록한다. returns 새로 넣은 편수.
@@ -524,12 +538,25 @@ def backfill_shown_from_summaries(db_path: Path, profile_id: str,
     with sqlite3.connect(src) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT p.arxiv_id, p.title FROM summaries s "
+            "SELECT p.arxiv_id, p.title, p.source FROM summaries s "
             "JOIN papers p ON p.arxiv_id = s.arxiv_id"
         ).fetchall()
+
     before = len(already_shown(db_path, profile_id))
-    mark_shown(db_path, profile_id,
-               [{"arxiv_id": r["arxiv_id"], "title": r["title"]} for r in rows])
+    papers: list[dict] = []
+    for row in rows:
+        aid, title = row["arxiv_id"], row["title"]
+        papers.append({"arxiv_id": aid, "title": title})
+        # **합성 ID 는 도착할 때의 신원이 아니다**(AGENTS.md 함정 목록).
+        # `pdf-<해시>` 는 본문을 받은 **뒤에** 생기는 저장용 ID이고, 그 논문이
+        # 검색 결과로 다시 도착할 때의 키는 `doi:...` 다. 합성 ID 로만 소급하면
+        # 다음 날 조회 키와 안 맞아 필터를 그냥 통과한다 — 실측(2026-09-08):
+        # 합성 ID 요약 9편 중 **6편**이 도착 키로는 기록에 없었다.
+        # `papers.source` 가 `open-access: <DOI>` 형태로 그 신원을 갖고 있다.
+        doi = _doi_from_source(row["source"])
+        if doi:
+            papers.append({"arxiv_id": None, "doi": doi, "title": title})
+    mark_shown(db_path, profile_id, papers)
     return len(already_shown(db_path, profile_id)) - before
 
 

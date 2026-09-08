@@ -478,7 +478,13 @@ async def scan_profile(
         "run_status": arxiv_status, "candidates_found": len(fresh),
         "title_only_papers": listed["papers"],
         "title_only_count": listed["scored_count"],
-        "retrieved_count": len(merged), "already_seen_count": len(seen),
+        # **"이미 보낸 논문" 수는 배달 기록으로 센다**(2026-09-08, §8-77 후속).
+        # 필터를 배달 기준으로 바꿨는데 이 수는 요약 수(`seen`)를 그대로 쓰고
+        # 있어서, 미발송 요약이 후보로 실리면서 동시에 "이미 보낸 논문 1건"으로
+        # 표시됐다 — 메일이 자기 모순을 말하고 있었다(외부 검토가 잡았다).
+        "retrieved_count": len(merged),
+        "already_seen_count": sum(
+            1 for p in merged if research_profile.paper_key(p) in shown),
         "arxiv_count": len(arxiv_papers), "s2_count": len(s2_papers),
         "s2_status": s2_status,
         **scored,
@@ -769,11 +775,25 @@ async def scan_and_digest(
 # 난다(2026-09-07, ⑨ 종료코드 전파).
 DELIVERY_FAILED_PREFIX = "발송 실패"
 DELIVERY_NO_RECIPIENT = "수신자 없음 — 발송 안 함"
+DELIVERY_SENT_PREFIX = "발송 완료"
 
 
 def delivery_failed(message: str | None) -> bool:
-    """발송이 **실패**했는가. 수신자가 없는 것은 설정 상태지 실패가 아니다."""
+    """발송이 **실패**했는가. 수신자가 없는 것은 설정 상태지 실패가 아니다.
+    종료코드는 이 판정을 쓴다 — 매일 울리는 경보는 무시되기 때문이다."""
     return bool(message) and str(message).startswith(DELIVERY_FAILED_PREFIX)
+
+
+def delivery_reached_someone(message: str | None) -> bool:
+    """메일이 **실제로 사람에게 갔는가**. 소비 처리는 이 판정을 쓴다.
+
+    `delivery_failed` 와 나누는 이유(2026-09-08, 외부 검토가 잡았다):
+    "수신자 없음"은 고장이 아니라 설정 상태라 **경보를 울리면 안 되지만**,
+    메일이 안 간 것은 사실이므로 **소비 처리도 하면 안 된다.** 하나로 묶었더니
+    수신자를 안 넣은 프로필에서 논문이 조용히 소비됐다 — 나중에 수신자를
+    등록해도 그 논문은 후보에서 이미 빠져 있다.
+    """
+    return bool(message) and str(message).startswith(DELIVERY_SENT_PREFIX)
 
 
 def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> str:
@@ -802,7 +822,7 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
         )
     except Exception as e:  # noqa: BLE001
         return f"{DELIVERY_FAILED_PREFIX}: {str(e).splitlines()[0][:200]}"
-    return f"발송 완료 → {len(recipients)}명"
+    return f"{DELIVERY_SENT_PREFIX} → {len(recipients)}명"
 
 
 async def scan_all_profiles(
@@ -832,9 +852,10 @@ async def scan_all_profiles(
             if send:
                 message = _deliver(db_path, profile_id, result, digest_text)
                 entry["delivery"] = message
-                # **배달에 성공한 날만 소비 처리한다**(§8-77). 실패하면 그 논문은
-                # 내일 후보로 남아 다시 나갈 기회를 갖는다.
-                if not delivery_failed(message):
+                # **실제로 사람에게 간 날만 소비 처리한다**(§8-77).
+                # 실패한 날도, 수신자가 없어 안 보낸 날도 그 논문은 내일 후보로
+                # 남아 다시 나갈 기회를 갖는다.
+                if delivery_reached_someone(message):
                     research_profile.mark_shown(
                         db_path, profile_id, result.get("papers") or [])
             summary[profile_id] = entry
@@ -920,8 +941,9 @@ def main() -> int:
         print(message)
         if delivery_failed(message):
             return 1
-        # --all 경로와 같은 규칙 — 배달에 성공한 뒤에만 소비 처리한다(§8-77).
-        research_profile.mark_shown(db_path, args.profile_id, result.get("papers") or [])
+        # --all 경로와 같은 규칙 — 실제로 간 뒤에만 소비 처리한다(§8-77).
+        if delivery_reached_someone(message):
+            research_profile.mark_shown(db_path, args.profile_id, result.get("papers") or [])
     return 0
 
 
