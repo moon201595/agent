@@ -1416,7 +1416,7 @@ def _seed_run(db_path, source, status, w_from, w_to, started):
              status, 0, started, started))
 
 
-def test_window_follows_the_source_that_saw_less(tmp_path):
+def test_window_follows_the_source_that_saw_less(tmp_path, monkeypatch):
     """arXiv 는 다 봤고 S2 는 못 봤으면, 창은 **S2 쪽**을 따라가야 한다 —
     안 그러면 S2 가 못 본 구간이 영영 안 조회된다."""
     from datetime import datetime, timedelta, timezone
@@ -1436,9 +1436,30 @@ def test_window_follows_the_source_that_saw_less(tmp_path):
     s2_only = rp.next_since(db_path, "team_ai", "s2", signature=sig)
     assert s2_only < arxiv_only, "픽스처 전제: s2 가 더 뒤처져 있다"
 
-    # 스캔이 실제로 쓰는 값이 둘 중 이른 쪽인지
-    combined = min(arxiv_only, s2_only)
-    assert combined == s2_only
+    # **스캔이 실제로 검색에 넘긴 since 를 잡는다.** 2026-09-08 외부 검토가
+    # 지적했다 — 처음 이 테스트는 테스트 안에서 min 을 다시 계산해 비교했다.
+    # 그러면 운영 코드의 min 을 max 로 바꿔도 통과한다(돌연변이로 확인: 67개
+    # 전부 통과했다). 통과하지만 아무것도 안 지키는 테스트였다.
+    _seed_summary(monkeypatch, tmp_path, [])
+    seen = {}
+
+    async def spy_arxiv(client, query, since, **kw):
+        seen["since"] = since
+        from datetime import datetime as _dt, timezone as _tz
+        return {"status": "done", "papers": [], "pages_used": 1, "query": query,
+                "until": _dt.now(_tz.utc).isoformat()}
+
+    async def no_s2(client, keywords, since, until, **kw):
+        return {"papers": [], "status": "done", "query": "q",
+                "keywords_failed": 0, "keywords_searched": 0, "keywords_truncated": 0}
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", no_s2)
+    asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
+
+    assert seen["since"] == s2_only, (
+        f"검색에 넘긴 since 가 뒤처진 쪽(s2)이 아니다: {seen['since']} != {s2_only}")
+    assert seen["since"] != arxiv_only
 
 
 def test_both_done_keeps_the_window_unchanged(tmp_path):

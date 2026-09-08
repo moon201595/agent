@@ -141,7 +141,8 @@ def _clip(text: str, limit: int) -> str:
 # 절 자체를 인식 못 해 요약이 통째로 비었다. **일부 절만 실패하면 나머지는
 # 그대로 표시되므로 누락 안내조차 없다** — 화면이 LLM 출력 형태에 조용히
 # 의존하던 가장 큰 덩어리였다(외부 검토가 재현).
-_HEADING_LINE_RE = re.compile(r"^\s{0,3}#{2,4}\s+(.+?)\s*$")
+_HEADING_LINE_RE = re.compile(r"^\s{0,3}(#{2,6})\s+(.+?)\s*$")
+_HEADING_DEPTH_RE = re.compile(r"^\s{0,3}(#{2,6})\s+\S", re.MULTILINE)
 
 # 절 이름의 별칭. 프롬프트가 시킨 이름을 모델이 조금씩 바꿔 쓴다.
 _SECTION_ALIASES = {
@@ -160,11 +161,23 @@ def _canonical_section(title: str) -> str:
 
 def _split_sections(markdown: str) -> dict[str, str]:
     """제목 단위로 쪼갠다. 표제 형식이 달라져도 내용이 사라지지 않게,
-    `##`~`####` 를 받고 굵게·번호·별칭을 정규화해 담는다.
+    굵게·번호·별칭을 정규화해 담는다.
+
+    **절의 깊이는 문서가 정한다**(2026-09-08 정정). `##`~`####` 를 전부 절로
+    보면 절 **안의 하위 제목**까지 최상위로 올라가 부모 절이 비어 버린다 —
+    실측: `pdf-f9518e4d9d` 는 `### 결과` 아래에 `#### ...` 네 개를 두는데,
+    그렇게 쪼개니 `결과` 의 내용이 0개가 됐다. 그래서 **문서에 나오는 가장
+    얕은 제목 깊이**를 절로 삼고 그보다 깊은 제목은 본문으로 둔다. 모델이
+    전체를 `##` 로 낮춰 써도, `###` 안에 `####` 를 써도 둘 다 맞게 나뉜다.
 
     같은 표준 이름이 두 번 나오면 **먼저 나온 것을 남긴다** — 뒤에 오는
     "파싱 품질 노트" 같은 부록이 본문을 덮어쓰지 않게.
     """
+    levels = [len(m.group(1)) for m in _HEADING_DEPTH_RE.finditer(markdown)]
+    if not levels:
+        return {}
+    top = min(levels)
+
     sections: dict[str, str] = {}
     current, buf = None, []
 
@@ -174,9 +187,9 @@ def _split_sections(markdown: str) -> dict[str, str]:
 
     for line in markdown.splitlines():
         m = _HEADING_LINE_RE.match(line)
-        if m:
+        if m and len(m.group(1)) == top:
             flush()
-            current, buf = _canonical_section(m.group(1)), []
+            current, buf = _canonical_section(m.group(2)), []
         elif current:
             buf.append(line)
     flush()
@@ -203,6 +216,17 @@ def _bullets(body: str, after: str | None = None) -> list[str]:
             out.append(_MD_BOLD_RE.sub(r"\1", m.group(1)).strip())
         elif out and not line.strip():
             break
+    if out:
+        return out
+    # **불릿이 하나도 없으면 산문을 쓴다**(2026-09-08). 실측: `pdf-f9518e4d9d`
+    # 의 `결과` 절은 `####` 하위 제목 아래 문단으로만 쓰여 있어 불릿이 0개였고,
+    # 그 논문의 결과는 메일에도 동향에도 **한 번도 실린 적이 없다.** 형식이
+    # 다르다고 내용을 버리지 않는다 — 하위 제목 줄은 본문이 아니므로 뺀다.
+    for line in lines:
+        text = line.strip()
+        if not text or _HEADING_LINE_RE.match(line):
+            continue
+        out.append(_MD_BOLD_RE.sub(r"\1", text))
     return out
 
 
