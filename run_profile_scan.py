@@ -110,7 +110,16 @@ def is_weekly_review_day(now: datetime | None = None) -> bool:
     """오늘이 주간 리뷰를 붙이는 날인가. 함수로 뺀 이유는 테스트가
     이것만 바꿀 수 있게 하기 위해서다 — datetime.now 전체를 갈아끼우면
     record_run 등 다른 시각 사용까지 깨진다(실제로 한 번 깨뜨렸다)."""
-    return (now or datetime.now(timezone.utc)).weekday() == WEEKLY_REVIEW_WEEKDAY
+    # **읽는 사람의 요일로 센다**(2026-09-08, §8-71). 그전에는 UTC 였는데
+    # 배달은 05:00 KST = **전날 20:00 UTC** 에 일어난다. 그래서 의도한 월요일
+    # 아침 메일에는 안 붙고(그때 UTC 로는 일요일) **화요일 아침 메일에 붙었다.**
+    # 여태 아무도 못 본 이유는 §8-70 ① 때문이다 — 주간 리뷰가 HTML 메일에
+    # 아예 닿지 않아서 요일이 어긋난 것도 드러나지 않았다.
+    #
+    # `astimezone()` 은 시스템 시간대를 쓴다. 이 하네스는 사람이 읽는 메일을
+    # 만들고 그 사람은 KST 로 산다 — 요일은 읽는 사람 기준이어야 한다.
+    # 인자로 받은 시각도 같은 규칙으로 옮긴다(테스트가 UTC 를 넘겨도 맞다).
+    return (now or datetime.now()).astimezone().weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
 def _key(paper: dict) -> str:
