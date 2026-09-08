@@ -277,3 +277,37 @@ def test_no_link_no_abstract_anywhere_is_still_an_honest_failure(monkeypatch):
         None, "", paper={"doi": "10.1/x", "title": "T", "abstract": ""}))
     assert out["status"] == "fetch_failed"
     assert "초록도 없음" in out["detail"]
+
+
+def test_open_access_paper_is_not_resummarized(tmp_path, monkeypatch):
+    """**§8-77 후속**(2026-09-08, 외부 검토가 잡았다). 호출부의 스킵은
+    `arxiv_id` 가 있을 때만 걸리는데 저널 논문은 도착할 때 `arxiv_id=None`
+    이고 합성 ID 는 PDF 를 받은 뒤에야 생긴다. 그래서 이미 요약한 저널 논문이
+    다시 후보가 되면 요약을 또 만들고 ⑦ 도 다시 띄웠다 — 무료 한도를 그대로
+    태우는 낭비다."""
+    import batch_summarize as bs
+
+    calls = {"summarize": 0, "repro": 0}
+
+    async def fake_oa(*a, **kw):
+        return {"arxiv_id": "pdf-abc", "text_chars": 1000}
+
+    async def fake_summarize(*a, **kw):
+        calls["summarize"] += 1
+        return "### 결론\n요약", "gemini", 1.0
+
+    monkeypatch.setattr(bs, "_summary_already_saved", lambda aid: aid == "pdf-abc")
+    monkeypatch.setattr(bs.server, "fetch_pdf_from_url", fake_oa, raising=False)
+    monkeypatch.setattr(bs.engine, "summarize", fake_summarize)
+    monkeypatch.setattr(bs.docker_runner, "launch_background",
+                        lambda aid: calls.__setitem__("repro", calls["repro"] + 1) or "started")
+
+    async def run():
+        return await bs._process_paper(
+            None, "", paper={"arxiv_id": None, "doi": "10.1/x", "title": "저널 논문",
+                             "open_access_pdf": "http://x/y.pdf", "abstract": "초록"})
+
+    out = asyncio.run(run())
+    assert out["status"] == "done" and out.get("skipped") is True
+    assert calls["summarize"] == 0, "이미 요약이 있는데 다시 만들었다"
+    assert calls["repro"] == 0, "이미 요약이 있는데 ⑦ 를 다시 띄웠다"

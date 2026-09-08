@@ -1559,6 +1559,36 @@ def test_successful_delivery_consumes_the_papers(tmp_path, monkeypatch):
     summary = asyncio.run(run())
     assert summary["team_ai"]["delivery"] == "발송 완료 → 1명"
     assert len(calls) == 1, "발송에 성공했는데 소비 처리를 안 했다"
+    # 무엇을 소비했는지는 아래 전용 테스트가 본다 — summary 에는 papers 가
+    # 없어서 여기서 대조할 수 없다.
+
+
+def test_successful_delivery_consumes_the_papers_that_were_sent(tmp_path, monkeypatch):
+    """소비 인자가 **그날 실린 논문 그대로**여야 한다. 빈 목록을 넘기면
+    아무것도 소비되지 않아 다음 날 같은 메일이 또 나간다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "a@example.com")
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+    monkeypatch.setattr(rps, "_deliver", lambda *a: "발송 완료 → 1명")
+
+    # 그날 실린 논문을 고정해 소비 인자와 대조한다.
+    sent = [{"arxiv_id": "px", "title": "실린 논문"}]
+    real = rps.scan_and_digest
+
+    async def stub(db, pid, client, **kw):
+        result, text = await real(db, pid, client, **kw)
+        result["papers"] = sent
+        return result, text
+
+    monkeypatch.setattr(rps, "scan_and_digest", stub)
+    got = []
+    monkeypatch.setattr(rps.research_profile, "mark_shown",
+                        lambda db, pid, papers: got.append(list(papers)))
+
+    asyncio.run(rps.scan_all_profiles(db_path, None, max_pages=2, send=True))
+    assert got == [sent], f"실린 논문과 소비한 논문이 다르다: {got}"
 
 
 def test_scan_without_send_does_not_consume(tmp_path, monkeypatch):
@@ -1582,9 +1612,10 @@ def test_backfill_marks_old_summaries_as_delivered(tmp_path, monkeypatch):
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     with _sq.connect(db_path) as con:
-        con.execute("CREATE TABLE IF NOT EXISTS papers (arxiv_id TEXT PRIMARY KEY, title TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS papers "
+                    "(arxiv_id TEXT PRIMARY KEY, title TEXT, source TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS summaries (arxiv_id TEXT PRIMARY KEY, path TEXT)")
-        con.execute("INSERT INTO papers VALUES ('p1','A'), ('p2','B')")
+        con.execute("INSERT INTO papers VALUES ('p1','A',NULL), ('p2','B',NULL)")
         con.execute("INSERT INTO summaries VALUES ('p1',''), ('p2','')")
 
     assert rp.already_shown(db_path, "team_ai") == set()
@@ -1657,3 +1688,46 @@ def test_active_s2_still_holds_the_window(tmp_path, monkeypatch):
     asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
     age = (datetime.now(timezone.utc) - seen["since"]).days
     assert age >= 29, f"질의하는 S2 가 뒤처졌는데 창이 안 따라갔다({age}일)"
+
+
+def test_backfill_also_records_the_arrival_identity_of_synthetic_ids(tmp_path):
+    """**합성 ID 는 도착할 때의 신원이 아니다**(AGENTS.md 함정 목록).
+    `pdf-<해시>` 는 본문을 받은 뒤 생기는 저장용 ID이고, 그 논문이 검색으로
+    다시 도착할 때의 키는 `doi:...` 다. 합성 ID 로만 소급하면 다음 날 조회 키와
+    안 맞아 필터를 그냥 통과한다 — 실측(2026-09-08): 합성 ID 요약 9편 중 6편이
+    도착 키로는 기록에 없었다."""
+    import sqlite3 as _sq
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    with _sq.connect(db_path) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS papers "
+                    "(arxiv_id TEXT PRIMARY KEY, title TEXT, source TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS summaries (arxiv_id TEXT PRIMARY KEY, path TEXT)")
+        con.execute("INSERT INTO papers VALUES ('pdf-abc','저널 논문','open-access: 10.1/x')")
+        con.execute("INSERT INTO summaries VALUES ('pdf-abc','')")
+
+    rp.backfill_shown_from_summaries(db_path, "team_ai")
+    shown = rp.already_shown(db_path, "team_ai")
+
+    # 저장 시 신원과 도착 시 신원 **둘 다** 기록돼야 한다
+    assert rp.paper_key({"arxiv_id": "pdf-abc", "title": "저널 논문"}) in shown
+    arrival = rp.paper_key({"arxiv_id": None, "doi": "10.1/x", "title": "저널 논문"})
+    assert arrival in shown, "도착 시 키가 없어 내일 다시 후보로 올라온다"
+
+
+def test_no_recipient_does_not_consume(tmp_path, monkeypatch):
+    """**수신자가 없으면 메일이 안 간 것이다**(2026-09-08, 외부 검토).
+    고장은 아니라 경보는 안 울리지만, 소비 처리도 하면 안 된다 — 나중에
+    수신자를 등록해도 그 논문은 후보에서 이미 빠져 있다."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)          # 수신자를 넣지 않는다
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+    calls = []
+    monkeypatch.setattr(rps.research_profile, "mark_shown",
+                        lambda db, pid, papers: calls.append(papers))
+
+    summary = asyncio.run(rps.scan_all_profiles(db_path, None, max_pages=2, send=True))
+    assert summary["team_ai"]["delivery"] == rps.DELIVERY_NO_RECIPIENT
+    assert not rps.delivery_failed(summary["team_ai"]["delivery"])   # 경보는 안 울린다
+    assert calls == [], "메일이 안 갔는데 소비 처리했다"

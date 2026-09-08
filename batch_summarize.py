@@ -33,6 +33,7 @@ from pathlib import Path
 import httpx
 
 import docker_runner
+import storage
 import server
 import summarize_engine as engine
 
@@ -77,6 +78,21 @@ async def _abstract_only_outcome(client, paper: dict | None, title: str,
         return {"arxiv_id": "", "status": "abstract_only", "brief": brief,
                 "detail": "본문 비공개 — 초록만 확인"}
     return {"arxiv_id": "", "status": "fetch_failed", "detail": why}
+
+
+def _summary_already_saved(arxiv_id: str) -> bool:
+    """이 id 로 저장된 요약이 있는가. 오픈액세스 경로의 재요약을 막는다.
+
+    `run_profile_scan._summary_exists` 와 같은 판단이지만 여기서 한 번 더
+    본다 — 그쪽은 검색 결과의 `arxiv_id` 로 거르는데 저널 논문은 그 시점에
+    `arxiv_id` 가 없고 합성 ID 는 PDF 를 받은 뒤에야 생긴다.
+    """
+    if not arxiv_id:
+        return False
+    with storage.db() as con:
+        return con.execute(
+            "SELECT 1 FROM summaries WHERE arxiv_id=?", (arxiv_id,)
+        ).fetchone() is not None
 
 
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
@@ -144,6 +160,20 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         arxiv_id = fetched["arxiv_id"]
         print(f"[{arxiv_id}] 오픈액세스 PDF 수집됨 ({fetched.get('text_chars', 0):,}자) — {title[:40]}")
         fetch_result = fetched
+
+        # **여기서 다시 한 번 기존 요약을 본다**(2026-09-08, 외부 검토가 잡았다).
+        #
+        # 호출부(run_profile_scan)의 스킵은 `arxiv_id` 가 있을 때만 걸린다.
+        # 저널 논문은 검색 결과로 도착할 때 `arxiv_id=None` 이라 그 문을 못
+        # 지나고, **합성 ID 는 바로 이 줄에서야 생긴다.** 그래서 이미 요약한
+        # 저널 논문이 다시 후보가 되면 요약을 또 만들고 ⑦ 도 다시 띄웠다 —
+        # 검토의 재현에서 요약 호출 2회·⑦ 트리거 2회였다. 무료 한도를 그대로
+        # 태우는 낭비이고, §8-77 로 후보가 다시 올라올 수 있게 되면서 실제로
+        # 일어날 수 있는 경로가 됐다.
+        if _summary_already_saved(arxiv_id):
+            print(f"[{arxiv_id}] 이미 요약이 있다 — 다시 만들지 않는다")
+            return {"arxiv_id": arxiv_id, "status": "done",
+                    "detail": "이미 요약 저장됨", "skipped": True}
     else:
         print(f"[{arxiv_id}] fetch_paper...")
         fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
