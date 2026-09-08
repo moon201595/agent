@@ -662,10 +662,23 @@ async def scan_and_digest(
     if profile and result.get("papers"):
         try:
             shown = list(result["papers"]) + list(result.get("title_only_papers") or [])
-            story = await trend_report.narrative(client, shown, profile)
+            # **내용 자리 논문에 한해 원문 요약의 결과 절까지 보고 쓴다**
+            # (2026-09-08). 초록은 저자가 쓴 홍보문이고 ④ 요약은 우리가 원문을
+            # 읽고 뽑은 것이라 "그래서 무엇이 나왔나"가 거기 있다.
+            #
+            # 각주 논문에는 안 붙인다. 요약이 있는 논문만 깊어지면 그 논문들이
+            # 서술을 독식하는데, 그건 §8-44 에서 한 번 데인 패턴이다("수집
+            # 사정이 관련도를 뒤집는다"). 내용 자리 6편은 전부 요약이 있으므로
+            # 그 안에서는 기울지 않는다.
+            content_ids = [p.get("arxiv_id") for p in result["papers"] if p.get("arxiv_id")]
+            excerpts = trend_report.result_excerpts(db_path, content_ids)
+            story = await trend_report.narrative(client, shown, profile, summaries=excerpts)
             if story:
-                result["narrative"] = story
-                print("  [동향] 오늘의 서술을 붙였다")
+                text, ungrounded, enriched = story
+                result["narrative"] = (text, ungrounded)
+                # 라벨이 "무엇을 보고 썼는지"를 말하려면 이 수가 필요하다(규칙 8).
+                result["narrative_summaries"] = enriched
+                print(f"  [동향] 오늘의 서술을 붙였다 (원문 요약 {enriched}편 반영)")
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
 

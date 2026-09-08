@@ -295,7 +295,7 @@ def test_all_paper_sources_reach_the_prompt():
     """
     rows = _PUB + [{"title": "Uploaded conference paper", "abstract": "본문",
                     "source": "manual-pdf: streamlit-upload"}]
-    corpus, used = trend_report._narrative_corpus(rows)
+    corpus, used, _enriched = trend_report._narrative_corpus(rows)
     assert used == 4
     assert "Uploaded conference paper" in corpus
 
@@ -306,7 +306,7 @@ def test_prompt_carries_topics_but_never_our_measurements():
     '무엇에 관심 있나'(core_topics)는 나가도 되지만 '무엇을 하고 있나'
     (집계·편수·별점·가중치·미등록 용어)는 안 된다.
     """
-    corpus, _ = trend_report._narrative_corpus(_PUB)
+    corpus, _used, _enriched = trend_report._narrative_corpus(_PUB)
     profile = {"core_topics": ["defect detection", "in-sensor computing"],
                "core_weights": {"defect detection": 1.0, "in-sensor computing": 0.6}}
     prompt = trend_report._NARRATIVE_PROMPT.format(
@@ -332,7 +332,7 @@ def test_narrative_topics_sends_names_without_weights():
 
 def test_ungrounded_numbers_flags_invented_ones():
     """규칙 8 의 두 번째 겹 — 프롬프트로 막고, 그래도 나오면 대조로 잡는다."""
-    corpus, _ = trend_report._narrative_corpus(_PUB)
+    corpus, _used, _enriched = trend_report._narrative_corpus(_PUB)
     assert trend_report.ungrounded_numbers("42.5% 올랐다", corpus) == []
     assert trend_report.ungrounded_numbers("17편에서 88% 늘었다", corpus) == ["17", "88"]
 
@@ -372,7 +372,7 @@ def test_report_warns_about_invented_numbers():
 def test_list_markers_are_not_treated_as_claims():
     """실측 오탐 — 첫 라이브 호출에서 목차 번호 1·3 에 경고가 붙었다.
     매번 뜨는 경고는 아무도 안 읽으므로 진짜 조작을 놓치게 만든다."""
-    corpus, _ = trend_report._narrative_corpus(_PUB)
+    corpus, _used, _enriched = trend_report._narrative_corpus(_PUB)
     assert trend_report.ungrounded_numbers("1. 흐름\n2) 접점\n- 3. 새로움", corpus) == []
     # 줄머리를 뺐다고 본문 숫자까지 놓치면 안 된다
     assert trend_report.ungrounded_numbers("1. 성능이 17편 늘었다", corpus) == ["17"]
@@ -405,7 +405,7 @@ def test_author_names_never_reach_the_prompt():
     괜찮다'로 넘어가지 않게 못 박는다."""
     rows = [{"title": "Defect detection", "abstract": "본문",
              "authors": "Hong Gildong, Kim Cheolsu", "source": "arxiv"}]
-    corpus, used = trend_report._narrative_corpus(rows)
+    corpus, used, _enriched = trend_report._narrative_corpus(rows)
     assert used == 1
     assert "Hong Gildong" not in corpus and "Kim Cheolsu" not in corpus
 
@@ -549,3 +549,141 @@ def test_frontier_failure_does_not_break_the_report():
     finally:
         tr.http_client.s2_citation_graph = orig
     assert frontier == [] and examined == 0
+
+
+# ------------------------------------------- 서술이 원문 요약까지 본다 (2026-09-08)
+#
+# 초록은 저자가 쓴 홍보문이고 ④ 요약의 결과 절은 우리가 원문 전체를 읽고 뽑은
+# 것이다. "그래서 무엇이 나왔나"는 거기 있다. 다만 **요약이 있는 논문만 깊어지면
+# 그 논문들이 서술을 독식**하므로(§8-44 에서 데인 패턴) 붙이는 범위를 좁게 잡고,
+# 실제로 몇 편에 붙었는지를 돌려줘 라벨이 그 수를 말하게 한다(규칙 8).
+
+
+def _summary_file(tmp_path, aid, results):
+    body = "### 기본정보\n- 제목 : T\n\n### 결과\n" + "".join(f"- {r}\n" for r in results)
+    f = tmp_path / f"{aid}.md"
+    f.write_text(body, encoding="utf-8")
+    return f
+
+
+def _store_summary(db, aid, path, *, total=10, matched=10, cov=1.0, kind="measured"):
+    """서술에 넣을 자격을 갖춘 요약 한 편. 인자를 낮추면 자격을 잃는다."""
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO summaries "
+            "(arxiv_id, path, numbers_total, numbers_matched, coverage_ratio, coverage_kind) "
+            "VALUES (?,?,?,?,?,?)", (aid, str(path), total, matched, cov, kind))
+
+
+def test_result_excerpts_pulls_only_the_result_section(db, tmp_path):
+    f = _summary_file(tmp_path, "a", ["정확도 91.2%로 올랐다", "지연은 5ms 였다"])
+    _store_summary(db, "a", f)
+    out = trend_report.result_excerpts(db, ["a"])
+    assert "정확도 91.2%" in out["a"] and "지연은 5ms" in out["a"]
+    assert "기본정보" not in out["a"]      # 다른 절은 안 끌고 온다
+
+
+def test_missing_summary_has_no_key_not_an_empty_string(db, tmp_path):
+    """"요약이 없다"와 "결과가 없다"를 빈 문자열로 뭉개면 라벨이 틀어진다."""
+    assert trend_report.result_excerpts(db, ["없는논문"]) == {}
+    assert trend_report.result_excerpts(db, []) == {}
+
+
+def test_excerpt_is_capped(db, tmp_path):
+    f = _summary_file(tmp_path, "a", ["가" * 3000])
+    _store_summary(db, "a", f)
+    out = trend_report.result_excerpts(db, ["a"], limit_chars=120)
+    assert len(out["a"]) == 120
+
+
+def test_corpus_marks_which_papers_carry_a_summary():
+    rows = [{"title": "Paper A", "abstract": "초록 A", "arxiv_id": "a"},
+            {"title": "Paper B", "abstract": "초록 B", "arxiv_id": "b"},
+            {"title": "Paper C", "abstract": "초록 C", "arxiv_id": "c"}]
+    corpus, used, enriched = trend_report._narrative_corpus(
+        rows, {"a": "정확도 91.2%로 올랐다"})
+    assert used == 3
+    assert enriched == 1                       # 라벨이 이 수를 말한다
+    assert "[원문 요약 · 결과] 정확도 91.2%" in corpus
+    assert corpus.count("[원문 요약 · 결과]") == 1
+    assert "초록 B" in corpus                   # 요약 없는 논문도 그대로 들어간다
+
+
+def test_corpus_without_summaries_is_unchanged():
+    rows = [{"title": "Paper A", "abstract": "초록 A", "arxiv_id": "a"}] * 3
+    plain, _u, enriched = trend_report._narrative_corpus(rows)
+    assert enriched == 0
+    assert "[원문 요약" not in plain
+
+
+def test_verified_summary_numbers_count_as_grounded():
+    """**⑤ 검증을 통과한** 요약의 숫자를 서술이 인용하면 근거가 있는 것이다.
+    통과하지 못한 요약은 애초에 corpus 에 못 들어온다(아래 테스트 참고) —
+    그 구분이 없으면 ⑨ 의 "원문에 없는 숫자" 경고가 조용히 꺼진다."""
+    rows = [{"title": "A", "abstract": "초록", "arxiv_id": "a"},
+            {"title": "B", "abstract": "초록", "arxiv_id": "b"},
+            {"title": "C", "abstract": "초록", "arxiv_id": "c"}]
+    corpus, _u, _e = trend_report._narrative_corpus(rows, {"a": "정확도 91.2% 를 기록했다"})
+    assert trend_report.ungrounded_numbers("정확도가 91.2% 로 올랐다.", corpus) == []
+
+
+# ------------------------------------------- 외부 검토(Codex)가 잡은 네 구멍 (2026-09-08)
+#
+# 요약을 서술에 넣으면서 내가 만든 것들이다. 넷 다 코드로 대조해 사실을 확인했다.
+
+
+def test_unverified_summary_never_reaches_the_narrative(db, tmp_path):
+    """**제일 아픈 것.** save_summary 는 수치가 안 맞아도 저장한다(불일치도
+    기록으로 남겨야 하니까). 그런 요약을 corpus 에 넣으면 ⑨ 가 "원문에 없는
+    숫자"를 대조하는 바로 그 corpus 에 원문에 없던 숫자가 들어가 경고가 꺼진다.
+
+    실측(2026-09-08): 저장된 요약 132편 중 57편(43%)에 불일치가 있다.
+    """
+    f = _summary_file(tmp_path, "a", ["정확도 91.2%로 올랐다"])
+    _store_summary(db, "a", f, total=10, matched=7)      # ⑤ 가 3건을 못 맞혔다
+    assert trend_report.result_excerpts(db, ["a"]) == {}
+
+
+def test_partially_read_summary_is_not_called_full_text(db, tmp_path):
+    """프롬프트가 이 발췌를 "원문 전체를 읽고 뽑은 결과"라고 소개한다.
+    청크가 중간에 실패한 부분 요약을 그렇게 부르면 재지 않은 것을 쟀다고
+    하는 것이다(규칙 8)."""
+    f = _summary_file(tmp_path, "a", ["결과가 좋았다"])
+    _store_summary(db, "a", f, cov=0.42)                  # 원문의 42%만 봤다
+    assert trend_report.result_excerpts(db, ["a"]) == {}
+
+
+def test_unknown_coverage_summary_is_excluded(db, tmp_path):
+    """커버리지를 모르는 구형 요약(coverage_kind NULL)도 마찬가지다 —
+    모르는 것을 "다 봤다"로 취급하지 않는다."""
+    f = _summary_file(tmp_path, "a", ["결과가 좋았다"])
+    _store_summary(db, "a", f, cov=None, kind=None)
+    assert trend_report.result_excerpts(db, ["a"]) == {}
+    _store_summary(db, "a", f, cov=1.0, kind="planned")   # 계획 상한도 실측이 아니다
+    assert trend_report.result_excerpts(db, ["a"]) == {}
+
+
+def test_broken_summary_file_does_not_kill_the_whole_narrative(db, tmp_path):
+    """`except OSError` 는 UnicodeDecodeError 를 안 잡는다. 호출부가 발췌와
+    서술 생성을 같은 try 로 감싸므로, 여기서 예외가 나가면 초록만으로 쓸 수
+    있었던 글까지 통째로 사라진다."""
+    bad = tmp_path / "bad.md"
+    bad.write_bytes(b"### \xff\xfe\xfa\n- \xff\xff")
+    good = _summary_file(tmp_path, "b", ["결과가 좋았다"])
+    _store_summary(db, "a", bad)
+    _store_summary(db, "b", good)
+
+    out = trend_report.result_excerpts(db, ["a", "b"])    # 예외가 나가면 안 된다
+    assert "b" in out and "결과가 좋았다" in out["b"]
+
+
+def test_same_paper_in_both_lists_is_counted_once():
+    """같은 논문이 내용 자리와 각주에 겹쳐 들어오면 요약이 두 번 붙고 편수가
+    부풀려진다 — "각주에는 안 붙인다"도 라벨의 편수도 거짓이 된다."""
+    dup = {"title": "Paper A", "abstract": "초록 A", "arxiv_id": "a"}
+    rows = [dup, dict(dup), {"title": "B", "abstract": "초록 B", "arxiv_id": "b"},
+            {"title": "C", "abstract": "초록 C", "arxiv_id": "c"}]
+    corpus, used, enriched = trend_report._narrative_corpus(rows, {"a": "결과가 좋았다"})
+    assert corpus.count("[원문 요약 · 결과]") == 1
+    assert enriched == 1
+    assert used == 4          # 목록 자체는 손대지 않는다 — 요약만 한 번 붙인다

@@ -850,7 +850,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
     text, ungrounded = story
     lines = ["", "─" * 62,
              "■ 오늘의 동향 정리",
-             "   (LLM 이 위 논문들의 제목·초록만 보고 쓴 것 — 앞의 숫자·라벨과 달리 검증되지 않았다)",
+             f"   ({narrative_source_label(scan_result)})",
              ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
@@ -1221,6 +1221,21 @@ def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
     return text
 
 
+def narrative_source_label(scan_result: dict) -> str:
+    """서술이 **무엇을 보고 쓴 것인지** 한 줄로. 라벨이 입력과 어긋나면 규칙 8 위반이다.
+
+    2026-09-08 이전에는 언제나 "제목·초록만 보고 쓴 것"이었다. 이제 내용 자리
+    논문에 한해 원문 요약의 결과 절까지 넣으므로(§8-73), **실제로 몇 편에
+    붙었는지**를 세어 말한다. 0 편이면 예전 문장 그대로다 — 요약이 없는 날에
+    "요약까지 봤다"고 하면 그게 거짓말이다.
+    """
+    n = int(scan_result.get("narrative_summaries") or 0)
+    if n <= 0:
+        return "LLM 이 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다."
+    return (f"LLM 이 제목·초록과, 그중 {n}편은 원문 요약의 결과까지 보고 쓴 것 — "
+            f"위 숫자와 달리 검증되지 않았다.")
+
+
 def _narrative_line_html(line: str) -> str:
     """서술 한 줄을 HTML 로. 소제목이면 굵게 키우고 위에 여백을 준다.
 
@@ -1399,8 +1414,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
             f'font-weight:600;margin:18px 0 4px;">오늘의 동향 정리</p>'
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'margin:0 0 6px;">LLM 이 오늘 걸린 논문의 제목·초록만 보고 쓴 것 — '
-            f'위 숫자와 달리 검증되지 않았다.</p>{paras}{warn}{named}'
+            f'margin:0 0 6px;">{_esc(narrative_source_label(scan_result))}</p>'
+            f'{paras}{warn}{named}'
         )
 
     body += _weekly_review_html(scan_result)
