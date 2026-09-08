@@ -970,6 +970,25 @@ def test_weekly_review_missing_leaves_both_renderers_clean(tmp_path, monkeypatch
     assert "주간 동향 리뷰" not in rps.digest.generate_digest_html(result, "team_ai")
 
 
+def test_weekly_review_lands_on_the_monday_morning_mail():
+    """**§8-71.** 배달은 05:00 KST = **전날 20:00 UTC** 에 일어난다. UTC 로 요일을
+    세면 월요일 아침 메일에는 안 붙고(그때 UTC 로는 일요일) **화요일 아침 메일에
+    붙는다.** 여태 못 본 이유는 §8-70 ① — 주간 리뷰가 HTML 에 아예 닿지 않아
+    요일이 어긋난 것도 안 보였다.
+
+    실제 배달 시각으로 시험한다. 요일은 **읽는 사람 기준**이어야 한다.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    KST = _tz(_td(hours=9))
+    assert rps.is_weekly_review_day(_dt(2026, 9, 14, 5, 0, tzinfo=KST)) is True   # 월
+    assert rps.is_weekly_review_day(_dt(2026, 9, 15, 5, 0, tzinfo=KST)) is False  # 화
+    assert rps.is_weekly_review_day(_dt(2026, 9, 13, 5, 0, tzinfo=KST)) is False  # 일
+
+    # 같은 순간을 UTC 로 줘도 답이 같아야 한다 — 표현이 아니라 순간이 기준이다.
+    monday_kst = _dt(2026, 9, 14, 5, 0, tzinfo=KST)
+    assert rps.is_weekly_review_day(monday_kst.astimezone(_tz.utc)) is True
+
+
 def test_weekly_review_day_is_computed_from_the_weekday():
     from datetime import datetime as _dt, timezone as _tz
     monday = _dt(2026, 9, 7, tzinfo=_tz.utc)      # 월요일
