@@ -221,6 +221,8 @@ NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
 # 이제 **논문 목록은 한 줄씩으로 줄었으므로 종합이 본체**다. 사용자 지적:
 # "논문별로는 간단하게, 맨 아래에 전체적인 동향 정리를 해줘야지."
 _NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록이다.
+일부 논문에는 `[원문 요약 · 결과]` 줄이 붙어 있다 — 그건 초록이 아니라
+**원문 전체를 읽고 뽑은 결과**다. 붙어 있으면 그쪽을 우선해서 읽는다.
 읽는 사람이 관심 있는 분야: {topics}
 
 이 목록만 보고 **오늘의 동향 정리**를 한국어 평서체로 쓴다.
@@ -243,7 +245,7 @@ _NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록�
    알 수 없다"고 쓰고 넘어간다.
 
 지킬 것:
-- 초록에 없는 내용을 쓰지 않는다. 모르면 모른다고 쓴다.
+- **위에 주어진 초록·요약에 없는 내용을 쓰지 않는다.** 모르면 모른다고 쓴다.
 - **숫자·통계·비율·증감을 쓰지 않는다.** 편수는 따로 집계돼 있다.
 - 논문을 가리킬 때는 제목 앞부분을 그대로 인용한다.
 - 관심 분야 목록을 그대로 나열하지 않는다. 논문과 이어질 때만 언급한다.
@@ -255,25 +257,114 @@ _NARRATIVE_PROMPT = """아래는 최근 발표된 논문들의 제목과 초록�
 """
 
 
-def _narrative_corpus(rows: list) -> tuple[str, int]:
-    """프롬프트에 넣을 논문 텍스트. (본문, 넣은 편수).
+# 서술에 넣을 **원문 요약 발췌**의 길이 상한(2026-09-08).
+# 초록은 저자가 쓴 홍보문이고, ④ 요약의 "결과" 절은 우리가 원문 전체를 읽고
+# 뽑은 것이라 "그래서 무엇이 나왔나"가 거기 있다. 다만 통째로 넣으면 6편만으로
+# 프롬프트가 초록 수십 편을 밀어내므로 절 하나만, 길이를 잘라 넣는다.
+NARRATIVE_SUMMARY_CHARS = 700
+
+# 요약에서 뽑을 절. 파일마다 제목이 조금씩 달라 순서대로 찾는다.
+_RESULT_SECTION_NAMES = ("결과", "핵심 결과", "주요 결과")
+
+# 서술에 넣을 요약이 갖춰야 할 조건(2026-09-08, 외부 검토가 잡은 두 구멍).
+#
+# (1) **⑤ 검증을 전부 통과한 요약만.** save_summary 는 수치가 안 맞아도 저장한다
+#     (불일치도 기록으로 남겨야 하니까). 그런 요약을 서술 corpus 에 넣으면,
+#     ⑨ 가 "원문에 없는 숫자"를 경고하려고 대조하는 그 corpus 에 **원문에 없던
+#     숫자가 들어가** 경고가 조용히 꺼진다. 검증을 약화시키는 것이다(규칙 9).
+#     실측(2026-09-08): 저장된 요약 132편 중 57편(43%)에 불일치가 있다 —
+#     이론적 위험이 아니다.
+#
+# (2) **원문을 실제로 다 본 요약만.** 프롬프트가 이 발췌를 "원문 전체를 읽고 뽑은
+#     결과"라고 소개하는데, 청크가 중간에 실패한 부분 요약이나 커버리지를 모르는
+#     구형 요약을 그렇게 부르면 재지 않은 것을 쟀다고 하는 것이다(규칙 8).
+#     기준은 다이제스트가 "원문 N%만 반영" 경고를 켜는 값과 같게 둔다.
+NARRATIVE_SUMMARY_MIN_COVERAGE = 0.98
+
+
+def result_excerpts(db: Path, arxiv_ids: list[str],
+                    limit_chars: int = NARRATIVE_SUMMARY_CHARS) -> dict[str, str]:
+    """서술에 넣어도 되는 ④ 요약의 결과 절만 뽑아 {arxiv_id: 발췌}.
+
+    **읽기 전용이고 LLM 을 부르지 않는다.** 요약이 없거나 위 두 조건을 못 채운
+    논문은 키가 없다 — "요약이 없다"와 "결과가 없다"를 빈 문자열로 뭉개지 않는다.
+    """
+    import summary_parser
+
+    if not arxiv_ids:
+        return {}
+    out: dict[str, str] = {}
+    marks = ",".join("?" * len(arxiv_ids))
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"SELECT arxiv_id, path FROM summaries WHERE arxiv_id IN ({marks}) "
+            "  AND numbers_total = numbers_matched "
+            "  AND coverage_kind = 'measured' "
+            "  AND coverage_ratio >= ?",
+            [*arxiv_ids, NARRATIVE_SUMMARY_MIN_COVERAGE],
+        ).fetchall()
+    for row in rows:
+        try:
+            markdown = Path(row["path"]).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # 깨진 파일 한 편이 그날 동향을 통째로 없애면 안 된다 — 호출부가
+            # 발췌와 서술 생성을 같은 try 로 감싸고 있어서, 여기서 예외가 나가면
+            # 초록만으로 쓸 수 있었던 글까지 사라진다(외부 검토 지적).
+            continue
+        sections = summary_parser.parse_sections(markdown)
+        bullets: list[str] = []
+        for name in _RESULT_SECTION_NAMES:
+            if sections.get(name):
+                bullets = sections[name]
+                break
+        if not bullets:
+            continue
+        text = " ".join(b.strip() for b in bullets if b.strip())
+        if text:
+            out[row["arxiv_id"]] = text[:limit_chars]
+    return out
+
+
+def _narrative_corpus(rows: list,
+                     summaries: dict[str, str] | None = None) -> tuple[str, int, int]:
+    """프롬프트에 넣을 논문 텍스트. (본문, 넣은 편수, 요약을 붙인 편수).
 
     출처로 거르지 않는다 — 규칙 4(2026-09-03 개정)는 논문 텍스트를 arXiv·
     오픈액세스·직접 올린 PDF 모두 허용한다. 여기만 걸렀더니 ④ 요약이 이미
     직접 올린 PDF 를 LLM 에 보내고 있는 것과 앞뒤가 안 맞았다(실측:
     `pdf-5bd2ec925e` 는 요약이 이미 있다).
+
+    summaries 를 주면 그 논문 아래에 **원문 요약의 결과 절**을 덧붙인다
+    (2026-09-08). 초록은 저자가 쓴 홍보문이고 요약은 우리가 원문을 읽고
+    뽑은 것이라 "그래서 무엇이 나왔나"가 거기 있다. 요약이 있는 논문만
+    깊어지므로 **몇 편에 붙었는지를 같이 돌려준다** — 라벨이 그 수를 말해야
+    한다(규칙 8: 안 본 것을 봤다고 하지 않는다).
     """
-    parts, used = [], 0
+    summaries = summaries or {}
+    parts, used, enriched = [], 0, 0
+    seen_ids: set[str] = set()
     for row in rows:
         title = (_field(row, "title") or "").strip()
         abstract = (_field(row, "abstract") or "").strip()[:NARRATIVE_ABSTRACT_CHARS]
         if not title:
             continue
-        parts.append(f"- {title}\n  {abstract}" if abstract else f"- {title}")
+        block = f"- {title}\n  {abstract}" if abstract else f"- {title}"
+        # 같은 논문이 두 목록(내용 자리·각주)에 겹쳐 들어오면 요약이 두 번 붙고
+        # 편수가 부풀려진다 — 그러면 "각주에는 안 붙인다"도, 라벨의 편수도
+        # 거짓이 된다. 호출부가 이미 겹침을 걸러 주지만 여기서도 막는다.
+        aid = _field(row, "arxiv_id") or ""
+        excerpt = summaries.get(aid) if aid and aid not in seen_ids else None
+        if aid:
+            seen_ids.add(aid)
+        if excerpt:
+            block += f"\n  [원문 요약 · 결과] {excerpt}"
+            enriched += 1
+        parts.append(block)
         used += 1
         if used >= NARRATIVE_MAX_PAPERS:
             break
-    return "\n".join(parts), used
+    return "\n".join(parts), used, enriched
 
 
 def ungrounded_numbers(text: str, corpus: str) -> list[str]:
@@ -323,14 +414,20 @@ def narrative_topics(profile: dict, rows: list | None = None, limit: int = 12) -
 
 
 async def narrative(client: httpx.AsyncClient, rows: list,
-                    profile: dict | None = None) -> tuple[str, list[str]] | None:
-    """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들).
+                    profile: dict | None = None,
+                    summaries: dict[str, str] | None = None,
+                    ) -> tuple[str, list[str], int] | None:
+    """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들, 요약 붙인 편수).
+
+    summaries 를 주면 그 논문에 한해 **원문 요약의 결과 절**까지 보고 쓴다
+    (2026-09-08). 세 번째 반환값은 실제로 요약이 붙은 편수다 — 배달 쪽 라벨이
+    "무엇을 보고 썼는지"를 정확히 말하려면 이 수가 필요하다(규칙 8).
 
     실패하면 None — 셈 절은 그대로 나간다. 서술은 부가 정보다.
     """
     import summarize_engine as se
 
-    corpus, used = _narrative_corpus(rows)
+    corpus, used, enriched = _narrative_corpus(rows, summaries)
     if used < 3:
         return None      # 표본이 이보다 적으면 "흐름"이라 부를 게 없다
 
@@ -348,7 +445,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     text = (text or "").strip()
     if not text:
         return None
-    return text, ungrounded_numbers(text, corpus)
+    return text, ungrounded_numbers(text, corpus), enriched
 
 
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
@@ -746,5 +843,7 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
     story = None
     if client is not None and with_narrative and this_week:
         story = await narrative(client, this_week, profile)
+        if story:
+            story = (story[0], story[1])   # 주간 리뷰는 요약을 안 넣는다(범위가 안 맞는다)
     return format_report(this_week, last_week, profile, shared, examined, targets,
                          story, lineage, cites, frontier)

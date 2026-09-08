@@ -1156,3 +1156,38 @@ def test_unmentioned_paper_gets_no_number():
     scan = {"papers": papers, "candidates_found": 1,
             "narrative": ("갈래\n첫째, 다른 이야기다.", [])}
     assert "(논문" not in digest.generate_digest(scan, "t")
+
+
+def test_narrative_label_says_what_it_actually_read():
+    """**라벨이 입력과 어긋나면 규칙 8 위반이다.** 2026-09-08 부터 내용 자리
+    논문에 한해 원문 요약의 결과 절까지 넣으므로, 라벨은 실제로 몇 편에
+    붙었는지를 말해야 한다."""
+    base = {"papers": [], "candidates_found": 3, "narrative": ("갈래\n첫째, 흐름이다.", [])}
+
+    none_used = digest.generate_digest_html(base, "t")
+    assert "제목·초록만 보고 쓴 것" in none_used
+    assert "원문 요약" not in none_used
+
+    with_summaries = digest.generate_digest_html({**base, "narrative_summaries": 6}, "t")
+    assert "그중 6편은 원문 요약의 결과까지 보고 쓴 것" in with_summaries
+    assert "제목·초록만 보고 쓴 것" not in with_summaries
+
+
+def test_narrative_label_is_the_same_in_both_renderers():
+    """평문/HTML 불일치가 이 코드베이스에서 반복된 결함이다(§8-57·67·70)."""
+    # 논문이 0편이면 평문은 꼬리 절을 통째로 안 찍는다(빈 다이제스트 설계).
+    # 실제로 서술은 papers 가 있을 때만 만들어지므로 그 모양으로 시험한다.
+    scan = {"papers": [_ZETA], "candidates_found": 3, "narrative_summaries": 4,
+            "narrative": ("갈래\n첫째, 흐름이다.", [])}
+    label = digest.narrative_source_label(scan)
+    assert "4편" in label
+    assert label in digest.generate_digest(scan, "t")
+    assert label in digest.generate_digest_html(scan, "t")
+
+
+def test_zero_summaries_falls_back_to_the_old_sentence():
+    """요약이 없는 날 "요약까지 봤다"고 하면 그게 거짓말이다."""
+    for value in (0, None):
+        scan = {"papers": [], "candidates_found": 1, "narrative_summaries": value,
+                "narrative": ("갈래\n첫째, 흐름이다.", [])}
+        assert digest.narrative_source_label(scan).startswith("LLM 이 제목·초록만")
