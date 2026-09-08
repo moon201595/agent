@@ -1326,3 +1326,74 @@ def test_enum_line_is_not_mistaken_for_a_label():
     """`첫째, 압축 : …` 을 라벨로 보면 설명까지 굵어진다."""
     out = digest._emphasise_label(digest._esc("첫째, 압축 : 이런 흐름이다"))
     assert "<strong>" not in out
+
+
+# ------------------------------------------- §8-73~75 처리 (2026-09-08, 사용자 지시)
+#
+# 외부 검토가 잡았지만 "이번 작업 밖"이라 기록만 해뒀던 셋이다. 셋 다
+# **화면이 LLM 출력 형태에 조용히 의존**하던 것이고, 조용하다는 게 문제였다.
+
+
+def test_latex_commands_are_replaced_by_name_not_substring():
+    """§8-73. `\\in` → `∈` 를 부분 문자열로 치환해서 `\\infty` 가 `∈fty` 가 됐고,
+    `\\left` 를 껍데기로 지워 `\\leftarrow` 가 `arrow` 가 됐다. 강조가 빠지는
+    정도가 아니라 무한대·방향의 뜻이 손상된 것이다."""
+    assert digest._plain(r"$\infty$") == "∞"
+    assert digest._plain(r"$\leftarrow$") == "←"
+    assert digest._plain(r"$\rightarrow$") == "→"
+    assert digest._plain(r"$x \in \mathbb{R}$") == "x ∈ R"
+
+
+def test_fraction_structure_survives():
+    """`\\frac{1}{2}` 가 중괄호만 지워져 `frac12` 였다 — 분수가 열두로 읽힌다."""
+    assert digest._plain(r"$\frac{1}{2}$") == "(1)/(2)"
+
+
+def test_real_summary_math_stays_readable():
+    """실물 요약에 나온 표기들."""
+    assert digest._plain(r"$1.67 \times 10^{-3}$") == "1.67 × 10^-3"
+    assert digest._plain(r"$\tau = 0.619$") == "τ = 0.619"
+    assert digest._plain(r"$\pm$") == "±"
+
+
+def test_section_heading_variations_still_parse():
+    """§8-74. `### 결과` 가 `### **결과**` 나 `## 결과` 로 바뀌면 절이 통째로
+    사라졌다. **일부 절만 실패하면 나머지는 그대로 보이므로 누락 안내도 없다.**"""
+    for heading in ("### 결과", "### **결과**", "## 결과", "#### 결과", "### 핵심 결과"):
+        sec = digest._split_sections(f"{heading}\n- 정확도가 올랐다\n")
+        assert sec.get("결과"), heading
+
+
+def test_bullet_variations_still_parse():
+    """`- 항목` 만 받아서 `* 항목`·`• 항목`·번호 목록이면 내용이 빠졌다."""
+    for body in ("- 가\n- 나", "* 가\n* 나", "• 가\n• 나", "1. 가\n2. 나"):
+        assert digest._bullets(body) == ["가", "나"], body
+
+
+def test_bullet_bold_is_stripped():
+    assert digest._bullets("- **결과** 가 좋았다") == ["결과 가 좋았다"]
+
+
+def test_first_section_wins_over_a_later_duplicate():
+    """뒤에 오는 "파싱 품질 노트" 같은 부록이 본문을 덮어쓰면 안 된다."""
+    sec = digest._split_sections("### 결과\n- 진짜 결과\n\n### 결과\n- 부록")
+    assert sec["결과"] == "- 진짜 결과"
+
+
+def test_gist_keeps_a_sentence_that_merely_contains_a_dash():
+    """§8-75. 첫 구분자 앞을 라벨인지 확인하지 않고 버려서 문장의 앞 절반이
+    사라졌다 — 읽는 사람은 잘린 줄도 모른다."""
+    text = "기존 접근은 실패한다 — 제안 기법은 이를 해결한다."
+    assert digest._strip_leading_label(text) == text
+
+
+def test_gist_still_strips_a_real_label():
+    assert digest._strip_leading_label("무엇을 하려 했는가 : 결함을 검출한다.") == "결함을 검출한다."
+    assert digest._strip_leading_label("어떻게 했는가: 트랜스포머를 썼다.") == "트랜스포머를 썼다."
+
+
+def test_gist_strips_a_short_name_like_prefix():
+    """`VLA-Precision : ...` 처럼 짧은 이름꼴은 라벨로 본다."""
+    assert digest._strip_leading_label("VLA-Precision : 학습을 효율화한다.") == "학습을 효율화한다."
+    # 조사로 끝나는 서술은 라벨이 아니다
+    assert digest._strip_leading_label("이 방법은 좋다 : 그래서 쓴다.").startswith("이 방법은")

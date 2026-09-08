@@ -134,21 +134,57 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
+# 절 제목 줄. `##`~`####` 를 다 받고 앞뒤 장식·굵게는 벗긴다.
+#
+# **2026-09-08 정정.** 예전에는 `line.startswith("### ")` 하나였다. 그래서
+# `### **결과**` 는 제목이 "**결과**" 로 잡혀 조회에 안 걸렸고, `## 결과` 는
+# 절 자체를 인식 못 해 요약이 통째로 비었다. **일부 절만 실패하면 나머지는
+# 그대로 표시되므로 누락 안내조차 없다** — 화면이 LLM 출력 형태에 조용히
+# 의존하던 가장 큰 덩어리였다(외부 검토가 재현).
+_HEADING_LINE_RE = re.compile(r"^\s{0,3}#{2,4}\s+(.+?)\s*$")
+
+# 절 이름의 별칭. 프롬프트가 시킨 이름을 모델이 조금씩 바꿔 쓴다.
+_SECTION_ALIASES = {
+    "핵심 결과": "결과", "주요 결과": "결과", "실험 결과": "결과",
+    "한계": "논문의 한계점", "한계점": "논문의 한계점",
+    "개요": "연구 개요", "방법": "방법 상세", "실험 셋업": "실험 설정",
+}
+
+
+def _canonical_section(title: str) -> str:
+    """제목에서 장식을 벗기고 별칭을 표준 이름으로."""
+    name = _MD_BOLD_RE.sub(r"\1", title).strip().strip("*_`").strip()
+    name = re.sub(r"^[0-9]+[.)]\s*", "", name).strip()
+    return _SECTION_ALIASES.get(name, name)
+
+
 def _split_sections(markdown: str) -> dict[str, str]:
-    """'### 제목' 단위로 쪼갠다. 템플릿 v2 형식이 전제지만, 없는 절은 그냥
-    빠질 뿐이라 형식이 달라져도 다이제스트가 깨지지 않는다."""
+    """제목 단위로 쪼갠다. 표제 형식이 달라져도 내용이 사라지지 않게,
+    `##`~`####` 를 받고 굵게·번호·별칭을 정규화해 담는다.
+
+    같은 표준 이름이 두 번 나오면 **먼저 나온 것을 남긴다** — 뒤에 오는
+    "파싱 품질 노트" 같은 부록이 본문을 덮어쓰지 않게.
+    """
     sections: dict[str, str] = {}
     current, buf = None, []
+
+    def flush():
+        if current and current not in sections:
+            sections[current] = "\n".join(buf).strip()
+
     for line in markdown.splitlines():
-        if line.startswith("### "):
-            if current:
-                sections[current] = "\n".join(buf).strip()
-            current, buf = line[4:].strip(), []
+        m = _HEADING_LINE_RE.match(line)
+        if m:
+            flush()
+            current, buf = _canonical_section(m.group(1)), []
         elif current:
             buf.append(line)
-    if current:
-        sections[current] = "\n".join(buf).strip()
+    flush()
     return sections
+
+
+# 불릿 기호. `-` 만 받다가 `*`·`•`·`·`·번호 목록에서 내용이 통째로 빠졌다.
+_BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•·–—]|[0-9]+[.)])\s+(.*)$")
 
 
 def _bullets(body: str, after: str | None = None) -> list[str]:
@@ -162,10 +198,10 @@ def _bullets(body: str, after: str | None = None) -> list[str]:
             return []
     out = []
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            out.append(stripped[2:].strip())
-        elif out and not stripped:
+        m = _BULLET_LINE_RE.match(line)
+        if m:
+            out.append(_MD_BOLD_RE.sub(r"\1", m.group(1)).strip())
+        elif out and not line.strip():
             break
     return out
 
@@ -550,6 +586,39 @@ def paper_link(paper: dict) -> str:
     return paper.get("open_access_pdf") or ""
 
 
+# 초록 정리의 앞 라벨. 프롬프트가 시키는 문구라 목록으로 셀 수 있다.
+_GIST_LABELS = (
+    "무엇을 하려 했는가", "무엇을 하려 했다는가", "어떻게 했는가", "무엇을 보였는가",
+    "무엇을·어떻게", "한 줄 요약", "요지", "개요", "핵심", "결론",
+)
+
+
+def _strip_leading_label(text: str) -> str:
+    """`무엇을 하려 했는가 : ...` 같은 **라벨만** 떼고 본문은 지키다.
+
+    **2026-09-08 정정.** 예전에는 첫 ` : ` · `: ` · ` — ` 앞을 라벨인지 확인하지
+    않고 버렸다. 그래서 `기존 접근은 실패한다 — 제안 기법은 이를 해결한다.` 가
+    `제안 기법은 이를 해결한다.` 로 잘렸다 — **문장의 앞 절반이 사라진 것**이고
+    읽는 사람은 잘린 줄도 모른다(외부 검토가 재현).
+
+    이제 앞부분이 (a) 알려진 라벨이거나 (b) 짧고 문장 부호가 없는 이름꼴일
+    때만 뗀다. 판단이 안 서면 **그대로 둔다** — 지우는 쪽이 손해가 크다.
+    """
+    for sep in (" : ", ": ", " — "):
+        head, found, rest = text.partition(sep)
+        if not found or not rest.strip():
+            continue
+        label = head.strip().strip("*_`").strip()
+        known = any(label.startswith(x) for x in _GIST_LABELS)
+        # 이름꼴: 짧고, 문장을 끝내는 부호가 없고, 조사로 끝나지 않는다.
+        name_like = (len(label) <= 14 and not re.search(r"[.!?。]", label)
+                     and not re.search(r"(다|요|음|함)$", label))
+        if known or name_like:
+            return rest.strip()
+        break      # 첫 구분자가 라벨이 아니면 뒤도 볼 것 없다
+    return text
+
+
 def _one_line_gist(paper: dict, sections: dict) -> str:
     """"이게 무슨 논문인가" 한 줄. 메일 본문에 논문마다 들어가는 전부다.
 
@@ -576,11 +645,7 @@ def _one_line_gist(paper: dict, sections: dict) -> str:
         cleaned = _plain(_BULLET_RE.sub("", line.strip()))
         if not cleaned:
             continue
-        # "무엇을 하려 했는가 : ..." 에서 뒤쪽만 쓴다
-        for sep in (" : ", ": ", " — "):
-            if sep in cleaned:
-                cleaned = cleaned.split(sep, 1)[1].strip()
-                break
+        cleaned = _strip_leading_label(cleaned)
         if cleaned:
             return cleaned
     return ""
@@ -724,24 +789,40 @@ _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 # **수식을 지우지 않는다** — 정보를 버리는 것이기 때문이다. 흔한 명령만
 # 사람이 읽는 기호로 바꾸고 나머지는 백슬래시와 중괄호만 벗긴다.
 _TEX_SYMBOLS = {
-    r"\in": "∈", r"\times": "×", r"\leq": "≤", r"\geq": "≥", r"\neq": "≠",
-    r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\lambda": "λ",
-    r"\sigma": "σ", r"\mu": "μ", r"\theta": "θ", r"\epsilon": "ε",
-    r"\cdot": "·", r"\approx": "≈", r"\sum": "Σ", r"\rightarrow": "→",
+    "in": "∈", "times": "×", "leq": "≤", "geq": "≥", "neq": "≠", "le": "≤", "ge": "≥",
+    "alpha": "α", "beta": "β", "gamma": "γ", "lambda": "λ", "delta": "δ", "pi": "π",
+    "sigma": "σ", "mu": "μ", "theta": "θ", "epsilon": "ε", "tau": "τ", "phi": "φ",
+    "cdot": "·", "approx": "≈", "sum": "Σ", "rightarrow": "→", "leftarrow": "←",
+    "to": "→", "infty": "∞", "pm": "±", "sim": "~", "ll": "≪", "gg": "≫",
+    "subset": "⊂", "cup": "∪", "cap": "∩", "forall": "∀", "exists": "∃",
+    "partial": "∂", "nabla": "∇", "prod": "∏", "int": "∫", "sqrt": "√",
 }
 _TEX_MATH_RE = re.compile(r"\$+([^$]+?)\$+")
-_TEX_CMD_RE = re.compile(r"\\(?:mathbb|mathcal|mathrm|mathbf|text|left|right|operatorname)\s*")
+# 껍데기만 벗기는 명령(뒤의 중괄호 내용은 남긴다).
+_TEX_WRAPPER_RE = re.compile(
+    r"\\(?:mathbb|mathcal|mathrm|mathbf|mathit|text|textbf|textit|left|right|operatorname)\b\s*")
+# \frac{a}{b} → a/b. 분수 구조를 살린다.
+_TEX_FRAC_RE = re.compile(r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+# 남은 명령 이름. **\w 경계로 잡는다** — 부분 문자열 치환을 하면 안 된다.
+_TEX_CMD_RE = re.compile(r"\\([A-Za-z]+)")
 _TEX_BRACE_RE = re.compile(r"[{}]")
 
 
 def _detex(fragment: str) -> str:
-    """`$...$` 안쪽을 평문으로. 지우지 않고 읽히게만 만든다."""
-    out = fragment
-    for tex, sym in _TEX_SYMBOLS.items():
-        out = out.replace(tex, sym)
-    out = _TEX_CMD_RE.sub("", out)
+    r"""`$...$` 안쪽을 평문으로. 지우지 않고 읽히게만 만든다.
+
+    **2026-09-08 정정.** 예전에는 `\in` → `∈` 같은 **부분 문자열 치환**을 했다.
+    그래서 `\infty` 가 `∈fty` 가 되고 `\leftarrow` 가 `arrow` 가 됐다
+    (`\left` 를 껍데기로 보고 지운 뒤 남은 `arrow`). `\frac{1}{2}` 는 중괄호만
+    지워 `frac12` 였다. 강조가 빠지는 정도가 아니라 **무한대·방향·분수 구조가
+    손상된 것**이라 읽는 사람이 뜻을 잘못 가져간다. 외부 검토가 재현했다.
+
+    이제 명령을 **이름 단위로만** 바꾼다. 긴 이름이 짧은 이름에 먹히지 않는다.
+    """
+    out = _TEX_FRAC_RE.sub(r"(\1)/(\2)", fragment)
+    out = _TEX_WRAPPER_RE.sub("", out)
+    out = _TEX_CMD_RE.sub(lambda m: _TEX_SYMBOLS.get(m.group(1), m.group(1)), out)
     out = _TEX_BRACE_RE.sub("", out)
-    out = re.sub(r"\\([A-Za-z]+)", r"\1", out)      # 남은 명령은 이름만 남긴다
     return re.sub(r"\s+", " ", out).strip()
 
 
