@@ -267,6 +267,13 @@ async def scan_profile(
 
     # 키워드가 바뀌었으면 델타 커서를 이어받으면 안 된다(§8-21) — 지문을
     # 넘겨서 next_since 가 스스로 판단하게 한다.
+    #
+    # **지문은 소스마다 다르다**(2026-09-09, §8-79). 각 소스는 자기가 실제로
+    # 던진 질의로만 과거를 봤으므로, "질의가 바뀌었나"도 그 질의 기준으로
+    # 물어야 한다. arXiv 는 core_topics 전부를 OR 로 묶으니 core 지문이고,
+    # S2 는 씨앗만 던지니 씨앗 지문이다. 하나로 합쳐 두면 **씨앗을 바꿔도
+    # S2 커서가 리셋되지 않아 새 씨앗이 과거를 영영 못 본다** — §8-21 이
+    # core 에서 막았던 사고가 씨앗에서 그대로 재발한다.
     signature = research_profile.topic_signature(profile["core_topics"])
 
     # **두 소스 중 더 뒤처진 쪽에 창을 맞춘다**(2026-09-08, §8-76).
@@ -291,9 +298,11 @@ async def scan_profile(
     # 그 소스는 앞으로 갱신되지 않으므로 커서가 늙기만 한다. 검토의 재현에서
     # 30일 전 S2 이력이 정상 arXiv 창을 30일로 늘렸다.
     s2_keywords = s2_delta.keywords_for_s2(profile)
+    s2_signature = research_profile.topic_signature(s2_keywords)
+    signatures = {"arxiv": signature, "s2": s2_signature}
     sources = ["arxiv"] + (["s2"] if s2_keywords else [])
     since = min(
-        research_profile.next_since(db_path, profile_id, src, signature=signature)
+        research_profile.next_since(db_path, profile_id, src, signature=signatures[src])
         for src in sources
     )
     query = _arxiv_query_from_core_topics(profile["core_topics"])
@@ -356,7 +365,7 @@ async def scan_profile(
             s2_status = "failed"
             research_profile.record_run(
                 db_path, profile_id, "s2", f"S2 keywords×{len(s2_keywords)}", since, until,
-                "failed", 0, error_detail=str(e), signature=signature,
+                "failed", 0, error_detail=str(e), signature=s2_signature,
             )
             print(f"  [경고] S2 검색 실패 — arXiv 만으로 이어간다: "
                   f"{type(e).__name__}: {str(e).splitlines()[0][:150]}")
@@ -365,7 +374,7 @@ async def scan_profile(
             s2_status = s2_result["status"]
             research_profile.record_run(
                 db_path, profile_id, "s2", s2_result["query"], since, until,
-                s2_status, len(s2_papers), signature=signature,
+                s2_status, len(s2_papers), signature=s2_signature,
             )
             print(f"  [S2] 키워드 {len(s2_keywords)}개 → {len(s2_papers)}편 "
                   f"(arXiv 밖 {sum(1 for x in s2_papers if not x.get('arxiv_id'))}편)")

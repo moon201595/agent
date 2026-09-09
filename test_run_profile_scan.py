@@ -1750,3 +1750,97 @@ def test_no_recipient_does_not_consume(tmp_path, monkeypatch):
     assert summary["team_ai"]["delivery"] == rps.DELIVERY_NO_RECIPIENT
     assert not rps.delivery_failed(summary["team_ai"]["delivery"])   # 경보는 안 울린다
     assert calls == [], "메일이 안 갔는데 소비 처리했다"
+
+
+def test_s2_실행기록이_씨앗_지문을_남긴다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: S2 에 core 지문을 넘기는 것(운영 경로를 실제로 부른다).
+
+    씨앗만 바꿨는데 S2 커서가 리셋되지 않으면 **새 씨앗이 과거를 영영 못
+    본다** — §8-21 이 core 에서 막았던 사고가 씨앗에서 재발한다.
+
+    앞선 판의 이 테스트는 `next_since` 를 테스트 안에서 직접 불러서, 스캔이
+    어떤 지문을 넘기는지는 보지 않았다. 돌연변이(`"s2": s2_signature` →
+    `"s2": signature`)를 넣었더니 **783개가 전부 통과했다.** 그래서 기록된
+    search_runs 행을 읽는 쪽으로 바꿨다.
+    """
+    db_path = tmp_path / "t.db"
+    rp.create_profile(db_path, "team_ai", "우리팀",
+                      core_topics=["agent", "digital twin"],
+                      core_weights={"agent": 0.6, "digital twin": 0.6},
+                      s2_seeds=["world model"], max_items=5)
+
+    async def _s2(client, keywords, since, until, limit=100):
+        return {"papers": [], "status": "done", "query": f"S2×{len(keywords)}",
+                "keywords_failed": 0}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _s2)
+
+    async def fake_throttled(client, params):
+        class FakeResp:
+            text = "<fake/>"
+        return FakeResp()
+
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _x: [])
+
+    asyncio.run(rps.scan_profile(db_path, "team_ai", client=None))
+
+    with sqlite3.connect(db_path) as con:
+        sigs = dict(con.execute(
+            "SELECT source, topic_signature FROM search_runs WHERE profile_id='team_ai'"))
+
+    core_sig = rp.topic_signature(["agent", "digital twin"])
+    seed_sig = rp.topic_signature(["world model"])
+    assert sigs["arxiv"] == core_sig, "arXiv 는 core 전부를 OR 로 던지니 core 지문이어야 한다"
+    assert sigs["s2"] == seed_sig, "S2 가 씨앗이 아니라 core 지문을 남겼다"
+    assert sigs["s2"] != sigs["arxiv"], "두 소스가 같은 지문을 쓰면 분리가 무의미하다"
+
+
+def test_씨앗을_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: next_since 에 소스별 지문 대신 core 지문을 넘기는 것.
+
+    앞 테스트는 **기록된** 지문만 본다. 지문은 두 곳에 쓰인다 — 기록과
+    `next_since` 판정이고, 실제로 창을 움직이는 것은 후자다. 그래서 창이
+    어디서 시작했는지를 본다.
+
+    두 소스 모두 최근 커서를 갖고 있는데 **S2 씨앗만 바뀐** 상황을 만든다.
+    지문이 소스별이면 S2 는 불일치로 과거 7일까지 돌아가고, 창은 둘 중 더
+    뒤처진 쪽을 따라가므로(§8-76) `since` 가 7일 전이 된다. core 지문을
+    S2 에도 쓰면 일치로 판정해 최근 커서를 이어받는다.
+    """
+    db_path = tmp_path / "t.db"
+    rp.create_profile(db_path, "team_ai", "우리팀",
+                      core_topics=["agent", "digital twin"],
+                      core_weights={"agent": 0.6, "digital twin": 0.6},
+                      s2_seeds=["world model"], max_items=5)
+
+    now = datetime.now(timezone.utc)
+    core_sig = rp.topic_signature(["agent", "digital twin"])
+    # 두 소스 다 "한 시간 전까지 봤다"는 이력을 남긴다. S2 이력의 지문은
+    # **옛 씨앗**(=core 지문)이다 — 씨앗을 막 바꾼 직후의 모습이다.
+    for src in ("arxiv", "s2"):
+        rp.record_run(db_path, "team_ai", src, "q", now - timedelta(hours=3),
+                      now - timedelta(hours=1), "done", 5, signature=core_sig)
+
+    async def _s2(client, keywords, since, until, limit=100):
+        return {"papers": [], "status": "done", "query": "S2", "keywords_failed": 0}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _s2)
+
+    async def fake_throttled(client, params):
+        class FakeResp:
+            text = "<fake/>"
+        return FakeResp()
+
+    monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_throttled)
+    monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _x: [])
+
+    asyncio.run(rps.scan_profile(db_path, "team_ai", client=None))
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT window_from FROM search_runs WHERE profile_id='team_ai' "
+            "ORDER BY rowid DESC LIMIT 2").fetchall()
+    starts = [datetime.fromisoformat(r[0]) for r in rows]
+    assert all(s < now - timedelta(days=6) for s in starts), (
+        f"씨앗이 바뀌었는데 창이 최근 커서를 이어받았다: {starts}")

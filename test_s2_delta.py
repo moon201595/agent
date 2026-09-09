@@ -537,3 +537,55 @@ def test_complete_window_has_no_reason(monkeypatch):
     got = asyncio.run(s2_delta.search_keyword_since(
         None, "k", _dt("2026-08-28T00:00:00"), _dt("2026-09-02T00:00:00")))
     assert got.truncated is False and got.reason is None
+
+
+# ── S2 씨앗과 채점 가중치의 분리 (2026-09-09, §8-79)
+#
+# 이 세 테스트가 지키는 것: **가중치를 올려도 S2 호출이 안 늘어나야 한다.**
+# 그전에는 `keywords_for_s2` 가 가중치 1.0 이상을 질의어로 골랐고, 그래서
+# "이 논문이 얼마나 우리 얘기인가"를 올리는 순간 무료 API 호출이 같이 늘었다.
+
+def test_씨앗이_있으면_가중치를_올려도_질의어가_안_늘어난다():
+    """이 테스트가 잡는 것: 명시적 씨앗 경로에 가중치 필터를 다시 연결하는 것.
+
+    비씨앗 키워드를 전부 1.0 으로 올려도 질의 목록이 그대로여야 한다 —
+    분리의 존재 이유가 바로 이것이다.
+    """
+    profile = {
+        "core_topics": ["defect detection", "world model", "physical AI"],
+        "core_weights": {"defect detection": 0.6, "world model": 0.6, "physical AI": 0.6},
+        "s2_seeds": ["world model"],
+    }
+    assert s2_delta.keywords_for_s2(profile) == ["world model"]
+
+    profile["core_weights"] = {k: 1.0 for k in profile["core_topics"]}
+    assert s2_delta.keywords_for_s2(profile) == ["world model"], (
+        "가중치를 올렸더니 질의어가 늘었다 — 씨앗과 중요도가 다시 붙었다")
+
+
+def test_씨앗이_비면_종전대로_가중치로_고른다():
+    """이 테스트가 잡는 것: 하위 호환 경로 삭제.
+
+    씨앗을 안 쓰는 구형 프로필은 예전과 똑같이 동작해야 한다. 씨앗이 비었다고
+    S2 를 꺼 버리면 기존 프로필의 검색이 조용히 멈춘다.
+    """
+    profile = {
+        "core_topics": ["a", "b", "c"],
+        "core_weights": {"a": 1.0, "b": 1.0, "c": 0.6},
+    }
+    assert s2_delta.keywords_for_s2(profile) == ["a", "b"]
+    assert s2_delta.keywords_for_s2(dict(profile, s2_seeds=[])) == ["a", "b"]
+    # 가중치조차 없는 더 오래된 프로필은 전부 1.0 으로 본다.
+    assert s2_delta.keywords_for_s2({"core_topics": ["a", "b"]}) == ["a", "b"]
+
+
+def test_씨앗에도_중복_제거_규칙이_그대로_걸린다():
+    """이 테스트가 잡는 것: 씨앗 경로에서 S2_REDUNDANT_KEYWORDS 를 빠뜨리는 것.
+
+    분리하면서 중복 규칙을 새 경로에 안 옮기면 429 를 부르던 호출이 되살아난다.
+    """
+    profile = {"core_topics": [], "s2_seeds": ["in-sensor computing", "on-sensor computing"]}
+    assert s2_delta.keywords_for_s2(profile) == ["in-sensor computing"]
+    # 대신할 씨앗이 없으면 개념을 통째로 잃지 않게 그대로 둔다.
+    assert s2_delta.keywords_for_s2({"core_topics": [], "s2_seeds": ["on-sensor computing"]}) \
+        == ["on-sensor computing"]
