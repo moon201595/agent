@@ -361,17 +361,27 @@ S2_REDUNDANT_KEYWORDS = {
 
 
 def keywords_for_s2(profile: dict, min_weight: float = S2_MIN_KEYWORD_WEIGHT) -> list[str]:
-    """S2 로 **질의할** 키워드 — 표적 계층(가중치 >= 1.0) 중 중복 제외.
+    """S2 로 **질의할** 키워드 — 프로필의 `s2_seeds`, 없으면 가중치 상위 계층.
 
     채점 키워드와 다르다. 채점은 core_topics 전부를 쓰고 로컬이라 공짜지만,
     질의는 한 개마다 S2 호출 하나이고 그게 429 의 원인이다.
 
-    가중치를 안 준 프로필(구형)은 전부 1.0 으로 보므로 자연히 전 키워드가
-    대상이 된다 — 하위 호환.
+    **씨앗을 가중치에서 떼어냈다**(2026-09-09, §8-79). 그전에는 가중치
+    1.0 이상이 곧 질의어였는데, 그러면 "이 논문이 얼마나 우리 얘기인가"를
+    올리는 순간 S2 호출이 같이 늘었다. 두 질문은 다르고, 실측이 그걸
+    보여줬다 — 씨앗이던 `surface inspection` 은 열흘치 적중 0편인데 씨앗이
+    아니던 `vision-language-action` 은 16편으로 최다였다(§8-73).
+
+    **씨앗이 비면 종전 그대로 가중치로 고른다** — 구형 프로필 하위 호환이고,
+    "S2 를 끈다"는 뜻이 아니다. 끄려면 상위 계층을 비우면 된다.
     """
-    weights = profile.get("core_weights") or {}
-    picked = [kw for kw in profile.get("core_topics", [])
-              if float(weights.get(kw, 1.0)) >= min_weight]
+    seeds = [s for s in (profile.get("s2_seeds") or []) if s and s.strip()]
+    if seeds:
+        picked = list(dict.fromkeys(seeds))
+    else:
+        weights = profile.get("core_weights") or {}
+        picked = [kw for kw in profile.get("core_topics", [])
+                  if float(weights.get(kw, 1.0)) >= min_weight]
     # 대신할 키워드가 실제로 질의 목록에 있을 때만 뺀다 — 없으면 그 개념을
     # 통째로 잃는다.
     return [kw for kw in picked

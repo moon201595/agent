@@ -1290,6 +1290,14 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
         value=", ".join(existing["exclude"]) if existing else "",
         key=f"{key_prefix}_exclude",
     )
+    s2_seeds = st.text_input(
+        "S2 검색 씨앗 (콤마로 구분, 비우면 가중치 1.0 이상을 쓴다)",
+        value=", ".join(existing.get("s2_seeds") or []) if existing else "",
+        key=f"{key_prefix}_seeds",
+        help="Semantic Scholar 에 **질의할** 단어다. 하나당 API 호출이라 "
+             "예산(300초)을 나눠 쓴다. 중요도(가중치)와 다른 개념이다 — "
+             "중요한 키워드를 씨앗으로 안 둬도 arXiv 로는 검색된다.",
+    )
     venues = st.text_input(
         "관심 venue (콤마로 구분, 선택 — S2가 venue 데이터를 아직 안 줘서 지금은 거의 안 씀)",
         value=", ".join(existing["venues"]) if existing else "",
@@ -1306,13 +1314,21 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
         if not pid or not name.strip():
             st.warning("프로필 ID와 이름은 비워둘 수 없음")
         else:
+            # **가중치를 같이 넘긴다**(2026-09-09, §8-76). 안 넘기면
+            # create_profile 이 전부 1.0 으로 채워서, 여기서 오탈자 하나
+            # 고치고 저장하는 것만으로 프로필의 등급이 통째로 날아갔다.
+            # 화면에 가중치 입력이 없으므로 기존 값을 그대로 실어 보낸다.
+            kept_weights = (existing or {}).get("core_weights") or {}
+            new_core = [k.strip() for k in core_topics.split(",") if k.strip()]
             research_profile.create_profile(
                 db_path, pid, name.strip(),
-                core_topics=[k.strip() for k in core_topics.split(",") if k.strip()],
+                core_topics=new_core,
                 target_domain=[k.strip() for k in target_domain.split(",") if k.strip()],
                 exclude=[k.strip() for k in exclude.split(",") if k.strip()],
                 venues=[k.strip() for k in venues.split(",") if k.strip()],
                 max_items=int(max_items),
+                core_weights={k: kept_weights[k] for k in new_core if k in kept_weights},
+                s2_seeds=[k.strip() for k in s2_seeds.split(",") if k.strip()],
             )
             st.session_state["_research_selected_profile"] = pid
             st.success(f"'{pid}' 저장됨")

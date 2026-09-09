@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS profile_keywords (
     profile_id TEXT,
     keyword TEXT,
-    kind TEXT,              -- 'core' | 'target' | 'exclude'
+    kind TEXT,              -- 'core' | 'target' | 'exclude' | 's2_seed'
+                            -- 's2_seed' 는 **검색 씨앗**이고 채점에 안 쓴다.
+                            -- 그전에는 core 가중치 1.0 이 씨앗 자리를 겸했는데,
+                            -- "무엇이 중요한가"와 "S2 에 무엇을 물어볼까"는
+                            -- 다른 질문이다(2026-09-09, §8-79).
     weight REAL DEFAULT 1.0,
     added_at TEXT,
     PRIMARY KEY (profile_id, keyword, kind)
@@ -185,6 +189,7 @@ def create_profile(
     exclude: list[str] | None = None, venues: list[str] | None = None,
     max_items: int = 8, schedule_frequency: str = "daily", schedule_time: str = "05:00",
     core_weights: dict[str, float] | None = None,
+    s2_seeds: list[str] | None = None,
 ) -> None:
     """기존 프로필이면 통째로 덮어쓴다(키워드도 전부 지우고 다시 씀) —
     "일부만 바뀐 것"과 "이전 키워드가 실수로 안 지워진 것"을 구분 못 하게
@@ -196,7 +201,19 @@ def create_profile(
     걸리면 거의 확실히 우리 주제지만, "quantization"은 제어·통신 논문에서
     전혀 다른 뜻으로 쓰인다(2026-08-31 실측: CSymPlan 이 상태공간 양자화로
     걸렸다). 이 값은 profile_keywords.weight 컬럼에 저장된다 — 컬럼 자체는
-    처음부터 있었지만 아무도 읽지 않던 것을 여기서 실제로 쓰기 시작한다."""
+    처음부터 있었지만 아무도 읽지 않던 것을 여기서 실제로 쓰기 시작한다.
+
+    s2_seeds 는 S2 에 **질의할** 키워드다(2026-09-09, §8-79). core_weights 와
+    갈라 둔 이유: 가중치는 "이 논문이 얼마나 우리 얘기인가"를 재고, 씨앗은
+    "어느 단어로 물어야 논문이 잘 나오나"를 정한다. 한 숫자가 둘 다 하던
+    동안 실측이 어긋났다 — 씨앗이던 `surface inspection` 은 열흘치 적중이
+    0편인데, 씨앗이 아니던 `vision-language-action` 이 16편으로 최다였다.
+
+    **생략(None)하면 기존 씨앗을 보존하고, 빈 목록([])을 명시하면 지운다.**
+    이 함수는 나머지를 전부 덮어쓰는데 씨앗만 예외로 둔 이유가 있다 —
+    구형 호출부(테스트, review_app 의 옛 경로)가 씨앗을 모른 채 저장하면
+    그 프로필의 검색 설정이 조용히 사라진다. 가중치가 바로 그렇게 날아가고
+    있었다(§8-76)."""
     init_db(db_path)
     now = _now()
     with sqlite3.connect(db_path) as con:
@@ -208,10 +225,17 @@ def create_profile(
             "schedule_time=excluded.schedule_time, updated_at=excluded.updated_at",
             (profile_id, name, max_items, schedule_frequency, schedule_time, now, now),
         )
+        kept_seeds: list[str] = []
+        if s2_seeds is None:
+            kept_seeds = [r[0] for r in con.execute(
+                "SELECT keyword FROM profile_keywords WHERE profile_id=? AND kind='s2_seed'",
+                (profile_id,))]
         con.execute("DELETE FROM profile_keywords WHERE profile_id=?", (profile_id,))
         con.execute("DELETE FROM profile_venues WHERE profile_id=?", (profile_id,))
+        seeds = kept_seeds if s2_seeds is None else list(s2_seeds)
+        seeds = list(dict.fromkeys(s.strip() for s in seeds if s and s.strip()))
         for kind, kws in (("core", core_topics), ("target", target_domain or []),
-                          ("exclude", exclude or [])):
+                          ("exclude", exclude or []), ("s2_seed", seeds)):
             for kw in kws:
                 con.execute(
                     "INSERT INTO profile_keywords (profile_id, keyword, kind, weight, added_at) "
@@ -245,7 +269,7 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
             "SELECT venue FROM profile_venues WHERE profile_id=?", (profile_id,)
         ).fetchall()
 
-    by_kind: dict[str, list[str]] = {"core": [], "target": [], "exclude": []}
+    by_kind: dict[str, list[str]] = {"core": [], "target": [], "exclude": [], "s2_seed": []}
     core_weights: dict[str, float] = {}
     for r in kw_rows:
         by_kind.setdefault(r["kind"], []).append(r["keyword"])
@@ -259,6 +283,9 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
         "core_topics": by_kind["core"], "target_domain": by_kind["target"],
         "exclude": by_kind["exclude"], "venues": [v["venue"] for v in venue_rows],
         "core_weights": core_weights,
+        # 씨앗은 core_topics 에 안 섞는다 — 섞으면 채점 대상이 되어 분리한
+        # 의미가 없어진다. 순서는 저장 순서에 기대지 않게 정렬한다.
+        "s2_seeds": sorted(by_kind["s2_seed"]),
     }
 
 
