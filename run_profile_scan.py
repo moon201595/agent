@@ -25,6 +25,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import httpx
@@ -71,6 +72,10 @@ DEEP_LAYER_BUDGET_SECONDS = float(os.environ.get("DEEP_LAYER_BUDGET_SECONDS", 24
 # 주간 동향 리뷰를 붙이는 요일(0=월). 매일 붙이면 어제와 거의 같은 표가
 # 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
 WEEKLY_REVIEW_WEEKDAY = 0
+# 읽는 사람의 시간대. §8-71 은 "읽는 사람의 요일"이 맞았지만 구현이 `astimezone()`
+# (= 이 컴퓨터의 시간대)여서 UTC 컨테이너에서는 같은 순간이 일요일이 됐다
+# (§8-93 ①, 2026-09-11 외부 검증). 컴퓨터가 어디 있든 답이 같아야 한다.
+READER_TZ = ZoneInfo("Asia/Seoul")
 
 # 상위 목록에서 **본문을 받을 수 있는 논문에 최소한 보장할 자리 수**(2026-09-05).
 #
@@ -116,10 +121,13 @@ def is_weekly_review_day(now: datetime | None = None) -> bool:
     # 여태 아무도 못 본 이유는 §8-70 ① 때문이다 — 주간 리뷰가 HTML 메일에
     # 아예 닿지 않아서 요일이 어긋난 것도 드러나지 않았다.
     #
-    # `astimezone()` 은 시스템 시간대를 쓴다. 이 하네스는 사람이 읽는 메일을
-    # 만들고 그 사람은 KST 로 산다 — 요일은 읽는 사람 기준이어야 한다.
-    # 인자로 받은 시각도 같은 규칙으로 옮긴다(테스트가 UTC 를 넘겨도 맞다).
-    return (now or datetime.now()).astimezone().weekday() == WEEKLY_REVIEW_WEEKDAY
+    # 요일은 읽는 사람 기준이고, 읽는 사람은 KST 로 산다 — `READER_TZ` 로 명시
+    # 변환한다. 인자 없는 `astimezone()` 은 **이 컴퓨터**의 시간대라 KST 머신에서만
+    # 우연히 맞았다(§8-93 ①). naive 값이 오면 이 컴퓨터 시각으로 본다.
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    return moment.astimezone(READER_TZ).weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
 def _key(paper: dict) -> str:
