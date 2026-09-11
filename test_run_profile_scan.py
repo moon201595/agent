@@ -174,7 +174,7 @@ def test_scan_and_digest_saves_digest_to_db_not_just_return_value(tmp_path, monk
 
     result, digest_text = asyncio.run(main())
 
-    assert "우리팀" in digest_text
+    assert "연구 동향 브리핑" in digest_text
     saved_text, saved_at = rp.get_latest_digest(db_path, "team_ai")
     assert saved_text == digest_text
     assert saved_at

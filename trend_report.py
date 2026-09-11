@@ -939,7 +939,7 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
     if story:
         text, ungrounded = story
         lines += ["", "─" * 60,
-                  "▶ 서술 (LLM 이 이번 주 논문의 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다)"]
+                  "▶ 서술 (LLM 이 이번 주 논문의 제목·초록만 보고 쓴 것)"]
         lines += [f"   {ln}" for ln in text.strip().splitlines()]
         if ungrounded:
             lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")

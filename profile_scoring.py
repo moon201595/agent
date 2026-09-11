@@ -255,6 +255,25 @@ _POLYSEMY_GUARDS: dict[str, tuple[str, ...]] = {
         r"quantization-aware", r"quantized", r"model compression",
         r"weight quantization", r"activation quantization",
     ),
+    # "world model" (2026-09-11). 사용자가 물었다 — "넌 뭐때문에 그걸 넣었어? 로봇
+    # 아니야? 아니면 디지털 트윈 시뮬레이션?" 맞다. 9/9 v2 개정에서 VLA 와 결합해
+    # 자기교정·정책 학습을 하는 흐름을 잡으려고 넣었다. 그런데 지구 시스템·방사선
+    # 임상·광양자 계산·비디오 LLM 도 같은 말을 쓴다 — 2026-09-11 메일 4위를 광양자
+    # 논문이 먹었다.
+    #
+    # **문자열을 좁히는 길은 막혀 있다**(실측, 후보 1477편): "world foundation
+    # model" 0편 · "embodied world model" 0편 · "robot world model" 1편. 논문이
+    # 그렇게 안 쓴다. 그래서 낱말은 두고 동반어로 가른다 — 로봇·정책·시뮬레이션·
+    # 디지털 트윈 계열. 실측: 적중 67편 중 61편 통과, 6편 거름(광양자 GBS, 성도
+    # MRI, 언어모델 Dutch Book, 비디오 LLM 탐침 + 경계선 둘). "physics"·"video"·
+    # "action" 은 넣지 않았다 — 거의 모든 초록에 있어 가드가 안 된다.
+    # 검색(S2 씨앗)은 그대로다 — 이건 채점만 거른다.
+    "world model": (
+        r"robots?", r"robotics?", r"polic(?:y|ies)", r"embodied", r"agents?", r"agentic",
+        r"manipulat\w*", r"vision-language-action", r"vla", r"navigation", r"driving",
+        r"vehicles?", r"locomotion", r"control(?:ler|lers)?", r"reinforcement learning",
+        r"planning", r"imitation", r"sim-to-real", r"simulat\w*", r"digital twin",
+    ),
 }
 
 _GUARD_RE_CACHE: dict[str, re.Pattern] = {}

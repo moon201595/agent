@@ -469,3 +469,20 @@ def test_top_core_weight_distinguishes_target_from_multiple_trend_hits():
 
 
 import profile_scoring  # noqa: E402  (위 테스트가 상수를 참조한다)
+
+
+def test_world_model_가드는_로봇·시뮬레이션_문맥이_없으면_적중으로_안_친다():
+    """2026-09-11. 광양자·임상·언어모델 논문이 'world model' 문자열로 걸려 메일 자리를
+    먹었다. 이 테스트가 잡는 것: 가드 제거, 동반어를 'action'·'physics' 처럼 어디에나
+    있는 말로 넓히는 것."""
+    prof = {"core_topics": ["world model"], "core_weights": {"world model": 1.0},
+            "target_domain": [], "exclude": []}
+    def hits(title, abstract=""):
+        return score_paper({"title": title, "abstract": abstract, "published": None}, prof)["core_hits"]
+    assert hits("A robot world model for manipulation") == ["world model"]
+    assert hits("Digital twin simulation with a learned world model") == ["world model"]
+    assert hits("World model planning for embodied agents") == ["world model"]
+    assert hits("A Gaussian Boson Sampling processor as a quantum world model",
+                "We predict physical dynamics of a vortex with a photonic world model.") == [], "물리·동역학만으로는 통과 못 한다"
+    assert hits("Dutch Books for Language Models", "world model consistency in LLMs") == []
+    assert hits("A radiographic world model for clinical evidence", "action editing of frames") == [], "'action' 은 동반어가 아니다"

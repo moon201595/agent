@@ -1089,7 +1089,11 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
     실패 걱정 없이 항상 읽힌다는 걸 우선했다)."""
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    header = f"[HARNESS Daily] {date_str} · {profile_name}"
+    # 제목은 읽는 사람 기준이다(2026-09-11, 사용자 요청). 시스템 이름(HARNESS)이나
+    # 프로필 내부 이름("우리팀 — …")은 받는 사람에게 정보가 아니다. 무엇인지
+    # (연구 동향 브리핑)와 언제인지(날짜)만 둔다. 프로필 이름은 여러 프로필을
+    # 받는 사람만 구분이 필요하므로 메일 제목에서만 조건부로 붙는다(_deliver).
+    header = f"연구 동향 브리핑 · {date_str}"
     papers = scan_result.get("papers", [])
     candidates = scan_result.get("candidates_found", 0)
 
@@ -1309,8 +1313,10 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         # Apple Mail 뿐이다(위 주석 1번).
         c_label = coverage_label(arxiv_id)
         needs_attention = ("flag" in v_label) or ("✗" in r_label) or bool(c_label)
-        chips = _status_chip(v_label.strip("[]"), flagged="flag" in v_label)
-        chips += _status_chip(r_label.strip("[]"), flagged="✗" in r_label)
+        # strip("[]") 은 양끝만 벗긴다 — "[검증 27/29 통과]  ⚠ flag 2건" 은 앞 괄호만
+        # 벗겨져 "통과]" 가 남았다(2026-09-11 메일에서 실제로 보였다). 안쪽 괄호까지 뺀다.
+        chips = _status_chip(v_label.replace("[", "").replace("]", "").strip(), flagged="flag" in v_label)
+        chips += _status_chip(r_label.replace("[", "").replace("]", "").strip(), flagged="✗" in r_label)
         if c_label:
             # 커버리지 경고는 flag 취급한다 — "검증 통과"만 보고 요약을
             # 그대로 믿으면 안 되는 상황이라 눈에 띄어야 한다.
@@ -1489,9 +1495,8 @@ def narrative_source_label(scan_result: dict) -> str:
     """
     n = int(scan_result.get("narrative_summaries") or 0)
     if n <= 0:
-        return "LLM 이 제목·초록만 보고 쓴 것 — 위 숫자와 달리 검증되지 않았다."
-    return (f"LLM 이 제목·초록과, 그중 {n}편은 원문 요약의 결과까지 보고 쓴 것 — "
-            f"위 숫자와 달리 검증되지 않았다.")
+        return "LLM 이 제목·초록만 보고 쓴 것."
+    return f"LLM 이 제목·초록과, 그중 {n}편은 원문 요약의 결과까지 보고 쓴 것."
 
 
 def _narrative_line_html(line: str) -> str:
@@ -1605,9 +1610,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     head = (
         f'<div style="background-color:{_NAVY};color:#FFFFFF;'
         f'padding:14px 16px;border-radius:6px;">'
-        f'<div style="font-size:17px;font-weight:700;color:#FFFFFF;">HARNESS Daily</div>'
-        f'<div style="font-size:13px;color:#DCE3F5;margin-top:2px;">'
-        f'{_esc(date_str)} · {_esc(profile_name)}</div></div>'
+        f'<div style="font-size:17px;font-weight:700;color:#FFFFFF;">연구 동향 브리핑</div>'
+        f'<div style="font-size:13px;color:#DCE3F5;margin-top:2px;">{_esc(date_str)}</div></div>'
     )
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
