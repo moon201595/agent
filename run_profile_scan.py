@@ -981,8 +981,12 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             view.pop("state_updates", None)
             text = digest.generate_digest(view, name)
             digest_html = digest.generate_digest_html(view, name)
-            email_delivery.send_digest_email(
-                text, f"[HARNESS Daily] {name}", [recipient], digest_html)
+            # 제목도 읽는 사람 기준(2026-09-11). 프로필 이름은 프로필이 둘 이상일 때만
+            # 붙인다 — 하나뿐이면 "우리팀 — …" 은 정보가 아니라 소음이다.
+            subject = f"[연구 동향 브리핑] {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            if len(research_profile.list_profiles(db_path)) > 1:
+                subject += f" · {name}"
+            email_delivery.send_digest_email(text, subject, [recipient], digest_html)
             sent += 1
             if states is not None:
                 visible = content_keys

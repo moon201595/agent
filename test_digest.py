@@ -89,7 +89,7 @@ def _digest_for(paper):
 def test_generate_digest_reports_no_papers_case():
     result = {"papers": [], "candidates_found": 12, "excluded_count": 3, "unmatched_count": 9}
     text = generate_digest(result, "우리팀")
-    assert "우리팀" in text
+    assert "연구 동향 브리핑" in text
     assert "새로 걸린 논문이 없습니다" in text
     assert "12" in text
 
@@ -776,9 +776,9 @@ def test_daily_digest_carries_a_narrative_not_just_counts():
     assert "키워드별 적중 편수" in text
 
 
-def test_narrative_is_labelled_unverified_and_separated_from_counts():
+def test_narrative_is_labelled_as_llm_written_and_separated_from_counts():
     text = digest.generate_digest(_scan_with_story(), "t")
-    assert "검증되지 않았다" in text
+    assert "제목·초록만 보고 쓴 것" in text
     # 2026-09-09 사용자 요청: 브리핑을 첫 화면에 둔다. 검증 라벨은 위에서
     # 계속 검사하고, 새 순서 계약은 평문·HTML 모두 잠근다(검증 완화 아님).
     assert text.index("오늘의 동향 정리") < text.index("키워드별 적중 편수")

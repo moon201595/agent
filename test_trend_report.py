@@ -355,11 +355,11 @@ def test_narrative_returns_none_when_both_engines_fail(monkeypatch):
     assert asyncio.run(trend_report.narrative(None, _PUB)) is None
 
 
-def test_report_labels_the_narrative_as_unverified():
+def test_report_labels_the_narrative_as_llm_written():
     """셈과 서술이 한 화면에서 섞이면 안 된다 — 어디부터 해석인지 보여야 한다."""
     out = trend_report.format_report([], [], {"core_topics": []},
                                      story=("결함 검출이 온센서와 만난다.", []))
-    assert "검증되지 않았다" in out
+    assert "제목·초록만 보고 쓴 것" in out
     assert "결함 검출이 온센서와 만난다." in out
 
 
