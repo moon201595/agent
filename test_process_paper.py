@@ -311,3 +311,51 @@ def test_open_access_paper_is_not_resummarized(tmp_path, monkeypatch):
     assert out["status"] == "done" and out.get("skipped") is True
     assert calls["summarize"] == 0, "이미 요약이 있는데 다시 만들었다"
     assert calls["repro"] == 0, "이미 요약이 있는데 ⑦ 를 다시 띄웠다"
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_mail_processing_waits_for_final_reproduction(tmp_path, monkeypatch, stub_pipeline, cached):
+    """대기를 빼거나 기존 요약을 다시 생성하면 실패한다. worker I/O만 가짜다."""
+    aid = "2609.00001"
+    monkeypatch.setattr(bs.server, "REPRO_DIR", tmp_path)
+    monkeypatch.setattr(bs, "_summary_already_saved", lambda _: cached)
+    marker = tmp_path / f"{aid}.running"
+    events = []
+    def launch(value):
+        assert value == aid
+        assert bool(stub_pipeline["save"]) is not cached
+        events.append("launch")
+        marker.write_text("running")
+        return "started"
+    async def finish(_seconds):
+        events.append("finish")
+        (tmp_path / f"{aid}.log").write_text(json.dumps({
+            "arxiv_id": aid, "success": False, "reason": "저장소 후보 없음", "log": []}))
+        marker.unlink()
+    monkeypatch.setattr(bs.docker_runner, "launch_background", launch)
+    monkeypatch.setattr(bs.asyncio, "sleep", finish)
+    out = asyncio.run(bs._process_paper(None, aid, wait_for_repro=True))
+    assert events == ["launch", "finish"]
+    assert out["reproduction"]["reason"] == "저장소 후보 없음"
+    assert out["reproduction"]["status"] == "completed"
+    assert len(stub_pipeline["summarize"]) == (0 if cached else 1)
+    assert len(stub_pipeline["fetch_arxiv"]) == (0 if cached else 1)
+
+
+def test_pending_reproduction_returns_explicit_timeout(tmp_path, monkeypatch):
+    aid = "2609.00001"
+    monkeypatch.setattr(bs.server, "REPRO_DIR", tmp_path)
+    monkeypatch.setattr(bs, "REPRO_WAIT_SECONDS", 0)
+    (tmp_path / f"{aid}.running").write_text("stale or running")
+    out = asyncio.run(bs._wait_reproduction(aid))
+    assert out["status"] == "timeout" and out["success"] is None
+    assert "작업 완료 미확인" in out["reason"]
+    assert (tmp_path / f"{aid}.running").exists()
+
+
+def test_missing_worker_result_is_not_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(bs.server, "REPRO_DIR", tmp_path)
+    (tmp_path / "2609.00001.log").write_text("Traceback: worker crashed")
+    out = asyncio.run(bs._wait_reproduction("2609.00001"))
+    assert out["status"] == "unconfirmed"
+    assert out["success"] is False

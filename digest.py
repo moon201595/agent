@@ -319,16 +319,23 @@ def summary_sections(arxiv_id: str) -> dict:
             results = [_clip(b, _RESULT_CHARS) for b in found[:_RESULT_BULLETS]]
             break
 
-    limits = ""
+    # 저자 진술과 모델의 비판은 근거 수준이 다르다(2026-09-09).
+    limits, author_limits = "", ""
     for line in sec.get("논문의 한계점", "").splitlines():
-        if "요약자가 판단한 한계" in line and ":" in line:
-            limits = _clip(line.split(":", 1)[1], _LIMIT_CHARS)
-            break
+        plain = _plain(line)
+        if ":" not in plain:
+            continue
+        label, value = plain.split(":", 1)
+        if "요약자가 판단한 한계" in label:
+            limits = _clip(value, _LIMIT_CHARS)
+        elif "저자" in label and "한계" in label:
+            author_limits = _clip(value, _LIMIT_CHARS)
 
     if not (one_liner or overview or results):
         return {}
     return {"one_liner": one_liner, "overview": overview, "method": method,
-            "setup": setup, "results": results, "limits": limits}
+            "setup": setup, "results": results, "limits": limits,
+            "author_limits": author_limits}
 
 
 def verification_label(arxiv_id: str) -> str:
@@ -675,6 +682,94 @@ def _one_line_gist(paper: dict, sections: dict) -> str:
     return ""
 
 
+def _paper_retraction_label(paper: dict) -> str:
+    state = paper.get("_delivered_state")
+    if state is None:
+        return retraction_label(paper.get("arxiv_id", "?"))
+    return {1: "[⚠ 철회된 논문]", 2: "[주의: 정정/우려 표명 이력]"}.get(state["retraction"], "")
+
+
+def _paper_repro_label(paper: dict) -> str:
+    outcome = paper.get("repro_outcome")
+    if outcome is not None:
+        status = outcome.get("status")
+        if status == "timeout":
+            return "[코드 재현 대기 시간 초과 — " + outcome["reason"] + "]"
+        if status == "not_attempted":
+            return "[" + outcome["reason"] + "]"
+        if outcome.get("success"):
+            reused = "기존 " if status == "cached" else ""
+            return f"[{reused}코드 설치·실행 성공 — 논문 성능 수치 재현은 미확인]"
+        if status == "unconfirmed":
+            return "[코드 재현 결과 미확인 — 작업 종료 후 결과 기록 없음]"
+        if outcome.get("reason") == "저장소 후보 없음":
+            return "[코드 저장소를 찾지 못해 재현하지 못함]"
+        attempts = outcome.get("log") or []
+        last = attempts[-1] if attempts else {}
+        detail = last.get("fail_detail") or outcome.get("reason") or "상세 기록 없음"
+        return f"[코드 재현 실패 — {last.get('stage', '종료')} · {detail}]"
+    state = paper.get("_delivered_state")
+    if state is None:
+        return repro_label(paper.get("arxiv_id", "?"))
+    import evidence_state
+    return "[" + evidence_state.state_label(state, "repro") + "]"
+
+
+def _state_update_lines(result: dict) -> list[str]:
+    """2026-09-10: 과거 상태 소식은 보내지 않는다. 오래된 미리보기 입력도 차단한다."""
+    return []
+
+
+def _date_label(paper: dict) -> str:
+    """발표·관측·처리는 날짜가 같을 때도 서로 다른 사건이다."""
+    def value(key: str) -> str:
+        return str(paper.get(key) or "미기록")
+    return (f"발표 {value('published')} · 최초 발견 {value('first_seen')} · "
+            f"요약 생성 {value('summarized_at')}")
+
+
+def _scope_lines(result: dict) -> list[str]:
+    """집계 범위 밖의 연구 동향을 단정하지 않도록 매일 같은 경계를 알린다."""
+    lines = ["■ 수집 범위와 해석 한계",
+             "이번 수집 표본의 관찰이다. 분야 전체의 증가·감소를 뜻하지 않는다."]
+    if result.get("since") or result.get("until"):
+        lines.append(f"검색 창: {result.get('since', '미기록')} ~ {result.get('until', '미기록')}")
+    for source, status_key, count_key in (("arxiv", "run_status", "arxiv_count"),
+                                          ("s2", "s2_status", "s2_count")):
+        if status_key in result:
+            signature = (result.get("search_signatures") or {}).get(source, "미기록")
+            lines.append(f"{source}: {result[status_key]} · 수집 {result.get(count_key, '미기록')}편 "
+                         f"· 검색 지문 {signature}")
+    lines.append("검색 설정·출처 장애·색인 지연에 따라 표본이 달라진다. done도 분야 전체 수집을 보장하지 않는다.")
+    return lines
+
+
+def _evidence_lines(result: dict) -> list[str]:
+    """실제 인용된 자료만 대조용으로 싣는다. ID 존재를 의미 검증으로 부르지 않는다."""
+    audit = result.get("citation_audit")
+    if not audit:
+        return []
+    lines = ["■ 서술 근거 대조", "A=초록 · R=요약 결과 · S=원문 문장(인접 문장 포함)",
+             f"인용 표시가 있는 본문 줄 {audit['cited_lines']}/{audit['lines']} · 주장 지지 여부는 미평가"]
+    if audit["unknown"]:
+        lines.append("⚠ 제공 자료에 없는 근거 ID: " + ", ".join(audit["unknown"]))
+    if audit["title_only"]:
+        lines.append("⚠ 제목만 인용한 주장 — 내용 근거가 아니다: " + ", ".join(audit["title_only"]))
+    if audit["cited_lines"] < audit["lines"]:
+        lines.append("⚠ 근거 ID가 없는 본문 줄이 있다. 원문 대조가 필요하다.")
+    catalog = result.get("evidence_catalog") or {}
+    for tag in audit["cited"]:
+        item = catalog.get(tag)
+        if item:
+            snippet = _clip(item["text"], 600)
+            if len(item["text"]) > 600:
+                snippet += " (대조 발췌 일부)"
+            lines.append(f"{tag} {item['title']} — {snippet}")
+            if item.get("url"):
+                lines.append(item["url"])
+    return lines
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
@@ -682,7 +777,7 @@ def _paper_entry(idx: int, paper: dict) -> str:
         f"{idx}. [{_stars(score)}] {paper.get('title') or '(제목 없음)'}",
     ]
     # 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5 철회 / M7 인젝션).
-    for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
+    for warning in (_paper_retraction_label(paper), injection_label(arxiv_id)):
         if warning:
             lines.append(f"   {warning}")
     lines.append(f"   왜 걸렸나 : {_why_matched(score)}")
@@ -731,11 +826,13 @@ def _paper_entry(idx: int, paper: dict) -> str:
                 if sections.get(key):
                     lines.append(f"   {label} :")
                     lines += [f"     - {_plain(b)}" for b in sections[key]]
+            if sections.get("author_limits"):
+                lines.append(f"   저자가 명시한 한계 : {_plain(sections['author_limits'])}")
             if sections["limits"]:
-                lines.append(f"   한계 : {_plain(sections['limits'])}")
+                lines.append(f"   요약자의 해석 : {_plain(sections['limits'])}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
-        labels = f"   {verification_label(arxiv_id)}   {repro_label(arxiv_id)}"
+        labels = f"   {verification_label(arxiv_id)}   {_paper_repro_label(paper)}"
         cov = coverage_label(arxiv_id)
         if cov:
             labels += f"   {cov}"
@@ -965,10 +1062,14 @@ def _narrative_section(scan_result: dict) -> list[str]:
     lines = ["", "─" * 62,
              "■ 오늘의 동향 정리",
              f"   ({narrative_source_label(scan_result)})",
+             "   기간 비교 없는 수집 표본의 관찰이며, 분야 전체의 변화는 판단하지 않았다.",
              ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
     text = annotate_numbers(text, numbered_mentions(scan_result))
+    audit = scan_result.get("citation_audit") or {}
+    if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
+        lines.append("   ⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것")
     lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
@@ -1000,6 +1101,8 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     # 조기 반환이 같은 병을 낸 게 §8-50 둘, §8-57 하나, §8-67 하나였다.
     # 갈래는 내용만 정하고 출구는 하나로 모은다(2026-09-07, §8-70 고치며).
     lines = [header, ""]
+    if not empty:
+        lines += _narrative_section(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -1028,7 +1131,6 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         if trend:
             lines += [f"■ 이번 창의 키워드별 적중 편수 (후보 {candidates}건 기준)",
                       f"   {trend}"]
-        lines += _narrative_section(scan_result)
         if lines and lines[-1] != "":
             lines.append("")
 
@@ -1107,6 +1209,15 @@ def _status_chip(label: str, flagged: bool) -> str:
     )
 
 
+def _summary_label_html(text: str) -> str:
+    """요약의 항목명만 강조해 값과 구분한다(2026-09-10 사용자 요청)."""
+    escaped = _esc(text)
+    return re.sub(
+        r"^(데이터셋|데이터 세트|평가\s*지표|실험\s*설정|핵심\s*결과|"
+        r"비교\s*대상|베이스라인|저자가 명시한 한계|요약자의 해석)(\s*[:：])",
+        r"<strong>\1</strong>\2", escaped)
+
+
 def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     """검증된 요약을 HTML 로. 없으면 예전처럼 초록 발췌로 떨어진다.
 
@@ -1117,15 +1228,15 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     def para(text: str, *, muted: bool = False, top: int = 6) -> str:
         color = _MUTED if muted else _INK
         return (f'<div style="color:{color};font-size:13px;margin-top:{top}px;'
-                f'line-height:1.5;">{_esc(text)}</div>')
+                f'line-height:1.5;">{_summary_label_html(text)}</div>')
 
     def bullets(label: str, items: list[str]) -> str:
         lis = "".join(
             f'<li style="color:{_INK};font-size:13px;line-height:1.5;'
-            f'margin-bottom:3px;">{_esc(b)}</li>' for b in items
+            f'margin-bottom:12px;">{_summary_label_html(b)}</li>' for b in items
         )
         return (f'<div style="color:{_MUTED};font-size:12px;font-weight:600;'
-                f'margin-top:8px;">{_esc(label)}</div>'
+                f'margin-top:16px; font-weight:700;"><strong>{_esc(label)}</strong></div>'
                 f'<ul style="margin:4px 0 0;padding-left:18px;">{lis}</ul>')
 
     # 초록 기반 정리는 **여기서** 만든다(2026-09-07).
@@ -1148,7 +1259,7 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     if deep_status == "abstract_only" and brief:
         body = "".join(
             f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:2px 0;">{_esc(_plain(ln))}</div>'
+            f'margin:12px 0;">{_summary_label_html(_plain(ln))}</div>'
             for ln in brief.splitlines() if _plain(ln))
         return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
                 f'margin-top:8px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}')
@@ -1167,8 +1278,10 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
                        ("실험 설정", "setup"), ("핵심 결과", "results")):
         if sections.get(key):
             out += bullets(label, [_plain(b) for b in sections[key]])
+    if sections.get("author_limits"):
+        out += para("저자가 명시한 한계 : " + _plain(sections["author_limits"]), muted=True, top=8)
     if sections["limits"]:
-        out += para("한계 : " + _plain(sections["limits"]), muted=True, top=8)
+        out += para("요약자의 해석 : " + _plain(sections["limits"]), muted=True, top=8)
     return out
 
 
@@ -1190,7 +1303,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         needs_attention = True
     else:
         v_label = verification_label(arxiv_id)
-        r_label = repro_label(arxiv_id)
+        r_label = _paper_repro_label(paper)
         # flag 가 있거나 재현이 실패한 항목은 펼쳐서 보낸다. Gmail·Outlook 은
         # 어차피 항상 펼쳐 보여주므로 이 속성이 실제로 의미를 갖는 건
         # Apple Mail 뿐이다(위 주석 1번).
@@ -1206,7 +1319,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
 
     # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —
     # 이 항목에서 가장 중요한 정보다.
-    for warning in (retraction_label(arxiv_id), injection_label(arxiv_id)):
+    for warning in (_paper_retraction_label(paper), injection_label(arxiv_id)):
         if warning:
             chips = _status_chip(warning.strip("[]"), flagged=True) + chips
             needs_attention = True
@@ -1273,7 +1386,7 @@ def _is_narrative_heading(line: str) -> bool:
 # 변이를 견디게 넓힌다. 모델이 지시를 지키는지에 표시가 의존하면 안 된다
 # — `_plain()` 이 마크다운을 지우는 것과 같은 이유다.
 _ENUM_RE = re.compile(
-    r"^(첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째"
+    r"^(첫\s*째|둘\s*째|셋\s*째|넷\s*째|다섯\s*째|여섯\s*째|일곱\s*째"
     r"|첫\s?번째|두\s?번째|세\s?번째|네\s?번째|다섯\s?번째|여섯\s?번째|일곱\s?번째)"
     r"([,.·:]?)")
 
@@ -1394,8 +1507,13 @@ def _narrative_line_html(line: str) -> str:
     if _is_narrative_heading(text):
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
                 f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
-    return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:3px 0;">{_emphasise_enum(_esc(text))}</div>')
+    # 같은 줄에 나열된 갈래도 문단으로 분리해 항목 사이 한 줄 여백을 둔다.
+    parts = re.split(r"(?<=[.!?。])\s+(?=(?:첫|둘|셋|넷|다섯|여섯|일곱)\s*째|(?:첫|두|세|네)\s*번째)", text)
+    return "".join(
+        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+        f'margin:{"14px" if _ENUM_RE.match(part) else "3px"} 0;line-height:1.6;">'
+        f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
+
 
 
 # ---------------------------------------------------------------- ⑥ 주간 리뷰
@@ -1533,6 +1651,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'(후보 {candidates}건 기준)<br>{_esc(trend)}</p>'
         )
 
+    details_body = body
+    # 과거 논문 상태나 근거 부록을 앞뒤에 붙이지 않는다(2026-09-10 사용자 요청).
+    body = ""
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
@@ -1544,6 +1665,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
                     f'margin-top:4px;">⚠ 원문에 없는 숫자가 섞여 있다: '
                     f'{_esc(", ".join(ungrounded))} — 믿지 말 것</div>')
+        audit = scan_result.get("citation_audit") or {}
+        if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
+            warn += f'<p style="color:{_FLAG_INK};">⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것</p>'
         # 서술이 이름으로 부른 논문에 링크를 붙인다(2026-09-07, §8-68 이 만든
         # 결함). 목록을 되살리는 게 아니라 **부른 것만** 붙인다 — 평문 판과
         # 같은 판정(mentioned_papers)을 쓰므로 두 판이 갈라지지 않는다.
@@ -1565,9 +1689,11 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'font-weight:600;margin:18px 0 4px;">오늘의 동향 정리</p>'
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'margin:0 0 6px;">{_esc(narrative_source_label(scan_result))}</p>'
+            f'<p style="color:{_MUTED};font-size:12px;">기간 비교 없는 수집 표본의 관찰이며, 분야 전체의 변화는 판단하지 않았다.</p>'
             f'{paras}{warn}{named}'
         )
 
+    body += details_body
     body += _weekly_review_html(scan_result)
 
     filtered = _filtered_line(scan_result)

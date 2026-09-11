@@ -142,6 +142,100 @@ _BREADTH_BASE = 0.8
 # 핵심 적중 없이도 위로 올라온다(핵심 상한과 같은 이유).
 DOMAIN_HITS_CAP = 2
 
+
+# ── 선별 순서 계약 (2026-09-11, A단계 — docs/ASTRA_PLAN_2026-09-10.md §5)
+#
+# **순위는 가중합이 아니라 튜플로 정한다.** 그전에는 위 `priority` 하나로
+# 정렬했는데, 그러면 도메인 가점 0.2 가 최신성 5일을 이긴다 — 실측
+# (2026-09-11, 저장 후보 1143편 고정 스냅샷): 최신 날짜 논문이 최상위
+# 계층에 35편 있는데 상위 6칸에 3편만 들어갔고, 9월 4일 논문 둘이 도메인
+# 가점으로 2·3위를 차지했다. 사용자의 요구는 "관련성 계층 우선, 같은
+# 계층이면 최신 우선"이고 합산은 그 계약을 지킬 수 없다.
+#
+# 튜플 (오름차순 정렬):
+#   tier_rank        활성 프로필의 서로 다른 가중치를 내림차순으로 세운 순위.
+#                    1.0→0, 0.6→1, … 낮을수록 먼저. 적중 core 중 최고 계층.
+#                    부동소수 값 대신 순위를 쓴다 — 0.35 와 0.4 의 차이는
+#                    "계층이 다르다"이지 "0.05 만큼 덜 관련"이 아니다.
+#   -day_ordinal     공개일을 **일 단위**로 정규화. 시·분 차이로 한 출처를
+#                    우대하지 않는다. 날짜를 모르면 0 — ordinal 은 항상 양수라
+#                    같은 계층 안에서 날짜 있는 것 뒤로 간다(§5.4). 계층은
+#                    넘지 않는다. (처음엔 별도 플래그를 뒀는데 이 항과 동작이
+#                    같아 돌연변이가 안 잡혔다 — 중복이라 뺐다.)
+#   -core_breadth    같은 날이면 서로 다른 core 적중 수(상한 2). **날짜 아래**에
+#                    둔다 — 계획서 §5.3 은 결합을 최신성보다 앞세우지 말라고
+#                    했지 동률 안에서 무시하라고 하지 않았다. 없으면 같은 날
+#                    core 둘 맞힌 논문이 core 하나+도메인 하나 논문에 밀린다
+#                    (09-04 메일의 PhyHGNet 회귀가 그 모양이었다).
+#   -domain_hits     그 다음 도메인 적중 수(상한 2). 동의어 묶음은 확인된 것이
+#                    없어 아직 안 한다 — 문자열 적중 수 그대로다.
+#   paper_key        동률 안정화. 입력 순서에 의존하지 않는다.
+#
+# `priority` 는 계속 계산해 **설명 필드로만** 남긴다. 정렬·자격 판정에는
+# 안 쓴다. 결합축(서로 다른 연구축 동시 적중)은 **최신성 위에** 놓지
+# 않는다(§5.3) — 지금 `core_hits` 는 연구축 수가 아니라 문자열 적중 목록이라,
+# 그걸 결합 개수로 쓰면 동의어 둘이 결합축으로 승격된다. 날짜 아래 동률
+# 가르개로만 쓰는 이유가 그것이다 — 피해가 같은 날 안으로 갇힌다.
+
+DATE_FORMATS = ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d")
+
+
+def publication_day(published: str | None) -> tuple[int | None, str]:
+    """returns (일 단위 ordinal 또는 None, 정밀도) — 정밀도는
+    'day' | 'year' | 'missing' | 'invalid'.
+
+    연도만 있는 값은 ordinal 을 **만들지 않는다**. 1월 1일로 채우면 없는
+    최신성을 지어내는 것이다. 대신 'year' 로 표시해 같은 계층 뒤로 보낸다."""
+    if not published:
+        return None, "missing"
+    text = str(published).strip()
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date().toordinal(), "day"
+        except ValueError:
+            continue
+    if re.fullmatch(r"\d{4}", text):
+        return None, "year"
+    return None, "invalid"
+
+
+def tier_table(profile: dict) -> list[float]:
+    """활성 core_topics 의 유효 가중치(누락은 1.0)를 서로 다른 값만 내림차순으로.
+    `core_weights.values()` 가 아니라 core_topics 기준이다 — 가중치 표에만
+    남은 죽은 키워드가 계층을 만들면 안 된다."""
+    weights = profile.get("core_weights") or {}
+    return sorted({float(weights.get(kw, 1.0)) for kw in profile.get("core_topics", [])},
+                  reverse=True)
+
+
+def tier_rank(profile: dict, core_hits: list[str]) -> int | None:
+    """적중 core 중 최고 계층의 순위(0 이 최상위). 적중 없으면 None.
+    `_score["top_core_weight"]` 를 역조회하지 않는다 — 그 값은 소수 넷째
+    자리로 반올림돼 원래 가중치와 안 맞을 수 있다. 적중 키워드와 원 프로필
+    값으로 다시 구한다."""
+    if not core_hits:
+        return None
+    table = tier_table(profile)
+    weights = profile.get("core_weights") or {}
+    best = max(float(weights.get(kw, 1.0)) for kw in core_hits)
+    return table.index(best)
+
+
+def rank_key(paper: dict, result: dict, profile: dict) -> tuple:
+    """선별 순서 계약(위 주석). 오름차순 정렬에 그대로 쓴다.
+    적중이 없는 논문은 애초에 순위 대상이 아니므로 호출부가 먼저 거른다."""
+    from research_profile import paper_key  # 순환 없음 — research_profile 은 이 모듈을 안 부른다
+    hits = result.get("core_hits") or []
+    tr = tier_rank(profile, hits)
+    day, _precision = publication_day(paper.get("published"))
+    breadth = min(len(hits), 2)
+    domain = min(len(result.get("domain_hits") or []), DOMAIN_HITS_CAP)
+    return (tr if tr is not None else 10 ** 6,
+            -(day or 0),
+            -breadth,
+            -domain,
+            paper_key(paper))
+
 # 다의어 가드 — 그 낱말이 **우리가 뜻하는 의미로** 쓰였는지 확인할 동반어.
 # 하나도 없으면 적중으로 치지 않는다.
 #
@@ -330,6 +424,7 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         # 담당하지, 사흘의 나이 차가 담당하는 게 아니다.
         priority += recency * weights.recency
 
+    day, precision = publication_day(paper.get("published"))
     return {
         "priority": round(priority, 4), "excluded": False,
         "exclude_hits": [], "core_hits": core_hits,
@@ -337,6 +432,9 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
         "top_core_weight": round(top_core_weight, 4), "domain_hits": domain_hits,
         "venue_hit": v_hit, "recency": recency, "full_text": full_text,
         "primary_hit": primary_hit,
+        # 선별 순서 계약의 설명 필드(2026-09-11). 정렬은 rank_key 가 한다.
+        "tier_rank": tier_rank(profile, core_hits),
+        "pub_day": day, "date_precision": precision,
     }
 
 
@@ -360,14 +458,17 @@ def score_and_rank(
         if result["excluded"]:
             excluded_count += 1
             continue
-        if result["priority"] == 0.0 and not result["core_hits"]:
+        # 자격은 **적중 유무**로 본다. 그전엔 `priority == 0.0` 을 같이 봤는데,
+        # 점수는 설명 필드가 됐으므로(2026-09-11) 자격 판정이 점수에 기대면 안 된다.
+        if not result["core_hits"]:
             unmatched_count += 1
             continue
         for kw in result["core_hits"]:
             core_hit_counts[kw] = core_hit_counts.get(kw, 0) + 1
         scored.append({**p, "_score": result})
 
-    scored.sort(key=lambda p: p["_score"]["priority"], reverse=True)
+    # 가중합이 아니라 튜플 계약으로 정렬한다(2026-09-11, 위 주석). 오름차순.
+    scored.sort(key=lambda p: rank_key(p, p["_score"], profile))
     if top_k is not None:
         scored = scored[:top_k]
 
