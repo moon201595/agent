@@ -988,6 +988,29 @@ def test_weekly_review_lands_on_the_monday_morning_mail():
     assert rps.is_weekly_review_day(monday_kst.astimezone(_tz.utc)) is True
 
 
+def test_weekly_review_day_does_not_depend_on_the_machine_timezone(monkeypatch):
+    """**§8-93 ①.** 예전 구현은 인자 없는 `astimezone()` 이라 **이 컴퓨터**의
+    시간대로 요일을 셌다. KST 머신에서는 맞고 UTC 컨테이너에서는 같은 순간이
+    일요일 20:00 이 되어 실패했다(2026-09-11 외부 검증에서 실제로 실패).
+    TZ 를 UTC 로 바꿔 놓고도 월요일 05:00 KST 가 월요일이어야 한다.
+    """
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    monkeypatch.setenv("TZ", "UTC")
+    _time.tzset()
+    try:
+        KST = _tz(_td(hours=9))
+        monday_kst = _dt(2026, 9, 14, 5, 0, tzinfo=KST)
+        # 이 컴퓨터 기준으로는 아직 일요일 20:00 — 그래도 읽는 사람에게는 월요일이다.
+        assert monday_kst.astimezone().weekday() == 6
+        assert rps.is_weekly_review_day(monday_kst) is True
+        assert rps.is_weekly_review_day(monday_kst.astimezone(_tz.utc)) is True
+        assert rps.is_weekly_review_day(_dt(2026, 9, 15, 5, 0, tzinfo=KST)) is False
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        _time.tzset()
+
+
 def test_weekly_review_day_is_computed_from_the_weekday():
     from datetime import datetime as _dt, timezone as _tz
     monday = _dt(2026, 9, 7, tzinfo=_tz.utc)      # 월요일

@@ -4842,7 +4842,10 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     `test_weekly_review_lands_on_the_monday_morning_mail` 이 실패한다(외부 실측:
     871 passed + 1 failed). §8-71 을 고칠 때 KST 를 명시 변환하지 않았다. 지금
     cron 이 도는 WSL 은 KST 라 맞지만 환경이 바뀌면 조용히 화요일로 돌아간다.
-    **미해결** — 고치려면 `ZoneInfo("Asia/Seoul")` 로 명시 변환. 범위 밖이라 기록만.
+    ~~**미해결**~~ → **같은 날 처리**(사용자 지시). `READER_TZ = ZoneInfo("Asia/Seoul")`
+    로 명시 변환. 테스트 `test_weekly_review_day_does_not_depend_on_the_machine_timezone`
+    이 `TZ=UTC` 로 바꿔 놓고 월요일 05:00 KST 가 월요일임을 확인한다. 돌연변이(인자 없는
+    `astimezone()` 으로 되돌림)는 UTC 에서 2개 실패. `TZ=UTC` 전체 875 passed.
 
     ② README 가 "메일은 재현을 기다리지 않는다"고 쓰는데 코드는
     `wait_for_repro=True` (run_profile_scan.py:748) 로 논문당 상한 60분
