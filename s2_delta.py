@@ -241,7 +241,7 @@ async def find_new_papers_since(
     예산에 걸리면 **거기까지 모은 것으로** 끝낸다(status="partial").
     조용히 전체인 척하지 않는다 — 몇 개 키워드까지 봤는지 같이 돌려준다.
     """
-    seen: set[str] = set()
+    seen: dict[str, dict] = {}   # key → 처음 발견한 논문 dict (씨앗 귀속 합치기용)
     papers: list[dict] = []
     failed = 0
     truncated = 0      # 잘린 키워드 전체 (기록용)
@@ -249,10 +249,15 @@ async def find_new_papers_since(
     blocked = 0        # 그중 예산·실패·offset 상한 — 사고로 못 본 것
     started = time.monotonic()
     searched = 0
+    # 씨앗별 시도 기록(2026-09-11, B단계 §6.2). 후보에 붙은 씨앗 목록은
+    # "0편 돌아온 씨앗"과 "예산이 끝나 시도도 못 한 씨앗"을 구분 못 한다.
+    per_keyword: list[dict] = []
     for keyword in keywords:
         if time.monotonic() - started > budget_s:
             print(f"  [S2] 시간 예산 {budget_s:.0f}초 초과 — 키워드 "
                   f"{searched}/{len(keywords)}개까지 보고 멈춘다", flush=True)
+            per_keyword.extend({"keyword": k, "status": "not_attempted", "returned": 0,
+                                "reason": "budget"} for k in keywords[len(per_keyword):])
             break
         searched += 1
         # 남은 예산을 그대로 이 호출의 대기 상한으로 준다 — 한 키워드가
@@ -262,7 +267,12 @@ async def find_new_papers_since(
                                            max_wait=max(remaining, 0.0))
         if found is None:          # 실패 — 결과 0건과 구분한다
             failed += 1
+            per_keyword.append({"keyword": keyword, "status": "failed", "returned": 0, "reason": None})
             continue
+        per_keyword.append({"keyword": keyword,
+                            "status": "partial" if found.truncated else "done",
+                            "returned": len(found.papers), "total": found.total,
+                            "reason": found.reason})
         if found.truncated:
             truncated += 1
             # **우리가 정한 상한에 걸린 것과 사고로 못 본 것을 가른다**
@@ -293,8 +303,15 @@ async def find_new_papers_since(
             key = (paper.get("arxiv_id") or paper.get("doi")
                    or paper["title"].lower())
             if key in seen:
+                # **어느 씨앗이 데려왔는지 버리지 않는다**(2026-09-11, B단계 §6.2).
+                # 그전엔 첫 씨앗만 남고 뒤 씨앗의 발견은 지워졌다 — 그러면
+                # 씨앗별 수율(반환·고유·적격)을 셀 수 없다.
+                first = seen[key]
+                if keyword not in first.setdefault("s2_seeds", []):
+                    first["s2_seeds"].append(keyword)
                 continue
-            seen.add(key)
+            paper.setdefault("s2_seeds", [keyword])
+            seen[key] = paper
             papers.append(paper)
 
     # 키워드가 **전부** 실패했으면 "결과 없음"과 구분해야 한다 — 전자는
@@ -332,6 +349,7 @@ async def find_new_papers_since(
         "keywords_truncated": truncated,
         "keywords_capped": capped,
         "keywords_blocked": blocked,
+        "per_keyword": per_keyword,
     }
 
 

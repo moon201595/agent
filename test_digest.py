@@ -779,8 +779,11 @@ def test_daily_digest_carries_a_narrative_not_just_counts():
 def test_narrative_is_labelled_unverified_and_separated_from_counts():
     text = digest.generate_digest(_scan_with_story(), "t")
     assert "검증되지 않았다" in text
-    # 셈이 먼저, 해석이 나중 — 순서가 뒤집히면 독자가 어디까지가 측정인지 못 가른다
-    assert text.index("키워드별 적중 편수") < text.index("오늘의 동향 정리")
+    # 2026-09-09 사용자 요청: 브리핑을 첫 화면에 둔다. 검증 라벨은 위에서
+    # 계속 검사하고, 새 순서 계약은 평문·HTML 모두 잠근다(검증 완화 아님).
+    assert text.index("오늘의 동향 정리") < text.index("키워드별 적중 편수")
+    html = digest.generate_digest_html(_scan_with_story(), "t")
+    assert html.index("오늘의 동향 정리") < html.index("키워드별 적중 편수")
 
 
 def test_narrative_warns_about_invented_numbers():
@@ -1397,3 +1400,26 @@ def test_gist_strips_a_short_name_like_prefix():
     assert digest._strip_leading_label("VLA-Precision : 학습을 효율화한다.") == "학습을 효율화한다."
     # 조사로 끝나는 서술은 라벨이 아니다
     assert digest._strip_leading_label("이 방법은 좋다 : 그래서 쓴다.").startswith("이 방법은")
+
+
+
+def test_reproduction_result_is_in_same_mail_without_old_updates():
+    import digest
+    paper = {"arxiv_id": "2609.00001", "title": "Today's paper",
+             "repro_outcome": {"status": "completed", "success": False,
+                               "reason": "저장소 후보 없음"}}
+    data = {"papers": [paper], "state_updates": [{"title": "Old irrelevant paper"}],
+            "state_recheck": {"status": "관측 완료", "checked": 3, "resolved": 2}}
+    for mail in (digest.generate_digest(data, "팀"), digest.generate_digest_html(data, "팀")):
+        assert "코드 저장소를 찾지 못해 재현하지 못함" in mail
+        assert "Old irrelevant paper" not in mail
+        assert "이전에 보낸 논문의 상태 소식" not in mail
+        assert "근거 상태 관측" not in mail
+
+
+def test_completed_reproduction_failure_keeps_stage_and_reason():
+    import digest
+    paper = {"repro_outcome": {"status": "completed", "success": False,
+             "log": [{"stage": "clone", "fail_detail": "repo_not_found"}]}}
+    label = digest._paper_repro_label(paper)
+    assert "clone" in label and "repo_not_found" in label and "실패" in label

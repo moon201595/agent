@@ -144,6 +144,9 @@ def _key(paper: dict) -> str:
 # 관련도 낮은 논문이 올라오는지 보고 정한다.
 KEYWORD_SLOT_SHARE = 0.5
 
+# 주간 제안기의 배치 deadline 위에 얹는 여유(초). 배달을 오래 붙잡지 않기 위한 바깥 상한이다.
+ADVISOR_TIMEOUT_GRACE_S = 30
+
 
 def _primary_keyword(paper: dict) -> str:
     """이 논문을 대표하는 핵심 키워드 — 가장 무거운 적중.
@@ -171,7 +174,9 @@ def _primary_keyword(paper: dict) -> str:
 
 def _spread_keywords(ranked: list[dict], max_items: int,
                      share: float = KEYWORD_SLOT_SHARE) -> list[dict]:
-    """한 키워드가 상위 목록을 독식하지 못하게 뒤로 미룬다. 순위 자체는
+    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
+
+    한 키워드가 상위 목록을 독식하지 못하게 뒤로 미룬다. 순위 자체는
     안 바꾼다 — 상한을 넘은 논문을 **목록 뒤로 보낼 뿐**이라, 다른 키워드가
     모자라면 그대로 다시 올라온다(없는 다양성을 지어내지 않는다).
 
@@ -205,9 +210,45 @@ def _spread_keywords(ranked: list[dict], max_items: int,
     return keep + deferred
 
 
+def _diversify_content(ranked: list[dict], max_items: int) -> list[dict]:
+    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
+
+    ② 관련성에 중복 감점을 더한다 — MMR(1998)의 로컬 적용이다.
+
+    2026-09-09: 대표 키워드가 달라도 제목·초록이 비슷하면 같은 이야기가
+    반복된다. 상위 후보만 단어 집합으로 비교하므로 새 API·모델은 없다.
+    감점 0.2는 초기 설계값이며 독자 평가로 최적화한 값은 아니다.
+    기존 키워드별 자리 상한은 이 재정렬 뒤에 그대로 적용한다.
+    """
+    import re
+    stop = {"the", "a", "an", "of", "and", "for", "to", "in", "with", "on", "we", "is"}
+    size = min(len(ranked), max(50, max_items * 10))
+    pool = list(enumerate(ranked[:size]))
+    tokens = {
+        i: set(re.findall(r"[a-z][a-z0-9-]+", ((p.get("title") or "") + " " +
+                                               (p.get("abstract") or "")).lower())) - stop
+        for i, p in pool
+    }
+    selected: list[int] = []
+    ordered: list[dict] = []
+    while pool and len(ordered) < max_items:
+        def value(item: tuple[int, dict]) -> tuple[float, int]:
+            i, paper = item
+            similarity = max((len(tokens[i] & tokens[j]) / len(tokens[i] | tokens[j])
+                              if tokens[i] | tokens[j] else 0.0 for j in selected), default=0.0)
+            return (0.8 * float(paper["_score"]["priority"]) - 0.2 * similarity, -i)
+        i, paper = max(pool, key=value)
+        ordered.append(paper)
+        selected.append(i)
+        pool = [(j, p) for j, p in pool if j != i]
+    return ordered + [p for _, p in pool] + ranked[size:]
+
+
 def _eligible_for_content(ranked: list[dict],
                           max_items: int) -> tuple[list[dict], list[dict]]:
-    """내용 자리(번호가 붙는 상위 목록)의 **자격**을 가른다.
+    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
+
+    내용 자리(번호가 붙는 상위 목록)의 **자격**을 가른다.
     returns (자격 있는 논문 — 아직 안 자른 상태, 자격 없는 나머지).
 
     **자르지 않는다.** 자르기 전에 `_spread_keywords` 가 한 번 더 손대야
@@ -299,6 +340,11 @@ async def scan_profile(
     # 30일 전 S2 이력이 정상 arXiv 창을 30일로 늘렸다.
     s2_keywords = s2_delta.keywords_for_s2(profile)
     s2_signature = research_profile.topic_signature(s2_keywords)
+    # **스캔 단위 실행 기록**(2026-09-11, B단계 §6.1). search_runs 는 출처마다
+    # 행 하나라 "이 스캔"을 가리키는 ID 가 없었다. 프로필 스냅샷·정책 버전을
+    # 여기 박아 두면 지문만으로 복원 못 하는 가중치·제외어·K 까지 남는다.
+    scan_id = research_profile.begin_scan(db_path, profile_id, profile)
+    s2_run_id = None
     signatures = {"arxiv": signature, "s2": s2_signature}
     sources = ["arxiv"] + (["s2"] if s2_keywords else [])
     since = min(
@@ -326,7 +372,7 @@ async def scan_profile(
         )
     except Exception as e:  # noqa: BLE001 — 실패도 search_runs 에 남기고 계속 간다
         arxiv_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
-        research_profile.record_run(
+        arxiv_run_id = research_profile.record_run(
             db_path, profile_id, "arxiv", query, since, until,
             "failed", 0, error_detail=str(e), signature=signature,
         )
@@ -335,7 +381,7 @@ async def scan_profile(
         arxiv_papers = result["papers"]
         arxiv_status = result["status"]
         until = datetime.fromisoformat(result["until"])
-        research_profile.record_run(
+        arxiv_run_id = research_profile.record_run(
             db_path, profile_id, "arxiv", result["query"], since, until,
             arxiv_status, len(arxiv_papers), signature=signature,
         )
@@ -354,6 +400,7 @@ async def scan_profile(
     # 버리지 않는다. 반대도 같다.
     s2_papers: list[dict] = []
     s2_status = "skipped"
+    s2_result: dict | None = None
     # s2_keywords 는 위 창 계산에서 이미 구했다 — 같은 값을 두 번 계산하면
     # 한쪽만 바뀌었을 때 창과 실제 질의가 어긋난다.
     if s2_keywords:
@@ -363,7 +410,7 @@ async def scan_profile(
             )
         except Exception as e:  # noqa: BLE001 — arXiv 쪽과 대칭이어야 한다
             s2_status = "failed"
-            research_profile.record_run(
+            s2_run_id = research_profile.record_run(
                 db_path, profile_id, "s2", f"S2 keywords×{len(s2_keywords)}", since, until,
                 "failed", 0, error_detail=str(e), signature=s2_signature,
             )
@@ -372,7 +419,7 @@ async def scan_profile(
         else:
             s2_papers = s2_result["papers"]
             s2_status = s2_result["status"]
-            research_profile.record_run(
+            s2_run_id = research_profile.record_run(
                 db_path, profile_id, "s2", s2_result["query"], since, until,
                 s2_status, len(s2_papers), signature=s2_signature,
             )
@@ -434,15 +481,30 @@ async def scan_profile(
     # 관련도가 정하고, 깊이는 확보한 것이 정한다.
     # **한 번만 채점한다.** 상위 목록도 "그 밖에" 목록도 같은 순위에서 자른다 —
     # 따로 채점하면 두 목록의 기준이 갈릴 수 있다.
-    # 자격 → 다양성 → 자르기. 이 순서여야 한다(각 함수 주석에 사유가 있다).
+    #
+    # **선별은 정렬 하나로 끝난다**(2026-09-11, A단계 — docs/ASTRA_PLAN §5.6).
+    # 그전에는 `자격(본문 링크) → 다양성(MMR·키워드 자리 상한) → 자르기` 세
+    # 단계를 거쳤는데, 세 단계 모두 순위 계약("계층 우선, 같은 계층이면
+    # 최신")을 깼다:
+    #   · `_eligible_for_content` — 본문 링크 없는 상위 논문을 링크 있는 하위
+    #     논문 뒤로 보냈다. 관련성과 수집 사정을 섞은 것이다(§5.5). 원래 걱정
+    #     (링크 없는 논문이 자리만 먹는다)은 §8-41 초록 정리로 이미 사라졌다.
+    #   · `_diversify_content` — `0.8×priority − 0.2×유사도` 로 재정렬. 합산이다.
+    #   · `_spread_keywords` — 외부 점검(2026-09-11)이 합성 입력으로 실증:
+    #     상한을 넘은 고계층 H4 를 미루고 저계층 L3 를 올렸다.
+    # 셋 다 핵심 경로에서 뺐다. 함수는 사유 기록으로 남겨 두되 호출부가 없다.
+    # 다양성은 통계로 보여 주고(키워드별 적중 편수 절) 선정에 끼워 넣지 않는다.
+    #
+    # reserve 도 같은 순서다 — Deep Layer 는 `papers + reserve` 를 순서대로
+    # 돌므로, 상위가 처리에 실패하면 **그 다음으로 관련 있는** 논문이 온다.
     scored = profile_scoring.score_and_rank(fresh, profile)
-    eligible, dropped = _eligible_for_content(scored["papers"], profile["max_items"])
-    eligible = _spread_keywords(eligible, profile["max_items"])
-    scored["papers"] = eligible[:profile["max_items"]]
-    rest = eligible[profile["max_items"]:] + dropped
+    ranked = scored["papers"]
+    scored["papers"] = ranked[:profile["max_items"]]
+    rest = ranked[profile["max_items"]:]
+    dropped: list[dict] = []    # 문지기가 없으므로 자격 미달 목록도 없다
     listed = {"papers": rest[:TITLE_ONLY_MAX_ITEMS]}
     listed["scored_count"] = len(listed["papers"])
-    scored["reserve"] = rest        # Deep Layer 가 수집에 실패한 자리를 이걸로 메운다
+    scored["reserve"] = rest        # Deep Layer 가 처리에 실패한 자리를 이걸로 메운다
 
     # ① **선택 이전의 후보를 남긴다**(2026-09-07, 외부 검토서 §182).
     #
@@ -491,6 +553,51 @@ async def scan_profile(
     except Exception as e:  # noqa: BLE001 — 관측 실패가 배달을 막으면 안 된다
         print(f"  [후보] 기록 실패(무시): {type(e).__name__}: {e}")
 
+    # **실행별 관측**(2026-09-11, B단계 §6.1). 위 개체 기록은 다음 실행이
+    # 덮어쓰지만 이건 쌓인다. 순위·탈락 사유·씨앗 귀속을 그 스캔의 정책
+    # 버전과 함께 남겨, 정책을 바꾼 뒤에도 "당시 선택"을 재생할 수 있다.
+    # 개체 기록과 **다른 try** 다 — 하나가 실패해도 다른 하나는 남아야 하고,
+    # 실패했으면 scan_runs 에 그렇게 남는다(집계가 "0편"과 "저장 실패"를 가른다).
+    # 여기 `content` 는 **초기 선정**이다. Deep Layer 의 처리 실패·예산 보류·
+    # reserve 대체로 최종 목록은 달라진다 — 그건 profile_shown 이 말한다.
+    try:
+        obs, position, seen_keys = [], 0, set()
+        for papers, outcome in buckets:
+            for paper in papers:
+                key = research_profile.paper_key(paper)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                sc = paper.get("_score") or {}
+                row = dict(paper)
+                row["outcome"] = outcome
+                if outcome == research_profile.OUTCOME_FILTERED:
+                    row["filter_reason"] = research_profile.FILTER_ALREADY_SHOWN
+                elif sc.get("excluded"):
+                    row["filter_reason"] = research_profile.FILTER_EXCLUDE_HIT
+                elif not sc.get("core_hits"):
+                    row["filter_reason"] = research_profile.FILTER_NO_CORE_HIT
+                else:
+                    position += 1
+                    row["rank_pos"] = position
+                obs.append(row)
+        n = research_profile.record_observations(
+            db_path, scan_id, profile_id, obs,
+            core_signature=signature, seed_signature=s2_signature)
+        research_profile.finish_scan(
+            db_path, scan_id, arxiv_run_id=arxiv_run_id, s2_run_id=s2_run_id,
+            seed_attempts=(s2_result or {}).get("per_keyword") if s2_keywords else [],
+            observations=n)
+        print(f"  [관측] {n}편을 스캔 {scan_id} 에 묶어 남겼다")
+    except Exception as e:  # noqa: BLE001 — 관측 실패가 배달을 막으면 안 된다
+        print(f"  [관측] 기록 실패(무시): {type(e).__name__}: {e}")
+        try:
+            research_profile.finish_scan(db_path, scan_id, arxiv_run_id=arxiv_run_id,
+                                         s2_run_id=s2_run_id,
+                                         observation_error=f"{type(e).__name__}: {str(e)[:200]}")
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": until.isoformat(),
         "run_status": arxiv_status, "candidates_found": len(fresh),
@@ -505,6 +612,7 @@ async def scan_profile(
             1 for p in merged if research_profile.paper_key(p) in shown),
         "arxiv_count": len(arxiv_papers), "s2_count": len(s2_papers),
         "s2_status": s2_status,
+        "search_signatures": signatures,
         **scored,
     }
 
@@ -571,6 +679,8 @@ async def scan_and_digest(
     실패가 나머지를 막지 않는다 — scan_all_profiles의 프로필 간 실패
     격리와 동일한 원칙. 결과는 논문 항목의 deep_status에 남는다:
     "ok" | "skipped: ..." | "failed: <사유 1줄>".
+    2026-09-10: 오늘 보낼 논문은 ⑦ 종료까지 기다린다. 기존 요약은 재사용하고
+    재현 결과를 같은 메일에 붙인다. 대기 상한을 넘으면 이유를 표시하고 발송한다.
     """
     # §8-15: 실행 전체와 논문 한 편의 외부 API 호출 수를 실제로 센다.
     # 역산이 아니라 호출 지점에서 세는 값이다(api_usage 모듈 docstring 참고).
@@ -621,14 +731,11 @@ async def scan_and_digest(
         # §8-50 에서 batch_summarize 안의 조기 반환 두 곳을 한 곳으로 모았는데,
         # **여기 세 번째가 남아 있었다.** 같은 결말로 가는 길이 여럿이면
         # 모이는 지점을 먼저 만들라는 교훈이 또 걸렸다.
-        if arxiv_id and _summary_exists(arxiv_id):
-            paper["deep_status"] = "skipped: 이미 요약 저장됨"
-            content.append(paper)          # 요약이 이미 있으니 보여줄 내용도 있다
-            continue
+        cached_summary = bool(arxiv_id and _summary_exists(arxiv_id))
         # 예산은 **논문을 시작하기 전에** 본다. 처리 중간에 끊으면 요약을
         # 반쯤 만들고 버리게 되고, 그 호출은 이미 무료 한도를 쓴 뒤다.
         elapsed = time.monotonic() - deep_started
-        if elapsed > DEEP_LAYER_BUDGET_SECONDS:
+        if not cached_summary and elapsed > DEEP_LAYER_BUDGET_SECONDS:
             paper["deep_status"] = "deferred: 시간 예산 초과"
             deferred.append(paper)
             print(f"  [예산] {arxiv_id} 이후를 내일로 미룸 "
@@ -638,16 +745,20 @@ async def scan_and_digest(
         try:
             with paper_scope:
                 outcome = await batch_summarize._process_paper(
-                    client, arxiv_id or "", paper=paper)
+                    client, arxiv_id or "", paper=paper, wait_for_repro=True)
         except Exception as e:  # noqa: BLE001 — 한 편의 실패가 나머지를 막으면 안 됨
             paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
             paper["api_calls"] = paper_scope.snapshot()
             print(f"  [계측] {arxiv_id} (실패): {paper_scope.format_summary()}")
             demoted.append(paper)
             continue
+        # ⑦ 대기를 요약 API 예산으로 세면 뒤 논문이 불필요하게 내일로 밀린다.
+        deep_started += outcome.get("repro_wait_seconds", 0.0)
+        if outcome.get("reproduction") is not None:
+            paper["repro_outcome"] = outcome["reproduction"]
         # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
         if outcome.get("status") == "done":
-            paper["deep_status"] = "ok"
+            paper["deep_status"] = "skipped: 이미 요약 저장됨" if cached_summary or outcome.get("skipped") else "ok"
             # 합성 ID 를 돌려받았으면(오픈액세스 경로) 이후 라벨 조회가
             # 그 ID 를 써야 한다 — 안 그러면 다이제스트가 검증·재현 결과를
             # 못 찾아 "데이터 없음"으로 나간다.
@@ -659,6 +770,7 @@ async def scan_and_digest(
             # summaries 테이블에 안 들어가므로 eval 기준선과 무관하고,
             # ⑦ 재현도 안 탄다(초록에는 재현할 코드가 없다).
             paper["deep_status"] = "abstract_only"
+            paper["repro_outcome"] = {"status": "not_attempted", "reason": "초록만 확보 — 코드 재현 미실행"}
             paper["abstract_brief"] = outcome.get("brief") or ""
         else:
             paper["deep_status"] = f"failed: {str(outcome.get('detail'))[:200]}"
@@ -722,6 +834,8 @@ async def scan_and_digest(
     # 주 1회로는 그 목적을 6일 동안 못 채운다. 하루 LLM 호출 1회면 된다.
     #
     # 인용망 조회(주간 리뷰의 비싼 부분)는 여기 안 붙인다 — 그건 주 1회 그대로다.
+    research_profile.attach_observation_dates(db_path, profile_id,
+        list(result.get("papers") or []) + list(result.get("title_only_papers") or []))
     if profile and result.get("papers"):
         try:
             shown = list(result["papers"]) + list(result.get("title_only_papers") or [])
@@ -735,12 +849,18 @@ async def scan_and_digest(
             # 그 안에서는 기울지 않는다.
             content_ids = [p.get("arxiv_id") for p in result["papers"] if p.get("arxiv_id")]
             excerpts = trend_report.result_excerpts(db_path, content_ids)
+            evidence = trend_report.source_evidence(db_path, excerpts)
+            for paper in shown:
+                paper["_evidence"] = evidence.get(paper.get("arxiv_id"), [])
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts)
             if story:
                 text, ungrounded, enriched = story
                 result["narrative"] = (text, ungrounded)
                 # 라벨이 "무엇을 보고 썼는지"를 말하려면 이 수가 필요하다(규칙 8).
                 result["narrative_summaries"] = enriched
+                corpus, _, _ = trend_report._narrative_corpus(shown, excerpts)
+                result["citation_audit"] = trend_report.citation_audit(text, corpus)
+                result["evidence_catalog"] = trend_report.evidence_catalog(shown, excerpts)
                 print(f"  [동향] 오늘의 서술을 붙였다 (원문 요약 {enriched}편 반영)")
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
@@ -762,6 +882,20 @@ async def scan_and_digest(
             print("  [동향] 주간 리뷰를 다이제스트에 붙였다")
         except Exception as e:  # noqa: BLE001
             print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
+
+    # 2026-09-10: 과거 논문 재통지는 중단한다. 오늘 보낼 논문의 현재
+    # 철회 상태만 점검하고 ⑦ 종료 결과는 위 처리 단계에서 이미 확보한다.
+    try:
+        import evidence_state
+        import summarize_engine
+        await evidence_state.prepare(db_path, profile_id, result, client,
+            summarize_engine.ENV.get("OPENALEX_API_KEY"),
+            summarize_engine.ENV.get("CROSSREF_MAILTO"))
+    except Exception as error:
+        result.pop("_evidence_states", None)
+        for paper in result.get("papers") or []:
+            paper.pop("_delivered_state", None)
+        print(f"  [근거 상태] 관측 실패: {type(error).__name__}")
 
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
@@ -833,14 +967,33 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
         return DELIVERY_NO_RECIPIENT
     profile = research_profile.get_profile(db_path, profile_id)
     name = profile["name"] if profile else profile_id
-    try:
-        digest_html = digest.generate_digest_html(result, name)
-        email_delivery.send_digest_email(
-            digest_text, f"[HARNESS Daily] {name}", recipients, digest_html,
-        )
-    except Exception as e:  # noqa: BLE001
-        return f"{DELIVERY_FAILED_PREFIX}: {str(e).splitlines()[0][:200]}"
-    return f"{DELIVERY_SENT_PREFIX} → {len(recipients)}명"
+    import evidence_state
+    failures = []
+    sent = 0
+    content_keys = {research_profile.paper_key(p) for p in result.get("papers") or []}
+    # 수신자 하나가 거절돼도 다른 수신자의 기준 상태를 함께 전진시키면 안 된다.
+    # 기존 SMTP 함수에 한 명씩 넘기므로 부분 거절도 그 수신자의 실패로 드러난다.
+    for recipient in recipients:
+        try:
+            view = dict(result)
+            states = result.get("_evidence_states")
+            # 이전 수신 이력을 다음 메일 내용으로 다시 조립하지 않는다.
+            view.pop("state_updates", None)
+            text = digest.generate_digest(view, name)
+            digest_html = digest.generate_digest_html(view, name)
+            email_delivery.send_digest_email(
+                text, f"[HARNESS Daily] {name}", [recipient], digest_html)
+            sent += 1
+            if states is not None:
+                visible = content_keys
+                evidence_state.acknowledge(db_path, profile_id, recipient,
+                    [i for i in states if i["paper_key"] in visible])
+        except Exception as error:
+            failures.append(str(error).splitlines()[0][:200])
+    if failures:
+        return f"{DELIVERY_FAILED_PREFIX}: {sent}/{len(recipients)}명 전송 수락 · " + " / ".join(failures)
+    return f"{DELIVERY_SENT_PREFIX} → {sent}명"
+
 
 
 async def scan_all_profiles(
@@ -879,6 +1032,30 @@ async def scan_all_profiles(
             summary[profile_id] = entry
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
+
+    # **주간 프로필 개선기**(2026-09-11, D단계 — docs/ASTRA_PLAN §8·§9, PROGRESS §8-89).
+    # 모든 프로필의 일일 처리·전달이 **끝난 뒤**에 돈다 — 첫 프로필의 제안이
+    # 둘째 프로필의 요약보다 먼저 예산을 쓰면 안 된다(외부 점검 지적). 주 1회는
+    # 요일이 아니라 (profile_id, week) 예약이 지킨다 — 수동 스캔도 같은 진입점이다.
+    # 제안만 하고 적용하지 않는다(운영 모드 기본 `proposal_only`). 실패·예산 소진·
+    # 관측 없음은 전부 정상 종료이고 위 summary(배달)를 건드리지 않는다.
+    # 새 지휘자 계층이 아니다(규칙 6) — 기존 진입점 안의 한 단계다.
+    if send and is_weekly_review_day():
+        import profile_advisor
+        from datetime import timedelta
+        end = datetime.now(timezone.utc)
+        for profile_id in list(summary):
+            try:
+                out = await asyncio.wait_for(
+                    profile_advisor.run_weekly(db_path, profile_id, client, end - timedelta(days=30), end),
+                    timeout=profile_advisor.BATCH_DEADLINE_S + ADVISOR_TIMEOUT_GRACE_S)
+                summary[profile_id]["advisor"] = {k: out.get(k) for k in ("status", "reason", "gate", "applied")}
+                print(f"  [제안] {profile_id}: {out.get('status')}"
+                      f"{' — ' + str(out.get('reason')) if out.get('reason') else ''}"
+                      f"{' · 게이트 ' + str(out.get('gate')) if out.get('gate') else ''}", flush=True)
+            except Exception as e:  # noqa: BLE001 — 제안기 장애가 배달 결과를 바꾸면 안 된다
+                summary[profile_id]["advisor"] = {"status": "error", "reason": f"{type(e).__name__}: {str(e)[:120]}"}
+                print(f"  [제안] {profile_id}: 실패(무시) {type(e).__name__}", flush=True)
     return summary
 
 

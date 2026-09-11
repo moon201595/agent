@@ -41,6 +41,29 @@ def _merge(base: dict, other: dict) -> dict:
     for key in ("citation_count", "year"):
         if out.get(key) is None and other.get(key) is not None:
             out[key] = other[key]
+    # **씨앗·검색 출처는 합집합이다**(2026-09-11, B단계 §6.2). "채워진 값이
+    # 이긴다"면 S2 두 씨앗이 각각 데려온 행이 제목으로 합쳐질 때 둘째 행의
+    # 귀속이 사라진다. arXiv 와 S2 양쪽에서 발견된 논문도 `source` 하나로는
+    # 알 수 없어 `retrieval_sources` 를 따로 둔다 — S2 응답에 arXiv ID 가 있다는
+    # 것은 이번 arXiv 검색에서도 발견했다는 뜻이 아니다.
+    for key in ("s2_seeds", "retrieval_sources"):
+        a_list, b_list = base.get(key) or [], other.get(key) or []
+        if a_list or b_list:
+            out[key] = sorted(set(a_list) | set(b_list))
+    srcs = {s for s in (base.get("source"), other.get("source")) if s}
+    if srcs:
+        out["retrieval_sources"] = sorted(set(out.get("retrieval_sources") or []) | srcs)
+    # **공개일은 더 이른 쪽이 이긴다**(2026-09-11, A단계 §5.4). 같은 논문이
+    # arXiv 와 S2 양쪽에서 오면 프리프린트 날짜와 저널 날짜가 다를 수 있다.
+    # "채워진 값이 이긴다"만으로는 어느 출처가 먼저 왔느냐에 따라 최신성이
+    # 갈린다 — 순위가 입력 순서에 의존하면 안 된다.
+    a, b = base.get("published"), other.get("published")
+    if a and b and a != b:
+        from profile_scoring import publication_day
+        da, _ = publication_day(a)
+        db_, _ = publication_day(b)
+        if da is not None and db_ is not None and db_ < da:
+            out["published"] = b
     return out
 
 

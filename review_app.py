@@ -1429,6 +1429,39 @@ def render_research_tab() -> None:
         st.markdown(f"#### 최신 다이제스트 ({_relative_time(generated_at)})")
         st.text(digest_text)
 
+    with st.expander("받은 메일 평가"):
+        st.caption("평가는 로컬에만 저장한다. 승인 관문이나 자동 순위 변경에 쓰지 않는다.")
+        papers = research_profile.feedback_papers(db_path, selected)
+        if papers:
+            by_key = {p["paper_key"]: p["title"] for p in papers}
+            with st.form(f"briefing_feedback_{selected}"):
+                key = st.selectbox("평가할 논문", list(by_key), format_func=lambda k: by_key[k])
+                useful = st.radio("읽는 데 도움이 되었나", list(research_profile.FEEDBACK_LABELS),
+                                  format_func=research_profile.FEEDBACK_LABELS.get)
+                claim = st.text_area("근거와 대조할 메일의 주장 문장 (선택)")
+                support = st.selectbox("원문 근거가 이 주장을 지지하는가",
+                                       list(research_profile.SUPPORT_LABELS),
+                                       format_func=research_profile.SUPPORT_LABELS.get)
+                if st.form_submit_button("평가 저장"):
+                    try:
+                        research_profile.record_feedback(db_path, selected, key, useful, claim, support)
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        st.success("평가를 저장했다.")
+            rows = research_profile.list_feedback(db_path, selected)
+            if rows:
+                import csv
+                import io
+                buffer = io.StringIO()
+                writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+                st.download_button("평가 자료 CSV", buffer.getvalue().encode("utf-8-sig"),
+                                   file_name="briefing_feedback.csv", mime="text/csv")
+        else:
+            st.caption("아직 배달 기록이 없다.")
+
 
 # ---------------------------------------------------------------- 메인
 

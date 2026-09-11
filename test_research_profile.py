@@ -358,3 +358,21 @@ def test_씨앗_지문이_바뀌면_커서를_안_이어받는다(tmp_path):
     # 씨앗을 바꾸면 기본 창(7일)으로 돌아간다
     changed = rp.next_since(db, "p", "s2", signature=rp.topic_signature(["rPPG"]))
     assert changed < same, "씨앗을 바꿨는데 커서를 그대로 이어받았다"
+
+
+# ── 프로필 revision (2026-09-11, D단계 §9.2)
+
+def test_저장_경로마다_revision_이_오르고_같은_내용으로_돌아와도_다른_revision_이다(tmp_path):
+    """이 테스트가 잡는 것: 사용자 저장 경로가 revision 을 안 올리는 것(stale 검사가
+    죽는다), 내용 해시를 revision 대신 쓰는 것(A→B→A 를 같은 버전으로 보는 것)."""
+    db = tmp_path / "t.db"
+    assert rp.current_revision(db, "p") == 0
+    r1 = rp.create_profile(db, "p", "이름", core_topics=["a"], core_weights={"a": 1.0})
+    r2 = rp.create_profile(db, "p", "이름", core_topics=["a", "b"], core_weights={"a": 1.0, "b": 0.6})
+    r3 = rp.create_profile(db, "p", "이름", core_topics=["a"], core_weights={"a": 1.0}, origin="rollback")
+    assert (r1, r2, r3) == (1, 2, 3) and rp.current_revision(db, "p") == 3
+    import sqlite3
+    with sqlite3.connect(db) as con:
+        rows = con.execute("SELECT revision, origin, content_sha FROM profile_revisions ORDER BY revision").fetchall()
+    assert [r[1] for r in rows] == ["user", "user", "rollback"]
+    assert rows[0][2] == rows[2][2] != rows[1][2], "내용은 같아도 revision 은 다르다"

@@ -107,6 +107,11 @@ def topic_signature(core_topics: list[str]) -> str:
 def init_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as con:
         con.executescript(_SCHEMA)
+        # 2026-09-09: 평가 이력은 덮어쓰지 않는다. 모델 개선 전후 비교의 원자료다.
+        con.execute("CREATE TABLE IF NOT EXISTS briefing_feedback ("
+                    "feedback_id INTEGER PRIMARY KEY, profile_id TEXT NOT NULL, "
+                    "paper_key TEXT NOT NULL, usefulness TEXT NOT NULL, claim TEXT NOT NULL, "
+                    "support TEXT NOT NULL, created_at TEXT NOT NULL)")
         # 2026-08-24: 다이제스트를 st.session_state(브라우저 세션 전용)에만
         # 두면 cron이 새벽에 혼자 스캔을 돌려도 그 결과가 review_app.py
         # 화면 어디에도 안 남는다 — "이제 매일 아침 알아서 돌게 하자"
@@ -178,6 +183,80 @@ def init_db(db_path: Path) -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_published "
                     "ON search_candidates (profile_id, published)")
 
+        # ── 실행별 관측 (2026-09-11, B단계 — docs/ASTRA_PLAN_2026-09-10.md §6.1)
+        #
+        # search_candidates 는 논문 **개체**의 최신 상태다 — 같은 논문이 다음 날
+        # 또 보이면 last_seen·outcome 만 덮어써서 "지난 실행에서는 어떤 자리였나"가
+        # 사라진다. 그러면 정책을 바꾼 뒤 "당시 선택"을 재생할 수 없고, 씨앗별
+        # 수율("이 씨앗이 이번 실행에서 몇 편을 데려왔나")도 셀 수 없다.
+        #
+        # 그래서 **관측**을 따로 둔다. 실행 하나 × 논문 하나 = 행 하나. 개체
+        # 테이블은 손대지 않는다(추가형, §12.1). 초록은 복사하지 않고 해시만
+        # 남긴다 — 본문은 search_candidates 에 있고, 해시가 같으면 같은 초록이다.
+        # **프로필 revision**(2026-09-11, D단계 §9.2). 내용 해시와 별개다 —
+        # A→B→A 로 돌아오면 해시는 같지만 처음 A 에서 쓴 제안은 낡은 제안이다.
+        # 모든 저장 경로(사용자 UI·create_profile·자동 적용)가 같은 트랜잭션 안에서
+        # 올린다. 그래야 "분석 당시 revision 과 지금 revision 이 같은가"(stale 검사)가
+        # 실제로 무언가를 지킨다. 행은 추가만 되고 지우지 않는다.
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS profile_revisions ("
+            " profile_id  TEXT NOT NULL,"
+            " revision    INTEGER NOT NULL,"
+            " created_at  TEXT NOT NULL,"
+            " origin      TEXT NOT NULL,"    # 'user' | 'advisor' | 'rollback'
+            " content_sha TEXT NOT NULL,"    # 정규화 프로필 내용 해시
+            " snapshot    TEXT NOT NULL,"    # 프로필 JSON (복구용)
+            " note        TEXT,"
+            " PRIMARY KEY (profile_id, revision))"
+        )
+
+        # **스캔 단위 실행 기록.** search_runs 는 출처(arXiv·S2)마다 행 하나라
+        # "이 스캔"을 가리키는 ID 가 없었다. 관측을 어느 스캔에 묶을지, 그 스캔이
+        # 어떤 프로필·정책으로 돌았는지, 관측 저장이 끝났는지를 여기 남긴다.
+        # 두 검색 지문은 키워드 집합의 해시라 가중치·제외어·도메인·K 를 복원하지
+        # 못하므로 **프로필 스냅샷을 통째로** 둔다(외부 점검 2026-09-11 지적).
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS scan_runs ("
+            " scan_id          TEXT PRIMARY KEY,"
+            " profile_id       TEXT NOT NULL,"
+            " started_at       TEXT NOT NULL,"
+            " profile_snapshot TEXT NOT NULL,"  # JSON — core/weights/target/exclude/seeds/max_items
+            " policy_version   TEXT NOT NULL,"
+            " arxiv_run_id     TEXT,"           # search_runs.run_id
+            " s2_run_id        TEXT,"
+            " seed_attempts    TEXT,"           # JSON — 씨앗별 {status, returned, reason}
+            " observations     INTEGER,"        # 저장된 관측 행 수. NULL = 저장 실패/미완
+            " observation_error TEXT)"
+        )
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS candidate_observations ("
+            " scan_id        TEXT NOT NULL,"   # scan_runs.scan_id
+            " profile_id     TEXT NOT NULL,"
+            " paper_key      TEXT NOT NULL,"
+            " title          TEXT,"
+            " abstract_sha   TEXT,"            # 초록 sha256 앞 16자리
+            " abstract       TEXT,"            # **바뀐 경우에만** 저장. 같으면 NULL + 아래 참조
+            " abstract_ref   TEXT,"            # 같은 초록을 실제로 가진 관측의 scan_id
+            " source         TEXT,"
+            " retrieval_sources TEXT,"         # JSON — 실제 발견 출처 합집합
+            " s2_seeds       TEXT,"            # JSON 목록 — 어느 씨앗이 데려왔나 (arXiv 면 NULL)
+            " published      TEXT,"
+            " date_precision TEXT,"            # profile_scoring.publication_day 의 둘째 값
+            " tier_rank      INTEGER,"         # 적중 없으면 NULL
+            " rank_pos       INTEGER,"         # 그 실행·정책에서의 순위 (무적격이면 NULL)
+            " outcome        TEXT,"
+            " filter_reason  TEXT,"            # 아래 FILTER_* 참고, 적격이면 NULL
+            " core_signature TEXT,"
+            " seed_signature TEXT,"
+            " policy_version TEXT,"            # 정렬 계약 버전 — rank_pos 는 이 정책의 값이다
+            " observed_at    TEXT NOT NULL,"
+            " PRIMARY KEY (scan_id, paper_key))"
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_observations_paper "
+                    "ON candidate_observations (profile_id, paper_key, observed_at)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_observations_profile_time "
+                    "ON candidate_observations (profile_id, observed_at)")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -190,7 +269,8 @@ def create_profile(
     max_items: int = 8, schedule_frequency: str = "daily", schedule_time: str = "05:00",
     core_weights: dict[str, float] | None = None,
     s2_seeds: list[str] | None = None,
-) -> None:
+    origin: str = "user", note: str | None = None,
+) -> int:
     """기존 프로필이면 통째로 덮어쓴다(키워드도 전부 지우고 다시 씀) —
     "일부만 바뀐 것"과 "이전 키워드가 실수로 안 지워진 것"을 구분 못 하게
     두느니, 매번 전체 상태를 새로 쓰는 쪽을 택했다(batch_summarize.py의
@@ -249,6 +329,35 @@ def create_profile(
                 "INSERT INTO profile_venues (profile_id, venue) VALUES (?,?)",
                 (profile_id, v),
             )
+        return _bump_revision(con, profile_id, origin, note, now)
+
+
+def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
+                   note: str | None, now: str) -> int:
+    """같은 연결·트랜잭션 안에서 revision 을 하나 올리고 그때의 프로필 내용을 박는다.
+    호출부가 connect 를 열고 닫는다 — 여기서 커밋하지 않는다."""
+    import hashlib, json
+    rows = con.execute(
+        "SELECT keyword, kind, weight FROM profile_keywords WHERE profile_id=? ORDER BY kind, keyword",
+        (profile_id,)).fetchall()
+    head = con.execute("SELECT max_items FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+    snapshot = {"keywords": [list(r) for r in rows], "max_items": head[0] if head else None}
+    sha = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+    cur = con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
+                      (profile_id,)).fetchone()[0]
+    con.execute(
+        "INSERT INTO profile_revisions (profile_id, revision, created_at, origin, content_sha, snapshot, note)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (profile_id, cur + 1, now, origin, sha, json.dumps(snapshot, ensure_ascii=False), note))
+    return cur + 1
+
+
+def current_revision(db_path: Path, profile_id: str) -> int:
+    """0 이면 revision 을 기록한 적이 없다(2026-09-11 이전 프로필)."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        return con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
+                           (profile_id,)).fetchone()[0]
 
 
 def get_profile(db_path: Path, profile_id: str) -> dict | None:
@@ -295,6 +404,12 @@ def paper_key(paper: dict) -> str:
     arxiv_id 를 못 쓰는 이유: S2 경유 저널 논문은 arxiv_id 가 **없다**
     (실측 2026-09-06: 후보 478편 중 222편). DOI → 정규화 제목 순으로 내려간다.
     """
+    # **보존 키 우선**(2026-09-11, C단계). 관측(candidate_observations)에서
+    # 복원한 논문은 arxiv_id·doi 가 없고 그때의 paper_key 만 있다. 그걸 무시하고
+    # 제목으로 키를 다시 만들면 운영과 다른 키가 되어 동률 순서·논문 대응이
+    # 어긋난다(외부 점검 지적). 복원 쪽이 `_paper_key` 로 넘긴다.
+    if paper.get("_paper_key"):
+        return str(paper["_paper_key"])
     aid = (paper.get("arxiv_id") or "").strip()
     doi = (paper.get("doi") or "").strip().lower()
     # **합성 ID(`pdf-<해시>`)보다 DOI 가 먼저다**(2026-09-06, 실측으로 잡았다).
@@ -495,6 +610,102 @@ def record_candidates(
     return len(rows)
 
 
+# 선별 순서 계약의 버전. 계약이 바뀌면 올린다 — 관측의 rank_pos 는 이 버전의 값이다.
+RANK_POLICY_VERSION = "rank-tuple-v1"   # 2026-09-11, PROGRESS §8-86
+
+# 관측의 탈락 사유. outcome 만으로는 "왜"가 안 보인다.
+FILTER_EXCLUDE_HIT = "exclude_hit"       # 제외어 적중
+FILTER_NO_CORE_HIT = "no_core_hit"       # 핵심 키워드 무적중
+FILTER_ALREADY_SHOWN = "already_shown"   # 이미 배달·소비된 논문
+
+
+def begin_scan(db_path: Path, profile_id: str, profile: dict,
+               started_at: str | None = None) -> str:
+    """스캔 실행 기록을 열고 scan_id 를 돌려준다. 프로필 스냅샷을 그대로 박는다."""
+    import json
+    init_db(db_path)
+    scan_id = uuid.uuid4().hex[:12]
+    snapshot = {k: profile.get(k) for k in
+                ("core_topics", "core_weights", "target_domain", "exclude", "s2_seeds", "max_items")}
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version)"
+            " VALUES (?,?,?,?,?)",
+            (scan_id, profile_id, started_at or _now(),
+             json.dumps(snapshot, ensure_ascii=False), RANK_POLICY_VERSION))
+    return scan_id
+
+
+def finish_scan(db_path: Path, scan_id: str, *, arxiv_run_id: str | None = None,
+                s2_run_id: str | None = None, seed_attempts: list | None = None,
+                observations: int | None = None, observation_error: str | None = None) -> None:
+    import json
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE scan_runs SET arxiv_run_id=COALESCE(?, arxiv_run_id),"
+            " s2_run_id=COALESCE(?, s2_run_id), seed_attempts=COALESCE(?, seed_attempts),"
+            " observations=COALESCE(?, observations),"
+            " observation_error=COALESCE(?, observation_error) WHERE scan_id=?",
+            (arxiv_run_id, s2_run_id,
+             json.dumps(seed_attempts, ensure_ascii=False) if seed_attempts is not None else None,
+             observations, observation_error, scan_id))
+
+
+def record_observations(db_path: Path, scan_id: str, profile_id: str,
+                        rows: list[dict], *, core_signature: str,
+                        seed_signature: str, observed_at: str | None = None) -> int:
+    """스캔 하나의 후보 관측을 남긴다. rows 의 각 항목은 논문 dict 에
+    `_score`(profile_scoring.score_paper 결과) · `outcome` · `rank_pos` ·
+    `filter_reason` 이 붙은 것이다. 같은 (scan_id, paper_key) 는 한 번만.
+
+    개체 테이블(search_candidates)과 달리 **덮어쓰지 않고 쌓인다.** 같은 논문이
+    다섯 스캔에서 보이면 다섯 행이다.
+
+    **초록은 바뀐 경우에만 저장한다**(§6.1). 같은 논문의 앞선 관측이 같은 해시의
+    초록을 실제로 갖고 있으면 그 scan_id 를 참조한다. search_candidates 의
+    초록을 참조하면 안 된다 — 그 열은 재수집 때 덮어써져 과거를 복구 못 한다.
+    참조 사슬을 만들지 않는다: 항상 초록을 **실제로 가진** 행을 가리킨다.
+    묶음 전체를 한 트랜잭션으로 넣는다 — 반쪽 저장이 집계에 섞이면 안 된다."""
+    import hashlib, json
+    init_db(db_path)
+    now = observed_at or _now()
+    with sqlite3.connect(db_path) as con:
+        out = []
+        for p in rows:
+            score = p.get("_score") or {}
+            abstract = p.get("abstract") or ""
+            sha = hashlib.sha256(abstract.encode("utf-8")).hexdigest()[:16] if abstract else None
+            stored, ref = None, None
+            if sha:
+                holder = con.execute(
+                    "SELECT scan_id FROM candidate_observations WHERE profile_id=? AND paper_key=?"
+                    " AND abstract_sha=? AND abstract IS NOT NULL ORDER BY observed_at DESC LIMIT 1",
+                    (profile_id, paper_key(p), sha)).fetchone()
+                if holder:
+                    ref = holder[0]
+                else:
+                    stored = abstract
+            seeds = p.get("s2_seeds")
+            rsrc = p.get("retrieval_sources") or ([p["source"]] if p.get("source") else None)
+            out.append((
+                scan_id, profile_id, paper_key(p), p.get("title"), sha, stored, ref,
+                p.get("source"), json.dumps(rsrc) if rsrc else None,
+                json.dumps(seeds, ensure_ascii=False) if seeds else None,
+                p.get("published"), score.get("date_precision"),
+                score.get("tier_rank"), p.get("rank_pos"), p.get("outcome"),
+                p.get("filter_reason"), core_signature, seed_signature,
+                RANK_POLICY_VERSION, now,
+            ))
+        con.executemany(
+            "INSERT OR REPLACE INTO candidate_observations (scan_id, profile_id, paper_key,"
+            " title, abstract_sha, abstract, abstract_ref, source, retrieval_sources, s2_seeds,"
+            " published, date_precision, tier_rank, rank_pos, outcome, filter_reason,"
+            " core_signature, seed_signature, policy_version, observed_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            out)
+    return len(out)
+
+
 def list_candidates(
     db_path: Path, profile_id: str, outcome: str | None = None,
     since: datetime | None = None, limit: int = 500,
@@ -630,3 +841,61 @@ def get_latest_digest(db_path: Path, profile_id: str) -> tuple[str, str] | None:
     if not row or not row[0]:
         return None
     return row[0], row[1]
+
+
+def attach_observation_dates(db_path: Path, profile_id: str, papers: list[dict]) -> None:
+    """발표일·발견일·요약일은 다른 사건이므로 메일에도 따로 전달한다."""
+    with sqlite3.connect(db_path) as con:
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for paper in papers:
+            row = con.execute(
+                "SELECT first_seen FROM search_candidates WHERE profile_id=? AND paper_key=?",
+                (profile_id, paper_key(paper))).fetchone()
+            paper["first_seen"] = row[0] if row else None
+            if "summaries" in tables:
+                row = con.execute("SELECT created_at FROM summaries WHERE arxiv_id=?",
+                                  (paper.get("arxiv_id"),)).fetchone()
+                paper["summarized_at"] = row[0] if row else None
+
+
+FEEDBACK_LABELS = {"useful": "유용함", "known": "이미 아는 내용", "out_of_scope": "관심 밖"}
+SUPPORT_LABELS = {"unassessed": "미평가", "supported": "근거가 지지함",
+                  "unsupported": "근거가 지지하지 않음", "unclear": "판단 어려움"}
+
+
+def record_feedback(db_path: Path, profile_id: str, key: str, usefulness: str,
+                    claim: str = "", support: str = "unassessed") -> None:
+    """⑧ 사람이 남긴 평가를 보존한다. 클릭을 승인이나 자동 채점 가중치로 쓰지 않는다.
+
+    인용 존재는 기계가 확인하고, 주장을 지지하는지는 사람이 대조한다(ALCE).
+    자유 서술은 로컬 DB에만 두며 LLM 입력으로 보내지 않는다.
+    """
+    if usefulness not in FEEDBACK_LABELS or support not in SUPPORT_LABELS:
+        raise ValueError("알 수 없는 평가")
+    if support != "unassessed" and not claim.strip():
+        raise ValueError("근거를 평가할 주장 문장이 필요하다")
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        if not con.execute("SELECT 1 FROM profile_shown WHERE profile_id=? AND paper_key=?",
+                           (profile_id, key)).fetchone():
+            raise ValueError("이 프로필에서 배달 기록이 없는 논문이다")
+        con.execute(
+            "INSERT INTO briefing_feedback (profile_id,paper_key,usefulness,claim,support,created_at) "
+            "VALUES (?,?,?,?,?,?)", (profile_id, key, usefulness, claim.strip(), support, _now()))
+
+
+def list_feedback(db_path: Path, profile_id: str) -> list[dict]:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM briefing_feedback WHERE profile_id=? ORDER BY feedback_id", (profile_id,))]
+
+
+def feedback_papers(db_path: Path, profile_id: str) -> list[dict]:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        return [dict(r) for r in con.execute(
+            "SELECT paper_key,title,shown_at FROM profile_shown WHERE profile_id=? "
+            "ORDER BY shown_at DESC,paper_key LIMIT 100", (profile_id,))]

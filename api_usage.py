@@ -29,16 +29,31 @@ from collections import Counter
 
 _lock = threading.Lock()
 _counts: Counter = Counter()
+_purposes: Counter = Counter()   # (provider, purpose) → n. provider 합계는 위와 같다.
 
 
-def record(provider: str, outcome: str = "ok") -> None:
+def record(provider: str, outcome: str = "ok", purpose: str | None = None) -> None:
+    """purpose 는 **별도 차원**이다(2026-09-11, D단계). 'gemini:advisor' 처럼 provider
+    이름을 바꾸면 기존 Gemini 합계와 갈라진다 — 합계는 그대로 두고 목적만 따로 센다."""
     with _lock:
         _counts[(provider, outcome)] += 1
+        if purpose:
+            _purposes[(provider, purpose)] += 1
 
 
 def reset() -> None:
     with _lock:
         _counts.clear()
+        _purposes.clear()
+
+
+def by_purpose() -> dict[str, dict[str, int]]:
+    """{provider: {purpose: n}} — 요약·서술·제안이 각각 몇 번 보냈나."""
+    out: dict[str, dict[str, int]] = {}
+    with _lock:
+        for (provider, purpose), n in _purposes.items():
+            out.setdefault(provider, {})[purpose] = n
+    return out
 
 
 def snapshot() -> dict[str, dict[str, int]]:

@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -95,8 +96,47 @@ def _summary_already_saved(arxiv_id: str) -> bool:
         ).fetchone() is not None
 
 
+# 2026-09-10: 후보 3개의 설치(각 15분)·실행·clone 시간을 허용한다.
+# 1시간은 운영 대기 정책이며 처리시간 실측치가 아니다. 넘으면 이유를 메일에 싣는다.
+REPRO_WAIT_SECONDS = 3600.0
+REPRO_POLL_SECONDS = 1.0
+
+
+async def _wait_reproduction(arxiv_id: str) -> dict:
+    """기존 worker의 종료 신호와 결과를 읽는다. 여기서 재현을 시작하지 않는다."""
+    stem = arxiv_id.replace("/", "_")
+    marker = server.REPRO_DIR / f"{stem}.running"
+    deadline = time.monotonic() + REPRO_WAIT_SECONDS
+    while marker.exists():
+        if time.monotonic() >= deadline:
+            return {"status": "timeout", "success": None,
+                    "reason": f"대기 상한({REPRO_WAIT_SECONDS / 60:g}분) 초과 — 작업 완료 미확인"}
+        await asyncio.sleep(REPRO_POLL_SECONDS)
+    # launch_background가 이미 성공한 논문은 실행하지 않는다. 이 갈래는
+    # 기존 DB의 성공 기록을 사용하며 새 실행을 했다고 표시하지 않는다.
+    with storage.db() as con:
+        row = con.execute("SELECT success, exit_code, stage FROM repro_results "
+                          "WHERE arxiv_id=? AND success=1 LIMIT 1", (arxiv_id,)).fetchone()
+    if row:
+        return {"status": "cached", "success": True, "exit_code": row["exit_code"]}
+    # 마커가 없다는 사실만으로 성공을 만들지 않는다. 최종 JSON이 있어야
+    # 저장소 없음·실행 실패도 그 작업의 실제 결과로 표시할 수 있다.
+    log_path = server.REPRO_DIR / f"{stem}.log"
+    if log_path.exists():
+        raw = log_path.read_text(encoding="utf-8", errors="replace")
+        for start in reversed([i for i, c in enumerate(raw) if c == "{" and (i == 0 or raw[i - 1] == "\n")]):
+            try:
+                result = json.loads(raw[start:])
+            except json.JSONDecodeError:
+                continue
+            if result.get("arxiv_id") == arxiv_id and isinstance(result.get("success"), bool):
+                return {"status": "completed", **result}
+    return {"status": "unconfirmed", "success": False,
+            "reason": "작업 종료 후 결과 기록을 확인하지 못함"}
+
+
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
-                          paper: dict | None = None) -> dict:
+                          paper: dict | None = None, wait_for_repro: bool = False) -> dict:
     """paper 를 주면 arXiv 밖 논문(저널 오픈액세스)도 처리한다(2026-09-02).
 
     왜 여기서 분기하나: ⑦ 재현 트리거를 소유한 지점이 이 함수라(CLAUDE.md 5)
@@ -108,7 +148,10 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
     이라고 적혀 있다 — 쓰이기를 기다리고 있던 배선이다. 합성 ID(pdf-<해시>)가
     나오면 그 뒤 저장·검증·재현은 arXiv 논문과 완전히 같다.
     """
-    if not arxiv_id:
+    cached = bool(wait_for_repro and arxiv_id and _summary_already_saved(arxiv_id))
+    if cached:
+        fetch_result = {}
+    elif not arxiv_id:
         pdf_url = (paper or {}).get("open_access_pdf")
         title = (paper or {}).get("title") or ""
         doi = (paper or {}).get("doi") or ""
@@ -172,8 +215,10 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         # 일어날 수 있는 경로가 됐다.
         if _summary_already_saved(arxiv_id):
             print(f"[{arxiv_id}] 이미 요약이 있다 — 다시 만들지 않는다")
-            return {"arxiv_id": arxiv_id, "status": "done",
-                    "detail": "이미 요약 저장됨", "skipped": True}
+            if not wait_for_repro:
+                return {"arxiv_id": arxiv_id, "status": "done",
+                        "detail": "이미 요약 저장됨", "skipped": True}
+            cached = True
     else:
         print(f"[{arxiv_id}] fetch_paper...")
         fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
@@ -181,35 +226,40 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
             print(f"[{arxiv_id}] fetch 실패: {fetch_result}")
             return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result}
 
-    # get_paper_text(MCP 도구)는 채팅 컨텍스트 절약용 80,000자 상한이 있다 —
-    # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
-    paper_text = server.read_full_text(arxiv_id)
+    used_engine, verification, retracted = "stored", {}, None
+    if not cached:
+        # get_paper_text(MCP 도구)는 채팅 컨텍스트 절약용 80,000자 상한이 있다 —
+        # 여기서는 원문 전체를 읽는다. 길면 summarize_engine 이 알아서 청크로 나눈다.
+        paper_text = server.read_full_text(arxiv_id)
 
-    # 서베이/리뷰 논문은 결정적 키워드 규칙으로 감지해 전용 템플릿을 쓴다
-    # (판단은 LLM이 아니라 코드가 한다 — engine.select_template 참고).
-    template = engine.select_template(fetch_result.get("title", ""))
+        # 서베이/리뷰 논문은 결정적 키워드 규칙으로 감지해 전용 템플릿을 쓴다
+        # (판단은 LLM이 아니라 코드가 한다 — engine.select_template 참고).
+        template = engine.select_template(fetch_result.get("title", ""))
 
-    print(f"[{arxiv_id}] 요약 생성 중...")
-    summary, used_engine, coverage = await engine.summarize(
-        client, paper_text, template, on_progress=on_progress)
-    print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자, 원문 {coverage * 100:.0f}% 실측)")
+        print(f"[{arxiv_id}] 요약 생성 중...")
+        summary, used_engine, coverage = await engine.summarize(
+            client, paper_text, template, on_progress=on_progress)
+        print(f"[{arxiv_id}] {used_engine} 로 생성됨 ({len(summary)}자, 원문 {coverage * 100:.0f}% 실측)")
 
-    # coverage 는 **실제로 들어간 청크** 기준 실측값이다(2026-09-07, §8-70).
-    # 저장 시점에 다시 계산하면 어느 청크가 성공했는지를 모른다.
-    save_result = json.loads(
-        await server.save_summary(server.SaveSummaryInput(
-            arxiv_id=arxiv_id, markdown=summary, engine=used_engine, coverage=coverage))
-    )
-    verification = save_result.get("verification", {})
+        # coverage 는 **실제로 들어간 청크** 기준 실측값이다(2026-09-07, §8-70).
+        # 저장 시점에 다시 계산하면 어느 청크가 성공했는지를 모른다.
+        save_result = json.loads(
+            await server.save_summary(server.SaveSummaryInput(
+                arxiv_id=arxiv_id, markdown=summary, engine=used_engine, coverage=coverage))
+        )
+        verification = save_result.get("verification", {})
 
-    # ⑧ 철회 여부 조회(M5, 2026-08-28) — OpenAlex 싱글턴 1회 + 필요 시
-    # Crossref 교차확인. 실패해도 None 으로 떨어지고 파이프라인은 계속된다.
-    retracted = await server.refresh_retraction_status(arxiv_id)
+        # ⑧ 철회 여부 조회(M5, 2026-08-28) — OpenAlex 싱글턴 1회 + 필요 시
+        # Crossref 교차확인. 실패해도 None 으로 떨어지고 파이프라인은 계속된다.
+        retracted = await server.refresh_retraction_status(arxiv_id)
 
     # ⑥ 승인 게이트 없이 곧바로 ⑦로 넘어간다(2026-08-24, 모듈 docstring
-    # 참고) — Docker clone+install+run은 무거운 작업이라 여기서 기다리지
-    # 않고 별도 프로세스로 띄우기만 하고 바로 다음 논문으로 넘어간다.
+    # 참고). 메일 경로는 같은 트리거로 시작한 작업의 종료까지 기다린다.
+    # UI의 비동기 실행 방식과 Docker 실행·격리 정책은 바꾸지 않는다.
     repro_msg = docker_runner.launch_background(arxiv_id)
+    repro_started = time.monotonic()
+    reproduction = await _wait_reproduction(arxiv_id) if wait_for_repro else None
+    repro_wait_seconds = time.monotonic() - repro_started if wait_for_repro else 0.0
 
     print(
         f"[{arxiv_id}] 완료 — engine={used_engine} "
@@ -218,7 +268,8 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         f"— ⑦ {repro_msg}"
     )
     return {"arxiv_id": arxiv_id, "status": "done", "engine": used_engine,
-            "repro": repro_msg, "is_retracted": retracted, **verification}
+            "repro": repro_msg, "is_retracted": retracted, "skipped": cached,
+            "reproduction": reproduction, "repro_wait_seconds": repro_wait_seconds, **verification}
 
 
 async def _resolve_targets(args: argparse.Namespace) -> list[str]:

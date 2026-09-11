@@ -246,7 +246,7 @@ def test_deep_layer_processes_each_scored_paper_serially(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         calls.append(arxiv_id)
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
@@ -269,7 +269,7 @@ def test_deep_layer_isolates_failure_of_one_paper(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         calls.append(arxiv_id)
         if arxiv_id == "p2":
             raise RuntimeError("Gemini·Groq 둘 다 실패: 테스트 예외")
@@ -307,7 +307,7 @@ def test_deep_layer_never_calls_launch_background_directly(tmp_path, monkeypatch
     monkeypatch.setattr(docker_runner, "launch_background",
                          lambda aid: lb_calls.append(aid) or "mocked")
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
     monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
@@ -318,9 +318,8 @@ def test_deep_layer_never_calls_launch_background_directly(tmp_path, monkeypatch
 
 
 def test_deep_layer_skips_already_summarized_paper(tmp_path, monkeypatch):
-    """(d) 이미 요약 저장된 논문은 _process_paper를 아예 안 부른다 —
-    재호출하면 요약 단계가 무조건 재실행이라(실측 확인) 무료 API 한도를
-    그대로 태우는 낭비다."""
+    """저장 요약도 기존 처리 지점에서 ⑦ 완료를 기다린 뒤 같은 메일에 싣는다.
+    요약 API 재호출 차단은 test_process_paper에서 실제 함수를 검사한다."""
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     _mock_arxiv_three_agent_papers(monkeypatch)
@@ -328,7 +327,7 @@ def test_deep_layer_skips_already_summarized_paper(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         calls.append(arxiv_id)
         return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
 
@@ -336,7 +335,7 @@ def test_deep_layer_skips_already_summarized_paper(tmp_path, monkeypatch):
 
     result, _digest_text = _run_scan_and_digest(db_path)
 
-    assert calls == ["p1", "p3"]  # p2는 스킵
+    assert calls == ["p1", "p2", "p3"]  # 요약 재사용과 ⑦ 완료 확인은 별개다
     statuses = {p["arxiv_id"]: p["deep_status"] for p in result["papers"]}
     assert statuses["p2"].startswith("skipped:")
 
@@ -349,7 +348,7 @@ def test_deep_layer_records_fetch_failed_dict_as_failure(tmp_path, monkeypatch):
     _mock_arxiv_three_agent_papers(monkeypatch)
     monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         if arxiv_id == "p1":
             return {"arxiv_id": arxiv_id, "status": "fetch_failed",
                     "detail": {"error": "HTML도 PDF도 없음"}}
@@ -789,7 +788,7 @@ def test_deep_layer_stops_when_budget_is_exceeded(tmp_path, monkeypatch):
     processed = []
     clock = {"t": 0.0}
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         processed.append(arxiv_id)
         clock["t"] += 1000.0          # 논문 한 편에 1000초씩 걸린다고 치자
         return {"status": "done"}
@@ -818,7 +817,7 @@ def test_budget_is_checked_before_starting_not_mid_paper(tmp_path, monkeypatch):
 
     started = []
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         started.append(arxiv_id)
         return {"status": "done"}
 
@@ -845,7 +844,7 @@ def test_deferred_papers_are_not_listed_in_the_digest(tmp_path, monkeypatch):
 
     clock = {"t": 0.0}
 
-    async def fake_process(client, arxiv_id, on_progress=None, paper=None):
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
         clock["t"] += 9999.0
         return {"status": "done"}
 
@@ -1844,3 +1843,34 @@ def test_씨앗을_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
     starts = [datetime.fromisoformat(r[0]) for r in rows]
     assert all(s < now - timedelta(days=6) for s in starts), (
         f"씨앗이 바뀌었는데 창이 최근 커서를 이어받았다: {starts}")
+
+
+
+def test_pending_reproduction_sends_reason_in_same_email(tmp_path, monkeypatch):
+    """대기 상한 뒤 발송을 막거나 시간 초과 사유를 숨기면 실패한다."""
+    import email_delivery
+    import sqlite3
+    db = tmp_path / "mail.db"
+    _setup_profile(db)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    rps.research_profile.add_recipient(db, "team_ai", "reader@example.com")
+    monkeypatch.setattr(rps, "_summary_exists", lambda _: False)
+    async def pending(client, aid, **kwargs):
+        assert kwargs["wait_for_repro"] is True
+        return {"status": "done", "arxiv_id": aid,
+                "reproduction": {"status": "timeout", "success": None,
+                    "reason": "대기 상한(60분) 초과 — 작업 완료 미확인"}}
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", pending)
+    mails = []
+    monkeypatch.setattr(email_delivery, "send_digest_email", lambda *a: mails.append(a))
+    summary = asyncio.run(rps.scan_all_profiles(db, None, send=True))
+    assert summary["team_ai"]["status"] == "ok"
+    assert rps._exit_code(summary) == 0
+    assert len(mails) == 1
+    for mail in (mails[0][0], mails[0][3]):
+        assert "대기 상한(60분) 초과" in mail
+        assert "작업 완료 미확인" in mail
+        assert "이전에 보낸 논문의 상태 소식" not in mail
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT last_digest FROM profiles WHERE profile_id='team_ai'").fetchone()[0]
+        assert con.execute("SELECT COUNT(*) FROM profile_shown").fetchone()[0] == 3
