@@ -1469,3 +1469,26 @@ def test_chips_are_visible_while_collapsed(isolated_db):
     html = _html_for([_scored_paper("p1", "flag 논문", 1.0)])
     summary = html[html.index("<summary"):html.index("</summary>")]
     assert "28/31" in summary or "flag" in summary.lower(), "칩이 summary 안에 있어야 접힌 채로 보인다"
+
+
+def test_summary_labels_are_bold_up_to_and_including_the_colon_for_any_label():
+    """2026-09-12 사용자 지적: '조건 구분 :' 만 굵지 않았다 — 항목명이 고정 목록이었다.
+    이 테스트가 잡는 것: 목록에 없는 항목명을 안 굵히는 것, 콜론을 굵게에서 빼는 것,
+    URL 의 콜론이나 문장 중간 콜론을 항목명으로 잡는 것."""
+    for label in ("데이터셋", "조건 구분", "무엇을 하려했는가", "학습 목적 함수"):
+        html = digest._summary_label_html(f"{label} : 설명이다")
+        assert html.startswith(f"<strong>{label} :</strong> 설명이다"), html
+    assert "<strong>" not in digest._summary_label_html("https://arxiv.org/abs/1 를 본다")
+    assert "<strong>" not in digest._summary_label_html("이 문장은 충분히 길어서 항목명이 아니고 서른 자를 넘긴 뒤에야 콜론이: 나온다")
+    assert digest._summary_label_html("결과 : 92.4 [S0142]").count("<strong>") == 1
+
+
+def test_interpretation_marks_written_as_predicates_become_sentences():
+    """2026-09-12 사용자 지적: "이 표본의 범위를 넘어서므로 해석이다" 는 문장이 아니다.
+    이 테스트가 잡는 것: 그 꼴을 그대로 두는 것, 멀쩡한 "(해석)" 문장을 건드리는 것."""
+    f = digest.normalise_interpretation_marks
+    assert f("이 표본의 범위를 넘어서므로 해석이다 [P2:A]") == "이 표본의 범위를 넘어선다 (해석) [P2:A]"
+    assert f("엔지니어링을 통해 달성될 수 있으므로 해석이다 [P12:A]") == "엔지니어링을 통해 달성될 수 있다 (해석) [P12:A]"
+    assert f("근거가 없으므로 해석이다.") == "근거가 없다 (해석)."
+    assert f("적용 가능성은 이 표본으로는 알 수 없다 (해석).") == "적용 가능성은 이 표본으로는 알 수 없다 (해석)."
+    assert f("다른 활용형으로 끝나므로 해석이다") == "다른 활용형으로 끝나므로, 이는 해석이다"
