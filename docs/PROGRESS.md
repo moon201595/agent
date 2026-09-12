@@ -5276,6 +5276,36 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     918 passed. **DDL 미적용**: profile_keyword_events(+index) · gate_decisions — 승인 뒤
     `migrate.py --apply`(bootstrap 은 migrate 가 이어서 한다).
 
+103. **insufficient 를 기각으로 기억하면 9/27 전 제안이 전부 죽는다 — 그리고 이관 보완 넷** (2026-09-12, 외부 검토 아홉째).
+
+    **① 새로 만든 버그.** §8-102 정정에서 `held/insufficient/invalid` 를 전부 기각 기억으로 남기게
+    했는데 insufficient 는 "나쁜 제안"이 아니라 "지금 판정할 근거·설정이 없다"(규칙 미설정 ·
+    관측 부족 · shadow 미완 · 손상 초록)다. 9/27 전엔 규칙이 의도적으로 None 이라 정상 제안이
+    `apply_rules_unconfigured → 기각 → 다음 주 suppressed` 가 되고, 규칙을 설정해도 같은 증거·
+    프로필이면 다시 평가되지 않았을 것이다. 고침 — **held 만** 기각 기억(설정된 한도를 실제로
+    넘긴 판정). 억제 키에 그 판정의 **rules_hash** 를 넣어 규칙이 바뀌면 다시 평가한다.
+    테스트: 1·2주 insufficient → 기각 0, 재분석 / 3주 held → 기각 / 4주 suppressed(분석 없음) /
+    5주 규칙 완화 → 다시 proposed. 억제된 제안은 valid 에서 빼고, 전부 억제면 status
+    `suppressed`(proposed 아님).
+
+    **② bootstrap 을 DDL 과 분리.** "이번 실행에서 DDL 이 빠져 있었을 때만" bootstrap 하던 것을
+    `data_pending` 으로 — 완료 판정은 이벤트 존재가 아니라 **현재 (keyword, kind) 집합 == 활성
+    세대 집합**. DDL 뒤·bootstrap 전에 죽어도 다음 `--apply` 가 잡는다(테스트: crash 흉내).
+    일부만 어긋나면(이벤트 없이 끼어든 행) 차이만 보정한다. 데이터 이관도 백업 뒤에.
+    **③ legacy rollback.** 이관 전 revision 으로 되돌리면 이벤트가 없어 되살아난 키워드가 전부
+    rollback/user 로 뭉개졌다 — `legacy_provenance`(core 는 처음 출현, 나머지 kind 는 user)로
+    보충. **④ 불변 트리거.** profile_keyword_events · gate_decisions 에 UPDATE/DELETE 금지
+    트리거(첫 이관 전에 넣었다 — DDL 에 포함). **⑤** 적용 시 마지막 판정의 규칙 해시와 현재
+    설정 대조는 9/27 임계값 때.
+
+    **이관 미리보기(운영 DB 는 안 건드림 — 일관 사본에서 리허설):**
+    DDL 대기 — profile_keyword_events + index + 트리거 2 · gate_decisions + 트리거 2.
+    데이터 대기 — 이관 뒤 bootstrap. 리허설 결과: bootstrap **68건**(core 38 · target 21 ·
+    exclude 7 · s2_seed 2, provenance 전부 user, actor bootstrap), **현재 집합 == 활성 세대 ok**,
+    트리거 4개 생성. 승인 대기.
+
+    테스트 +4(기각 재작성 · 불변 · legacy rollback · crash-after-DDL), 돌연변이 7/7. 922 passed.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

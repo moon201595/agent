@@ -111,3 +111,39 @@ def test_백업은_WAL_에_남은_커밋을_포함하고_검증을_통과해야_
     assert len(list((tmp_path / "backups").glob("*.db"))) == 1
     # --scope all 과 명시적 --db 는 같이 못 쓴다
     assert migrate.main(["--scope", "all", "--db", str(db)]) == 2
+
+
+def test_bootstrap_은_DDL_과_별개의_데이터_이관이라_DDL_뒤에_죽어도_다음_실행이_잡는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: bootstrap 을 'DDL 이 이번에 빠져 있었을 때만' 하는 것(DDL 성공 → bootstrap 전
+    crash → 영구 skip), 완료 판정을 '이벤트가 있다'로 하는 것(부분 bootstrap 통과)."""
+    monkeypatch.delenv(schema_guard.APPLY_ENV, raising=False)
+    import migrate, research_profile as rp
+    monkeypatch.setattr(migrate, "BACKUP_DIR", tmp_path / "backups")
+    db = tmp_path / "t.db"
+    monkeypatch.setenv(schema_guard.APPLY_ENV, "1")
+    rp.create_profile(db, "p", "이름", core_topics=["A", "B"], core_weights={"A": 1.0, "B": 1.0}, max_items=2, s2_seeds=["A"])
+    monkeypatch.delenv(schema_guard.APPLY_ENV)
+    # 이관 전 상태를 흉내: 이벤트 표를 통째로 없앤다(트리거 포함)
+    with sqlite3.connect(db) as con:
+        con.execute("DROP TABLE profile_keyword_events")
+    monkeypatch.setattr(migrate, "owners", lambda scope="operational": {"operational": [("research_profile", rp._ddl)], "evaluation": [], "all": [("research_profile", rp._ddl)]}[scope])
+    assert migrate.main(["--db", str(db)]) == 1                      # DDL pending
+    # DDL 은 됐는데 bootstrap 전에 죽었다고 하자: 표만 만들고 종료
+    monkeypatch.setenv(schema_guard.APPLY_ENV, "1"); rp.init_db(db); monkeypatch.delenv(schema_guard.APPLY_ENV)
+    assert migrate.pending(db) == {"research_profile": []}, "DDL 은 최신"
+    assert "keyword_events_bootstrap" in migrate.data_pending(db), "데이터 이관은 여전히 대기"
+    assert migrate.main(["--db", str(db)]) == 1, "DDL todo 가 없어도 데이터 대기면 할 일이 있다"
+    assert migrate.main(["--db", str(db), "--apply"]) == 0
+    assert migrate.data_pending(db) == {} and set(rp.active_generations(db, "p")) == {("a", "core"), ("b", "core"), ("a", "s2_seed")}
+    assert list((tmp_path / "backups").glob("*.db")), "데이터 이관도 백업 뒤에 한다"
+    # 부분 bootstrap(이벤트는 있는데 집합이 다름)도 대기로 본다
+    rp.create_profile(db, "p", "이름", core_topics=["A", "B", "C"], core_weights={"A": 1.0, "B": 1.0, "C": 1.0}, max_items=2, s2_seeds=["A"])
+    assert migrate.data_pending(db) == {}, "정상 변경은 이벤트가 따라오므로 불일치가 아니다"
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO profile_keywords (profile_id, keyword, kind, weight, added_at) VALUES ('p','D','core',1.0,'t')")
+    assert "keyword_events_bootstrap" in migrate.data_pending(db), "이벤트 없이 끼어든 키워드는 불일치다"
+    assert migrate.main(["--db", str(db), "--apply"]) == 0, "부분 불일치도 보정된다"
+    assert migrate.data_pending(db) == {}
+    with sqlite3.connect(db) as con:
+        d = con.execute("SELECT actor_origin, provenance_origin FROM profile_keyword_events WHERE keyword='d'").fetchone()
+    assert d == ("bootstrap", "user")

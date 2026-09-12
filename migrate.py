@@ -42,6 +42,28 @@ def pending(db: Path, scope: str = "operational") -> dict[str, list[str]]:
     return {name: schema_guard.missing_in(db, ddl) for name, ddl in owners(scope)}
 
 
+def data_pending(db: Path, scope: str = "operational") -> dict[str, list[str]]:
+    """DDL 과 **별개의** 데이터 이관 대기 — DDL 이 됐는데 그 뒤 단계 전에 죽어도 다음 실행이 다시
+    발견해야 한다(외부 검토 2026-09-12). 지금은 하나: 키워드 이벤트 bootstrap. 완료 판정은 "이벤트가
+    있다"가 아니라 **현재 (keyword, kind) 집합 == 활성 세대 집합**이다."""
+    out: dict[str, list[str]] = {}
+    if scope != "operational":
+        return out
+    with sqlite3.connect(db) as con:
+        has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_keyword_events'").fetchone()
+        if not has:
+            return out
+        import research_profile
+        for (pid,) in con.execute("SELECT profile_id FROM profiles"):
+            current = {(r[0].lower(), r[1]) for r in con.execute(
+                "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (pid,))}
+            active = set(research_profile.active_generations(db, pid))
+            if current != active:
+                out.setdefault("keyword_events_bootstrap", []).append(
+                    f"{pid}: 현재 {len(current)} vs 활성 세대 {len(active)}")
+    return out
+
+
 class BackupFailed(RuntimeError):
     pass
 
@@ -97,33 +119,42 @@ def main(argv: list[str] | None = None) -> int:
         sqlite3.connect(db).close()
     before = pending(db, args.scope)
     todo = {k: v for k, v in before.items() if v}
-    if not todo:
+    data_todo = data_pending(db, args.scope) if not fresh else {}
+    if not todo and not data_todo:
         print("스키마 최신 — 할 일 없음"); return 0
     for name, miss in todo.items():
-        print(f"[{name}] 빠진 것 {len(miss)}: " + ", ".join(miss))
+        print(f"[DDL {name}] 빠진 것 {len(miss)}: " + ", ".join(miss))
+    for name, items in data_todo.items():
+        print(f"[DATA {name}] 대기: " + "; ".join(items))
     if not args.apply:
         print("\n적용하려면 승인 뒤 --apply. 백업은 자동으로 만든다."); return 1
     if not fresh:
         dest = backup(db)
         print(f"백업(일관·integrity ok): {dest}")
-    os.environ[schema_guard.APPLY_ENV] = "1"
-    try:
-        for name, ddl in owners(args.scope):
-            if before[name]:
-                print(f"[{name}] 적용 → {schema_guard.ensure(db, ddl, name)}")
-    finally:
-        os.environ.pop(schema_guard.APPLY_ENV, None)
-    after = {k: v for k, v in pending(db, args.scope).items() if v}
-    if after:
-        print("적용 뒤에도 빠진 것: " + str(after)); return 3
-    if args.scope == "operational" and any("profile_keyword_events" in m for m in sum(before.values(), [])):
-        # 키워드 세대 이력(§8-102) 도입: 활성 키워드를 첫 세대로 적는다. 두 번 불러도 0.
+    if todo:
+        os.environ[schema_guard.APPLY_ENV] = "1"
+        try:
+            for name, ddl in owners(args.scope):
+                if before[name]:
+                    print(f"[DDL {name}] 적용 → {schema_guard.ensure(db, ddl, name)}")
+        finally:
+            os.environ.pop(schema_guard.APPLY_ENV, None)
+        after = {k: v for k, v in pending(db, args.scope).items() if v}
+        if after:
+            print("적용 뒤에도 빠진 것: " + str(after)); return 3
+    # 데이터 이관은 DDL 결과와 무관하게 "대기 중이면" 한다 — DDL 뒤에 죽었어도 다음 실행이 여기서 잡는다.
+    data_todo = data_pending(db, args.scope) if not fresh else {}
+    if "keyword_events_bootstrap" in data_todo:
         import research_profile
         with sqlite3.connect(db) as con:
             profiles = [r[0] for r in con.execute("SELECT profile_id FROM profiles")]
         for pid in profiles:
-            print(f"[bootstrap] {pid}: 키워드 이벤트 {research_profile.bootstrap_keyword_events(db, pid)}건")
-    print("대조 완료 — 스키마 최신"); return 0
+            print(f"[DATA bootstrap] {pid}: 키워드 이벤트 {research_profile.bootstrap_keyword_events(db, pid)}건")
+        left = data_pending(db, args.scope)
+        if left:
+            print("bootstrap 뒤에도 불일치: " + str(left)); return 4
+        print("[DATA bootstrap] 검증 — 현재 키워드 집합 == 활성 세대 집합: ok")
+    print("대조 완료 — 스키마·데이터 최신"); return 0
 
 
 if __name__ == "__main__":

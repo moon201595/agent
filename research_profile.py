@@ -237,6 +237,11 @@ def _ddl(con: sqlite3.Connection) -> None:
         " note         TEXT)"
     )
     con.execute("CREATE INDEX IF NOT EXISTS idx_keyword_events_profile ON profile_keyword_events(profile_id, keyword, kind, event_id)")
+    # append-only 를 DB 가 강제한다 — 코드가 실수로 UPDATE/DELETE 해도 막힌다(첫 이관 전에 넣는다).
+    con.execute("CREATE TRIGGER IF NOT EXISTS keyword_events_immutable_u BEFORE UPDATE ON profile_keyword_events "
+                "BEGIN SELECT RAISE(ABORT, 'profile_keyword_events is append-only'); END")
+    con.execute("CREATE TRIGGER IF NOT EXISTS keyword_events_immutable_d BEFORE DELETE ON profile_keyword_events "
+                "BEGIN SELECT RAISE(ABORT, 'profile_keyword_events is append-only'); END")
     # 얼린 H7 의 정의가 바뀌면(health-v2: already_shown 제외) 옛 행과 새 행을 한 기준선에
     # 못 섞는다 — 행마다 지표 버전을 적는다(2026-09-12). 기존 DB 에는 ALTER 로 붙는다(migrate).
     sh_cols = {row[1] for row in con.execute("PRAGMA table_info(scan_health)")}
@@ -462,16 +467,39 @@ def _bootstrap_keyword_events(con: sqlite3.Connection, profile_id: str, revision
 
 
 def bootstrap_keyword_events(db_path: Path, profile_id: str) -> int:
-    """이관 뒤 한 번 — 이벤트가 없는 프로필의 현재 키워드를 첫 세대로 적는다. 이미 있으면 0."""
+    """이관 뒤 — 현재 키워드 집합과 활성 세대 집합을 **맞춘다.** 이벤트가 하나도 없으면 전부 첫
+    세대로(actor=bootstrap), 일부만 어긋나 있으면(이벤트 없이 끼어든 행·사라진 행) 그 차이만
+    added/removed 로 보충한다. 이미 같으면 0 — 두 번 불러도 안전하다."""
     init_db(db_path)
+    current = set()
     with sqlite3.connect(db_path) as con:
-        if con.execute("SELECT 1 FROM profile_keyword_events WHERE profile_id=? LIMIT 1", (profile_id,)).fetchone():
-            return 0
-        active = {(r[0].lower(), r[1]) for r in con.execute(
+        current = {(r[0].lower(), r[1]) for r in con.execute(
             "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,))}
         rev = con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?", (profile_id,)).fetchone()[0]
-        _bootstrap_keyword_events(con, profile_id, rev, _now(), active)
-        return len(active)
+        if not con.execute("SELECT 1 FROM profile_keyword_events WHERE profile_id=? LIMIT 1", (profile_id,)).fetchone():
+            _bootstrap_keyword_events(con, profile_id, rev, _now(), current)
+            return len(current)
+    active = set(active_generations(db_path, profile_id))
+    if active == current:
+        return 0
+    with sqlite3.connect(db_path) as con:
+        return _record_keyword_events(con, profile_id, rev, _now(), active, current, "bootstrap",
+                                      "이관 대조에서 발견된 불일치 보정",
+                                      restore_from=legacy_provenance(db_path, profile_id, current - active))
+
+
+def legacy_provenance(db_path: Path, profile_id: str, keys: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """이벤트 표 도입 **전** 구간의 provenance — (keyword, kind) 별. core 는 처음 출현 이력, 나머지
+    kind 는 제안기가 손댄 적이 없으므로 user. rollback 이 bootstrap 보다 과거 revision 으로 갈 때
+    이벤트가 없어 전부 rollback/user 로 뭉개지던 것을 막는다(외부 검토 2026-09-12)."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        first = _first_seen_provenance(con, profile_id)
+    out = {}
+    for kw, kind in keys:
+        prov = first.get(kw, {}).get("origin", "user") if kind == "core" else "user"
+        out[(kw, kind)] = prov if prov in PROVENANCE_ORIGINS else "user"
+    return out
 
 
 def active_generations(db_path: Path, profile_id: str, as_of_revision: int | None = None) -> dict[tuple[str, str], dict]:
