@@ -342,19 +342,22 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None) -> tuple[
 
 
 # ── 저장 ─────────────────────────────────────────────────────────────────
+def _ddl(con: sqlite3.Connection) -> None:
+    """이 모듈의 스키마. schema_guard 를 통해서만 돈다(§8-98)."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS impact_analyses ("
+        " analysis_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
+        " snapshot_id TEXT NOT NULL, snapshot_sha256 TEXT NOT NULL, scope_json TEXT NOT NULL,"
+        " k INTEGER NOT NULL, policy_version TEXT NOT NULL, impact_version TEXT NOT NULL,"
+        " rules_json TEXT NOT NULL, before_hash TEXT NOT NULL, after_hash TEXT NOT NULL,"
+        " before_json TEXT NOT NULL, after_json TEXT NOT NULL, diff_json TEXT NOT NULL,"
+        " impact_json TEXT NOT NULL, gate_status TEXT NOT NULL, reasons_json TEXT NOT NULL,"
+        " input_sha256 TEXT NOT NULL)")
+
+
 def init_db(db: Path) -> None:
-    with sqlite3.connect(db) as con:
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS impact_analyses ("
-            " analysis_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
-            " snapshot_id TEXT NOT NULL, snapshot_sha256 TEXT NOT NULL, scope_json TEXT NOT NULL,"
-            " k INTEGER NOT NULL, policy_version TEXT NOT NULL, impact_version TEXT NOT NULL,"
-            " rules_json TEXT NOT NULL, before_hash TEXT NOT NULL, after_hash TEXT NOT NULL,"
-            " before_json TEXT NOT NULL, after_json TEXT NOT NULL, diff_json TEXT NOT NULL,"
-            " impact_json TEXT NOT NULL, gate_status TEXT NOT NULL, reasons_json TEXT NOT NULL,"
-            " input_sha256 TEXT NOT NULL)")
-
-
+    import schema_guard
+    schema_guard.ensure(db, _ddl, "profile_impact")
 def input_hash(snap: dict, before: dict, after: dict, k: int, rules: dict | None,
                consumed_keys: set[str] | None = None) -> str:
     """분석 입력 전체의 해시 — after·K·정책·설정·**소비 집합** 중 하나라도 바뀌면

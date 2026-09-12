@@ -263,31 +263,34 @@ FROZEN = "frozen"
 DRAFT = "draft"
 
 
-def experiments_init(eval_db: Path) -> None:
-    """평가 저장소는 운영 DB 와 **다른 파일**이다. 운영 DB 는 평가 도구가 읽기만 한다."""
-    with sqlite3.connect(eval_db) as con:
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS experiments ("
-            " experiment_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL,"
-            " manifest_json TEXT NOT NULL, manifest_sha256 TEXT, frozen_at TEXT)")
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS experiment_runs ("
-            " run_id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, arm TEXT NOT NULL, at TEXT NOT NULL,"
-            " manifest_sha256 TEXT NOT NULL, snapshot_sha256 TEXT, arm_revision INTEGER, result_json TEXT)")
-        # frozen 행은 바꿀 수 없다 — 해시만 남기고 원문 변경을 허용하면 불변이 아니다.
-        con.execute(
-            "CREATE TRIGGER IF NOT EXISTS experiments_frozen_immutable BEFORE UPDATE ON experiments "
-            "WHEN OLD.status='frozen' BEGIN SELECT RAISE(ABORT, 'frozen experiment is immutable'); END")
-        con.execute(
-            "CREATE TRIGGER IF NOT EXISTS experiments_frozen_nodelete BEFORE DELETE ON experiments "
-            "WHEN OLD.status='frozen' BEGIN SELECT RAISE(ABORT, 'frozen experiment is immutable'); END")
+def _ddl(con: sqlite3.Connection) -> None:
+    """평가 저장소 스키마. schema_guard 를 통해서만 돈다(§8-98)."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS experiments ("
+        " experiment_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL,"
+        " manifest_json TEXT NOT NULL, manifest_sha256 TEXT, frozen_at TEXT)")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS experiment_runs ("
+        " run_id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, arm TEXT NOT NULL, at TEXT NOT NULL,"
+        " manifest_sha256 TEXT NOT NULL, snapshot_sha256 TEXT, arm_revision INTEGER, result_json TEXT)")
+    # frozen 행은 바꿀 수 없다 — 해시만 남기고 원문 변경을 허용하면 불변이 아니다.
+    con.execute(
+        "CREATE TRIGGER IF NOT EXISTS experiments_frozen_immutable BEFORE UPDATE ON experiments "
+        "WHEN OLD.status='frozen' BEGIN SELECT RAISE(ABORT, 'frozen experiment is immutable'); END")
+    con.execute(
+        "CREATE TRIGGER IF NOT EXISTS experiments_frozen_nodelete BEFORE DELETE ON experiments "
+        "WHEN OLD.status='frozen' BEGIN SELECT RAISE(ABORT, 'frozen experiment is immutable'); END")
 
 
 REQUIRED_MANIFEST = ("primary_metric", "direction", "max_degradation", "k", "denominator",
-                     "label_rule", "missing_policy", "follow_up_days", "budget", "r_rules", "gate_rules",
-                     "initial_profile_hash", "policy_version", "prompt_version", "arms")
+                 "label_rule", "missing_policy", "follow_up_days", "budget", "r_rules", "gate_rules",
+                 "initial_profile_hash", "policy_version", "prompt_version", "arms")
 
 
+def experiments_init(eval_db: Path) -> None:
+    """평가 저장소는 운영 DB 와 **다른 파일**이다. 운영 DB 는 평가 도구가 읽기만 한다."""
+    import schema_guard
+    schema_guard.ensure(eval_db, _ddl, "evaluation")
 def experiment_draft(eval_db: Path, manifest: dict) -> str:
     experiments_init(eval_db)
     import uuid

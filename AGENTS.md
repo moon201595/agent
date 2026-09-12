@@ -37,6 +37,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - MCP 서버: `.venv/bin/python server.py` (stdio). 클라이언트가 띄운다.
 - 사람 판단 UI: `.venv/bin/streamlit run review_app.py`
 - 일일 스캔(cron 진입점): `./run_daily_scan.sh` — 매일 05:00 KST, 로그는 `logs/daily_scan.log`.
+- **DB 스키마 변경**: 각 모듈의 DDL 은 `schema_guard` 를 통해서만 돈다. 운영 DB(테이블이 있는 파일)에는
+  코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고, 사람 승인 뒤
+  `migrate.py --apply`(백업 자동). 테스트는 conftest 가 플래그를 켜 임시 DB 에 바로 적용한다(2026-09-12).
 
 ## 테스트 · 검증 (정확한 명령어 그대로)
 

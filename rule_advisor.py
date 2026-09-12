@@ -22,7 +22,10 @@ import profile_scoring
 import trend_report
 
 # 기준선 뒤 고정할 파라미터. 지금 값은 **초기값**이며 근거 실측 전이다.
-DEFAULT_RULES = {"min_support": 2, "min_cooccurrence_ratio": 0.5, "max_proposals": 3}
+DEFAULT_RULES = {"min_support": 2, "min_cooccurrence_ratio": 0.5, "max_proposals": 3,
+    "min_exploration_evidence": 2,   # 탐색 용어의 최소 증거 편수 — min_support 와 별개
+    "exploration_slots": 1,          # 탐색 후보에 예약하는 자리
+}
 
 
 def propose(sent: dict, profile: dict, rules: dict | None = None) -> dict:
@@ -58,18 +61,26 @@ def propose(sent: dict, profile: dict, rules: dict | None = None) -> dict:
     proposals = [{"action": "add_core_term", "term": g, "proposed_tier": lowest,
                   "evidence_paper_keys": evidence.get(g, [])[:5],
                   "reason": f"rule:support={support[g]},cooccurrence={cooc.get(g, 0)}",
-                  "ambiguity_risks": []} for g in cand[:r["max_proposals"]]]
+                  "ambiguity_risks": []} for g in cand]
     # 탐색 차선(②, §8-97): A 와 같은 `sent["exploration"]` 을 R 도 본다 — 아니면 F/R/A 비교에서
-    # A 만 탈락 후보를 보는 셈이다. 규칙은 하나: 증거가 min_support 편 이상이면 최하위 계층으로.
-    seen = {p["term"] for p in proposals}
+    # A 만 탈락 후보를 보는 셈이다. 두 차선이 **같이 경쟁**한다 — 일반 차선이 먼저 3자리를
+    # 채우면 탐색 후보는 경쟁도 못 한다(외부 검토 2026-09-12). 탐색 후보가 있으면 자리
+    # 하나를 예약한다(exploration_slots). 문턱도 갈랐다 — 탐색 증거는 전체 풀의 편수가
+    # 아니라 모델에 보낸 2편이라, min_support 를 올리면 탐색이 통째로 죽는다.
+    import term_discovery
+    explo = []
     for t in sent.get("exploration") or []:
-        if len(proposals) >= r["max_proposals"]:
-            break
         keys = [e["key"] for e in t.get("papers") or []]
-        if t["term"] in seen or t["term"].lower() in known or len(keys) < r["min_support"]:
+        if t["term"].lower() in known or term_discovery.is_variant_of_known(t["term"], profile):
+            continue                       # 기존 키워드의 표기 변형은 제안이 아니다
+        if len(keys) < r["min_exploration_evidence"]:
             continue
-        proposals.append({"action": "add_core_term", "term": t["term"], "proposed_tier": lowest,
-                          "evidence_paper_keys": keys[:5], "reason": f"rule:exploration,evidence={len(keys)}",
-                          "ambiguity_risks": []})
+        explo.append({"action": "add_core_term", "term": t["term"], "proposed_tier": lowest,
+                      "evidence_paper_keys": keys[:5], "reason": f"rule:exploration,evidence={len(keys)}",
+                      "ambiguity_risks": []})
+    normal = [p for p in proposals if p["term"] not in {e["term"] for e in explo}]
+    reserved = min(r["exploration_slots"], len(explo)) if explo else 0
+    proposals = normal[:max(0, r["max_proposals"] - reserved)]
+    proposals += explo[:r["max_proposals"] - len(proposals)]
     return {"decision": "propose" if proposals else "no_change", "proposals": proposals,
             "rule": "ngram-cooccurrence-v1", "params": r}

@@ -98,11 +98,12 @@ def freeze_scan(db: Path, scan_id: str, profile_id: str, obs: list[dict], profil
             {**prev, "profile_id": profile_id})["papers"]
         prev_topk = [p["_paper_key"] for p in ranked[:k]]
         retention = len(set(prev_topk) & set(topk)) / len(topk)
-    research_profile.record_scan_health(
+    written = research_profile.record_scan_health(
         db, scan_id, profile_id, anchor_terms=sorted(anchors), auto_terms=sorted(core - anchors),
         provenance={kw: prov[kw] for kw in sorted(core) if kw in prov}, topk=topk,
         prev_profile_sha=prev_sha, prev_topk=prev_topk, retention=retention)
-    return {"anchors": sorted(anchors), "auto": sorted(core - anchors), "retention": retention}
+    return {"anchors": sorted(anchors), "auto": sorted(core - anchors), "retention": retention,
+            "written": written}
 
 
 # ── 스캔 하나 ─────────────────────────────────────────────────────────────
