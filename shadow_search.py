@@ -44,7 +44,9 @@ from run_profile_scan import _arxiv_query_from_core_topics
 SHADOW_VERSION = "shadow-v1"
 DEFAULT_WINDOW_DAYS = 7
 SHADOW_BUDGET_S = 300.0          # 팔 하나가 아니라 실험 전체
-ARXIV_MAX_PAGES = 6              # 일일 스캔(30)보다 작게 — 실험이지 수집이 아니다
+# 일일 스캔과 **같은** 페이지 상한 — 작게 잡으면(처음엔 6) 합집합 손실이 과장된다: 첫 저장 실험에서
+# "잃은 적격 9편" 중 5편이 arXiv ID 였고 일일 30페이지면 잡혔을 것이다(§8-101). 예산은 SHADOW_BUDGET_S 가 자른다.
+ARXIV_MAX_PAGES = 30
 
 
 def _ddl(con: sqlite3.Connection) -> None:
@@ -64,6 +66,9 @@ def _ddl(con: sqlite3.Connection) -> None:
         " api_calls    INTEGER NOT NULL,"
         " seconds      REAL NOT NULL,"
         " status       TEXT NOT NULL,"   # done | partial | failed
+        " partial_reason TEXT,"          # partial 의 원인 — s2_budget | arxiv_budget | s2_partial | arxiv_partial
+        " error        TEXT,"            # failed 의 예외 요약
+        " policy_version TEXT NOT NULL," # research_profile.RANK_POLICY_VERSION — 다른 매처 정책의 실험은 안 붙는다
         " version      TEXT NOT NULL)"
     )
 
@@ -89,35 +94,43 @@ def arms_for(before: dict, after: dict) -> dict:
 
 
 async def _search(client: httpx.AsyncClient, arms: dict, since: datetime, until: datetime,
-                  budget_s: float) -> tuple[dict, dict, str]:
-    """씨앗별·질의별 결과를 한 번씩만 모은다. returns (seed→papers, query→papers, status)."""
+                  budget_s: float) -> tuple[dict, dict, str, str | None]:
+    """씨앗별·질의별 결과를 한 번씩만 모은다. returns (seed→papers, query→papers, status, partial_reason).
+    SHADOW_BUDGET_S 는 **실험 전체**의 계약이다 — S2 는 남은 시간을 넘기고, arXiv 는 예산을 안 받으므로
+    바깥에서 `asyncio.wait_for(left)` 로 자른다(외부 검토 2026-09-12: 선언만 있고 강제가 없었다)."""
     deadline = time.monotonic() + budget_s
     seed_results: dict[str, list[dict]] = {}
-    status = "done"
+    status, why = "done", None
     all_seeds = sorted(set(arms["baseline"]["seeds"]) | set(arms["candidate"]["seeds"]))
     for seed in all_seeds:
         left = deadline - time.monotonic()
         if left <= 0:
-            status = "partial"
+            status, why = "partial", why or "s2_budget"
             break
         res = await s2_delta.find_new_papers_since(client, [seed], since, until, budget_s=left)
         seed_results[seed] = res.get("papers") or []
         if res.get("status") != "done":
-            status = "partial"
+            status, why = "partial", why or "s2_partial"
     query_results: dict[str, list[dict]] = {}
     # arXiv 질의가 안 바뀌어도 **한 번** 검색해 두 팔에 공유한다 — 손실은 합집합 기준이어야
     # 뜻이 있다. 첫 dry-run(2026-09-12)에서 S2 팔만 비교하니 "잃은 적격 28편"이 나왔는데
     # 24편은 일일 arXiv 검색이 어차피 잡는 논문이었다. 바뀐 질의는 각각 검색한다.
     queries = {arms["baseline"]["arxiv_query"], arms["candidate"]["arxiv_query"]}
     for q in sorted(queries):
-        if time.monotonic() >= deadline:
-            status = "partial"
+        left = deadline - time.monotonic()
+        if left <= 0:
+            status, why = "partial", why or "arxiv_budget"
             break
-        res = await find_new_papers.find_new_papers_since(client, q, since, max_pages=ARXIV_MAX_PAGES)
+        try:
+            res = await asyncio.wait_for(
+                find_new_papers.find_new_papers_since(client, q, since, max_pages=ARXIV_MAX_PAGES), timeout=left)
+        except asyncio.TimeoutError:
+            status, why = "partial", why or "arxiv_budget"
+            break
         query_results[q] = res.get("papers") or []
         if res.get("status") != "done":
-            status = "partial"
-    return seed_results, query_results, status
+            status, why = "partial", why or "arxiv_partial"
+    return seed_results, query_results, status, why
 
 
 def _arm_papers(arm: dict, seed_results: dict, query_results: dict) -> list[dict]:
@@ -163,7 +176,9 @@ def compare(base: dict, cand: dict, k: int) -> dict:
         "eligible_lost": sorted(b_el - c_el), "eligible_gained": sorted(c_el - b_el),
         "eligible_before": len(b_el), "eligible_after": len(c_el),
         "noise_before": base["excluded"] + base["no_core"], "noise_after": cand["excluded"] + cand["no_core"],
-        "topk_overlap": (len(topk_b & topk_c) / k) if k else None,
+        # 분모는 K 가 아니라 baseline 상위 집합의 실제 크기 — 적격이 K 보다 적을 때 K 로 나누면
+        # 같은 집합인데도 1.0 이 안 된다(외부 검토 2026-09-12). baseline 이 비면 None.
+        "topk_overlap": (len(topk_b & topk_c) / len(topk_b)) if topk_b else None,
         "topk_left": sorted(topk_b - topk_c), "topk_entered": sorted(topk_c - topk_b),
     }
 
@@ -181,11 +196,13 @@ async def run_shadow(db: Path, profile_id: str, before: dict, after: dict,
     k = int(after.get("max_items") or before.get("max_items") or 6)
     scope = api_usage.Scope()
     started = time.monotonic()
+    error = None
     with scope:
         try:
-            seed_results, query_results, status = await _search(client, arms, since, now, budget_s)
+            seed_results, query_results, status, why = await _search(client, arms, since, now, budget_s)
         except Exception as e:  # noqa: BLE001 — 실험 실패는 실패로 남긴다
-            seed_results, query_results, status = {}, {}, f"failed: {type(e).__name__}: {str(e)[:120]}"
+            seed_results, query_results, status, why = {}, {}, "failed", None
+            error = f"{type(e).__name__}: {str(e)[:200]}"
     seconds = time.monotonic() - started
     calls = scope.total()
     base = _measure(_arm_papers(arms["baseline"], seed_results, query_results), before, k, arms["baseline"]["seeds"])
@@ -198,16 +215,18 @@ async def run_shadow(db: Path, profile_id: str, before: dict, after: dict,
            "created_at": now.isoformat(), "window_start": since.isoformat(), "window_end": now.isoformat(),
            "before_hash": profile_impact.profile_hash(before), "after_hash": profile_impact.profile_hash(after),
            "arms": arms, "metrics": metrics, "api_calls": calls, "seconds": round(seconds, 1),
-           "status": status if status in ("done", "partial") else "failed", "error": None if status in ("done", "partial") else status,
-           "version": SHADOW_VERSION}
+           "status": status, "partial_reason": why, "error": error,
+           "policy_version": research_profile.RANK_POLICY_VERSION, "version": SHADOW_VERSION}
     if store:
         init_db(db)
         with sqlite3.connect(db) as con:
-            con.execute("INSERT INTO shadow_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            con.execute("INSERT INTO shadow_runs (shadow_id, profile_id, analysis_id, created_at, window_start,"
+                        " window_end, before_hash, after_hash, arms_json, metrics_json, api_calls, seconds,"
+                        " status, partial_reason, error, policy_version, version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (out["shadow_id"], profile_id, analysis_id, out["created_at"], out["window_start"],
                          out["window_end"], out["before_hash"], out["after_hash"],
                          json.dumps(arms, ensure_ascii=False), json.dumps(metrics, ensure_ascii=False),
-                         calls, out["seconds"], out["status"], SHADOW_VERSION))
+                         calls, out["seconds"], status, why, error, research_profile.RANK_POLICY_VERSION, SHADOW_VERSION))
     return out
 
 
@@ -216,7 +235,9 @@ def format_shadow(out: dict) -> list[str]:
     if out.get("status") == "skipped":
         return [f"shadow 건너뜀: {out['reason']}"]
     a, m, d = out["arms"], out["metrics"], out["metrics"]["diff"]
-    lines = [f"shadow {out['shadow_id']} · {out['status']} · 창 {m['window_days']}일 · API {out['api_calls']}회 · {out['seconds']}초",
+    lines = [f"shadow {out['shadow_id']} · {out['status']}" + (f"({out['partial_reason']})" if out.get('partial_reason') else "")
+             + (f" · 오류 {out['error']}" if out.get('error') else "")
+             + f" · 창 {m['window_days']}일 · API {out['api_calls']}회 · {out['seconds']}초 · 정책 {out['policy_version']}",
              f"  baseline 씨앗 {a['baseline']['seeds']} → candidate 씨앗 {a['candidate']['seeds']}"
              + (f" (제거 {a['seeds_removed']})" if a['seeds_removed'] else "") + (f" (추가 {a['seeds_added']})" if a['seeds_added'] else ""),
              f"  반환 {m['baseline']['returned']} → {m['candidate']['returned']} · 적격 {d['eligible_before']} → {d['eligible_after']}"

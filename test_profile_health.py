@@ -316,3 +316,39 @@ def test_얼리기_실패는_관측_저장_실패로_기록되지_않는다(tmp_
         frozen = con.execute("SELECT count(*) FROM scan_health").fetchone()[0]
     assert n == 5 and err is None, "관측은 저장됐고 실패로 기록되면 안 된다"
     assert frozen == 0
+
+
+def test_H7_반사실은_이미_보낸_논문을_양쪽에서_똑같이_뺀다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 직전 프로필 반사실이 already_shown 논문까지 다시 순위에 넣어 유지율이
+    인위적으로 내려가는 것(외부 검토 2026-09-12). 소비 상태는 프로필과 무관하다."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    # a1 을 '보냈다'로 표시 → 다음 스캔에서 already_shown. 그리고 프로필을 바꿔 반사실이 계산되게 한다.
+    rp.mark_shown(db, "p", [{"arxiv_id": "a1", "title": "target term study"}])
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term"],
+                      core_weights={"target term": 1.0, "trend term": 0.9},      # 가중치만 바꿈 — 순위는 그대로
+                      exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    _run(db, monkeypatch, PAPERS)
+    sid = _scan_ids(db)[1]
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        row = dict(con.execute("SELECT * FROM scan_health WHERE scan_id=?", (sid,)).fetchone())
+        shown = con.execute("SELECT count(*) FROM candidate_observations WHERE scan_id=? AND filter_reason='already_shown'", (sid,)).fetchone()[0]
+    assert shown == 1, "전제: a1 이 already_shown 으로 관측됐다"
+    assert "a1" not in json.loads(row["prev_topk"]), "이미 보낸 논문은 반사실 상위 K 에도 없다"
+    assert row["retention"] == 1.0, "프로필 뜻이 안 바뀌었으니 같은 풀에서 상위 K 는 같다"
+    assert row["health_version"] == ph.HEALTH_VERSION
+
+
+def test_정책이나_지표_버전이_섞인_창은_판정하지_않는다():
+    """이 테스트가 잡는 것: match-v1 시절과 match-v2 시절 스캔을 한 기준선 중앙값에 넣는 것,
+    H7 정의가 바뀐(health-v1/v2) 행을 섞는 것."""
+    good = [_row(i, policy_version="rank-tuple-v1+match-v2", health_version="health-v2") for i in range(15)]
+    recent = [_row(20 + i, policy_version="rank-tuple-v1+match-v2", health_version="health-v2") for i in range(3)]
+    rules = {"min_anchor_share_topk": 0.5}
+    assert ph.assess(good, recent, rules)["status"] == ph.OK
+    old = [_row(0, policy_version="rank-tuple-v1", health_version="health-v2")] + good[1:]
+    r = ph.assess(old, recent, rules)
+    assert r["status"] == ph.MIXED_MODES and r["reasons"][0].startswith("policy_version=")
+    oldh = [_row(0, policy_version="rank-tuple-v1+match-v2", health_version="health-v1")] + good[1:]
+    assert ph.assess(oldh, recent, rules)["reasons"][0].startswith("health_version=")
