@@ -79,8 +79,11 @@ def test_이벤트_표_도입_전_프로필은_현재_활성_키워드를_첫_�
     이력이 advisor 인 것은 advisor 여야 한다), bootstrap 을 두 번 하는 것."""
     db = tmp_path / "t.db"
     _create(db, ["A"]); _create(db, ["A", "X"], origin="advisor")
-    with sqlite3.connect(db) as con:                      # 도입 전 상태를 흉내: 이벤트 표를 비운다
+    with sqlite3.connect(db) as con:                      # 도입 전 상태를 흉내: 트리거를 걷고 이벤트 표를 비운다
+        con.execute("DROP TRIGGER keyword_events_immutable_d")
         con.execute("DELETE FROM profile_keyword_events")
+        con.execute("CREATE TRIGGER keyword_events_immutable_d BEFORE DELETE ON profile_keyword_events "
+                    "BEGIN SELECT RAISE(ABORT, 'profile_keyword_events is append-only'); END")
     assert rp.keyword_provenance(db, "p")["x"]["origin"] == "advisor", "이벤트 없으면 처음 출현 이력으로"
     n = rp.bootstrap_keyword_events(db, "p")
     assert n == 4 and rp.bootstrap_keyword_events(db, "p") == 0
@@ -94,33 +97,48 @@ def _sent(keys):
             "exploration": [], "sent_paper_keys": list(keys), "allowed_tiers": [1.0]}
 
 
-def test_게이트가_막은_제안은_다음_주에_같은_증거로_다시_분석되지_않는다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: run_weekly 가 게이트 결과를 기각으로 안 남기는 것(사람이 없는 구조에서
-    기각의 주체는 게이트다), 억제된 제안이 다시 분석되는 것."""
+def test_insufficient_는_기각이_아니고_held_만_기억한다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 규칙 미설정(insufficient)으로 막힌 정상 제안을 기각으로 기억해 9/27 전
+    제안이 전부 억제되는 것(외부 검토 2026-09-12), held 를 기억하지 않는 것, 규칙이 바뀌었는데도
+    억제하는 것, 전부 억제됐는데 status 가 proposed 인 것."""
     import asyncio
     import test_profile_advisor as T
     from datetime import timedelta
     db = tmp_path / "d.db"
-    # test_profile_advisor 의 db fixture 와 같은 준비
     rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term"],
                       core_weights={"target term": 1.0, "trend term": 0.6}, exclude=["banned"], max_items=2, s2_seeds=["target term"])
     monkeypatch.setenv("GOOGLE_API_KEY", "k1")
     T._seed_corpus(db)
-    # 계층 변경 제안 — 검색 집합은 안 바뀌므로 shadow 가 아니라 규칙 미설정(insufficient)으로 막힌다
     tier = json.dumps({"decision": "propose", "proposals": [
         {"action": "change_core_tier", "term": "trend term", "proposed_tier": 1.0,
          "evidence_paper_keys": ["a1", "a3"], "reason": "r", "ambiguity_risks": []}]})
+    # 1) 규칙 미설정 → insufficient → 기각 아님. 다음 주 같은 제안은 다시 분석된다.
     out1 = T._run(db, T.FakeClient([T.gemini_ok(tier)]))
-    assert out1["status"] == "proposed" and out1["gate"] == pi.INSUFFICIENT, out1
+    assert out1["status"] == "proposed" and out1["gate"] == pi.INSUFFICIENT
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM advisor_events WHERE kind='rejected'").fetchone()[0] == 0
+    out2 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=7)))
+    assert out2["status"] == "proposed" and out2["valid"] == 1 and out2["suppressed"] == 0
+    # 2) 규칙을 설정해 held 가 나면 기각 기억 → 다음 주 억제 → status 는 suppressed, valid 0
+    adv.init_db(db)
+    rules = {"max_core_changes": 0, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, ?)", (adv.MODE_PROPOSAL_ONLY, json.dumps(rules)))
+    out3 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=14)))
+    assert out3["gate"] == pi.HELD
     with sqlite3.connect(db) as con:
         rej = [json.loads(r[0]) for r in con.execute("SELECT detail_json FROM advisor_events WHERE kind='rejected'")]
-    assert len(rej) == 1 and rej[0]["reason"].startswith("gate:insufficient_evidence") and rej[0]["term"] == "trend term"
-    # 다음 주: 같은 증거·같은 프로필로 같은 제안 → 억제, 분석 안 함
-    out2 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=7)))
+    assert len(rej) == 1 and rej[0]["reason"].startswith("gate:held") and rej[0]["rules_hash"]
+    out4 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=21)))
+    assert out4["status"] == "suppressed" and out4["valid"] == 0 and out4["suppressed"] == 1
     with sqlite3.connect(db) as con:
-        st = [r[0] for r in con.execute("SELECT status FROM advisor_proposals ORDER BY rowid")]
         n_an = con.execute("SELECT count(*) FROM impact_analyses").fetchone()[0]
-    assert st == ["analyzed", "suppressed"] and n_an == 1, (st, n_an, out2)
+    assert n_an == 2, "4주차엔 분석하지 않았다(1·2주차는 같은 입력이라 분석 1건 재사용 + 3주차 held 1건)"
+    # 3) 규칙이 바뀌면(한도 완화) 같은 증거라도 다시 평가한다
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE advisor_settings SET rules_json=? WHERE profile_id='p'", (json.dumps({**rules, "max_core_changes": 5}),))
+    out5 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=28)))
+    assert out5["status"] == "proposed" and out5["suppressed"] == 0
 
 
 def test_기각_기억은_같은_제안_같은_증거_같은_프로필일_때만_억제한다(tmp_path):
@@ -130,7 +148,8 @@ def test_기각_기억은_같은_제안_같은_증거_같은_프로필일_때만
     _create(db, ["A"]); profile = rp.get_profile(db, "p")
     p = {"action": "add_core_term", "term": "spiking-sensor", "proposed_tier": 1.0, "evidence_paper_keys": ["k2", "k1"]}
     sent = _sent(["k1", "k2", "k3"])
-    adv.record_rejection(db, "p", p, sent, profile, reason="너무 넓다")
+    rh = adv.current_rules_hash(db, "p", None)
+    adv.record_rejection(db, "p", p, sent, profile, reason="gate:held", rules_hash=rh)
     same = {"action": "add_core_term", "term": "spiking sensors", "proposed_tier": 1.00, "evidence_paper_keys": ["k1", "k2"]}
     out = adv.suppress_rejected(db, "p", [same], sent, profile)
     assert out[0].get("suppressed") is True, "표기 변형·키 순서·계층 표기가 달라도 같은 제안이다"
@@ -142,6 +161,7 @@ def test_기각_기억은_같은_제안_같은_증거_같은_프로필일_때만
     assert not adv.suppress_rejected(db, "p", [same], sent, other)[0].get("suppressed"), "프로필이 바뀌면 다시 올린다"
     _create(db, ["A"]); back = rp.get_profile(db, "p")     # A→B→A: revision 은 올랐지만 내용은 같다
     assert adv.suppress_rejected(db, "p", [same], sent, back)[0].get("suppressed") is True, "revision 이 아니라 내용 해시"
+    assert not adv.suppress_rejected(db, "p", [same], sent, back, rules={"max_core_changes": 3})[0].get("suppressed"), "규칙이 바뀌면 다시 평가"
     with sqlite3.connect(db) as con:
         d = json.loads(con.execute("SELECT detail_json FROM advisor_events WHERE kind='rejected'").fetchone()[0])
     assert d["base_revision"] == 1 and "reason" in d
@@ -180,3 +200,36 @@ def test_게이트_판정은_실제로_쓴_규칙과_함께_추가만_되는_표
     dec2 = pi.latest_decision(db, an2["analysis_id"])
     assert dec2["gate_status"] == pi.ELIGIBLE and json.loads(dec2["effective_rules_json"]) == rules and dec2["rules_hash"]
     assert adv.apply_analysis(db, "p", an2["analysis_id"])["applied"] is True
+
+
+def test_이벤트와_판정_기록은_DB_가_append_only_를_강제한다(tmp_path):
+    """이 테스트가 잡는 것: 코드 실수로 이력을 UPDATE/DELETE 할 수 있는 것."""
+    import pytest
+    db = tmp_path / "t.db"
+    _create(db, ["A"])
+    pi.init_db(db)
+    with sqlite3.connect(db) as con:
+        for sql in ("UPDATE profile_keyword_events SET keyword='z'", "DELETE FROM profile_keyword_events"):
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(sql)
+        con.execute("INSERT INTO gate_decisions VALUES ('d','a','p','t','analyze',NULL,'x','[]','{}',NULL,'h')")
+        for sql in ("UPDATE gate_decisions SET gate_status='y'", "DELETE FROM gate_decisions"):
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(sql)
+
+
+def test_이관_전_revision_으로_rollback_해도_legacy_provenance_가_보충된다(tmp_path):
+    """이 테스트가 잡는 것: bootstrap 보다 과거 revision 으로 되돌릴 때 이벤트가 없어 되살아난 키워드가
+    전부 rollback/user 로 뭉개지는 것 — advisor 가 넣었던 키워드는 advisor 로 와야 한다."""
+    db = tmp_path / "t.db"
+    r1 = _create(db, ["A"])
+    r2 = _create(db, ["A", "X"], origin="advisor")
+    r3 = _create(db, ["A"])
+    with sqlite3.connect(db) as con:                      # r1~r3 가 이벤트 표 도입 전이었다고 흉내
+        con.execute("DROP TRIGGER keyword_events_immutable_d")
+        con.execute("DELETE FROM profile_keyword_events")
+    rp.bootstrap_keyword_events(db, "p")                  # 이제 활성 = {A} 만 첫 세대
+    out = adv.rollback(db, "p", r2, reason="legacy")
+    assert out["rolled_back"]
+    prov = rp.keyword_provenance(db, "p")
+    assert prov["x"]["origin"] == "advisor" and prov["a"]["origin"] == "user"

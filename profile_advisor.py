@@ -449,21 +449,25 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if parsed is None:
         return finish("failed", "no_valid_response", attempts=attempts)
 
-    validated = suppress_rejected(db, profile_id, validate_proposals(parsed, sent, profile), sent, profile)
-    after = apply_actions(profile, validated)
     mode, rules = get_mode(db, profile_id)
+    validated = suppress_rejected(db, profile_id, validate_proposals(parsed, sent, profile), sent, profile, rules)
+    after = apply_actions(profile, validated)
     consumed = research_profile.already_shown(db, profile_id)
     analysis = None
     if any(not p.get("errors") and not p.get("deferred") and not p.get("suppressed") for p in validated):
         analysis = profile_impact.analyze_and_store(db, snap, profile, after, k or int(profile.get("max_items") or 6),
                                                     rules=rules, consumed_keys=consumed)
-        # 게이트가 막았으면(eligible 도 needs_shadow 도 아님) 이 묶음의 제안을 기각으로 기억한다 —
-        # 같은 증거·같은 프로필이면 다음 주에 다시 분석하지 않는다. 사람은 개입하지 않는다.
-        if analysis["gate_status"] in (profile_impact.HELD, profile_impact.INSUFFICIENT, profile_impact.INVALID):
+        # **held 만** 기각으로 기억한다 — 설정된 정책 한도를 실제로 넘긴 판정. insufficient 는 "나쁜
+        # 제안"이 아니라 "지금 판정할 근거·설정이 없다"(규칙 미설정·관측 부족·shadow 미완)라서
+        # 기억하면 9/27 전 정상 제안이 전부 억제된다(외부 검토 2026-09-12). 규칙이 바뀌면 다시
+        # 평가돼야 하므로 억제 키에 그 판정의 규칙 해시를 넣는다. 사람은 개입하지 않는다.
+        if analysis["gate_status"] == profile_impact.HELD:
+            dec = profile_impact.latest_decision(db, analysis["analysis_id"])
             for p in validated:
                 if not p.get("errors") and not p.get("deferred") and not p.get("suppressed"):
                     record_rejection(db, profile_id, p, sent, profile,
-                                     reason=f"gate:{analysis['gate_status']}:" + ";".join(json.loads(analysis["reasons_json"])[:3]))
+                                     reason=f"gate:held:" + ";".join(json.loads(analysis["reasons_json"])[:3]),
+                                     rules_hash=dec["rules_hash"] if dec else None)
     with sqlite3.connect(db) as con:
         for i, p in enumerate(validated, start=1):
             status = ("deferred" if p.get("deferred") else "invalid" if p.get("errors")
@@ -477,8 +481,12 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
                          json.dumps(p.get("ambiguity_risks") or [], ensure_ascii=False),
                          json.dumps({"errors": p.get("errors") or []}, ensure_ascii=False), status,
                          None, analysis["analysis_id"] if analysis else None))
-    return finish("proposed" if validated else "no_change", None, attempts=attempts,
-                  proposals=len(validated), valid=sum(1 for p in validated if not p.get("errors") and not p.get("deferred")),
+    actionable = sum(1 for p in validated if not p.get("errors") and not p.get("deferred") and not p.get("suppressed"))
+    suppressed = sum(1 for p in validated if p.get("suppressed"))
+    # 전부 억제됐으면 "제안됨"이 아니다 — 새로 볼 것이 없다는 별도 상태(외부 검토 2026-09-12).
+    status = ("no_change" if not validated else "suppressed" if suppressed and not actionable else "proposed")
+    return finish(status, None, attempts=attempts,
+                  proposals=len(validated), valid=actionable, suppressed=suppressed,
                   gate=analysis["gate_status"] if analysis else None,
                   gate_reasons=json.loads(analysis["reasons_json"]) if analysis else None,
                   mode=mode, applied=False)
@@ -509,24 +517,24 @@ def evidence_sha(p: dict, sent: dict) -> str:
 
 
 def record_rejection(db: Path, profile_id: str, p: dict, sent: dict, profile: dict, reason: str,
-                     base_revision: int | None = None) -> str:
+                     base_revision: int | None = None, rules_hash: str | None = None) -> str:
     """**게이트가** 제안을 막았다 — advisor_events(kind=rejected). 이 시스템에는 사람이 제안을
     승인·거절하는 단계가 없다(스케줄 → 메일 한 통). 기각의 주체는 게이트(held/insufficient/invalid)
-    이고 이 함수는 run_weekly 가 그 결과로 부른다. 억제 조건은 proposal_sig + evidence_sha +
-    base_profile_hash 셋이 같을 때(revision 은 감사용: A→B→A 면 숫자만 다르다) — 같은 증거로
-    같은 제안을 다음 주에 다시 분석하지 않는다. 새 증거가 생기면 다시 올라온다.
+    이고 이 함수는 run_weekly 가 **held** 결과로만 부른다. 억제 조건은 proposal_sig + evidence_sha +
+    base_profile_hash + rules_hash 넷이 같을 때(revision 은 감사용: A→B→A 면 숫자만 다르다) —
+    같은 증거·같은 프로필·같은 규칙이면 다시 분석하지 않는다. 새 증거나 바뀐 규칙이면 다시 올라온다.
     이 이력은 LLM 프롬프트에 안 나간다 — 제안이 나온 뒤 로컬에서만 거른다."""
     init_db(db)
     detail = {"proposal_sig": proposal_signature(p), "evidence_sha": evidence_sha(p, sent),
               "base_profile_hash": profile_impact.profile_hash(profile),
               "base_revision": base_revision if base_revision is not None else research_profile.current_revision(db, profile_id),
-              "term": p.get("term"), "action": p.get("action"), "reason": reason}
+              "rules_hash": rules_hash, "term": p.get("term"), "action": p.get("action"), "reason": reason}
     with sqlite3.connect(db) as con:
         _event(con, profile_id, "rejected", p.get("proposal_id"), detail)
     return detail["proposal_sig"]
 
 
-def rejected_signatures(db: Path, profile_id: str) -> set[tuple[str, str, str]]:
+def rejected_signatures(db: Path, profile_id: str) -> set[tuple[str, str, str, str | None]]:
     init_db(db)
     with sqlite3.connect(db) as con:
         rows = con.execute("SELECT detail_json FROM advisor_events WHERE profile_id=? AND kind='rejected'", (profile_id,)).fetchall()
@@ -534,19 +542,28 @@ def rejected_signatures(db: Path, profile_id: str) -> set[tuple[str, str, str]]:
     for (dj,) in rows:
         d = json.loads(dj or "{}")
         if d.get("proposal_sig") and d.get("evidence_sha") and d.get("base_profile_hash"):
-            out.add((d["proposal_sig"], d["evidence_sha"], d["base_profile_hash"]))
+            out.add((d["proposal_sig"], d["evidence_sha"], d["base_profile_hash"], d.get("rules_hash")))
     return out
 
 
-def suppress_rejected(db: Path, profile_id: str, validated: list[dict], sent: dict, profile: dict) -> list[dict]:
-    """같은 제안·같은 증거·같은 프로필이면 `suppressed` 표시. 새 증거나 바뀐 프로필이면 다시 올라온다."""
+def current_rules_hash(db: Path, profile_id: str, rules: dict | None) -> str:
+    """지금 판정에 쓰일 규칙의 해시 — gate_decisions 의 rules_hash 와 같은 방식."""
+    eff = {**profile_impact.DEFAULT_APPLY_RULES, **(rules or {})}
+    canon = json.dumps({"rules": eff, "shadow_rules": None}, sort_keys=True)
+    return hashlib.sha256(canon.encode()).hexdigest()[:16]
+
+
+def suppress_rejected(db: Path, profile_id: str, validated: list[dict], sent: dict, profile: dict,
+                      rules: dict | None = None) -> list[dict]:
+    """같은 제안·같은 증거·같은 프로필·같은 규칙이면 `suppressed`. 하나라도 바뀌면 다시 올라온다."""
     memo = rejected_signatures(db, profile_id)
     if not memo:
         return validated
     ph = profile_impact.profile_hash(profile)
+    rh = current_rules_hash(db, profile_id, rules)
     out = []
     for p in validated:
-        key = (proposal_signature(p), evidence_sha(p, sent), ph)
+        key = (proposal_signature(p), evidence_sha(p, sent), ph, rh)
         out.append({**p, "suppressed": True, "suppressed_by": key[0]} if key in memo and not p.get("errors") else p)
     return out
 
@@ -612,6 +629,11 @@ def rollback(db: Path, profile_id: str, to_revision: int, reason: str) -> dict:
     # rollback 이지만 사람이 넣었던 것은 user 로, 제안기가 넣었던 것은 advisor 로 돌아온다(§8-102).
     restore = {kk: v["provenance_origin"] for kk, v in
                research_profile.active_generations(db, profile_id, as_of_revision=to_revision).items()}
+    # 되살릴 revision 이 이벤트 표 도입 전이면 세대 기록이 없다 — legacy provenance 로 보충한다.
+    target_keys = {(k.lower(), kind) for k, kind, _w in kws}
+    missing = target_keys - set(restore)
+    if missing:
+        restore.update(research_profile.legacy_provenance(db, profile_id, missing))
     rev = research_profile.create_profile(
         db, profile_id, current["name"], core_topics=core, core_weights=weights,
         target_domain=[k for k, kind, w in kws if kind == "target"],

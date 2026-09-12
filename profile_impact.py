@@ -468,6 +468,10 @@ def _ddl(con: sqlite3.Connection) -> None:
         " effective_shadow_rules_json TEXT,"
         " rules_hash   TEXT NOT NULL)"
     )
+    con.execute("CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_u BEFORE UPDATE ON gate_decisions "
+                "BEGIN SELECT RAISE(ABORT, 'gate_decisions is append-only'); END")
+    con.execute("CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_d BEFORE DELETE ON gate_decisions "
+                "BEGIN SELECT RAISE(ABORT, 'gate_decisions is append-only'); END")
 
 def init_db(db: Path) -> None:
     import schema_guard
