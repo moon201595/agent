@@ -5306,6 +5306,26 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
 
     테스트 +4(기각 재작성 · 불변 · legacy rollback · crash-after-DDL), 돌연변이 7/7. 922 passed.
 
+104. **이관 실행(승인 뒤) · 묶음 held 를 개별 기각으로 귀속하지 않는다** (2026-09-12).
+
+    **이관(`migrate.py --apply`, 외부 검토 승인):** 일관 백업
+    `data/backups/papers_2026-09-12T093957.795637Z_pre_migration.db`(integrity ok, **보관** — 다음
+    05:00 health-v2 스캔이 정상 완료될 때까지 지우지 않는다) → DDL 7개 적용(profile_keyword_events
+    + index + 트리거 2, gate_decisions + 트리거 2) → bootstrap **68건**(core 38 · target 21 ·
+    exclude 7 · s2_seed 2, provenance 전부 user, actor bootstrap) → 현재 집합 == 활성 세대 **ok**
+    → 재대조 "스키마 최신 — 할 일 없음". integrity ok.
+
+    **묶음 held 귀속.** 제안기는 여러 제안을 하나의 after 로 묶어 한 번 게이트한다. 묶음이 held
+    (예: core_changes 2 > 1)면 §8-103 코드는 actionable 제안 **전부**를 기각으로 기억했다 —
+    A·B 각각은 통과할 수 있는데도. 고침: 묶음이 held 면 **제안 하나씩 따로 분석**해
+    (`apply_actions(profile, [p])`, 로컬 재채점이라 API 0) **혼자서도 held 인 것만** 기각한다.
+    개별 분석 id 는 advisor_proposals.analysis_id 에 남는다(묶음은 bundle_analysis_id).
+    테스트: 한도 1에 제안 2 → 묶음 held, 기각 0, 개별 eligible, 다음 주 억제 없음 / 한도 0 → 둘 다
+    기각. 돌연변이(묶음 held 면 전부 기각) 잡힘. 923 passed.
+
+    ⑨ 준비는 여기까지다. 남은 것: 적용 시 마지막 판정 규칙 해시 ↔ 현재 설정 대조(9/27
+    임계값 때), auto_apply 개통(⑧ 뒤), ⑫ 복구 트리거(health assess → rollback).
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

@@ -461,12 +461,21 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
         # 제안"이 아니라 "지금 판정할 근거·설정이 없다"(규칙 미설정·관측 부족·shadow 미완)라서
         # 기억하면 9/27 전 정상 제안이 전부 억제된다(외부 검토 2026-09-12). 규칙이 바뀌면 다시
         # 평가돼야 하므로 억제 키에 그 판정의 규칙 해시를 넣는다. 사람은 개입하지 않는다.
+        # 묶음(bundle) 이 held 여도 **개별 제안의 잘못은 아니다** — A+B 가 합쳐서 한도를 넘었을 뿐
+        # 각각은 통과할 수 있다(외부 검토 2026-09-12). 묶음이 held 면 제안 하나씩 따로 분석해
+        # **혼자서도 held 인 것만** 기각으로 기억한다. 로컬 재채점이라 API 비용은 0 이다.
         if analysis["gate_status"] == profile_impact.HELD:
-            dec = profile_impact.latest_decision(db, analysis["analysis_id"])
             for p in validated:
-                if not p.get("errors") and not p.get("deferred") and not p.get("suppressed"):
+                if p.get("errors") or p.get("deferred") or p.get("suppressed"):
+                    continue
+                solo = profile_impact.analyze_and_store(
+                    db, snap, profile, apply_actions(profile, [p]), k or int(profile.get("max_items") or 6),
+                    rules=rules, consumed_keys=consumed)
+                p["_solo_analysis_id"] = solo["analysis_id"]
+                if solo["gate_status"] == profile_impact.HELD:
+                    dec = profile_impact.latest_decision(db, solo["analysis_id"])
                     record_rejection(db, profile_id, p, sent, profile,
-                                     reason=f"gate:held:" + ";".join(json.loads(analysis["reasons_json"])[:3]),
+                                     reason="gate:held(solo):" + ";".join(json.loads(solo["reasons_json"])[:3]),
                                      rules_hash=dec["rules_hash"] if dec else None)
     with sqlite3.connect(db) as con:
         for i, p in enumerate(validated, start=1):
@@ -480,7 +489,7 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
                          json.dumps(p.get("evidence_paper_keys") or []), p.get("reason"),
                          json.dumps(p.get("ambiguity_risks") or [], ensure_ascii=False),
                          json.dumps({"errors": p.get("errors") or []}, ensure_ascii=False), status,
-                         None, analysis["analysis_id"] if analysis else None))
+                         p.get("_solo_analysis_id"), analysis["analysis_id"] if analysis else None))
     actionable = sum(1 for p in validated if not p.get("errors") and not p.get("deferred") and not p.get("suppressed"))
     suppressed = sum(1 for p in validated if p.get("suppressed"))
     # 전부 억제됐으면 "제안됨"이 아니다 — 새로 볼 것이 없다는 별도 상태(외부 검토 2026-09-12).
