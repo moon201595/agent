@@ -5007,6 +5007,48 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     886 passed. 실 DB: scan_health 생성, 9/11 스캔은 recomputed 로 표시, 내일 05:00
     첫 as_observed 행.
 
+97. **② 탐색 차선 — 키워드에 안 걸린 논문에서 후보 용어를 로컬로 찾는다** (2026-09-12).
+    §8-94 에서 확인한 닫힌 고리(용어 발견·제안기 입력이 적중 논문만 봄, 9/11 탈락 429편은
+    한 번도 안 읽힘)를 열었다. 설계는 외부 검토(§8-96 끝)를 따랐다 — "논문 3편을 뽑아 그
+    안에서 신조어를 찾는다"가 아니라 **"탈락 후보 전체를 n-gram 으로 훑어 후보 용어를
+    만들고, 용어마다 증거 논문 2편만 제안기에 보낸다."** LLM 은 발견자가 아니라 검토자다.
+
+    `term_discovery.py`: `exploration_pool`(no_core_hit 관측, 논문당 최신 하나, 초록 복원,
+    도메인 적중은 저장값 우선) → `discover`(2·3-gram, 현재 키워드·도메인·제외어와 포함
+    관계인 조합 제외, **우산 용어 제외**, 3편 이상, 긴 조합 우선, 편수 → 도메인 적중 →
+    씨앗 유입 → 최신 → 용어 순) → 용어 3개 × 증거 2편. target_domain 은 진입 조건이 아니라
+    정렬 신호다 — 조건이면 core 폐쇄 고리가 domain 폐쇄 고리로 바뀐다.
+
+    **실측(9/11 탈락 429편, 초록 401편).** 첫 판은 상위 12개 중 8개가 우산 용어였다 —
+    large language models · machine learning · deep learning · artificial intelligence …
+    그리고 상투구(address these challenges · findings suggest · remains challenging).
+    우산 용어는 "조합의 모든 낱말이 우산 어휘"일 때만 뺀다(_GENERIC_WORDS) — 낱말
+    하나라도 밖이면 산다. 상투구 낱말은 trend_report._BOILERPLATE 에 더했다(주간 리뷰의
+    "등록 안 된 말"도 같이 깨끗해진다). 고친 뒤 상위 3: **reinforcement learning 15편 ·
+    vision language models 9편 · random forest 6편.**
+
+    **`vision language models` 는 진짜 구멍이다.** 우리 키워드는 `vision-language model`
+    (하이픈)이고 `_keyword_pattern` 은 복수형은 받지만 하이픈↔공백은 안 받는다. 그래서
+    9편이 no_core_hit 였다. **미해결로 적는다**(범위 밖, 규칙 12): 키워드 매칭에서
+    하이픈과 공백을 같게 볼지는 오탐 실측 뒤 정한다. 프롬프트 v2 는 이런 경우를
+    "기존 키워드의 표기 변형"으로 적고 제안하지 말라고 지시한다.
+
+    제안기(A): `prompts/profile_advisor_v2.md` — "탐색 후보 용어" 절 추가, R1~R7 그대로.
+    대표 논문 8 → 5(DELIVERY_PAPERS), 탐색 증거 초록 500자. 실측 프롬프트 13,210자 / 16,000.
+    `build_input` 은 용어 문자열과 증거(key·title·abstract)만 보낸다 — support·도메인
+    편수는 내부 집계라 뺀다(규칙 4·R5, 화이트리스트 테스트를 넓혔다). 증거 키는
+    `sent_paper_keys` 에 들어가 R3 를 통과하고, R7(문자열 실재) corpus 에도 들어간다.
+    탐색이 실패해도 주간 제안은 대표 논문만으로 간다.
+
+    규칙 제안기(R)도 같은 `sent["exploration"]` 을 본다 — 아니면 F/R/A 비교에서 A 만
+    탈락 후보를 보는 셈이다. 규칙은 하나: 증거 min_support 편 이상이면 최하위 계층.
+    실측: R 이 위 셋을 그대로 제안한다(reason `rule:exploration`). 적용은 여전히 닫혀 있다.
+
+    주간 리뷰에 "▶ 키워드에 안 걸린 논문에서 반복된 말 (탐색 풀 N편)" 절 — 코드 생성,
+    편수는 메일에만. 관측 없는 기간은 미측정.
+
+    테스트 6개, 돌연변이 10/10. 892 passed. astra 판정은 아직 못 받았다(9/15 이후).
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
