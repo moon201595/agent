@@ -252,6 +252,13 @@ def init_db(db_path: Path) -> None:
             " observed_at    TEXT NOT NULL,"
             " PRIMARY KEY (scan_id, paper_key))"
         )
+        # 관측 시점의 적중을 그대로 남긴다(2026-09-12, §8-95). 없으면 건강 지표가 **현재**
+        # 채점 코드로 과거를 다시 세게 되고, 가드 하나가 들어갈 때마다 과거 지표가 바뀐다
+        # (외부 검토가 잡았다 — 9/11 스캔의 anchor 적중이 0.83 으로 "변한" 것이 그 증거).
+        obs_cols = {row[1] for row in con.execute("PRAGMA table_info(candidate_observations)")}
+        for col in ("core_hits", "exclude_hits", "domain_hits"):
+            if col not in obs_cols:
+                con.execute(f"ALTER TABLE candidate_observations ADD COLUMN {col} TEXT")  # JSON 목록
         con.execute("CREATE INDEX IF NOT EXISTS idx_observations_paper "
                     "ON candidate_observations (profile_id, paper_key, observed_at)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_observations_profile_time "
@@ -350,6 +357,20 @@ def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
         " VALUES (?,?,?,?,?,?,?)",
         (profile_id, cur + 1, now, origin, sha, json.dumps(snapshot, ensure_ascii=False), note))
     return cur + 1
+
+
+def profile_from_snapshot(snapshot: dict) -> dict:
+    """profile_revisions.snapshot({"keywords": [[kw, kind, weight]...], "max_items"}) 을
+    get_profile 과 같은 모양의 dict 로. rollback 과 건강 지표(H7)가 같은 변환을 쓴다."""
+    kws = snapshot.get("keywords") or []
+    return {
+        "core_topics": [k for k, kind, _w in kws if kind == "core"],
+        "core_weights": {k: float(w if w is not None else 1.0) for k, kind, w in kws if kind == "core"},
+        "target_domain": [k for k, kind, _w in kws if kind == "target"],
+        "exclude": [k for k, kind, _w in kws if kind == "exclude"],
+        "s2_seeds": [k for k, kind, _w in kws if kind == "s2_seed"],
+        "max_items": snapshot.get("max_items"),
+    }
 
 
 def current_revision(db_path: Path, profile_id: str) -> int:
@@ -656,7 +677,9 @@ def record_observations(db_path: Path, scan_id: str, profile_id: str,
                         seed_signature: str, observed_at: str | None = None) -> int:
     """스캔 하나의 후보 관측을 남긴다. rows 의 각 항목은 논문 dict 에
     `_score`(profile_scoring.score_paper 결과) · `outcome` · `rank_pos` ·
-    `filter_reason` 이 붙은 것이다. 같은 (scan_id, paper_key) 는 한 번만.
+    `filter_reason` 이 붙은 것이다. `_hits` = {core_hits(제외 전), exclude_hits, domain_hits}
+    를 주면 그대로 저장한다 — 건강 지표가 과거를 지금 코드로 다시 세지 않게(§8-95).
+    같은 (scan_id, paper_key) 는 한 번만.
 
     개체 테이블(search_candidates)과 달리 **덮어쓰지 않고 쌓인다.** 같은 논문이
     다섯 스캔에서 보이면 다섯 행이다.
@@ -687,6 +710,7 @@ def record_observations(db_path: Path, scan_id: str, profile_id: str,
                     stored = abstract
             seeds = p.get("s2_seeds")
             rsrc = p.get("retrieval_sources") or ([p["source"]] if p.get("source") else None)
+            hits = p.get("_hits") or {}
             out.append((
                 scan_id, profile_id, paper_key(p), p.get("title"), sha, stored, ref,
                 p.get("source"), json.dumps(rsrc) if rsrc else None,
@@ -695,13 +719,17 @@ def record_observations(db_path: Path, scan_id: str, profile_id: str,
                 score.get("tier_rank"), p.get("rank_pos"), p.get("outcome"),
                 p.get("filter_reason"), core_signature, seed_signature,
                 RANK_POLICY_VERSION, now,
+                json.dumps(hits.get("core_hits"), ensure_ascii=False) if "core_hits" in hits else None,
+                json.dumps(hits.get("exclude_hits"), ensure_ascii=False) if "exclude_hits" in hits else None,
+                json.dumps(hits.get("domain_hits"), ensure_ascii=False) if "domain_hits" in hits else None,
             ))
         con.executemany(
             "INSERT OR REPLACE INTO candidate_observations (scan_id, profile_id, paper_key,"
             " title, abstract_sha, abstract, abstract_ref, source, retrieval_sources, s2_seeds,"
             " published, date_precision, tier_rank, rank_pos, outcome, filter_reason,"
-            " core_signature, seed_signature, policy_version, observed_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " core_signature, seed_signature, policy_version, observed_at,"
+            " core_hits, exclude_hits, domain_hits)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             out)
     return len(out)
 
