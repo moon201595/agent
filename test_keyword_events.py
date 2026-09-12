@@ -233,3 +233,40 @@ def test_이관_전_revision_으로_rollback_해도_legacy_provenance_가_보충
     assert out["rolled_back"]
     prov = rp.keyword_provenance(db, "p")
     assert prov["x"]["origin"] == "advisor" and prov["a"]["origin"] == "user"
+
+
+def test_묶음이_held_여도_혼자서_통과하는_제안은_기각되지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: A+B 묶음이 core_changes 한도를 넘어 held 일 때 A·B 를 각각 기각으로
+    귀속하는 것(외부 검토 2026-09-12). 혼자서도 held 인 것만 기억한다."""
+    import asyncio
+    import test_profile_advisor as T
+    from datetime import timedelta
+    db = tmp_path / "d.db"
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term"],
+                      core_weights={"target term": 1.0, "trend term": 0.6}, exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    monkeypatch.setenv("GOOGLE_API_KEY", "k1")
+    T._seed_corpus(db)
+    two = json.dumps({"decision": "propose", "proposals": [
+        {"action": "change_core_tier", "term": "trend term", "proposed_tier": 1.0, "evidence_paper_keys": ["a1", "a3"], "reason": "r", "ambiguity_risks": []},
+        {"action": "change_core_tier", "term": "target term", "proposed_tier": 0.6, "evidence_paper_keys": ["a1", "a2"], "reason": "r", "ambiguity_risks": []}]})
+    adv.init_db(db)
+    rules = {"max_core_changes": 1, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}   # 하나는 되고 둘은 안 된다
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, ?)", (adv.MODE_PROPOSAL_ONLY, json.dumps(rules)))
+    out = T._run(db, T.FakeClient([T.gemini_ok(two)]))
+    assert out["gate"] == pi.HELD, out
+    with sqlite3.connect(db) as con:
+        rej = con.execute("SELECT count(*) FROM advisor_events WHERE kind='rejected'").fetchone()[0]
+        solo = [r[0] for r in con.execute("SELECT analysis_id FROM advisor_proposals ORDER BY ordinal")]
+        gates = {r[0]: r[1] for r in con.execute("SELECT analysis_id, gate_status FROM impact_analyses")}
+    assert rej == 0, "각각은 한도 안이라 어느 것도 기각이 아니다"
+    assert all(solo) and all(gates[a] == pi.ELIGIBLE for a in solo), "개별 분석이 남고 각각 eligible"
+    out2 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(two)]), T.START, T.END, now=T.NOW + timedelta(days=7)))
+    assert out2["suppressed"] == 0 and out2["valid"] == 2, "다음 주에도 억제되지 않는다"
+    # 반대로 혼자서도 한도를 넘는 제안은 기각된다
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE advisor_settings SET rules_json=? WHERE profile_id='p'", (json.dumps({**rules, "max_core_changes": 0}),))
+    out3 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(two)]), T.START, T.END, now=T.NOW + timedelta(days=14)))
+    with sqlite3.connect(db) as con:
+        rej = [json.loads(r[0])["term"] for r in con.execute("SELECT detail_json FROM advisor_events WHERE kind='rejected'")]
+    assert out3["gate"] == pi.HELD and sorted(rej) == ["target term", "trend term"]
