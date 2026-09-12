@@ -103,6 +103,9 @@ def snapshot(db: Path, profile_id: str, start: datetime, end: datetime) -> dict:
         "profile_id": profile_id, "start": start.isoformat(), "end": end.isoformat(),
         "papers": [{k: p[k] for k in ("_paper_key", "title", "abstract", "published",
                                       "retrieval_sources", "s2_seeds")} for p in papers],
+        # 손상 목록도 내용이다 — 같은 텍스트라도 손상 표시가 있으면 게이트 결과가 다르므로
+        # 옛 정상 분석을 재사용하면 안 된다(2026-09-12).
+        "abstract_corrupt": sorted(corrupt),
         "impact_version": IMPACT_VERSION,
     }, ensure_ascii=False, sort_keys=True)
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
@@ -372,24 +375,38 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
     return ELIGIBLE, shadow_tag + ["all_rules_passed"]
 
 
-def regate_with_shadow(db: Path, analysis_id: str, shadow: dict,
+def regate_with_shadow(db: Path, analysis_id: str, shadow_id: str,
                        rules: dict | None = None, shadow_rules: dict | None = None) -> dict:
-    """저장된 분석(needs_shadow_search)에 shadow 결과를 붙여 게이트를 다시 계산하고 **그
-    행의 gate_status·reasons 를 갱신**한다. 스냅샷·diff·impact 는 그대로 — 검색 효과만 더해진다.
-    shadow 의 before/after 해시가 분석과 다르면 붙이지 않는다(다른 변경안의 실험이다)."""
+    """저장된 분석(needs_shadow_search)에 **저장된** shadow 를 붙여 게이트를 다시 계산하고 그 행의
+    gate_status·reasons 를 갱신한다. 임시 dict 나 미저장 dry-run 은 못 붙인다 — DB 의 shadow_runs
+    행만 받고, profile_id·analysis_id·before/after 해시·정책 버전·shadow 구현 버전이 **전부** 같을
+    때만 쓴다(외부 검토 2026-09-12, P0: 해시 둘만 보면 같은 설정의 다른 프로필·다른 매처 정책의
+    실험도 붙는다). 스냅샷 불변량(스캔 수·손상 초록)은 scope_json 에서 그대로 복원한다."""
+    import shadow_search
     init_db(db)
+    shadow_search.init_db(db)       # 표가 없으면(운영 DB 미이관) 여기서 크게 멈춘다 — 조용히 못 붙이는 게 맞다
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
         an = con.execute("SELECT * FROM impact_analyses WHERE analysis_id=?", (analysis_id,)).fetchone()
         if not an:
             return {"updated": False, "reason": "analysis_not_found"}
-        if an["before_hash"] != shadow["before_hash"] or an["after_hash"] != shadow["after_hash"]:
-            return {"updated": False, "reason": "hash_mismatch"}
+        sh = con.execute("SELECT * FROM shadow_runs WHERE shadow_id=?", (shadow_id,)).fetchone()
+        if not sh:
+            return {"updated": False, "reason": "shadow_not_found"}
+        mismatch = [f for f, want, got in (
+            ("profile_id", an["profile_id"], sh["profile_id"]), ("analysis_id", analysis_id, sh["analysis_id"]),
+            ("before_hash", an["before_hash"], sh["before_hash"]), ("after_hash", an["after_hash"], sh["after_hash"]),
+            ("policy_version", an["policy_version"], sh["policy_version"]),
+            ("shadow_version", shadow_search.SHADOW_VERSION, sh["version"])) if want != got]
+        if mismatch:
+            return {"updated": False, "reason": "binding_mismatch:" + ",".join(mismatch)}
         diff, imp = json.loads(an["diff_json"]), json.loads(an["impact_json"])
         scope = json.loads(an["scope_json"])
-        # 스냅샷 자체는 저장 안 한다 — 편수는 scope 에 있고, 손상 초록은 분석 때 이미 사유로 남았다.
-        snap = {"paper_count": scope.get("papers", 0), "scans": {"total": 1}, "abstract_corrupt": []}
-        metrics = {**shadow["metrics"], "status": shadow["status"], "shadow_id": shadow["shadow_id"]}
+        if "scans" not in scope:        # 불변량을 안 남긴 옛 분석 — 재판정하지 않는다
+            return {"updated": False, "reason": "scope_without_invariants"}
+        snap = {"paper_count": scope.get("papers", 0), "scans": scope["scans"],
+                "abstract_corrupt": scope.get("abstract_corrupt") or []}
+        metrics = {**json.loads(sh["metrics_json"]), "status": sh["status"], "shadow_id": shadow_id}
         status, reasons = gate(diff, imp, snap, rules or json.loads(an["rules_json"]), metrics, shadow_rules)
         con.execute("UPDATE impact_analyses SET gate_status=?, reasons_json=? WHERE analysis_id=?",
                     (status, json.dumps(reasons), analysis_id))
@@ -445,8 +462,12 @@ def analyze_and_store(db: Path, snap: dict, before: dict, after: dict, k: int,
         "analysis_id": uuid.uuid4().hex[:12], "profile_id": snap["profile_id"],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "snapshot_id": snap["snapshot_id"], "snapshot_sha256": snap["content_sha256"],
+        # 게이트가 보는 스냅샷 불변량을 그대로 남긴다 — shadow 뒤 재판정이 이걸로 같은 로컬 차단
+        # 사유(스캔 없음·손상 초록)를 다시 낸다. 처음엔 scans=1·corrupt=[] 로 합성해 차단이
+        # 사라졌다(외부 검토 2026-09-12, P0).
         "scope_json": json.dumps({"start": snap["start"], "end": snap["end"], "papers": snap["paper_count"],
-                                  "consumed": len(consumed_keys) if consumed_keys is not None else None}),
+                                  "consumed": len(consumed_keys) if consumed_keys is not None else None,
+                                  "scans": snap["scans"], "abstract_corrupt": list(snap["abstract_corrupt"])}),
         "k": k, "policy_version": research_profile.RANK_POLICY_VERSION, "impact_version": IMPACT_VERSION,
         "rules_json": json.dumps({**DEFAULT_APPLY_RULES, **(rules or {})}),
         "before_hash": diff["before_hash"], "after_hash": diff["after_hash"],

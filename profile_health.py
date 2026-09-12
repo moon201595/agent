@@ -35,7 +35,7 @@ import profile_impact
 import profile_scoring
 import research_profile
 
-HEALTH_VERSION = "health-v1"
+HEALTH_VERSION = "health-v2"   # v2(2026-09-12): H7 반사실에서 already_shown 제외 · 버전 노출
 
 # 전부 None = 미설정. 기준선(최소 MIN_BASELINE_SCANS 스캔)을 관측한 뒤 숫자를 넣는다.
 # 값은 **비율의 절대 하한/상한**이다 — "중앙값 − δ" 는 기준선이 이미 나쁠 때
@@ -92,16 +92,20 @@ def freeze_scan(db: Path, scan_id: str, profile_id: str, obs: list[dict], profil
     prev_sha, prev_topk, retention = None, None, None
     if prev is not None and topk:
         prev_sha = _profile_sha(prev)
+        # already_shown 은 프로필과 무관한 **소비 상태**다 — 현재 상위 K 에서 빠진 것처럼 반사실
+        # 에서도 빼야 같은 후보 풀을 비교한다. 안 빼면 이미 보낸 논문이 직전 프로필 쪽 상위를
+        # 채워 유지율이 인위적으로 내려간다(외부 검토 2026-09-12). core·exclude 는 직전 프로필로.
+        pool = [p for p in obs if p.get("filter_reason") != research_profile.FILTER_ALREADY_SHOWN]
         ranked = profile_scoring.score_and_rank(
             [{"_paper_key": research_profile.paper_key(p), "title": p.get("title") or "",
-              "abstract": p.get("abstract") or "", "published": p.get("published")} for p in obs],
+              "abstract": p.get("abstract") or "", "published": p.get("published")} for p in pool],
             {**prev, "profile_id": profile_id})["papers"]
         prev_topk = [p["_paper_key"] for p in ranked[:k]]
         retention = len(set(prev_topk) & set(topk)) / len(topk)
     written = research_profile.record_scan_health(
         db, scan_id, profile_id, anchor_terms=sorted(anchors), auto_terms=sorted(core - anchors),
         provenance={kw: prov[kw] for kw in sorted(core) if kw in prov}, topk=topk,
-        prev_profile_sha=prev_sha, prev_topk=prev_topk, retention=retention)
+        prev_profile_sha=prev_sha, prev_topk=prev_topk, retention=retention, health_version=HEALTH_VERSION)
     return {"anchors": sorted(anchors), "auto": sorted(core - anchors), "retention": retention,
             "written": written}
 
@@ -164,7 +168,7 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
                 hits, excluded = _hits(paper, profile)
                 modes.add("recomputed")
             papers.append({**paper, "hits": hits, "excluded": excluded,
-                           "eligible": r["filter_reason"] is None,
+                           "eligible": r["filter_reason"] is None, "filter_reason": r["filter_reason"],
                            "rank_pos": r["rank_pos"], "tier_rank": r["tier_rank"],
                            "day": _day(r["published"])})
 
@@ -188,6 +192,9 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
     out = {
         "scan_id": scan_id, "profile_id": run["profile_id"], "started_at": run["started_at"],
         "mode": mode, "hits_mode": hits_mode, "frozen": bool(frozen),
+        # 정책·지표 버전 — 매처(match-v2)나 H7 정의가 바뀐 전후를 한 기준선에 섞지 않는다
+        "policy_version": run["policy_version"],
+        "health_version": frozen["health_version"] if frozen and "health_version" in frozen.keys() and frozen["health_version"] else HEALTH_VERSION,
         "k": k, "observations": len(papers), "eligible": len(eligible), "topk": len(topk),
         "anchor_basis": basis, "anchors": len(anchors), "auto": sorted(auto),
         # H1·H2 드리프트
@@ -214,7 +221,8 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
     elif prev_profile is not None and topk:
         prev = {**prev_profile, "profile_id": run["profile_id"]}
         ranked = profile_scoring.score_and_rank(
-            [{k_: p[k_] for k_ in ("_paper_key", "title", "abstract", "published")} for p in papers], prev)["papers"]
+            [{k_: p[k_] for k_ in ("_paper_key", "title", "abstract", "published")}
+             for p in papers if p["filter_reason"] != research_profile.FILTER_ALREADY_SHOWN], prev)["papers"]
         prev_top = {p["_paper_key"] for p in ranked[:k]}
         out["topk_retention_vs_prev"] = len(prev_top & {p["_paper_key"] for p in topk}) / len(topk)
     return out
@@ -294,6 +302,10 @@ def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) 
     modes = {r.get("mode") for r in baseline + recent} - {None}
     if len(modes) > 1 or "partial" in modes:
         return {**out, "status": MIXED_MODES, "reasons": [f"modes={sorted(modes)}"]}
+    for field in ("policy_version", "health_version"):   # 정책·지표 뜻이 다른 스캔은 한 창이 아니다
+        versions = {r.get(field) for r in baseline + recent}
+        if len(versions) > 1:
+            return {**out, "status": MIXED_MODES, "reasons": [f"{field}={sorted(map(str, versions))}"]}
 
     checks = [("min_anchor_share_topk", "anchor_share_topk", "min"),
               ("max_exclude_collision_auto", "exclude_collision_auto", "max"),

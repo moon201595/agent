@@ -216,6 +216,11 @@ def _ddl(con: sqlite3.Connection) -> None:
         " policy_version   TEXT NOT NULL,"
         " computed_at      TEXT NOT NULL)"
     )
+    # 얼린 H7 의 정의가 바뀌면(health-v2: already_shown 제외) 옛 행과 새 행을 한 기준선에
+    # 못 섞는다 — 행마다 지표 버전을 적는다(2026-09-12). 기존 DB 에는 ALTER 로 붙는다(migrate).
+    sh_cols = {row[1] for row in con.execute("PRAGMA table_info(scan_health)")}
+    if "health_version" not in sh_cols:
+        con.execute("ALTER TABLE scan_health ADD COLUMN health_version TEXT")
     con.execute(
         "CREATE TABLE IF NOT EXISTS profile_revisions ("
         " profile_id  TEXT NOT NULL,"
@@ -425,7 +430,7 @@ def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
 def record_scan_health(db_path: Path, scan_id: str, profile_id: str, *, anchor_terms: list[str],
                        auto_terms: list[str], provenance: dict, topk: list[str],
                        prev_profile_sha: str | None, prev_topk: list[str] | None,
-                       retention: float | None) -> bool:
+                       retention: float | None, health_version: str | None = None) -> bool:
     """스캔 시점의 건강 지표 입력을 얼린다. 한 스캔에 한 행 — **한 번 얼리면 안 바뀐다.**
     같은 scan_id 로 다시 부르면 아무것도 쓰지 않고 False 를 돌려준다. 처음 구현이
     INSERT OR REPLACE 라 재호출이 얼린 값을 조용히 덮었다(외부 검토 2026-09-12) —
@@ -437,12 +442,12 @@ def record_scan_health(db_path: Path, scan_id: str, profile_id: str, *, anchor_t
             return False
         con.execute(
             "INSERT INTO scan_health (scan_id, profile_id, anchor_terms, auto_terms,"
-            " provenance_json, topk, prev_profile_sha, prev_topk, retention, policy_version, computed_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " provenance_json, topk, prev_profile_sha, prev_topk, retention, policy_version, computed_at,"
+            " health_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (scan_id, profile_id, json.dumps(sorted(anchor_terms), ensure_ascii=False),
              json.dumps(sorted(auto_terms), ensure_ascii=False), json.dumps(provenance, ensure_ascii=False),
              json.dumps(topk), prev_profile_sha, json.dumps(prev_topk) if prev_topk is not None else None,
-             retention, RANK_POLICY_VERSION, _now()))
+             retention, RANK_POLICY_VERSION, _now(), health_version))
     return True
 
 

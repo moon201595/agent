@@ -5187,10 +5187,52 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     "team_ai_advance", 0, ...)` 이 아니라 — revision 0 은 기록이 없다 — 씨앗을 다시 넣는
     create_profile 이면 된다. 내일 05:00 부터 S2 는 씨앗 2개.
 
-    테스트 5개, 돌연변이 11/11. 906 passed. astra 판정은 못 받았다(9/15).
+    테스트 5개, 돌연변이 11/11. 907 passed. astra 판정은 못 받았다(9/15).
     **미해결**: shadow 안의 arXiv 재시도 백오프(30·60·120·240초)가 shadow 예산(300초)을 넘길
     수 있다 — find_new_papers 가 예산을 안 받는다. 일일 스캔과 같은 성질이라 여기서 안 고친다.
     dry-run JSON: docs/shadow_dryrun_2026-09-12_world_model.json.
+
+101. **⑦ 마감 — 게이트 안전성 P0 둘, 예산·분모, 그리고 health 기준선 정합성** (2026-09-12, 외부 검토 일곱째).
+
+    ① **regate 가 스냅샷 불변량을 합성했다(P0).** `regate_with_shadow` 가 `scans={"total":1}`·
+    `abstract_corrupt=[]` 를 지어내서, 최초 분석이 손상 초록·스캔 없음으로 insufficient 였어도
+    shadow 뒤엔 그 차단이 사라졌다. 고침 — analyze_and_store 가 scope_json 에 `scans`·
+    `abstract_corrupt` 를 그대로 남기고 regate 가 그걸로 같은 게이트를 다시 돈다. 불변량 없는
+    옛 분석은 재판정하지 않는다. 테스트: 손상 초록 있는 분석 → shadow → 여전히 insufficient.
+    부수 발견 — 손상 목록이 스냅샷 내용 해시에 없어 손상된 스냅샷이 옛 정상 분석을 **재사용**
+    했다. 해시에 넣었다.
+    ② **shadow 결속(P0).** 해시 둘만 보면 같은 설정의 다른 프로필·다른 매처 정책의 실험도
+    붙는다. 고침 — regate 는 임시 dict 가 아니라 **저장된 shadow_id** 만 받고 profile_id ·
+    analysis_id · before/after 해시 · policy_version · SHADOW_VERSION 여섯이 전부 같아야 쓴다.
+    미저장 dry-run 은 구조적으로 게이트를 못 푼다. `shadow_runs` 에 policy_version ·
+    partial_reason · error 컬럼을 넣은 **뒤** 이관했다(그전엔 표를 안 만들어 둔 게 맞았다).
+    ③ **예산 계약.** SHADOW_BUDGET_S=300 이 arXiv 에는 강제되지 않았다(호출 전만 확인).
+    `asyncio.wait_for(left)` 로 자르고 partial_reason=arxiv_budget. 테스트: 5초 걸리는 arXiv 를
+    0.5초 예산으로 → 4초 안에 partial.
+    ④ **상위 K 유지 분모.** K 고정이면 적격이 K 미만일 때 같은 집합인데 1.0 이 안 된다 →
+    |baseline 상위 집합|, 비면 None.
+
+    **health 기준선 정합성(⑧ 전에).** ⑤ H7 반사실이 obs 전체를 다시 순위 매겨 **already_shown
+    까지 참가**했다 — 현재 상위 K 는 미배달만이라 유지율이 인위적으로 내려간다. 소비 상태는
+    프로필과 무관하므로 양쪽에서 똑같이 뺀다(freeze·재계산 경로 둘 다). ⑥ 지표에
+    policy_version·health_version 을 노출하고 assess 가 섞이면 mixed_modes — match-v1 시절과
+    v2 시절이 한 중앙값에 못 들어간다. `HEALTH_VERSION=health-v2`, scan_health 에
+    health_version 컬럼(ALTER, 이번 이관에 포함). **기준선은 내일 05:00 첫 정상 스캔부터 14회
+    +14일 — 9/27 이후.** 9/11 스캔(recomputed·v1 정책)은 기준선에 안 들어간다.
+
+    **이관 실행(승인 조건 충족 뒤):** 일관 백업 → scan_health.health_version + shadow_runs 생성
+    → 재대조 최신.
+
+    **합집합 shadow 재실행·저장** (`38e501cdab76`, S2 7회 + arXiv 7회(429 1회), 102초):
+    baseline 3씨앗 → candidate 2씨앗. 반환 755 → 506 · 적격 306 → 297(**잃음 9**) · 잡음
+    449 → 209 · **상위 6 겹침 1.00**. world model 씨앗: 반환 294 · 적격 40 · 잡음 254.
+    잃은 9편 중 5편은 arXiv ID — shadow 의 arXiv 페이지 상한이 6 이라 못 봤을 뿐 일일 30페이지면
+    잡힌다. 그래서 ARXIV_MAX_PAGES 를 일일과 같은 30 으로 올렸다(이 실행은 partial(arxiv_partial)
+    로 저장돼 있고 게이트는 partial 을 안 받는다). 진짜 S2 고유 손실은 4편(주변부) 그대로다.
+    씨앗 제거 결정은 **사람이 예비 shadow + 관측 대조를 보고 수동으로** 한 것이다 — 완성된
+    합집합 게이트를 통과한 것이 아니다. 이 실행값은 ⑧ 임계값 보정 표본으로 쓰지 않는다.
+
+    테스트 +5, 돌연변이 8/8. 911 passed. ⑨ 준비(세대 provenance·기각 기억)는 다음 항목.
 
 ## 9. 폐기된 것
 

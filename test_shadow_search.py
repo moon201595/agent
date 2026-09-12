@@ -120,31 +120,89 @@ def test_검색_변경이_없으면_건너뛰고_실패는_실패로_남는다(t
         assert con.execute("SELECT status FROM shadow_runs").fetchone()[0] == "failed"
 
 
-def test_게이트는_shadow_가_있어야_보류를_넘고_규칙_미설정이면_증거부족이다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: shadow 없이 needs_shadow 를 넘는 것, shadow 규칙 None 인데 eligible 을 내는 것,
-    한도를 넘었는데 held 가 아닌 것, 다른 변경안의 shadow 를 붙이는 것(해시 불일치)."""
+def _analysis(db, before, after, extra_obs=None):
+    """관측 하나로 분석을 세운다(스냅샷엔 스캔 기록이 필요하다)."""
+    sid = rp.begin_scan(db, "p", before)
+    rows = [{"arxiv_id": "t1", "title": "target term study", "abstract": "", "published": "2026-09-10T00:00:00Z",
+             "outcome": "content", "rank_pos": 1, "_hits": {"core_hits": ["target term"], "exclude_hits": [], "domain_hits": []}}]
+    rows += extra_obs or []
+    rp.record_observations(db, sid, "p", rows, core_signature="c", seed_signature="s")
+    rp.finish_scan(db, sid, observations=len(rows))
+    snap = profile_impact.snapshot(db, "p", datetime(2020, 1, 1, tzinfo=timezone.utc), datetime(2030, 1, 1, tzinfo=timezone.utc))
+    return profile_impact.analyze_and_store(db, snap, before, after, 2)
+
+
+def test_게이트는_저장된_shadow_만_받고_결속이_전부_맞아야_보류를_넘는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: shadow 없이 needs_shadow 를 넘는 것, 임시 dict·미저장 dry-run 을 붙이는 것,
+    profile_id·analysis_id·해시·정책 버전·shadow 버전 중 하나라도 다른 실험을 붙이는 것,
+    shadow 규칙 None 인데 eligible 을 내는 것, 한도를 넘었는데 held 가 아닌 것."""
     db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
     after = {**before, "s2_seeds": ["target term"]}
     _fake(monkeypatch, [])
-    # 관측이 있어야 분석이 선다 — 스냅샷을 만들려면 스캔 기록이 필요하므로 최소 한 번 관측을 넣는다
-    sid = rp.begin_scan(db, "p", before)
-    rp.record_observations(db, sid, "p", [{"arxiv_id": "t1", "title": "target term study", "abstract": "", "published": "2026-09-10T00:00:00Z",
-                                            "outcome": "content", "rank_pos": 1, "_hits": {"core_hits": ["target term"], "exclude_hits": [], "domain_hits": []}}],
-                           core_signature="c", seed_signature="s")
-    rp.finish_scan(db, sid, observations=1)
-    snap = profile_impact.snapshot(db, "p", datetime(2020, 1, 1, tzinfo=timezone.utc), datetime(2030, 1, 1, tzinfo=timezone.utc))
-    an = profile_impact.analyze_and_store(db, snap, before, after, 2)
+    an = _analysis(db, before, after)
     assert an["gate_status"] == profile_impact.NEEDS_SHADOW
+    dry = asyncio.run(sh.run_shadow(db, "p", before, after, None, analysis_id=an["analysis_id"], store=False))
+    assert profile_impact.regate_with_shadow(db, an["analysis_id"], dry["shadow_id"])["reason"] == "shadow_not_found"
     shadow = asyncio.run(sh.run_shadow(db, "p", before, after, None, analysis_id=an["analysis_id"]))
-    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow)
+    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"])
     assert r["gate_status"] == profile_impact.INSUFFICIENT and any("shadow_rules_unconfigured" in x for x in r["reasons"])
     rules = {"max_core_changes": 3, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
     srules = {"max_eligible_lost": 0, "min_topk_overlap": 0.9, "max_noise_after": 5}
-    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow, rules, srules)
+    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)
     assert r["gate_status"] == profile_impact.HELD and any("shadow_eligible_lost:1>0" in x for x in r["reasons"])
-    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow, rules, {**srules, "max_eligible_lost": 1, "min_topk_overlap": 0.5})
+    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, {**srules, "max_eligible_lost": 1, "min_topk_overlap": 0.5})
     assert r["gate_status"] == profile_impact.ELIGIBLE and r["reasons"][0].startswith("shadow:")
+    # 결속: 다른 분석 id 로 저장된 shadow · 다른 정책 버전 · 다른 프로필은 거부
+    other = asyncio.run(sh.run_shadow(db, "p", before, after, None, analysis_id="someone-else"))
+    assert profile_impact.regate_with_shadow(db, an["analysis_id"], other["shadow_id"], rules, srules)["reason"].startswith("binding_mismatch:analysis_id")
     with sqlite3.connect(db) as con:
-        assert con.execute("SELECT gate_status FROM impact_analyses WHERE analysis_id=?", (an["analysis_id"],)).fetchone()[0] == profile_impact.ELIGIBLE
-    other = {**shadow, "after_hash": "x"}
-    assert profile_impact.regate_with_shadow(db, an["analysis_id"], other, rules, srules) == {"updated": False, "reason": "hash_mismatch"}
+        con.execute("UPDATE shadow_runs SET policy_version='rank-tuple-v9' WHERE shadow_id=?", (shadow["shadow_id"],))
+    assert "policy_version" in profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)["reason"]
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE shadow_runs SET policy_version=?, profile_id='q' WHERE shadow_id=?", (rp.RANK_POLICY_VERSION, shadow["shadow_id"]))
+    assert "profile_id" in profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)["reason"]
+
+
+def test_shadow_뒤에도_원래_로컬_차단_사유는_살아_있다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: regate 가 스냅샷 불변량(손상 초록·스캔 수)을 합성해 최초 분석의
+    insufficient 사유를 지우고 eligible 을 내는 것(P0)."""
+    db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
+    after = {**before, "s2_seeds": ["target term"]}
+    _fake(monkeypatch, [])
+    an = _analysis(db, before, after)
+    with sqlite3.connect(db) as con:      # 관측 하나의 초록 참조를 깨뜨린다 → 스냅샷이 손상으로 본다
+        con.execute("UPDATE candidate_observations SET abstract=NULL, abstract_sha='deadbeefdeadbeef', abstract_ref='nope'")
+    snap = profile_impact.snapshot(db, "p", datetime(2020, 1, 1, tzinfo=timezone.utc), datetime(2030, 1, 1, tzinfo=timezone.utc))
+    assert snap["abstract_corrupt"], "전제: 스냅샷에 손상 초록이 있다"
+    an = profile_impact.analyze_and_store(db, snap, before, after, 2)   # 스냅샷이 바뀌었으니 새 분석
+    assert an["gate_status"] == profile_impact.NEEDS_SHADOW
+    shadow = asyncio.run(sh.run_shadow(db, "p", before, after, None, analysis_id=an["analysis_id"]))
+    rules = {"max_core_changes": 3, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    srules = {"max_eligible_lost": 5, "min_topk_overlap": 0.0, "max_noise_after": 50}
+    r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)
+    assert r["gate_status"] == profile_impact.INSUFFICIENT and any(x.startswith("abstract_corrupt:") for x in r["reasons"]), r
+
+
+def test_예산은_arXiv_에도_강제되고_유지율_분모는_baseline_상위_집합이다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: arXiv 호출이 예산을 넘겨도 기다리는 것, partial 원인을 안 남기는 것,
+    적격이 K 보다 적을 때 K 로 나눠 같은 집합인데 1.0 이 안 되는 것."""
+    db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
+    after = {**before, "s2_seeds": ["target term"]}
+    _fake(monkeypatch, [])
+
+    async def slow_arxiv(client, query, since, **kw):
+        await asyncio.sleep(5)
+        return {"papers": [], "status": "done", "until": "", "query": query}
+    monkeypatch.setattr(find_new_papers, "find_new_papers_since", slow_arxiv)
+    import time as _t
+    t0 = _t.monotonic()
+    out = asyncio.run(sh.run_shadow(db, "p", before, after, None, budget_s=0.5))
+    assert _t.monotonic() - t0 < 4, "예산 0.5초를 넘겨 5초를 기다리면 안 된다"
+    assert out["status"] == "partial" and out["partial_reason"] == "arxiv_budget"
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT partial_reason, policy_version FROM shadow_runs").fetchone() == ("arxiv_budget", rp.RANK_POLICY_VERSION)
+    # 유지율 분모
+    assert sh.compare({"keys": ["a"], "eligible_keys": ["a"], "topk": ["a"], "excluded": 0, "no_core": 0},
+                      {"keys": ["a"], "eligible_keys": ["a"], "topk": ["a"], "excluded": 0, "no_core": 0}, 6)["topk_overlap"] == 1.0
+    assert sh.compare({"keys": [], "eligible_keys": [], "topk": [], "excluded": 0, "no_core": 0},
+                      {"keys": [], "eligible_keys": [], "topk": [], "excluded": 0, "no_core": 0}, 6)["topk_overlap"] is None
