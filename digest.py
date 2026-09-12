@@ -1066,7 +1066,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
              ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
-    text = annotate_numbers(reflow_branch_lists(text), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
+    text = annotate_numbers(reflow_branch_lists(normalise_interpretation_marks(text)), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
     audit = scan_result.get("citation_audit") or {}
     if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
         lines.append("   ⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것")
@@ -1213,13 +1213,16 @@ def _status_chip(label: str, flagged: bool) -> str:
     )
 
 
+# 줄 머리의 "항목명 : " — 항목명은 30자 이내, 콜론 앞까지 콜론 없음, 콜론 뒤엔 공백이나 줄 끝
+# (URL 의 "https:" 는 뒤가 '/' 라 안 잡힌다). 고정 목록(데이터셋·평가 지표…)이었을 땐 "조건 구분 :"
+# "학습 목적 함수 :" 처럼 목록에 없는 항목만 안 굵어져 눈에 띄었다(2026-09-12 사용자 지적).
+_SUMMARY_LABEL_RE = re.compile(r"^([^:：\n]{1,30}?\s*[:：])(?=\s|$)")
+
+
 def _summary_label_html(text: str) -> str:
-    """요약의 항목명만 강조해 값과 구분한다(2026-09-10 사용자 요청)."""
+    """요약의 항목명(콜론까지)을 굵게 해 값과 구분한다(2026-09-10 사용자 요청, 2026-09-12 일반화)."""
     escaped = _esc(text)
-    return re.sub(
-        r"^(데이터셋|데이터 세트|평가\s*지표|실험\s*설정|핵심\s*결과|"
-        r"비교\s*대상|베이스라인|저자가 명시한 한계|요약자의 해석)(\s*[:：])",
-        r"<strong>\1</strong>\2", escaped)
+    return _SUMMARY_LABEL_RE.sub(r"<strong>\1</strong>", escaped, count=1)
 
 
 def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
@@ -1488,6 +1491,24 @@ def reflow_branch_lists(text: str) -> str:
     return "\n".join(out)
 
 
+# "~므로 해석이다" — 모델이 '해석' 표시를 서술어로 써서 문장이 안 된다("범위를 넘어서므로
+# 해석이다", "달성될 수 있으므로 해석이다"; 2026-09-12 사용자 지적, 프롬프트로 두 번 막았는데도
+# 나왔다). 한국어 활용을 되돌릴 수는 없으니 **자주 나오는 꼴만** 문장으로 고치고 "(해석)" 을 붙인다.
+_INTERP_FIXES = [
+    (re.compile(r"범위를 넘어서므로 해석이다"), "범위를 넘어선다 (해석)"),
+    (re.compile(r"(있|없)으므로 해석이다"), r"\1다 (해석)"),
+    (re.compile(r"이므로 해석이다"), "이다 (해석)"),
+    (re.compile(r"하므로 해석이다"), "한다 (해석)"),
+    (re.compile(r"므로 해석이다"), "므로, 이는 해석이다"),   # 그 밖의 활용 — 최소한 문장은 되게
+]
+
+
+def normalise_interpretation_marks(text: str) -> str:
+    for pat, rep in _INTERP_FIXES:
+        text = pat.sub(rep, text)
+    return text
+
+
 def annotate_numbers(text: str, mentions: list[tuple[str, int]], total: int | None = None) -> str:
     """서술 안에서 부른 논문 뒤에 `(요약 논문 3/6)` 을 붙인다. 원문을 안 지운다.
 
@@ -1703,7 +1724,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
-        text = annotate_numbers(reflow_branch_lists(text), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
+        text = annotate_numbers(reflow_branch_lists(normalise_interpretation_marks(text)), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
         paras = "".join(_narrative_line_html(ln)
                         for ln in text.strip().splitlines() if _plain(ln))
         warn = ""
