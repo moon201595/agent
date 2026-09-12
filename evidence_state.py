@@ -66,7 +66,7 @@ def tracked_papers(db: Path, profile_id: str, now: datetime) -> list[dict]:
         shown = con.execute(
             "SELECT h.*, c.arxiv_id AS arrival_id, c.doi FROM profile_shown h "
             "LEFT JOIN search_candidates c ON c.profile_id=h.profile_id AND c.paper_key=h.paper_key "
-            "WHERE h.profile_id=? AND julianday(h.shown_at)>=julianday(?) ORDER BY h.shown_at,h.paper_key",
+            "WHERE h.profile_id=? AND h.shown_at>=? ORDER BY h.shown_at,h.paper_key",
             (profile_id, (now - timedelta(days=LOOKBACK_DAYS)).isoformat())).fetchall()
     by_id = {p["arxiv_id"]: p for p in papers}
     by_key: dict[str, list[dict]] = {}

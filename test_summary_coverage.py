@@ -189,13 +189,14 @@ def test_verification_pass_and_partial_coverage_appear_together(isolated_db):
 
 
 def test_html_flags_partial_coverage_open(isolated_db):
-    """"검증 통과"만 보고 요약을 그대로 믿으면 안 되는 상황이라 펼쳐 보낸다."""
+    """"검증 통과"만 보고 요약을 그대로 믿으면 안 되는 상황 — 경고 칩이 보여야 한다.
+    2026-09-12 부터 토글은 전부 닫힌 채로 가므로(사용자 요청) 펼침으로 알리지 않는다."""
     _seed(isolated_db, "p1", coverage=0.402)
     paper = {"arxiv_id": "p1", "title": "긴 논문", "abstract": "x",
              "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}
     html = digest.generate_digest_html({"papers": [paper], "candidates_found": 1}, "우리팀")
     assert "원문 40%만 반영" in html
-    assert "<details open" in html
+    assert "<details open" not in html
 
 
 # ------------------------------------------- 값의 뜻을 같이 저장한다 (§8-70)
