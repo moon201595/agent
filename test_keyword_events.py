@@ -94,6 +94,35 @@ def _sent(keys):
             "exploration": [], "sent_paper_keys": list(keys), "allowed_tiers": [1.0]}
 
 
+def test_게이트가_막은_제안은_다음_주에_같은_증거로_다시_분석되지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: run_weekly 가 게이트 결과를 기각으로 안 남기는 것(사람이 없는 구조에서
+    기각의 주체는 게이트다), 억제된 제안이 다시 분석되는 것."""
+    import asyncio
+    import test_profile_advisor as T
+    from datetime import timedelta
+    db = tmp_path / "d.db"
+    # test_profile_advisor 의 db fixture 와 같은 준비
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term"],
+                      core_weights={"target term": 1.0, "trend term": 0.6}, exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    monkeypatch.setenv("GOOGLE_API_KEY", "k1")
+    T._seed_corpus(db)
+    # 계층 변경 제안 — 검색 집합은 안 바뀌므로 shadow 가 아니라 규칙 미설정(insufficient)으로 막힌다
+    tier = json.dumps({"decision": "propose", "proposals": [
+        {"action": "change_core_tier", "term": "trend term", "proposed_tier": 1.0,
+         "evidence_paper_keys": ["a1", "a3"], "reason": "r", "ambiguity_risks": []}]})
+    out1 = T._run(db, T.FakeClient([T.gemini_ok(tier)]))
+    assert out1["status"] == "proposed" and out1["gate"] == pi.INSUFFICIENT, out1
+    with sqlite3.connect(db) as con:
+        rej = [json.loads(r[0]) for r in con.execute("SELECT detail_json FROM advisor_events WHERE kind='rejected'")]
+    assert len(rej) == 1 and rej[0]["reason"].startswith("gate:insufficient_evidence") and rej[0]["term"] == "trend term"
+    # 다음 주: 같은 증거·같은 프로필로 같은 제안 → 억제, 분석 안 함
+    out2 = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(tier)]), T.START, T.END, now=T.NOW + timedelta(days=7)))
+    with sqlite3.connect(db) as con:
+        st = [r[0] for r in con.execute("SELECT status FROM advisor_proposals ORDER BY rowid")]
+        n_an = con.execute("SELECT count(*) FROM impact_analyses").fetchone()[0]
+    assert st == ["analyzed", "suppressed"] and n_an == 1, (st, n_an, out2)
+
+
 def test_기각_기억은_같은_제안_같은_증거_같은_프로필일_때만_억제한다(tmp_path):
     """이 테스트가 잡는 것: 기각을 영구 blacklist 로 쓰는 것(새 증거·바뀐 프로필에도 억제), 근거 키
     순서·표기 변형·계층 표기가 다르다고 다른 제안으로 보는 것, revision 만 달라도(A→B→A) 다시 올리는 것."""
