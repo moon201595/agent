@@ -92,6 +92,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `profile_advisor.py` · `prompts/profile_advisor_v1.md` | 주간 LLM 프로필 제안기. 밖에 나가는 것은 관심사와 논문 제목·초록·키뿐. HTTP 요청 2회 상한을 영속 장부로 지킨다. 운영 모드 기본 `proposal_only` — 적용은 닫혀 있다 (D) |
 | `rule_advisor.py` | 규칙 기반 제안기 R — LLM 제안기와 같은 입력·같은 계약·같은 게이트. F/R/A 비교의 R 팔 (E1) |
 | `evaluation.py` | 지연·비용·제안 효율·core 적중 비율, 독립 라벨이 있을 때만 의미상 지표, 시점 누수 없는 재생, 불변 실험 manifest (E1) |
+| `profile_health.py` | 프로필 건강 지표 — 스캔별 당시 스냅샷 재채점으로 anchor 적중·계층·최신성·제외어 충돌을 센다. "적용 후 악화"의 정의(규칙은 미설정으로 시작) |
 
 기존 도구·요약·재현 계층은 그대로 재사용한다.
 

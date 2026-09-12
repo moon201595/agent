@@ -4858,6 +4858,67 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     `sqlite_master`(17, 제안기가 아직 한 번도 안 돌아 advisor_* 미생성)를
     셌는데 코드의 `CREATE TABLE` 은 26 이다. 발표 자료는 26 으로 고쳤다.
 
+94. **⑪ 프로필 건강 지표 — "적용 후 악화"를 라벨 없이 정의했다** (2026-09-12).
+    외부 검토(발표 자료 대조 뒤 받은 것)가 "악화의 정의가 없으면 auto-apply 를 열면
+    안 된다"고 했고 맞다. 게이트 임계값(§8-88 `DEFAULT_APPLY_RULES` 셋 다 None)의
+    근거도, rollback 트리거의 조건도 이것 없이는 못 만든다. 순서를 정했다:
+    **⑪ 지표 → ⑦ shadow 검색 → ⑧ 임계값 → ⑨ 적용 개통 → ⑫ 복구 트리거.**
+
+    같은 검토가 짚은 네 가지를 코드로 대조했다. 셋은 맞고 하나는 반만 맞다.
+    - 용어 발견·제안기 입력이 **적중한 논문만** 본다 — `trend_report.observed_rows`
+      가 core_hits 로 거르고(trend_report.py:574), `profile_advisor.select_papers` 는
+      순위 상위 8 이다. 9/11 관측 947행 중 no_core_hit 429편은 한 번도 안 읽힌다.
+      닫힌 고리 지적은 맞다. **미해결** — ⑦ 앞에서 입력을 탈락 후보로 넓힌다.
+    - "변경 유형 분기 자체가 미구현" — **반만 맞다.** 분기는 있다
+      (`profile_impact.gate`: seed_changed → NEEDS_SHADOW, profile_impact.py:309).
+      없는 건 shadow 검색의 실행이다.
+    - 기각 기억 없음 — 맞다. `advisor_events` 에 apply_refused 는 남지만 다음 주 같은
+      제안을 안 거른다. **미해결**(⑨ 때).
+    - 키워드 provenance 없음 — 맞다. `profile_keywords` 에 origin·generation 컬럼이 없다.
+      **미해결**(⑨ 때 ALTER TABLE — 사람 승인 뒤).
+
+    **지표(`profile_health.py`, health-v1).** 스캔 하나마다 `scan_runs.profile_snapshot`
+    으로 **다시 채점**해 센다(현재 프로필로 세면 "당시 무엇이 위였나"가 아니다 — 돌연변이
+    M11 이 이걸 잡는다). anchor = 사람이 넣은 core(origin='user' revision ∪ 첫 스캔
+    스냅샷; provenance 컬럼이 생기면 그쪽으로), auto = 현재 core − anchor.
+
+    | 지표 | 정의 | 막는 것 |
+    |---|---|---|
+    | anchor_share_topk / _eligible | 상위 K(적격 풀) 중 anchor 적중 비율 | 드리프트 |
+    | exclude_collision_auto | auto 적중 후보 중 제외어도 걸린 비율 | 노이즈 |
+    | top_tier_share_topk | 상위 K 중 tier_rank==0 비율 | 잠식 |
+    | topk_retention_vs_prev | 직전 프로필로 재채점한 상위 K 와의 교집합 / K | 적용 직후 교체 폭 |
+    | new_eligible_from_auto | anchor 로는 no_core_hit 였을 적격 편수 | 이득 측 — 0 이면 변경이 헛것 |
+    | freshness_topk · mean_delay_days_topk | 상위 K 중 최신일 비율 · 평균 지연 | 최신성 계약 |
+    | keyword_hits | 키워드별 적중 편수 | 적중 0 이 이어지는 auto 키워드 = 감쇠 후보 |
+
+    뺀 것: auto_only_share_topk(= 1 − anchor_share_topk, 중복), cost(api_usage·
+    evaluation.operating_cost 에 이미 있다), seed_yield(observation_signals 에 이미 있다).
+
+    **판정(`assess`).** 기준선 창과 최근 창의 **중앙값**을 비교한다(평균이면 한 번 튄
+    값에 걸린다 — 돌연변이 M3). 규칙 `DEFAULT_HEALTH_RULES` 는 전부 None → `unconfigured`,
+    기준선 14스캔 미만 → `insufficient_baseline`. 임계값은 **절대값**을 기본으로 둔다 —
+    "중앙값 − δ" 만 쓰면 기준선이 이미 나쁠 때 그걸 정상으로 굳힌다. δ 는 보조.
+    걸린 사유는 전부 남긴다(첫 사유에서 멈추면 돌연변이 M4).
+
+    **오늘 실측(9/11 스캔 1회, 947행):** anchor 38개(첫 스캔 스냅샷) · auto 없음 ·
+    상위 K anchor 적중 **0.83** · 최상위 계층 1.00 · 최신일 1.00 · 평균 지연 1.0일 ·
+    적격 풀 anchor 적중 0.99. 0.83 인 이유 — 재채점이 현재 코드로 도는데 §8-92 의
+    `world model` 가드가 스캔 **뒤에** 들어가서 4위(광양자)가 지금은 적중 0 이다.
+    지표가 정책 변경도 드러낸다는 뜻이고, 이건 결함이 아니라 기록할 사실이다.
+    적중 0 키워드 5개: in-sensor computing · on-device inference · on-sensor computing ·
+    surface inspection · wearable biosensor.
+
+    주간 리뷰에 "■ 프로필 건강 지표" 절을 붙였다 — 코드가 만든 절이고 LLM 프롬프트에는
+    안 들어간다(규칙 4). 실패해도 리뷰는 나간다.
+
+    테스트 6개, 돌연변이 12/12 잡힘(처음 2개가 새서 테스트를 보강했다: 중앙값→평균,
+    스냅샷→현재 프로필). 881 passed.
+
+    **astra 판정을 못 받았다.** Codex 사용 한도가 걸려 9/15 15:20 까지 막혔다(유료
+    해법 없음, 규칙 1). 설계 질문 7개는 scratchpad 에 남겼고 15일 뒤 그대로 보낸다.
+    그때까지 이 정의는 **내 판단만** 거친 것이다.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
