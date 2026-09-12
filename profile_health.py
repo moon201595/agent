@@ -194,7 +194,10 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
         "mode": mode, "hits_mode": hits_mode, "frozen": bool(frozen),
         # 정책·지표 버전 — 매처(match-v2)나 H7 정의가 바뀐 전후를 한 기준선에 섞지 않는다
         "policy_version": run["policy_version"],
-        "health_version": frozen["health_version"] if frozen and "health_version" in frozen.keys() and frozen["health_version"] else HEALTH_VERSION,
+        # 얼린 행의 NULL 은 "버전을 적기 전(health-v1)"이지 현재 버전이 아니다 — 현재 상수로 채우면
+        # v1 시절 H7(already_shown 포함)이 v2 로 위장해 기준선에 섞인다(외부 검토 2026-09-12).
+        # 얼린 행이 없으면 지금 재계산한 것이므로 현재 버전.
+        "health_version": (frozen["health_version"] or "health-v1") if frozen else HEALTH_VERSION,
         "k": k, "observations": len(papers), "eligible": len(eligible), "topk": len(topk),
         "anchor_basis": basis, "anchors": len(anchors), "auto": sorted(auto),
         # H1·H2 드리프트

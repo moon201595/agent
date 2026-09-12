@@ -375,6 +375,28 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
     return ELIGIBLE, shadow_tag + ["all_rules_passed"]
 
 
+def _record_decision(con: sqlite3.Connection, analysis_id: str, profile_id: str, source: str,
+                     shadow_id: str | None, status: str, reasons: list[str],
+                     rules: dict, shadow_rules: dict | None) -> str:
+    canon = json.dumps({"rules": rules, "shadow_rules": shadow_rules}, sort_keys=True)
+    did = uuid.uuid4().hex[:12]
+    con.execute("INSERT INTO gate_decisions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (did, analysis_id, profile_id, datetime.now(timezone.utc).isoformat(), source, shadow_id,
+                 status, json.dumps(reasons), json.dumps(rules, sort_keys=True),
+                 json.dumps(shadow_rules, sort_keys=True) if shadow_rules is not None else None,
+                 hashlib.sha256(canon.encode()).hexdigest()[:16]))
+    return did
+
+
+def latest_decision(db: Path, analysis_id: str) -> dict | None:
+    init_db(db)
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute("SELECT * FROM gate_decisions WHERE analysis_id=? ORDER BY decided_at DESC, rowid DESC LIMIT 1",
+                          (analysis_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def regate_with_shadow(db: Path, analysis_id: str, shadow_id: str,
                        rules: dict | None = None, shadow_rules: dict | None = None) -> dict:
     """저장된 분석(needs_shadow_search)에 **저장된** shadow 를 붙여 게이트를 다시 계산하고 그 행의
@@ -407,10 +429,14 @@ def regate_with_shadow(db: Path, analysis_id: str, shadow_id: str,
         snap = {"paper_count": scope.get("papers", 0), "scans": scope["scans"],
                 "abstract_corrupt": scope.get("abstract_corrupt") or []}
         metrics = {**json.loads(sh["metrics_json"]), "status": sh["status"], "shadow_id": shadow_id}
-        status, reasons = gate(diff, imp, snap, rules or json.loads(an["rules_json"]), metrics, shadow_rules)
+        eff_rules = {**DEFAULT_APPLY_RULES, **(rules or json.loads(an["rules_json"]))}
+        eff_srules = {**DEFAULT_SHADOW_RULES, **(shadow_rules or {})}
+        status, reasons = gate(diff, imp, snap, eff_rules, metrics, eff_srules)
         con.execute("UPDATE impact_analyses SET gate_status=?, reasons_json=? WHERE analysis_id=?",
                     (status, json.dumps(reasons), analysis_id))
-    return {"updated": True, "gate_status": status, "reasons": reasons}
+        did = _record_decision(con, analysis_id, an["profile_id"], "regate_with_shadow", shadow_id,
+                               status, reasons, eff_rules, eff_srules)
+    return {"updated": True, "gate_status": status, "reasons": reasons, "decision_id": did}
 
 
 # ── 저장 ─────────────────────────────────────────────────────────────────
@@ -425,7 +451,23 @@ def _ddl(con: sqlite3.Connection) -> None:
         " before_json TEXT NOT NULL, after_json TEXT NOT NULL, diff_json TEXT NOT NULL,"
         " impact_json TEXT NOT NULL, gate_status TEXT NOT NULL, reasons_json TEXT NOT NULL,"
         " input_sha256 TEXT NOT NULL)")
-
+    # **게이트 판정 감사 기록**(2026-09-12, §8-102). impact_analyses.gate_status 는 재판정으로 바뀌는데
+    # rules_json 은 최초 분석 때 것이라 "eligible 인데 규칙은 전부 None" 같은 자기모순이 생긴다.
+    # 판정마다 실제로 쓴 규칙·shadow 규칙·해시를 추가만 하는 표에 남긴다. 적용기는 이걸로 대조한다.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS gate_decisions ("
+        " decision_id  TEXT PRIMARY KEY,"
+        " analysis_id  TEXT NOT NULL,"
+        " profile_id   TEXT NOT NULL,"
+        " decided_at   TEXT NOT NULL,"
+        " source       TEXT NOT NULL,"    # analyze | regate_with_shadow
+        " shadow_id    TEXT,"
+        " gate_status  TEXT NOT NULL,"
+        " reasons_json TEXT NOT NULL,"
+        " effective_rules_json TEXT NOT NULL,"
+        " effective_shadow_rules_json TEXT,"
+        " rules_hash   TEXT NOT NULL)"
+    )
 
 def init_db(db: Path) -> None:
     import schema_guard
@@ -458,6 +500,7 @@ def analyze_and_store(db: Path, snap: dict, before: dict, after: dict, k: int,
     diff = diff_profiles(before, after)
     imp = impact(snap, before, after, k, consumed_keys) if not diff["errors"] else {}
     status, reasons = gate(diff, imp, snap, rules) if imp else (INVALID, [f"structure:{e}" for e in diff["errors"]])
+    eff_rules = {**DEFAULT_APPLY_RULES, **(rules or {})}
     row = {
         "analysis_id": uuid.uuid4().hex[:12], "profile_id": snap["profile_id"],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -481,4 +524,5 @@ def analyze_and_store(db: Path, snap: dict, before: dict, after: dict, k: int,
     with sqlite3.connect(db) as con:
         con.execute(f"INSERT INTO impact_analyses ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
                     tuple(row.values()))
+        _record_decision(con, row["analysis_id"], row["profile_id"], "analyze", None, status, reasons, eff_rules, None)
     return {**row, "reused": False}
