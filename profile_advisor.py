@@ -457,6 +457,13 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if any(not p.get("errors") and not p.get("deferred") and not p.get("suppressed") for p in validated):
         analysis = profile_impact.analyze_and_store(db, snap, profile, after, k or int(profile.get("max_items") or 6),
                                                     rules=rules, consumed_keys=consumed)
+        # 게이트가 막았으면(eligible 도 needs_shadow 도 아님) 이 묶음의 제안을 기각으로 기억한다 —
+        # 같은 증거·같은 프로필이면 다음 주에 다시 분석하지 않는다. 사람은 개입하지 않는다.
+        if analysis["gate_status"] in (profile_impact.HELD, profile_impact.INSUFFICIENT, profile_impact.INVALID):
+            for p in validated:
+                if not p.get("errors") and not p.get("deferred") and not p.get("suppressed"):
+                    record_rejection(db, profile_id, p, sent, profile,
+                                     reason=f"gate:{analysis['gate_status']}:" + ";".join(json.loads(analysis["reasons_json"])[:3]))
     with sqlite3.connect(db) as con:
         for i, p in enumerate(validated, start=1):
             status = ("deferred" if p.get("deferred") else "invalid" if p.get("errors")
@@ -503,8 +510,11 @@ def evidence_sha(p: dict, sent: dict) -> str:
 
 def record_rejection(db: Path, profile_id: str, p: dict, sent: dict, profile: dict, reason: str,
                      base_revision: int | None = None) -> str:
-    """사람이 제안을 기각했다 — advisor_events(kind=rejected). 억제 조건은 proposal_sig +
-    evidence_sha + base_profile_hash 셋이 같을 때(revision 은 감사용: A→B→A 면 숫자만 다르다).
+    """**게이트가** 제안을 막았다 — advisor_events(kind=rejected). 이 시스템에는 사람이 제안을
+    승인·거절하는 단계가 없다(스케줄 → 메일 한 통). 기각의 주체는 게이트(held/insufficient/invalid)
+    이고 이 함수는 run_weekly 가 그 결과로 부른다. 억제 조건은 proposal_sig + evidence_sha +
+    base_profile_hash 셋이 같을 때(revision 은 감사용: A→B→A 면 숫자만 다르다) — 같은 증거로
+    같은 제안을 다음 주에 다시 분석하지 않는다. 새 증거가 생기면 다시 올라온다.
     이 이력은 LLM 프롬프트에 안 나간다 — 제안이 나온 뒤 로컬에서만 거른다."""
     init_db(db)
     detail = {"proposal_sig": proposal_signature(p), "evidence_sha": evidence_sha(p, sent),
