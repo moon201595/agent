@@ -708,3 +708,18 @@ def test_prompt_demands_the_shape_digest_renders():
     for heading in digest._NARRATIVE_HEADINGS:
         assert heading in prompt, f"프롬프트가 '{heading}' 을 지시하지 않는다"
         assert digest._is_narrative_heading(f"■ {heading}")
+
+
+def test_citation_audit_treats_branch_list_lines_as_evidence_of_the_lead_sentence():
+    """2026-09-12: 갈래를 "설명 문장 + '- 제목 [P#]' 줄"로 바꾸자 설명 문장이 근거 없는 줄로, 목록의
+    T 가 제목만 근거로 잡혀 ⚠ 가 떴다. 이 테스트가 잡는 것: 목록 줄을 앞 문장에 안 붙이는 것,
+    목록 줄의 T 를 title_only 로 세는 것, 그러면서 설명 문장의 T 는 놓치는 것."""
+    corpus = "- [P1:T] A\n  [P1:A] a\n- [P2:T] B\n  [P2:A] b"
+    text = "■ 갈래\n첫째, 이런 흐름이다.\n- A [P1:A]\n- B [P2:T]\n둘째, 저런 흐름이다 [P2:T]."
+    a = trend_report.citation_audit(text, corpus)
+    assert a["lines"] == 2 and a["cited_lines"] == 2, "목록 줄은 앞 문장에 딸린다"
+    assert a["title_only"] == ["[P2:T]"] and a["unknown"] == []
+    assert "[P2:T]" in a["cited"]
+    # 목록 줄이 아닌 곳의 T 만 title_only — 목록에만 T 가 있으면 비어야 한다
+    b = trend_report.citation_audit("첫째, 흐름이다.\n- B [P2:T]", corpus)
+    assert b["title_only"] == [] and b["cited_lines"] == 1

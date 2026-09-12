@@ -238,8 +238,10 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
    가장 주목할 논문 한두 편을 고르고 왜 그런지 쓴다. 제목을 그대로 인용한다.
 
 ■ 갈래
-   여러 논문에 공통으로 보이는 기술적 흐름 2~3개. 각 흐름마다 해당하는
-   논문 제목을 함께 적어 독자가 목록에서 찾아볼 수 있게 한다.
+   여러 논문에 공통으로 보이는 기술적 흐름 2~3개. 각 흐름은 설명 한두 문장으로
+   열고, 해당 논문은 문장 안에 나열하지 말고 **다음 줄부터 한 줄에 하나씩**
+   "- 제목 [P3:A]" 로 적는다(근거 ID 는 초록 A 나 요약 R — 제목 T 만 쓰지 않는다).
+   독자가 목록에서 찾아볼 수 있게.
 
 ■ 우리 분야와 만나는 지점
    위 흐름이 관심 분야와 어디서 이어지는가. 실제 적용을 생각할 때 무엇을
@@ -256,6 +258,8 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
   "■ 오늘 눈에 띄는 것"을 한 줄로 먼저 쓰고 다음 줄부터 내용을 쓴다.
 - **갈래 절에서 흐름을 열 때는 "첫째,", "둘째,", "셋째," 로 시작한다.**
   "첫 번째는" 같은 다른 표현을 쓰지 않는다.
+- **갈래의 논문은 "- " 로 시작하는 줄에 하나씩.** 설명 문장 안에 제목을 여러 개
+  늘어놓지 않는다(2026-09-12 사용자 요청 — 문장 속 나열은 읽기 어렵다).
 
 지킬 것:
 - **위에 주어진 초록·요약에 없는 내용을 쓰지 않는다.** 모르면 모른다고 쓴다.
@@ -377,16 +381,30 @@ def source_evidence(db: Path, excerpts: dict[str, str]) -> dict[str, list[dict]]
 
 
 def citation_audit(text: str, corpus: str) -> dict:
-    """ALCE의 구분을 빌려 인용 존재만 센다. 인용이 주장을 지지하는지는 미평가다."""
+    """ALCE의 구분을 빌려 인용 존재만 센다. 인용이 주장을 지지하는지는 미평가다.
+
+    갈래의 "- 제목 [P3:A]" 목록 줄(2026-09-12)은 **앞 설명 문장에 딸린 근거**로 본다 — 목록 줄을
+    붙인 뒤 세지 않으면 설명 문장이 "근거 없는 주장"으로, 목록 줄의 T 가 "제목만 근거"로 잡혀
+    형식을 바꾼 것만으로 ⚠ 가 뜬다. 목록 줄의 T 는 제목 참조지 기술 주장이 아니라 title_only 에
+    안 넣는다(설명 문장 자체의 T 는 여전히 잡는다)."""
     pattern = r"\[P\d+:(?:[ART]|S\d+)\]"
     available = set(re.findall(r"(?m)^\s*(?:- )?(" + pattern + r")", corpus))
+    merged: list[str] = []
+    lead_tags: set[str] = set()      # 목록 줄이 아닌 곳(설명 문장)에 있는 근거 — T 는 여기서만 잡는다
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("■"):
+            continue
+        if re.match(r"^[-•]\s+", line) and merged:
+            merged[-1] += " " + line
+        else:
+            merged.append(line)
+            lead_tags.update(re.findall(pattern, line))
     cited = set(re.findall(pattern, text))
-    lines = [line.strip() for line in text.splitlines()
-             if line.strip() and not line.lstrip().startswith("■")]
     return {"cited": sorted(cited), "unknown": sorted(cited - available),
-            "title_only": sorted(tag for tag in cited if tag.endswith(":T]")),
-            "lines": len(lines),
-            "cited_lines": sum(bool(re.search(pattern, line)) for line in lines),
+            "title_only": sorted(tag for tag in lead_tags if tag.endswith(":T]")),
+            "lines": len(merged),
+            "cited_lines": sum(bool(re.search(pattern, line)) for line in merged),
             "support": "미평가"}
 
 
@@ -542,6 +560,10 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     return text, ungrounded_numbers(text, corpus), enriched
 
 
+# 시각 비교는 **문자열**로 한다(2026-09-12). julianday() 는 배정도라 마이크로초를 버려
+# (`julianday(a)-julianday(b)` 가 0.0) 같은 밀리초 안의 두 시각이 같아진다 — _now() 를
+# 마이크로초로 올린 뒤 창 경계 플레이크가 났다. 저장 형식이 전부 ISO '+00:00' 이라
+# 사전순이 시간순이고, 초 단위 옛 값('…:41+00:00')도 같은 초의 마이크로초 값 앞에 온다('+' < '.').
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
@@ -568,8 +590,8 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
             "s.coverage_ratio, s.coverage_kind FROM search_candidates c "
             "LEFT JOIN summaries s ON s.arxiv_id=c.arxiv_id "
             "LEFT JOIN papers p ON p.arxiv_id=c.arxiv_id "
-            "WHERE c.profile_id=? AND julianday(c.first_seen)>=julianday(?) "
-            "AND julianday(c.first_seen)<julianday(?) ORDER BY c.first_seen, c.paper_key",
+            "WHERE c.profile_id=? AND c.first_seen>=? "
+            "AND c.first_seen<? ORDER BY c.first_seen, c.paper_key",
             (profile["profile_id"], start.isoformat(), end.isoformat())).fetchall()
     # 포함 판정은 적중 유무로 한다 — `priority` 는 설명 필드가 됐다(2026-09-11, A단계).
     # 값이 같더라도 자격을 점수에 기대면 점수식이 바뀔 때 조용히 따라 움직인다.
@@ -581,8 +603,8 @@ def collection_scope(db: Path, profile_id: str, start: datetime, end: datetime) 
     with sqlite3.connect(db) as con:
         rows = con.execute(
             "SELECT source, status, topic_signature, COUNT(*) FROM search_runs "
-            "WHERE profile_id=? AND julianday(started_at)>=julianday(?) "
-            "AND julianday(started_at)<julianday(?) "
+            "WHERE profile_id=? AND started_at>=? "
+            "AND started_at<? "
             "GROUP BY source, status, topic_signature ORDER BY source, status, topic_signature",
             (profile_id, start.isoformat(), end.isoformat())).fetchall()
     return [f"{src} {status} {n}회 · 검색 지문 {sig or '미기록'}" for src, status, sig, n in rows]

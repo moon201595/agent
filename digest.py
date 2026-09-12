@@ -1066,7 +1066,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
              ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
-    text = annotate_numbers(text, numbered_mentions(scan_result))
+    text = annotate_numbers(reflow_branch_lists(text), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
     audit = scan_result.get("citation_audit") or {}
     if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
         lines.append("   ⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것")
@@ -1330,7 +1330,10 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
             chips = _status_chip(warning.strip("[]"), flagged=True) + chips
             needs_attention = True
 
-    open_attr = " open" if needs_attention else ""
+    # **토글은 전부 닫힌 채로 간다**(2026-09-12 사용자 요청). 예전엔 검증 flag·재현 실패가 있는
+    # 논문만 열어 뒀는데, 어떤 건 열리고 어떤 건 닫힌 채 오면 오히려 어수선하다. 주의가 필요한
+    # 것은 칩(needs_attention → 칩 강조)으로 보이고, 펼치는 건 읽는 사람이 한다.
+    open_attr = ""
 
     # **텍스트 판과 같은 조건을 쓴다.** `== "ok"` 로 좁혔더니 deep_status 가
     # 비어 있는 구형 결과에서 평문에는 요약이 실리고 HTML 에는 안 실렸다 —
@@ -1347,8 +1350,9 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         # **접힌 상태에서 보이는 한 줄**(2026-09-05). 제목만으로는 무슨 논문인지
         # 모르고, 절을 다 펼쳐 두면 목록을 훑을 수가 없다. 제목 + 한 줄이
         # 목록이고, 펼치면 요약본 전체가 나온다.
-        f'{gist_html}</summary>'
-        f'<div style="margin-top:8px;">{chips}</div>'
+        # 칩(검증 n/m · 재현 · 철회 · 원문 N%)도 **접힌 상태에서 보여야 한다**(2026-09-12). 토글을
+        # 전부 닫아 보내기로 하면서, 예전처럼 주의 논문만 자동으로 펼쳐 칩을 드러내는 길이 없어졌다.
+        f'{gist_html}<div style="margin-top:6px;font-weight:400;">{chips}</div></summary>'
         f'{detail}'
         f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'
         f'왜 걸렸나 : {_esc(_why_matched(score))}</div>'
@@ -1453,9 +1457,42 @@ def numbered_mentions(scan_result: dict) -> list[tuple[str, int]]:
     return sorted(out, key=lambda kv: -len(kv[0]))
 
 
-def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
-    """서술 안에서 부른 논문 뒤에 `(논문 3)` 을 붙인다. 원문을 안 지운다.
+_CITE = r"\[P\d+:[^\]]+\]"
+_BRANCH_TAIL_RE = re.compile(r"\s*(?:등의?\s*)?논문(?:이|들이|은|들은|도)?\s*(?:이에|여기에|이|여기)\s*(?:해당한다|속한다|묶인다|들어간다|포함된다)[.。]?\s*$")
 
+
+def reflow_branch_lists(text: str) -> str:
+    """갈래 문단 안에 "제목 [P1:A], 제목 [P4:A, P4:R] 논문이 이에 해당한다" 처럼 **문장 속에 나열된
+    논문**을 설명 문장 + "- 제목 [근거]" 줄로 푼다(2026-09-12 사용자 요청: 문장 속 나열은 읽기 어렵다).
+    프롬프트도 그렇게 쓰라고 하지만 모델이 지시를 지키는지에 형식이 의존하면 안 된다 — 받는
+    쪽에서 결정적으로 푼다. 근거 ID 가 둘 이상 문장 안에 있을 때만 건드리고, 못 풀면 그대로 둔다."""
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        first = re.search(_CITE, stripped)
+        if not stripped or stripped.startswith(("■", "-", "•")) or not first:
+            out.append(line); continue
+        # 첫 근거 ID 가 있는 자리에서 그 제목의 시작을 찾는다: 직전 문장 끝(". ") 다음부터.
+        # (항목이 둘 이상이어야 푼다 — 아래 len(items) 검사. 근거 수 선검사는 그와 겹쳐 뺐다.)
+        head_end = stripped.rfind(". ", 0, first.start())
+        if head_end < 0:
+            out.append(line); continue
+        lead, rest = stripped[:head_end + 1], stripped[head_end + 2:]
+        rest = _BRANCH_TAIL_RE.sub("", rest).strip()
+        items = [it.strip(" ,") for it in re.split(r"(?<=\])\s*,\s*", rest) if it.strip(" ,")]
+        if len(items) < 2 or not all(re.search(_CITE + r"$", it) for it in items):
+            out.append(line); continue
+        indent = line[:len(line) - len(line.lstrip())]
+        out.append(indent + lead)
+        out.extend(f"{indent}- {it}" for it in items)
+    return "\n".join(out)
+
+
+def annotate_numbers(text: str, mentions: list[tuple[str, int]], total: int | None = None) -> str:
+    """서술 안에서 부른 논문 뒤에 `(요약 논문 3/6)` 을 붙인다. 원문을 안 지운다.
+
+    "논문 3" 만으로는 아래 요약 목록의 3번째라는 걸 모른다(2026-09-12 사용자 지적) —
+    "요약 논문 3/6" 으로 어디의 몇 번째인지 적는다. total 이 없으면 "요약 논문 3".
     한 번 붙은 이름은 다시 안 붙인다 — 같은 논문이 문단마다 나오면 번호가
     도배된다. 이미 번호가 붙은 자리는 건너뛴다.
     """
@@ -1470,7 +1507,7 @@ def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
         pattern = (re.escape(key) if len(key) > 24
                    else rf"(?<![A-Za-z0-9]){re.escape(key)}(?![A-Za-z0-9])")
         flags = re.IGNORECASE if len(key) > 24 else 0
-        for m in re.finditer(pattern + r"(?!\s*\(논문)", text, flags):
+        for m in re.finditer(pattern + r"(?!\s*\((?:요약 )?논문)", text, flags):
             # **이미 잡힌 구간 안이면 건너뛴다**(2026-09-08). 안 그러면
             # `HINT++: Better` 안의 `HINT` 가 다른 논문으로 잡혀
             # `HINT (논문 1)++: Better (논문 2)` 가 된다 — 외부 검토가 재현했다.
@@ -1481,7 +1518,8 @@ def annotate_numbers(text: str, mentions: list[tuple[str, int]]) -> str:
             done.add(num)
             break
     for pos, num in sorted(inserts, reverse=True):   # 뒤에서부터 넣어야 위치가 안 밀린다
-        text = f"{text[:pos]} (논문 {num}){text[pos:]}"
+        label = f"요약 논문 {num}/{total}" if total else f"요약 논문 {num}"
+        text = f"{text[:pos]} ({label}){text[pos:]}"
     return text
 
 
@@ -1512,6 +1550,10 @@ def _narrative_line_html(line: str) -> str:
     if _is_narrative_heading(text):
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
                 f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
+    # 갈래의 논문 목록 — "- 제목 [P3:A]" 한 줄에 하나(2026-09-12). 들여쓰고 글머리를 단다.
+    if re.match(r"^[-•]\s+", text):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                f'margin:2px 0 2px 18px;line-height:1.55;">• {_esc(re.sub(r"^[-•]\s+", "", text))}</div>')
     # 같은 줄에 나열된 갈래도 문단으로 분리해 항목 사이 한 줄 여백을 둔다.
     parts = re.split(r"(?<=[.!?。])\s+(?=(?:첫|둘|셋|넷|다섯|여섯|일곱)\s*째|(?:첫|두|세|네)\s*번째)", text)
     return "".join(
@@ -1661,7 +1703,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
-        text = annotate_numbers(text, numbered_mentions(scan_result))
+        text = annotate_numbers(reflow_branch_lists(text), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
         paras = "".join(_narrative_line_html(ln)
                         for ln in text.strip().splitlines() if _plain(ln))
         warn = ""

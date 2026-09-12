@@ -280,19 +280,21 @@ def _html_for(papers, **kw):
     return generate_digest_html(result, "우리팀")
 
 
-def test_html_opens_details_for_flagged_paper(isolated_db):
-    """(a) ⑤ flag가 있는 항목은 <details open>으로 펼쳐 보낸다."""
+def test_html_keeps_flagged_paper_collapsed_but_chip_visible(isolated_db):
+    """2026-09-12 사용자 요청: 토글은 **전부 닫힌 채로** 간다(어떤 건 열리고 어떤 건 닫히면 어수선).
+    그전엔 ⑤ flag 논문을 펼쳐 보냈다. 주의는 칩으로 보여야 한다 — 펼치지 않아도 flag 가 보인다."""
     _seed_verification(isolated_db["db"], "p1", total=31, matched=28)
     html = _html_for([_scored_paper("p1", "flag 논문", 1.0)])
-    assert "<details open" in html
+    assert "<details open" not in html and "<details " in html
+    assert "28/31" in html or "flag" in html.lower()
 
 
-def test_html_opens_details_for_failed_repro(isolated_db):
-    """재현 실패도 주의 대상이라 펼친다."""
+def test_html_keeps_failed_repro_collapsed(isolated_db):
+    """재현 실패도 닫힌 채로(2026-09-12). 칩은 summary 줄에 있어 닫혀 있어도 보인다."""
     _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/b", success=False)
     html = _html_for([_scored_paper("p1", "재현 실패 논문", 1.0)])
-    assert "<details open" in html
+    assert "<details open" not in html and "<details " in html
 
 
 def test_html_leaves_clean_paper_collapsed(isolated_db):
@@ -416,7 +418,7 @@ def test_html_retraction_chip_forces_open(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/b", success=True)
     _seed_retraction(isolated_db["db"], "p1", 1)
     html = _html_for([_scored_paper("p1", "철회 논문", 1.0)])
-    assert "<details open" in html          # 검증·재현이 깨끗해도 펼친다
+    assert "<details open" not in html      # 2026-09-12: 철회여도 펼치지 않는다 — 칩이 알린다
     assert "철회된 논문" in html
 
 
@@ -543,14 +545,13 @@ def test_old_rows_with_no_stage_fall_back_to_plain_failure(isolated_db):
 
 
 def test_network_suspected_label_is_flagged_in_html(isolated_db):
-    """네트워크 차단 의심은 ✗ 라 HTML 에서 펼쳐진 채로 나가야 한다
-    (기존 needs_attention 규칙이 유지되는지 확인)."""
+    """네트워크 차단 의심은 ✗ 칩으로 HTML 에 보인다. 2026-09-12 부터 펼치지는 않는다."""
     _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage="run", fail_detail="run_network_suspected")
     html = _html_for([_scored_paper("p1", "논문", 1.0)])
     assert "네트워크 차단 의심" in html
-    assert "<details open" in html
+    assert "<details open" not in html
 
 
 def test_not_run_labels_do_not_force_attention_in_html(isolated_db):
@@ -1141,7 +1142,7 @@ def test_narrative_points_back_to_the_numbered_paper():
     scan = {"papers": papers, "candidates_found": 9,
             "narrative": ("갈래\n첫째, FailureSpot 이 대표적이다.", [])}
     for out in (digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")):
-        assert "FailureSpot (논문 2)" in out
+        assert "FailureSpot (요약 논문 2/2)" in out
 
 
 def test_number_annotation_marks_each_paper_once():
@@ -1150,7 +1151,7 @@ def test_number_annotation_marks_each_paper_once():
                "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}]
     text = "FailureSpot 이 있다.\n다시 FailureSpot 을 본다.\n또 FailureSpot 이다."
     out = digest.annotate_numbers(text, digest.numbered_mentions({"papers": papers}))
-    assert out.count("(논문 1)") == 1
+    assert out.count("(요약 논문 1)") == 1
 
 
 def test_unmentioned_paper_gets_no_number():
@@ -1272,8 +1273,8 @@ def test_overlapping_names_do_not_split_a_title():
     papers = [{"arxiv_id": "1", "title": "HINT: Hierarchical"},
               {"arxiv_id": "2", "title": "HINT++: Better"}]
     out = digest.annotate_numbers("HINT++: Better 가 있다.", digest.numbered_mentions({"papers": papers}))
-    assert out.count("(논문") == 1
-    assert "HINT (논문" not in out
+    assert out.count("(요약 논문") == 1
+    assert "HINT (요약 논문" not in out
 
 
 def test_ambiguous_acronym_is_dropped_rather_than_guessed():
@@ -1291,7 +1292,7 @@ def test_title_prefix_quotation_still_gets_a_number():
                "title": "Deep Microcompression: Structured Pruning and Bit-packed Quantization"}]
     out = digest.annotate_numbers("Deep Microcompression은 겨냥한다.",
                                   digest.numbered_mentions({"papers": papers}))
-    assert "Deep Microcompression (논문 1)" in out
+    assert "Deep Microcompression (요약 논문 1)" in out
     # 짧은 머리말은 흔한 말과 부딪히므로 열쇠로 쓰지 않는다
     assert "Fast Net" not in digest._mention_keys("Fast Net: Something")
 
@@ -1423,3 +1424,48 @@ def test_completed_reproduction_failure_keeps_stage_and_reason():
              "log": [{"stage": "clone", "fail_detail": "repo_not_found"}]}}
     label = digest._paper_repro_label(paper)
     assert "clone" in label and "repo_not_found" in label and "실패" in label
+
+
+def test_narrative_bullet_lines_render_as_indented_list_items():
+    """2026-09-12 사용자 요청: 갈래의 논문은 문장 속 나열이 아니라 한 줄에 하나.
+    이 테스트가 잡는 것: "- 제목" 줄이 일반 문단과 같은 모양으로 나가는 것, 글머리 기호가 두 번 붙는 것."""
+    html = digest._narrative_line_html("- BenchShield: Formal Model-Backed Instrumentation [P4:A]")
+    assert "• BenchShield" in html and "margin:2px 0 2px 18px" in html and "- BenchShield" not in html
+    html2 = digest._narrative_line_html("첫째, 검증 및 런타임 제어 기술이다.")
+    assert "<strong>첫째,</strong>" in html2 and "18px" not in html2
+
+
+def test_branch_inline_title_lists_are_reflowed_one_per_line():
+    """2026-09-12 사용자 요청. 이 테스트가 잡는 것: 문장 속 나열을 그대로 두는 것, 설명 문장을 잃는 것,
+    꼬리("논문이 이에 해당한다")가 마지막 항목에 붙어 남는 것, 근거 ID 하나뿐인 문장을 건드리는 것,
+    이미 목록인 줄을 다시 푸는 것."""
+    para = ("   첫째, 검증 및 런타임 제어 기술이다. Engineering Reliable Commit Gates [P1:A], "
+            "BenchShield: Formal Model-Backed Instrumentation [P4:A, P4:R, P4:S0071], "
+            "GuardedAct with Blast-Radius-Aware Sandboxing [P11:A] 논문이 이에 해당한다.")
+    out = digest.reflow_branch_lists(para).splitlines()
+    assert out == ["   첫째, 검증 및 런타임 제어 기술이다.",
+                   "   - Engineering Reliable Commit Gates [P1:A]",
+                   "   - BenchShield: Formal Model-Backed Instrumentation [P4:A, P4:R, P4:S0071]",
+                   "   - GuardedAct with Blast-Radius-Aware Sandboxing [P11:A]"]
+    single = "가장 주목할 논문은 BenchShield [P4:A] 이다. 이유는 이렇다."
+    assert digest.reflow_branch_lists(single) == single, "근거 ID 하나면 나열이 아니다"
+    already = "- A [P1:A]\n- B [P2:A]"
+    assert digest.reflow_branch_lists(already) == already
+    no_lead = "A [P1:A], B [P2:A] 논문이 여기에 속한다."
+    assert digest.reflow_branch_lists(no_lead) == no_lead, "설명 문장이 없으면 못 푼다 — 그대로 둔다"
+    # 전체 파이프라인: 평문·HTML 둘 다 목록으로, 번호는 '요약 논문 N/M'
+    papers = [{"arxiv_id": str(i), "title": t} for i, t in enumerate(
+        ["Engineering Reliable Commit Gates", "Other", "Other2", "BenchShield: Formal Model-Backed Instrumentation", "X", "Y"], start=1)]
+    scan = {"papers": papers, "candidates_found": 9, "narrative": ("■ 갈래\n" + para, [])}
+    text = "\n".join(digest.narrative_section(scan)) if hasattr(digest, "narrative_section") else None
+    html = digest._narrative_line_html(digest.annotate_numbers(digest.reflow_branch_lists(para), digest.numbered_mentions(scan), 6).splitlines()[2])
+    assert "• BenchShield: Formal Model-Backed Instrumentation (요약 논문 4/6)" in html
+
+
+def test_chips_are_visible_while_collapsed(isolated_db):
+    """2026-09-12: 토글이 닫힌 채로 오므로 검증·재현·철회 칩은 <summary> 안에 있어야 보인다.
+    이 테스트가 잡는 것: 칩이 </summary> 뒤(펼쳐야 보이는 자리)에 있는 것."""
+    _seed_verification(isolated_db["db"], "p1", total=31, matched=28)
+    html = _html_for([_scored_paper("p1", "flag 논문", 1.0)])
+    summary = html[html.index("<summary"):html.index("</summary>")]
+    assert "28/31" in summary or "flag" in summary.lower(), "칩이 summary 안에 있어야 접힌 채로 보인다"
