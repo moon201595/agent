@@ -1016,7 +1016,7 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
                                   (profile["profile_id"], start.isoformat(), end.isoformat())).fetchone()
         block = term_discovery.format_discovery(
             term_discovery.discover(pool, profile), len(pool) if has_obs else None,
-            term_discovery.known_variants(pool, profile))
+            term_discovery.known_variants(pool, profile), term_discovery.single_seed_noise(pool, profile))
         report += "\n" + "\n".join(block) + "\n"
     except Exception as e:  # noqa: BLE001
         report += f"\n▶ 키워드에 안 걸린 논문의 반복어: 집계 실패 — {type(e).__name__}\n"

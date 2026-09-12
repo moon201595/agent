@@ -39,7 +39,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 일일 스캔(cron 진입점): `./run_daily_scan.sh` — 매일 05:00 KST, 로그는 `logs/daily_scan.log`.
 - **DB 스키마 변경**: 각 모듈의 DDL 은 `schema_guard` 를 통해서만 돈다. 운영 DB(테이블이 있는 파일)에는
   코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고, 사람 승인 뒤
-  `migrate.py --apply`(백업 자동). 테스트는 conftest 가 플래그를 켜 임시 DB 에 바로 적용한다(2026-09-12).
+  `migrate.py --apply`(WAL 포함 일관 백업 자동). 새 설치는 `--apply --scope all`. 평가 DB 는
+  `--scope evaluation`. 테스트는 conftest 가 플래그를 켜 임시 DB 에 바로 적용한다(2026-09-12).
 
 ## 테스트 · 검증 (정확한 명령어 그대로)
 
@@ -173,6 +174,10 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   보내 "관련성 계층 우선" 계약을 깼다. 초록 정리 경로(§8-41)가 생겨 원래 걱정(자리만 먹고 처리 실패)이
   사라졌으므로 문지기를 뺐다(docs/ASTRA_PLAN_2026-09-10.md §5.5, PROGRESS §8-86). 지금도 유효한 절반은
   이것이다 — **본문 확보 실패를 링크 존재로 판단하면 안 된다. 받아본 결과를 믿는다.**
+- **키워드 매처는 낱말 사이에 공백·하이픈류·언더스코어·슬래시·괄호만 허용한다**(match-v2, 2026-09-12).
+  그전엔 통째 escape 라 "large language model (LLM) agents"·"vision--language models"·"MVTec-AD" 를
+  놓쳤다 — 1.0 계층 키워드가 가장 흔한 표기를 못 잡고 있었다. 넓히고 싶어도 `\W+`·`.*` 로 가지
+  않는다(사이에 다른 낱말이 끼면 다른 뜻이다). 정책 버전 `rank-tuple-v1+match-v2`.
 - **순위는 가중합이 아니라 튜플이다**(2026-09-11). `profile_scoring.rank_key` 가
   `(계층, -날짜, -적중폭, -도메인, 키)` 로 정하고 `priority` 는 설명 필드다. 선정 경로에 합산
   재정렬(MMR·자리 상한·문지기)을 다시 붙이면 계약이 깨진다 — `test_rank_contract.py` 가 감시한다.

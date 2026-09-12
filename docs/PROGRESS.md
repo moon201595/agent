@@ -5107,6 +5107,51 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     테스트 +7(건강 2 · 탐색 3 · 가드 2), 돌연변이 11/11(둘은 처음에 새서 테스트 자료를
     키웠다). 899 passed, 캐시 없이 두 번 재실행 동일.
 
+99. **백업이 WAL 을 놓칠 수 있었다 · 매처가 낱말 사이 구두점을 못 받았다 · 씨앗 축이 잡음을 올렸다** (2026-09-12, 외부 검토 다섯째).
+
+    **① 백업(`migrate.py`).** `shutil.copy2` 였다. 이 DB 는 WAL 모드라 checkpoint 전 커밋은
+    `-wal` 에 있고, 파일만 복사하면 빠진다 — "백업했다"가 거짓. 테스트가 그걸 실증한다:
+    WAL 에 행 하나를 남긴 DB 를 copy2 하면 테이블이 0개, `Connection.backup()` 으로 하면
+    그 행이 있다. 고침 — online backup API + 백업본 `PRAGMA integrity_check` + 테이블 수
+    대조, 실패하면 파일을 지우고 BackupFailed. 같은 초 두 번째 백업이 첫 파일을 재사용하던
+    것(스탬프가 초 단위)도 마이크로초 + 덮어쓰기 거부로 막았다.
+
+    **② schema_guard 의 "빈 DB 면 자동 적용" 예외를 없앴다.** owner 가 여섯이라 첫 owner
+    (storage)가 테이블을 만든 순간 둘째(research_profile)부터 SchemaOutOfDate 였다 — 테스트는
+    플래그로 숨겨져 있었다. 반쪽 예외보다 입구 하나: 새 설치도 `migrate.py --apply --scope all`.
+    평가 DB(다른 파일)는 owner 목록에 없어 "유일한 입구" 계약이 깨져 있었다 →
+    `--scope operational|evaluation|all`.
+
+    **③ 승인받고 적용했다.** `migrate.py --apply`: 일관 백업(integrity ok) →
+    `impact_analyses` 1 + `advisor_*` 6 생성 → 재대조 최신. 월요일 첫 주간 실행이 돈다.
+
+    **④ 키워드 매처 match-v2 (`profile_scoring._keyword_pattern`).** 순서를 검토대로 —
+    offline 재생 → 오탐 확인 → 수정 → 정책 버전. 옛(통째 escape)/새(낱말 분할 + 제한 구분자)
+    매처를 관측 947편에 재생: **11개 키워드에서 56편이 새로 잡혔고 전부 진양성(오탐 0).**
+    vision-language model +18(vision language models · vision--language) · LLM agent +16
+    ("large language model (LLM) agents" · LLM-Agent) · MVTec AD +4(MVTec-AD) · digital twin +4
+    (digital-twin) · vision-language-action +3 · world model +3(world-model) · agentic AI +2 ·
+    mixed-precision +2 · 그 외 3. 허용 구분자는 공백·하이픈류·언더스코어·슬래시·괄호뿐 —
+    `\W+` 나 `.*` 는 안 쓴다(사이에 다른 낱말이 끼면 여전히 안 잡힌다, 돌연변이 T7 이 감시).
+    적격·적중의 뜻이 바뀌므로 `RANK_POLICY_VERSION = "rank-tuple-v1+match-v2"`. 옛 관측의
+    filter_reason 은 그대로다(당시 정책) — 탐색 풀의 "표기 변형" 줄이 내일 스캔부터 줄어든다.
+    1.0 계층 키워드가 가장 흔한 표기를 놓치고 있었던 것이 이번 주 가장 큰 실측이다.
+
+    **⑤ 씨앗 축.** `seed_ratio`(씨앗으로 들어온 비율)는 관련도가 아니라 S2 관련도 잡음의
+    표시였다 — 'foreign language' 4편 전부 한 씨앗. 고침 — **독립 씨앗 수(seed_breadth) ≥ 2**
+    만 씨앗 축 후보. 단일 씨앗 반복어는 후보가 아니라 **그 씨앗의 검색 잡음 진단**으로
+    주간 리뷰에 따로 간다. 축에 후보가 없으면 자리를 support 로 채우고, 라벨은 실제 축이다
+    (처음엔 자리 번호로 라벨을 달아 support 에서 뽑힌 것에 'seed' 가 붙었다 — 돌연변이가 아니라
+    실측에서 나왔다). 도메인 축도 도메인 적중 0 은 안 뽑는다.
+
+    **실측(9/11 탈락 429편, 고친 뒤).** [support] reinforcement learning 15 · [domain]
+    learning algorithms 3 · [seed] real world 5(2종). 잡음 진단: **`world model` 씨앗이
+    random forest · retrospective cohort · risk stratification · world bank 를 6편씩** 끌어온다
+    — 향후 계획 결정 ②(world model 씨앗 교체)의 근거가 여기 있다.
+
+    테스트 +5(가드·백업 3 재작성 · 매처 1 · 씨앗 1), 돌연변이 8/8(둘은 자료 보강 뒤).
+    902 passed, 캐시 없이 재실행 동일. astra 판정은 여전히 못 받았다(9/15 이후).
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

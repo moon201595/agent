@@ -94,7 +94,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `evaluation.py` | 지연·비용·제안 효율·core 적중 비율, 독립 라벨이 있을 때만 의미상 지표, 시점 누수 없는 재생, 불변 실험 manifest (E1) |
 | `profile_health.py` | 프로필 건강 지표 — 스캔별 당시 스냅샷 재채점으로 anchor 적중·계층·최신성·제외어 충돌을 센다. "적용 후 악화"의 정의(규칙은 미설정으로 시작) |
 | `term_discovery.py` | 탐색 차선 — 키워드에 안 걸려 탈락한 논문에서 n-gram 후보 용어를 로컬로 찾고 용어당 증거 논문만 제안기에 넘긴다(LLM 은 검토자) |
-| `schema_guard.py` · `migrate.py` | DDL 은 빈 DB 나 `PAPER_HARNESS_APPLY_DDL=1` 일 때만 실행, 아니면 대조만 하고 뒤처지면 멈춘다. 운영 DB 변경은 `migrate.py --apply`(백업 → 적용 → 재대조) 하나로 |
+| `schema_guard.py` · `migrate.py` | DDL 은 `PAPER_HARNESS_APPLY_DDL=1` 일 때만 실행, 아니면 대조만 하고 뒤처지면 멈춘다. 모든 스키마 변경(새 설치 포함)은 `migrate.py --apply [--scope operational\|evaluation\|all]` 하나로 — WAL 을 포함한 일관 백업 → 적용 → 재대조 |
 
 기존 도구·요약·재현 계층은 그대로 재사용한다.
 
