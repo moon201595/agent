@@ -104,3 +104,10 @@ def test_백업은_WAL_에_남은_커밋을_포함하고_검증을_통과해야_
     with pytest.raises(migrate.BackupFailed):
         migrate.backup(db)
     assert len(list((tmp_path / "backups").glob("*.db"))) == 1, "실패한 백업 파일은 남기지 않는다"
+    # backup API 자체가 예외를 내도 부분 파일을 지우고 BackupFailed 로 올린다
+    monkeypatch.setattr(migrate, "_copy_pages", lambda src, dst: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O")))
+    with pytest.raises(migrate.BackupFailed):
+        migrate.backup(db)
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 1
+    # --scope all 과 명시적 --db 는 같이 못 쓴다
+    assert migrate.main(["--scope", "all", "--db", str(db)]) == 2

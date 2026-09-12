@@ -1,0 +1,150 @@
+{
+ "shadow_id": "bbf8bad39352",
+ "profile_id": "team_ai_advance",
+ "analysis_id": null,
+ "created_at": "2026-09-12T07:31:33.059365+00:00",
+ "window_start": "2026-09-05T07:31:33.059365+00:00",
+ "window_end": "2026-09-12T07:31:33.059365+00:00",
+ "before_hash": "e0fe9793d072",
+ "after_hash": "b99456184aad",
+ "arms": {
+  "baseline": {
+   "seeds": [
+    "photoplethysmography",
+    "vision-language-action",
+    "world model"
+   ],
+   "arxiv_query": "all:4-bit OR all:FPGA OR all:\"LLM agent\" OR all:\"MVTec AD\" OR all:MVTec-AD OR all:NPU OR all:\"agentic AI\" OR all:\"defect detection\" OR all:\"digital twin\" OR all:\"domain randomization\" OR all:\"embodied AI\" OR all:\"event camera\" OR all:\"image super-resolution\" OR all:\"in-memory computing\" OR all:\"in-sensor computing\" OR all:\"knowledge distillation\" OR all:\"machine vision\" OR all:mixed-precision OR all:\"model compression\" OR all:\"neural network accelerator\" OR all:\"on-device inference\" OR all:\"on-sensor computing\" OR all:photoplethysmography OR all:\"physical AI\" OR all:\"post-training quantization\" OR all:\"quantization-aware training\" OR all:rPPG OR all:\"robot learning\" OR all:\"robot manipulation\" OR all:\"robot simulation\" OR all:sim-to-real OR all:\"structured pruning\" OR all:\"surface inspection\" OR all:\"vision-language model\" OR all:vision-language-action OR all:\"visual anomaly detection\" OR all:\"wearable biosensor\" OR all:\"world model\""
+  },
+  "candidate": {
+   "seeds": [
+    "photoplethysmography",
+    "vision-language-action"
+   ],
+   "arxiv_query": "all:4-bit OR all:FPGA OR all:\"LLM agent\" OR all:\"MVTec AD\" OR all:MVTec-AD OR all:NPU OR all:\"agentic AI\" OR all:\"defect detection\" OR all:\"digital twin\" OR all:\"domain randomization\" OR all:\"embodied AI\" OR all:\"event camera\" OR all:\"image super-resolution\" OR all:\"in-memory computing\" OR all:\"in-sensor computing\" OR all:\"knowledge distillation\" OR all:\"machine vision\" OR all:mixed-precision OR all:\"model compression\" OR all:\"neural network accelerator\" OR all:\"on-device inference\" OR all:\"on-sensor computing\" OR all:photoplethysmography OR all:\"physical AI\" OR all:\"post-training quantization\" OR all:\"quantization-aware training\" OR all:rPPG OR all:\"robot learning\" OR all:\"robot manipulation\" OR all:\"robot simulation\" OR all:sim-to-real OR all:\"structured pruning\" OR all:\"surface inspection\" OR all:\"vision-language model\" OR all:vision-language-action OR all:\"visual anomaly detection\" OR all:\"wearable biosensor\" OR all:\"world model\""
+  },
+  "seed_changed": true,
+  "arxiv_query_changed": false,
+  "seeds_removed": [
+   "world model"
+  ],
+  "seeds_added": []
+ },
+ "metrics": {
+  "baseline": {
+   "returned": 578,
+   "eligible": 174,
+   "excluded": 6,
+   "no_core": 398,
+   "topk": [
+    "doi:10.64898/2026.09.10.26361944",
+    "2609.11310",
+    "2609.11697",
+    "2609.10915",
+    "2609.10954",
+    "2609.10986"
+   ],
+   "per_seed": {
+    "photoplethysmography": {
+     "returned": 5,
+     "eligible": 5,
+     "noise": 0
+    },
+    "vision-language-action": {
+     "returned": 296,
+     "eligible": 141,
+     "noise": 155
+    },
+    "world model": {
+     "returned": 298,
+     "eligible": 42,
+     "noise": 256
+    }
+   }
+  },
+  "candidate": {
+   "returned": 301,
+   "eligible": 146,
+   "excluded": 2,
+   "no_core": 153,
+   "topk": [
+    "doi:10.64898/2026.09.10.26361944",
+    "2609.11310",
+    "2609.11697",
+    "2609.10915",
+    "2609.10986",
+    "2609.11022"
+   ],
+   "per_seed": {
+    "photoplethysmography": {
+     "returned": 5,
+     "eligible": 5,
+     "noise": 0
+    },
+    "vision-language-action": {
+     "returned": 296,
+     "eligible": 141,
+     "noise": 155
+    }
+   }
+  },
+  "diff": {
+   "unique_to_baseline": 277,
+   "unique_to_candidate": 0,
+   "eligible_lost": [
+    "2609.05834",
+    "2609.06009",
+    "2609.06229",
+    "2609.06302",
+    "2609.06823",
+    "2609.07002",
+    "2609.07051",
+    "2609.07126",
+    "2609.07299",
+    "2609.07328",
+    "2609.07532",
+    "2609.07719",
+    "2609.08342",
+    "2609.08855",
+    "2609.09210",
+    "2609.09418",
+    "2609.09597",
+    "2609.10464",
+    "2609.10506",
+    "2609.10540",
+    "2609.10954",
+    "2609.11445",
+    "2609.11548",
+    "2609.11553",
+    "doi:10.1145/3800935.3830851",
+    "doi:10.1145/3800935.3830860",
+    "doi:10.18255/2412-6519-2026-3-306-323",
+    "doi:10.61784/asat3023"
+   ],
+   "eligible_gained": [],
+   "eligible_before": 174,
+   "eligible_after": 146,
+   "noise_before": 404,
+   "noise_after": 155,
+   "topk_overlap": 0.8333333333333334,
+   "topk_left": [
+    "2609.10954"
+   ],
+   "topk_entered": [
+    "2609.11022"
+   ]
+  },
+  "k": 6,
+  "window_days": 7,
+  "api": {
+   "s2": {
+    "ok": 7
+   }
+  }
+ },
+ "api_calls": 7,
+ "seconds": 14.3,
+ "status": "done",
+ "error": null,
+ "version": "shadow-v1"
+}

@@ -5152,6 +5152,46 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     테스트 +5(가드·백업 3 재작성 · 매처 1 · 씨앗 1), 돌연변이 8/8(둘은 자료 보강 뒤).
     902 passed, 캐시 없이 재실행 동일. astra 판정은 여전히 못 받았다(9/15 이후).
 
+100. **⑦ shadow 검색 — 검색 집합을 바꾸는 변경안을 격리해서 실측한다. 첫 실험: S2 씨앗 `world model` 제거** (2026-09-12).
+
+    hardening 둘 먼저(외부 검토 여섯째): `migrate.backup()` 전체를 try/except 로 감싸 backup
+    API 자체 실패에서도 부분 파일을 지우고 BackupFailed; `--scope all` 과 명시적 `--db` 조합
+    금지(운영·평가 스키마가 한 파일에 섞인다).
+
+    **`shadow_search.py`.** 두 팔(baseline=변경 전, candidate=변경 후)을 같은 창·같은 시각에
+    검색한다. 검색 함수(find_new_papers·s2_delta)는 원래 DB 를 안 건드리는 순수 함수라 그대로
+    부르고 기록(record_run)은 안 한다 — search_runs·search_candidates·profile_shown·revision 을
+    읽지도 쓰지도 않는다(테스트가 표 크기로 확인). 공유 씨앗은 한 번만, 바뀌지 않은 arXiv
+    질의도 **한 번** 검색해 두 팔에 공유한다 — 손실은 합집합 기준이어야 뜻이 있다. 재는 것:
+    반환·적격·잡음(제외어+무적중)·팔별 고유·잃은/얻은 적격 논문 키·상위 K 겹침·씨앗별
+    수율·API 호출(Scope)·소요. 판정은 안 한다. 결과는 `shadow_runs`(새 표, DDL 은 승인 대기)에
+    한 행. `profile_impact.gate` 가 shadow 를 받으면 needs_shadow_search 를 넘되 shadow 규칙
+    (`DEFAULT_SHADOW_RULES` 전부 None)이 미설정이면 insufficient, 한도를 넘으면 held.
+    `regate_with_shadow` 가 저장된 분석의 게이트를 갱신한다 — before/after 해시가 다르면 거부.
+    dry-run(store=False)은 표도 안 만든다.
+
+    **실측 1(격리, 저장 안 함, S2 7회·14초, 창 7일).** baseline 씨앗 3 → candidate 2.
+    반환 578 → 301 · 적격 174 → 146(잃음 28 · 얻음 0) · 잡음 404 → 155 · 상위 6 겹침 0.83.
+    씨앗별: photoplethysmography 5/5/0 · vision-language-action 296/141/155 ·
+    **world model 298/42/256**(반환/적격/잡음).
+    잃은 28편을 관측과 대조하니 **24편은 arXiv 경로로도 관측된 논문**이다 — 일일 arXiv 검색이
+    잡는다. S2 로만 오는 진짜 손실은 4편: ACM 하이퍼텍스트 2편(주변부), 정체 불명 DOI 2편.
+    잃은 28편의 core 적중은 23편이 `world model`(가드 통과) — 즉 씨앗이 데려오는 관련 논문은
+    거의 다 arXiv 에 있는 논문이다. 이 대조를 shadow 자체가 하도록 arXiv 공유 검색을 넣었다.
+    실측 2(합집합 기준)는 arXiv 429 백오프에 걸려 중단했다 — 두드리지 않는다. 다음 조용한
+    시간에 다시.
+
+    **결정(검토 권고 그대로): core 키워드 `world model` 유지 · 다의어 가드 유지 · S2 씨앗에서
+    제거 · `world model robot` 류로 즉시 교체하지 않음(과거 실측 0~1편 — recall 을 날린다).**
+    revision 1(origin=user, note 에 shadow id). 되돌리려면 `profile_advisor.rollback(db,
+    "team_ai_advance", 0, ...)` 이 아니라 — revision 0 은 기록이 없다 — 씨앗을 다시 넣는
+    create_profile 이면 된다. 내일 05:00 부터 S2 는 씨앗 2개.
+
+    테스트 5개, 돌연변이 11/11. 906 passed. astra 판정은 못 받았다(9/15).
+    **미해결**: shadow 안의 arXiv 재시도 백오프(30·60·120·240초)가 shadow 예산(300초)을 넘길
+    수 있다 — find_new_papers 가 예산을 안 받는다. 일일 스캔과 같은 성질이라 여기서 안 고친다.
+    dry-run JSON: docs/shadow_dryrun_2026-09-12_world_model.json.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
