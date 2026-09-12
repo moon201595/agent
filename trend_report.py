@@ -1003,4 +1003,13 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
         report += "\n" + "\n".join(block) + "\n"
     except Exception as e:  # noqa: BLE001 — 신호 실패가 리뷰를 막으면 안 된다
         report += f"\n■ 관측 신호: 집계 실패 — {type(e).__name__}\n"
+    # **프로필 건강 지표**(2026-09-12, ⑪단계 §8-94). 스캔별로 당시 프로필로 재채점해
+    # anchor 적중·최상위 계층·최신성·제외어 충돌을 센다 — "적용 후 악화"의 정의다.
+    # 코드가 만든 절이고 LLM 프롬프트에는 들어가지 않는다(규칙 4). 실패해도 리뷰는 나간다.
+    try:
+        import profile_health
+        rows = profile_health.series(db, profile["profile_id"], start, end)
+        report += "\n" + "\n".join(profile_health.format_health(rows)) + "\n"
+    except Exception as e:  # noqa: BLE001
+        report += f"\n■ 프로필 건강 지표: 집계 실패 — {type(e).__name__}\n"
     return report
