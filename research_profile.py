@@ -719,7 +719,9 @@ def record_candidates(
 
 
 # 선별 순서 계약의 버전. 계약이 바뀌면 올린다 — 관측의 rank_pos 는 이 버전의 값이다.
-RANK_POLICY_VERSION = "rank-tuple-v1"   # 2026-09-11, PROGRESS §8-86
+# 순위 튜플은 v1 그대로이고(§8-86) 키워드 매처가 match-v2 로 바뀌었다(§8-99) — 적격·적중의
+# 뜻이 바뀌므로 정책 버전을 올린다. 관측 행의 policy_version 으로 전후를 가른다.
+RANK_POLICY_VERSION = "rank-tuple-v1+match-v2"   # 2026-09-12
 
 # 관측의 탈락 사유. outcome 만으로는 "왜"가 안 보인다.
 FILTER_EXCLUDE_HIT = "exclude_hit"       # 제외어 적중

@@ -39,6 +39,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 _WORD_RE_CACHE: dict[str, re.Pattern] = {}
+# 낱말 사이에 올 수 있는 것: 공백, 하이픈류(‐ - – — ―), 언더스코어, 슬래시, 괄호. 이것뿐이다.
+_TOKEN_SPLIT_RE = re.compile(r"[\s\-‐-―_/]+")
+_TOKEN_SEP = r"(?:[\s\-‐-―_/]|\(|\))+"
 
 
 def _keyword_pattern(keyword: str) -> re.Pattern:
@@ -52,7 +55,15 @@ def _keyword_pattern(keyword: str) -> re.Pattern:
     드물지 않다. 단어 경계는 그대로 유지되므로 오탐은 늘지 않는다."""
     pat = _WORD_RE_CACHE.get(keyword)
     if pat is None:
-        pat = re.compile(r"\b" + re.escape(keyword) + r"(?:es|s)?\b", re.IGNORECASE)
+        # match-v2(2026-09-12, §8-99). 키워드를 낱말로 나누고 낱말 사이에 **제한된 구분자**만
+        # 허용한다 — 공백·하이픈류·언더스코어·슬래시·괄호. 그전에는 re.escape(키워드) 통째라
+        # "vision language models"·"vision--language models"·"large language model (LLM) agents"·
+        # "MVTec-AD"·"digital-twin" 을 못 잡았다. 탐색 차선(§8-98)이 찾아냈고 offline 재생으로
+        # 관측 947편에서 56편이 새로 잡혔는데 전부 진양성이었다(오탐 0). `.*`나 `\W+` 같은
+        # 넓은 허용은 안 한다 — 사이에 다른 낱말이 끼면 여전히 안 잡힌다.
+        tokens = [t for t in _TOKEN_SPLIT_RE.split(keyword) if t]
+        body = _TOKEN_SEP.join(re.escape(t) for t in tokens) if tokens else re.escape(keyword)
+        pat = re.compile(r"\b" + body + r"(?:es|s)?\b", re.IGNORECASE)
         _WORD_RE_CACHE[keyword] = pat
     return pat
 

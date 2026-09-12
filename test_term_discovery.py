@@ -178,7 +178,8 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
     """이 테스트가 잡는 것: 도메인·씨앗이 동률 깨기에 그쳐 범용 용어가 상위를 독식하는 것,
     기존 키워드의 하이픈·복수형 변형이 후보로 나가는 것, 스니펫이 앞 N 자라 용어가 잘리는 것."""
     db = tmp_path / "t.db"
-    rp.create_profile(db, "p", "이름", core_topics=["vision-language model"], core_weights={"vision-language model": 1.0},
+    rp.create_profile(db, "p", "이름", core_topics=["vision-language model", "safety policy"],
+                      core_weights={"vision-language model": 1.0, "safety policy": 1.0},
                       target_domain=["factory"], exclude=["banned"], max_items=2, s2_seeds=["x"])
     long_tail = "filler words here. " * 40 + "we use a spiking sensor at the end."   # 용어가 700자 뒤
     papers = ([{"arxiv_id": f"g{i}", "title": f"generic thing {i}", "abstract": "generic thing everywhere", "published": _day(1)} for i in range(6)]
@@ -186,6 +187,7 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
               + [{"arxiv_id": f"j{i}", "title": f"plain noise {i}", "abstract": "plain noise persists", "published": _day(1)} for i in range(6)]
               + [{"arxiv_id": f"d{i}", "title": f"factory item {i}", "abstract": "spiking sensor in a factory line", "published": _day(1)} for i in range(4)]
               + [{"arxiv_id": f"v{i}", "title": f"vision language models {i}", "abstract": "", "published": _day(1)} for i in range(3)]
+              + [{"arxiv_id": f"s{i}", "title": f"safety policies {i}", "abstract": "", "published": _day(1)} for i in range(3)]
               + [{"arxiv_id": "t1", "title": "tail paper", "abstract": long_tail, "published": _day(1)}])
     _run(db, monkeypatch, papers)
     profile = rp.get_profile(db, "p")
@@ -196,9 +198,12 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
     assert generic and generic[0]["lane"] == "support" and generic[0]["support"] == 6
     # support 만 보면 generic(6)·stuff(6)·plain(6) 이 세 자리를 다 가져가 spiking(5)은 못 들어온다
     assert "spiking sensor" in by and by["spiking sensor"]["lane"] == "domain", "도메인 축 자리는 도메인 비율 1등에게"
-    assert "vision language models" not in by, "vision-language model 의 표기 변형은 후보가 아니다"
+    # match-v2 뒤로 "vision language models" 는 키워드에 **잡힌다** — 탐색 풀에 없어야 한다
+    assert not any(p["_paper_key"].startswith("v") for p in pool), "매처가 잡는 표기는 탈락 풀에 없다"
+    # 매처가 아직 못 잡는 변형(-ies 복수)은 후보가 아니라 '표기 변형' 보고로 간다
+    assert "safety policies" not in by
     var = td.known_variants(pool, profile)
-    assert var and var[0]["term"] == "vision language models" and var[0]["known"] == "vision-language model"
+    assert var and var[0]["term"] == "safety policies" and var[0]["known"] == "safety policy"
     # 스니펫: 용어가 초록 뒤쪽에 있어도 전송 조각 안에 있다
     tail = td.snippet(long_tail, "spiking sensor", 200)
     assert "spiking sensor" in tail and len(tail) <= 204 and tail.startswith("…")
@@ -226,3 +231,34 @@ def test_규칙_제안기는_두_차선을_같이_경쟁시키고_문턱을_가�
     assert "spiking sensor" in [p["term"] for p in out["proposals"]], "min_support 는 탐색 문턱이 아니다"
     out = rule_advisor.propose(sent, profile, {"min_exploration_evidence": 3})
     assert "spiking sensor" not in [p["term"] for p in out["proposals"]]
+
+
+def test_씨앗_축은_독립_씨앗_둘_이상이어야_하고_단일_씨앗_반복은_잡음_진단으로_간다():
+    """이 테스트가 잡는 것: '씨앗으로 들어왔는가' 비율로 한 씨앗의 관련도 잡음이 후보가 되는 것
+    (실측 foreign language), 단일 씨앗 반복을 어디에도 보고하지 않는 것."""
+    profile = {"core_topics": ["core term"], "core_weights": {"core term": 1.0}, "target_domain": [], "exclude": []}
+    def paper(key, text, seeds):
+        return {"_paper_key": key, "title": text, "abstract": "", "published": "2026-09-10", "day": 1,
+                "domain_hits": [], "s2_seeds": seeds, "retrieval_sources": ["s2"]}
+    pool = ([paper(f"n{i}", "foreign language teachers", ["seedA"]) for i in range(4)]        # 한 씨앗, 4편
+            + [paper(f"b{i}", "spiking sensor arrays", ["seedA" if i % 2 else "seedB"]) for i in range(3)]  # 두 씨앗, 3편
+            + [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)])
+    terms = td.discover(pool, profile)
+    by = {t["term"]: t for t in terms}
+    assert by["spiking sensor arrays"]["lane"] == "seed" and by["spiking sensor arrays"]["seed_breadth"] == 2
+    assert "foreign language teachers" not in by or by["foreign language teachers"]["lane"] != "seed", "단일 씨앗은 씨앗 축 후보가 아니다"
+    noise = td.single_seed_noise(pool, profile, top=20)
+    assert noise and all(x["seed"] == "seedA" for x in noise) and "foreign language teachers" in [x["term"] for x in noise]
+    assert not any(x["term"].startswith("spiking") for x in noise), "두 씨앗에서 반복된 말은 잡음 진단이 아니다"
+    # 씨앗 연관 용어가 단일 씨앗뿐이면 씨앗 축은 비고 support 로 채운다 — 단일 씨앗을 '씨앗 축'으로 올리지 않는다
+    only_single = ([paper(f"n{i}", "foreign language teachers", ["seedA"]) for i in range(4)]
+                   + [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)]
+                   + [paper(f"h{i}", "other stuff abounds", []) for i in range(4)])
+    picked = td.discover(only_single, profile)
+    assert {t["lane"] for t in picked} == {"support"}, "단일 씨앗 용어는 씨앗 축 라벨을 달지 못한다"
+    text = "\n".join(td.format_discovery(terms, len(pool), None, noise))
+    assert "검색 잡음 진단" in text and "foreign language teachers · 4편 · 씨앗 'seedA'" in text
+    # 축에 후보가 없으면 자리를 버리지 않고 support 로 채우고, 라벨은 실제 축이다
+    no_seed = [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)] + [paper(f"h{i}", "other stuff abounds", []) for i in range(4)]
+    picked = td.discover(no_seed, profile)
+    assert len(picked) == 2 and {t["lane"] for t in picked} == {"support"}

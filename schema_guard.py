@@ -6,8 +6,10 @@ EXISTS`·`ALTER TABLE` 을 갖고 있어 **코드를 실행하는 것만으로**
 문서에 "backup → 승인 → migration → check" 라고 적어도 구현이 그 순서를 강제하지 않았다.
 
 규칙: 모듈의 DDL 은 `ensure(db, ddl, owner)` 를 통해서만 돈다.
-- DB 파일이 비어 있으면(테이블 0개) 적용한다 — 새 설치·테스트.
 - 환경변수 PAPER_HARNESS_APPLY_DDL=1 이면 적용한다 — `migrate.py --apply` 가 백업 뒤 켠다.
+  **새 설치도 같은 길이다**(`migrate.py --apply --scope all`). 처음엔 "빈 DB 면 자동 적용"
+  예외를 뒀는데, owner 가 여럿이라 첫 owner 가 테이블을 만든 순간 둘째부터 막혔다(외부
+  검토 2026-09-12). 반쪽 예외보다 입구 하나가 정직하다. 테스트는 conftest 가 플래그를 켠다.
 - 그 밖에는 DDL 을 **실행하지 않고** 기대 스키마와 실제를 대조한다. 빠진 테이블·컬럼·
   인덱스·트리거가 있으면 SchemaOutOfDate 로 멈춘다(무엇이 빠졌고 어떤 명령으로 적용하는지
   적어서). 다 있으면 아무것도 쓰지 않는다.
@@ -22,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 APPLY_ENV = "PAPER_HARNESS_APPLY_DDL"
-MIGRATE_HINT = ".venv/bin/python migrate.py --apply"
+MIGRATE_HINT = ".venv/bin/python migrate.py --apply --scope all"
 
 
 class SchemaOutOfDate(RuntimeError):
@@ -68,9 +70,7 @@ def missing_in(db_path: Path, ddl: Callable[[sqlite3.Connection], None]) -> list
 def ensure(db_path: Path, ddl: Callable[[sqlite3.Connection], None], owner: str) -> str:
     """returns 'applied' | 'up_to_date'. 그 밖에는 SchemaOutOfDate."""
     db_path = Path(db_path)
-    with sqlite3.connect(db_path) as con:
-        empty = con.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0] == 0
-    if empty or os.environ.get(APPLY_ENV) == "1":
+    if os.environ.get(APPLY_ENV) == "1":
         with sqlite3.connect(db_path) as con:
             ddl(con)
         return "applied"

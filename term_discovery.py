@@ -30,6 +30,7 @@ DEFAULT_RULES: dict = {
     "min_papers": 3,          # 이 편수 미만은 우연이다(emerging_terms 와 같은 기준)
     "top_terms": 3,           # 제안기에 보낼 용어 수
     "evidence_per_term": 2,   # 용어당 증거 논문 수
+    "min_seed_breadth": 2,    # 씨앗 축 후보의 최소 독립 씨앗 수 — 단일 씨앗 반복은 검색 잡음 진단으로만
 }
 
 
@@ -158,9 +159,11 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
         ps = papers_of[g]
         return sum(1 for p in ps if p["domain_hits"]) / len(ps)
 
-    def seed_ratio(g: str) -> float:
-        ps = papers_of[g]
-        return sum(1 for p in ps if p["s2_seeds"]) / len(ps)
+    def seed_breadth(g: str) -> int:
+        """서로 다른 씨앗 경로 수. "씨앗으로 들어왔는가"(비율)는 관련도가 아니라 S2 관련도 잡음의
+        표시였다 — 실측 'foreign language' 4편 전부 한 씨앗(외부 검토 2026-09-12). 독립된 씨앗
+        둘 이상에서 반복돼야 씨앗 축의 후보다."""
+        return len({sd for p in papers_of[g] for sd in p["s2_seeds"]})
 
     def newest(g: str) -> int:
         return max((p["day"] for p in papers_of[g] if p["day"] is not None), default=0)
@@ -171,15 +174,22 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
     # ③ 씨앗 연관 비율·최신. 자리가 남으면(후보 부족·중복) support 순으로 채운다.
     lanes = [
         sorted(cand, key=lambda g: (-len(papers_of[g]), -dom_ratio(g), g)),
-        sorted(cand, key=lambda g: (-dom_ratio(g), -len(papers_of[g]), g)),
-        sorted(cand, key=lambda g: (-seed_ratio(g), -newest(g), -len(papers_of[g]), g)),
+        sorted([g for g in cand if dom_ratio(g) > 0], key=lambda g: (-dom_ratio(g), -len(papers_of[g]), g)),
+        sorted([g for g in cand if seed_breadth(g) >= r["min_seed_breadth"]],
+               key=lambda g: (-seed_breadth(g), -newest(g), -len(papers_of[g]), g)),
     ]
+    names = ("support", "domain", "seed")
     chosen: list[str] = []
+    lane_of: dict[str, str] = {}
     for i in range(r["top_terms"]):
-        lane = lanes[i % len(lanes)]
-        pick = next((g for g in lane if g not in chosen), None)
+        li = i % len(lanes)
+        pick = next((g for g in lanes[li] if g not in chosen), None)
+        if pick is None and li != 0:          # 그 축에 후보가 없으면 자리를 버리지 않고 support 로
+            li = 0
+            pick = next((g for g in lanes[0] if g not in chosen), None)
         if pick is not None:
             chosen.append(pick)
+            lane_of[pick] = names[li]         # 실제로 뽑힌 축 — 자리 번호가 아니다
     out = []
     for g in chosen:
         ps = papers_of[g]
@@ -189,11 +199,33 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
         out.append({"term": g, "support": len(ps),
                     "domain_papers": sum(1 for p in ps if p["domain_hits"]),
                     "seed_papers": sum(1 for p in ps if p["s2_seeds"]),
-                    "lane": ("support", "domain", "seed")[chosen.index(g) % 3],
+                    "seed_breadth": seed_breadth(g),
+                    "lane": lane_of[g],
                     "evidence": [{"key": p["_paper_key"], "title": p["title"],
                                   "abstract": snippet(p["abstract"], g, EVIDENCE_CHARS),
                                   "published": p["published"]} for p in ev]})
     return out
+
+
+def single_seed_noise(pool: list[dict], profile: dict, rules: dict | None = None, top: int = 5) -> list[dict]:
+    """한 씨앗에서만 반복된 미등록 용어 — 후보가 아니라 **검색 잡음 진단**이다. 그 씨앗이
+    관련도 순위로 무엇을 끌어오는지 보여 주며, 씨앗 교체 판단의 재료가 된다(주간 리뷰 전용)."""
+    r = {**DEFAULT_RULES, **(rules or {})}
+    known = _known_terms(profile)
+    seeds_of: dict[str, set[str]] = defaultdict(set)
+    counts: dict[str, int] = defaultdict(int)
+    for p in pool:
+        if not p["s2_seeds"]:
+            continue
+        for g in _grams(f"{p['title']}. {p['abstract']}"):
+            if _generic(g) or any(k in g or g in k for k in known) or is_variant_of_known(g, profile):
+                continue
+            counts[g] += 1
+            seeds_of[g].update(p["s2_seeds"])
+    out = [{"term": g, "support": n, "seed": next(iter(seeds_of[g]))}
+           for g, n in counts.items() if n >= r["min_papers"] and len(seeds_of[g]) == 1]
+    out.sort(key=lambda x: (-x["support"], x["term"]))
+    return out[:top]
 
 
 def known_variants(pool: list[dict], profile: dict, rules: dict | None = None) -> list[dict]:
@@ -234,7 +266,7 @@ def snippet(text: str, term: str, chars: int) -> str:
 
 
 def format_discovery(terms: list[dict], pool_size: int | None,
-                     variants: list[dict] | None = None) -> list[str]:
+                     variants: list[dict] | None = None, noise: list[dict] | None = None) -> list[str]:
     """주간 리뷰용 — 코드가 만든 절, 편수를 쓴다(메일에는 써도 된다, 프롬프트에는 안 간다)."""
     if pool_size is None:
         return ["▶ 키워드에 안 걸린 논문의 반복어: 관측 이력 없음 — 미측정"]
@@ -243,9 +275,13 @@ def format_discovery(terms: list[dict], pool_size: int | None,
         lines.append("   없음 — 3편 이상 반복된 미등록 조합이 없다")
     for t in terms:
         lines.append(f"   [{t.get('lane', '-')}] {t['term']}: {t['support']}편 · 도메인 적중 {t['domain_papers']}"
-                     f" · 씨앗 유입 {t['seed_papers']} · 예: {t['evidence'][0]['title'][:60] if t['evidence'] else '-'}")
+                     f" · 씨앗 {t.get('seed_breadth', 0)}종/{t['seed_papers']}편 · 예: {t['evidence'][0]['title'][:60] if t['evidence'] else '-'}")
     if variants:
         lines.append("   기존 키워드의 표기 변형이라 제안하지 않은 것 (키워드 매칭이 놓치는 표기):")
         for v in variants[:5]:
             lines.append(f"     {v['term']} ≈ {v['known']} · {v['support']}편")
+    if noise:
+        lines.append("   한 씨앗에서만 반복된 말 — 후보가 아니라 그 씨앗의 검색 잡음 진단:")
+        for x in noise:
+            lines.append(f"     {x['term']} · {x['support']}편 · 씨앗 '{x['seed']}'")
     return lines

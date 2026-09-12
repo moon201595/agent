@@ -486,3 +486,22 @@ def test_world_model_가드는_로봇·시뮬레이션_문맥이_없으면_적�
                 "We predict physical dynamics of a vortex with a photonic world model.") == [], "물리·동역학만으로는 통과 못 한다"
     assert hits("Dutch Books for Language Models", "world model consistency in LLMs") == []
     assert hits("A radiographic world model for clinical evidence", "action editing of frames") == [], "'action' 은 동반어가 아니다"
+
+
+def test_키워드_매처는_낱말_사이_제한된_구분자만_허용한다():
+    """match-v2(§8-99). 이 테스트가 잡는 것: 통째 escape 로 돌아가 "(LLM) agents"·"vision--language
+    models"·"MVTec-AD" 를 놓치는 것, 반대로 `.*`/`\\W+` 로 넓혀 사이에 다른 낱말이 낀 것까지 잡는 것."""
+    import profile_scoring as ps
+    hit = lambda kw, text: bool(ps._keyword_pattern(kw).search(text))
+    assert hit("LLM agent", "large language model (LLM) agents can plan")
+    assert hit("LLM agent", "an LLM-agent-driven pipeline")
+    assert hit("vision-language model", "three vision--language models (VLMs)")
+    assert hit("vision-language model", "Quantized Vision Language Models")
+    assert hit("vision-language model", "vision_language/model backends")
+    assert hit("MVTec AD", "on the MVTec-AD bottle benchmark")
+    assert hit("digital twin", "organizes digital-twin scans")
+    assert hit("event camera", "event cameras")                      # 복수형은 그대로
+    assert not hit("LLM agent", "an LLM that helps the agent"), "사이에 다른 낱말 — 여전히 안 잡는다"
+    assert not hit("vision-language model", "vision, language, and model"), "쉼표는 허용 구분자가 아니다"
+    assert not hit("digital twin", "digital and twin"), "'and' 는 낱말이다"
+    assert not hit("AI", "domain")                                   # 단어 경계는 그대로
