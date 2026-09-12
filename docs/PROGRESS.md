@@ -5258,7 +5258,12 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     `proposal_sig + evidence_sha + base_profile_hash` 셋 동일 — revision 은 감사용(A→B→A 는
     숫자만 다르다). 새 증거·바뀐 텍스트·바뀐 프로필이면 다시 올라온다. `run_weekly` 가 검증
     뒤 로컬에서 `suppressed` 표시하고 변경안에서 뺀다. **기각 이력은 LLM 에 안 나간다.**
-    사람이 기각하는 입구(`record_rejection`)는 함수만 — UI 는 다음.
+    **정정(같은 날, 사용자 지적):** 처음엔 "사람이 기각한 것"을 기억하는 함수로 만들었는데 이
+    시스템에는 사람이 제안을 승인·거절하는 단계가 **없다**(스케줄 → 메일 한 통). 부르는 곳도
+    없는 죽은 코드였다. 기각의 주체를 **게이트**로 바꿨다 — run_weekly 가 분석 결과가
+    held/insufficient/invalid 면 그 묶음의 제안을 기각으로 남기고, 같은 증거·같은 프로필이면
+    다음 주에 다시 분석하지 않는다(테스트: 1주차 analyzed+기각 기록 → 2주차 suppressed, 분석 1건).
+    사람 개입은 0 그대로다.
 
     **④ 게이트 판정 감사(`gate_decisions`, append-only).** 재판정이 gate_status 만 바꿔
     "eligible 인데 rules_json 은 전부 None" 이 가능했다. 판정마다 source · shadow_id · 상태 ·
