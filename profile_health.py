@@ -51,6 +51,7 @@ DEFAULT_HEALTH_RULES: dict = {
 }
 MIN_BASELINE_SCANS = 14   # E2 의 "기준선 2주"와 같은 수 —
 MIN_BASELINE_DAYS = 14    # 수동 스캔이 섞이면 14회가 14일보다 훨씬 빨리 찬다. 둘 다 본다.
+MIN_RECENT_SCANS = 3      # 최근 창도 표본이 필요하다 — 1회면 중앙값이 그 값이라 한 번 튄 것에 반응한다.
 
 UNCONFIGURED = "unconfigured"
 INSUFFICIENT_BASELINE = "insufficient_baseline"
@@ -63,31 +64,45 @@ DETERIORATED = "deteriorated"
 
 # ── anchor / auto ─────────────────────────────────────────────────────────
 def anchor_keywords(db: Path, profile_id: str) -> tuple[set[str], str]:
-    """returns (anchor core 키워드 집합, 근거).
-
-    근거 우선순위: origin='user' revision 스냅샷의 core ∪ 가장 이른 scan_runs 스냅샷의
-    core_topics. 둘 다 없으면 현재 프로필 전부(basis='current_all') — 자동 키워드가
-    한 번도 안 들어간 프로필이므로 맞다. provenance 컬럼이 생기면 그쪽으로 옮긴다.
-    """
-    anchors: set[str] = set()
-    basis: list[str] = []
-    with sqlite3.connect(db) as con:
-        for (snap,) in con.execute(
-                "SELECT snapshot FROM profile_revisions WHERE profile_id=? AND origin='user'",
-                (profile_id,)):
-            kws = json.loads(snap).get("keywords") or []
-            anchors.update(k for k, kind, _w in kws if kind == "core")
-            basis.append("user_revision")
-        first = con.execute(
-            "SELECT profile_snapshot FROM scan_runs WHERE profile_id=? ORDER BY started_at LIMIT 1",
-            (profile_id,)).fetchone()
-        if first:
-            anchors.update(json.loads(first[0]).get("core_topics") or [])
-            basis.append("first_scan_snapshot")
-    if not anchors:
+    """returns (anchor core 키워드 집합, 근거). anchor = 처음 나타난 이력의 origin 이 'user'
+    인 키워드(research_profile.keyword_provenance — 시점 고정). 이력이 전혀 없으면 현재
+    프로필 전부(basis='current_all')."""
+    prov = research_profile.keyword_provenance(db, profile_id)
+    if not prov:
         profile = research_profile.get_profile(db, profile_id)
-        return set(profile.get("core_topics") or []), "current_all"
-    return {a.lower() for a in anchors}, "+".join(sorted(set(basis)))
+        return {k.lower() for k in profile.get("core_topics") or []}, "current_all"
+    return {k for k, v in prov.items() if v["origin"] == "user"}, "provenance"
+
+
+def _profile_sha(profile: dict) -> str:
+    return profile_impact.profile_hash({k: profile.get(k) for k in
+                                        ("core_topics", "core_weights", "target_domain", "exclude", "s2_seeds", "max_items")})
+
+
+def freeze_scan(db: Path, scan_id: str, profile_id: str, obs: list[dict], profile: dict) -> dict:
+    """스캔이 끝난 자리에서 부른다(run_profile_scan). anchor/auto 와 H7 반사실을 계산해
+    scan_health 에 얼린다. obs 는 record_observations 에 넘긴 그 행들(rank_pos·_hits 포함)."""
+    k = int(profile.get("max_items") or 6)
+    prov = research_profile.keyword_provenance(db, profile_id)
+    core = {c.lower() for c in profile.get("core_topics") or []}
+    anchors = {kw for kw in core if prov.get(kw, {"origin": "user"})["origin"] == "user"}
+    topk = [research_profile.paper_key(p) for p in obs
+            if p.get("rank_pos") is not None and p["rank_pos"] <= k]
+    prev = previous_profile(db, profile_id, scan_id)
+    prev_sha, prev_topk, retention = None, None, None
+    if prev is not None and topk:
+        prev_sha = _profile_sha(prev)
+        ranked = profile_scoring.score_and_rank(
+            [{"_paper_key": research_profile.paper_key(p), "title": p.get("title") or "",
+              "abstract": p.get("abstract") or "", "published": p.get("published")} for p in obs],
+            {**prev, "profile_id": profile_id})["papers"]
+        prev_topk = [p["_paper_key"] for p in ranked[:k]]
+        retention = len(set(prev_topk) & set(topk)) / len(topk)
+    research_profile.record_scan_health(
+        db, scan_id, profile_id, anchor_terms=sorted(anchors), auto_terms=sorted(core - anchors),
+        provenance={kw: prov[kw] for kw in sorted(core) if kw in prov}, topk=topk,
+        prev_profile_sha=prev_sha, prev_topk=prev_topk, retention=retention)
+    return {"anchors": sorted(anchors), "auto": sorted(core - anchors), "retention": retention}
 
 
 # ── 스캔 하나 ─────────────────────────────────────────────────────────────
@@ -126,8 +141,12 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
         profile = json.loads(run["profile_snapshot"])
         profile["profile_id"] = run["profile_id"]
         k = int(profile.get("max_items") or 6)
-        anchors, basis = anchor_keywords(db, run["profile_id"])
         core = {c.lower() for c in profile.get("core_topics") or []}
+        frozen = con.execute("SELECT * FROM scan_health WHERE scan_id=?", (scan_id,)).fetchone()
+        if frozen:                       # 스캔 시점에 얼린 값 — 이력·코드가 바뀌어도 그대로
+            anchors = set(json.loads(frozen["anchor_terms"])); basis = "frozen"
+        else:                            # 얼리기 전 스캔(2026-09-12 이전) — 그 시점 이력으로 도출
+            anchors, basis = anchor_keywords(db, run["profile_id"])
         auto = core - anchors
 
         papers: list[dict] = []
@@ -160,9 +179,14 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
     delays = [scan_day - p["day"] for p in topk if p["day"] is not None and scan_day is not None]
     keyword_hits = {kw: sum(1 for p in papers if kw in p["hits"]) for kw in sorted(core)}
 
+    # 재현 모드: 적중(관측 저장)과 anchor/H7(스캔 시점 얼림) 둘 다 있어야 as_observed.
+    # 둘 다 없으면 recomputed, 하나만 있으면 partial — assess 는 한 창에 한 모드만 받는다.
+    hits_mode = "mixed" if len(modes) > 1 else next(iter(modes))
+    mode = ("as_observed" if hits_mode == "as_observed" and frozen
+            else "recomputed" if hits_mode == "recomputed" and not frozen else "partial")
     out = {
         "scan_id": scan_id, "profile_id": run["profile_id"], "started_at": run["started_at"],
-        "mode": "mixed" if len(modes) > 1 else next(iter(modes)),
+        "mode": mode, "hits_mode": hits_mode, "frozen": bool(frozen),
         "k": k, "observations": len(papers), "eligible": len(eligible), "topk": len(topk),
         "anchor_basis": basis, "anchors": len(anchors), "auto": sorted(auto),
         # H1·H2 드리프트
@@ -184,7 +208,9 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
         # H7 직전 프로필 대비 유지
         "topk_retention_vs_prev": None,
     }
-    if prev_profile is not None and topk:
+    if frozen:                           # H7 도 얼린 값 — 나중 채점 코드로 다시 세지 않는다
+        out["topk_retention_vs_prev"] = frozen["retention"]
+    elif prev_profile is not None and topk:
         prev = {**prev_profile, "profile_id": run["profile_id"]}
         ranked = profile_scoring.score_and_rank(
             [{k_: p[k_] for k_ in ("_paper_key", "title", "abstract", "published")} for p in papers], prev)["papers"]
@@ -200,15 +226,14 @@ def previous_profile(db: Path, profile_id: str, scan_id: str) -> dict | None:
     revision 을 기록하기 전(2026-09-11 이전) 프로필도 다룰 수 있다. 앞선 스캔이 전부
     같은 프로필이면 None — 유지율은 프로필이 바뀐 뒤에만 뜻이 있다."""
     with sqlite3.connect(db) as con:
-        cur = con.execute("SELECT started_at, profile_snapshot, rowid FROM scan_runs WHERE scan_id=?",
+        cur = con.execute("SELECT started_at, profile_snapshot FROM scan_runs WHERE scan_id=?",
                           (scan_id,)).fetchone()
         if not cur:
             return None
-        # 같은 초에 두 스캔이 들어오면 started_at 이 같다 — rowid 로 순서를 가른다.
+        # started_at 은 마이크로초 해상도(begin_scan) — 순서를 rowid 에 맡기지 않는다.
         for (snap,) in con.execute(
-                "SELECT profile_snapshot FROM scan_runs WHERE profile_id=? AND "
-                "(started_at < ? OR (started_at = ? AND rowid < ?)) ORDER BY started_at DESC, rowid DESC",
-                (profile_id, cur[0], cur[0], cur[2])):
+                "SELECT profile_snapshot FROM scan_runs WHERE profile_id=? AND started_at < ? "
+                "ORDER BY started_at DESC", (profile_id, cur[0])):
             if snap != cur[1]:
                 return json.loads(snap)
     return None
@@ -221,7 +246,7 @@ def series(db: Path, profile_id: str, start: datetime, end: datetime) -> list[di
     with sqlite3.connect(db) as con:
         ids = [r[0] for r in con.execute(
             "SELECT scan_id FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? "
-            "ORDER BY started_at, rowid", (profile_id, start.isoformat(), end.isoformat()))]
+            "ORDER BY started_at", (profile_id, start.isoformat(), end.isoformat()))]
     out = []
     for sid in ids:
         m = scan_metrics(db, sid, prev_profile=previous_profile(db, profile_id, sid))
@@ -263,10 +288,10 @@ def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) 
     out["baseline_days"] = span
     if len(baseline) < MIN_BASELINE_SCANS or span is None or span < MIN_BASELINE_DAYS:
         return {**out, "status": INSUFFICIENT_BASELINE}
-    if not recent:
+    if len(recent) < MIN_RECENT_SCANS:
         return {**out, "status": INSUFFICIENT_RECENT}
     modes = {r.get("mode") for r in baseline + recent} - {None}
-    if len(modes) > 1 or "mixed" in modes:
+    if len(modes) > 1 or "partial" in modes:
         return {**out, "status": MIXED_MODES, "reasons": [f"modes={sorted(modes)}"]}
 
     checks = [("min_anchor_share_topk", "anchor_share_topk", "min"),
@@ -286,14 +311,16 @@ def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) 
             continue
         if (kind == "min" and val < limit) or (kind == "max" and val > limit):
             reasons.append(f"{metric}={val:.3f} {'<' if kind == 'min' else '>'} {rule}={limit}")
-    if unmeasured:
-        return {**out, "status": UNMEASURED_REQUIRED, "reasons": unmeasured + reasons}
     drop = rules.get("max_drop_from_baseline")
     if drop is not None:
         for metric in ("anchor_share_topk", "top_tier_share_topk", "freshness_topk"):
             b, r = base_med[metric], rec_med[metric]
-            if b is not None and r is not None and b - r > drop:
+            if b is None or r is None:  # 보조 규칙도 같은 원칙 — 못 쟀으면 통과가 아니다
+                unmeasured.append(f"{metric} unmeasured (required by max_drop_from_baseline)")
+            elif b - r > drop:
                 reasons.append(f"{metric} fell {b:.3f}→{r:.3f} (> max_drop_from_baseline={drop})")
+    if unmeasured:
+        return {**out, "status": UNMEASURED_REQUIRED, "reasons": unmeasured + reasons}
     return {**out, "status": DETERIORATED if reasons else OK, "reasons": reasons}
 
 
@@ -317,7 +344,8 @@ def format_health(rows: list[dict]) -> list[str]:
     lines.append(f"  스캔 {n}회 · anchor {rows[-1]['anchors']}개({rows[-1]['anchor_basis']})"
                  + (f" · auto {len(rows[-1]['auto'])}개" if rows[-1]["auto"] else " · auto 없음")
                  + f" · 적중 근거 {'/'.join(modes)}"
-                 + (" (recomputed 는 관측 시점 적중이 없는 옛 스캔 — 현재 코드로 다시 셈)" if "recomputed" in modes else ""))
+                 + (" (recomputed·partial 은 관측 시점에 얼리지 못한 옛 스캔 — 현재 코드·이력으로 다시 셈)"
+                    if modes != ["as_observed"] else ""))
     lines.append(f"  상위 K: anchor 적중 {_fmt(med['anchor_share_topk'])} · 최상위 계층 "
                  f"{_fmt(med['top_tier_share_topk'])} · 최신일 {_fmt(med['freshness_topk'])} · "
                  f"평균 지연 {_fmt(med['mean_delay_days_topk'])}일 (중앙값)")
