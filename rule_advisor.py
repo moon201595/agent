@@ -59,5 +59,17 @@ def propose(sent: dict, profile: dict, rules: dict | None = None) -> dict:
                   "evidence_paper_keys": evidence.get(g, [])[:5],
                   "reason": f"rule:support={support[g]},cooccurrence={cooc.get(g, 0)}",
                   "ambiguity_risks": []} for g in cand[:r["max_proposals"]]]
+    # 탐색 차선(②, §8-97): A 와 같은 `sent["exploration"]` 을 R 도 본다 — 아니면 F/R/A 비교에서
+    # A 만 탈락 후보를 보는 셈이다. 규칙은 하나: 증거가 min_support 편 이상이면 최하위 계층으로.
+    seen = {p["term"] for p in proposals}
+    for t in sent.get("exploration") or []:
+        if len(proposals) >= r["max_proposals"]:
+            break
+        keys = [e["key"] for e in t.get("papers") or []]
+        if t["term"] in seen or t["term"].lower() in known or len(keys) < r["min_support"]:
+            continue
+        proposals.append({"action": "add_core_term", "term": t["term"], "proposed_tier": lowest,
+                          "evidence_paper_keys": keys[:5], "reason": f"rule:exploration,evidence={len(keys)}",
+                          "ambiguity_risks": []})
     return {"decision": "propose" if proposals else "no_change", "proposals": proposals,
             "rule": "ngram-cooccurrence-v1", "params": r}

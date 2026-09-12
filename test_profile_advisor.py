@@ -107,8 +107,11 @@ def test_금지_필드는_HTTP_payload_에_없고_허용_필드만_나간다(db)
     with sqlite3.connect(db) as con:
         row = con.execute("SELECT sent_input_json, prompt_text, prompt_sha256 FROM advisor_runs").fetchone()
     sent_obj = json.loads(row[0])
-    assert set(sent_obj) == {"core_by_tier", "allowed_tiers", "s2_seeds", "papers", "sent_paper_keys"}
+    assert set(sent_obj) == {"core_by_tier", "allowed_tiers", "s2_seeds", "papers", "sent_paper_keys", "exploration"}
     assert all(set(pp) == adv.SENT_FIELDS for pp in sent_obj["papers"]), "논문마다 key·title·abstract 만 나간다"
+    # 탐색 차선(②)도 같은 화이트리스트 — 용어 문자열 + 논문(key·title·abstract). support·도메인 편수는 안 나간다.
+    for t in sent_obj["exploration"]:
+        assert set(t) == {"term", "papers"} and all(set(pp) == adv.SENT_FIELDS for pp in t["papers"]), t
     assert row[1] == sent, "실행 시 사용한 정확한 프롬프트 문자열을 보존한다"
 
 

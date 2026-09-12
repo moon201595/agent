@@ -98,6 +98,9 @@ state art sota baseline baselines outperform outperforms
 compared comparison extensive comprehensive significantly substantially
 first second third recent recently novel
 approach approaches method methods framework frameworks technique techniques
+address addresses addressing findings finding suggest suggests suggesting
+limitation limitations challenge challenges challenging remains remain
+validated validate validates scenario scenarios
 """.split())
 
 _EDGE_STOP = frozenset("""
@@ -1003,6 +1006,18 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
         report += "\n" + "\n".join(block) + "\n"
     except Exception as e:  # noqa: BLE001 — 신호 실패가 리뷰를 막으면 안 된다
         report += f"\n■ 관측 신호: 집계 실패 — {type(e).__name__}\n"
+    # **탐색 차선**(2026-09-12, ②단계 §8-97). 키워드에 안 걸려 탈락한 논문에서 반복된
+    # 조합 — 위 "등록 안 된 말"은 적중 논문 안에서만 봤다. 코드가 만든 절, LLM 없음.
+    try:
+        import term_discovery
+        pool = term_discovery.exploration_pool(db, profile["profile_id"], start, end)
+        with sqlite3.connect(db) as con:
+            has_obs = con.execute("SELECT 1 FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? LIMIT 1",
+                                  (profile["profile_id"], start.isoformat(), end.isoformat())).fetchone()
+        block = term_discovery.format_discovery(term_discovery.discover(pool, profile), len(pool) if has_obs else None)
+        report += "\n" + "\n".join(block) + "\n"
+    except Exception as e:  # noqa: BLE001
+        report += f"\n▶ 키워드에 안 걸린 논문의 반복어: 집계 실패 — {type(e).__name__}\n"
     # **프로필 건강 지표**(2026-09-12, ⑪단계 §8-94). 스캔별로 당시 프로필로 재채점해
     # anchor 적중·최상위 계층·최신성·제외어 충돌을 센다 — "적용 후 악화"의 정의다.
     # 코드가 만든 절이고 LLM 프롬프트에는 들어가지 않는다(규칙 4). 실패해도 리뷰는 나간다.

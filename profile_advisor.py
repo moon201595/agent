@@ -37,13 +37,17 @@ import profile_scoring
 import research_profile
 import summarize_engine as engine
 
-PROMPT_PATH = Path(__file__).parent / "prompts" / "profile_advisor_v1.md"
-PROMPT_VERSION = "profile_advisor_v1"
+PROMPT_PATH = Path(__file__).parent / "prompts" / "profile_advisor_v2.md"
+PROMPT_VERSION = "profile_advisor_v2"
 
 # 초기 제한값(적정성 미실측 — PROGRESS §8-89). 무료 제공량이 아니라 D 자체의 상한이다.
 MAX_REQUESTS_PER_BATCH = 2
 MAX_PROPOSALS = 3
 MAX_PAPERS = 8
+# 탐색 차선(②, §8-97): 대표 논문은 5편으로 줄이고 탐색 용어 3개 × 증거 2편을 더한다.
+# 증거 초록은 짧게 — 프롬프트 상한(MAX_PROMPT_CHARS) 안에서 11편이 들어가야 한다.
+DELIVERY_PAPERS = 5
+EXPLORATION_ABSTRACT_CHARS = 500
 MAX_TITLE_CHARS = 240
 MAX_ABSTRACT_CHARS = 1200
 MAX_PROMPT_CHARS = 16000
@@ -139,10 +143,12 @@ def select_papers(snap: dict, profile: dict, limit: int = MAX_PAPERS) -> list[di
     return with_abs[:limit]
 
 
-def build_input(snap: dict, profile: dict, papers: list[dict]) -> dict:
+def build_input(snap: dict, profile: dict, papers: list[dict],
+                exploration: list[dict] | None = None) -> dict:
     """모델에 보낼 것만. 편수·수율·탈락 사유·이력은 **넣지 않는다**(PROGRESS §8-89).
     `sent_paper_keys` 는 근거 키 검증용 — 전체 스냅샷이 아니라 실제 전송 부분집합에
-    있어야 근거로 인정한다."""
+    있어야 근거로 인정한다. `exploration`(term_discovery.discover 결과)은 용어와 증거
+    논문만 보낸다 — support·도메인 편수는 내부 집계라 뺀다(규칙 4·R5)."""
     weights = profile.get("core_weights") or {}
     by_tier: dict[float, list[str]] = {}
     for kw in profile.get("core_topics") or []:
@@ -150,12 +156,19 @@ def build_input(snap: dict, profile: dict, papers: list[dict]) -> dict:
     sent_papers = [{"key": p["_paper_key"] if "_paper_key" in p else research_profile.paper_key(p),
                     "title": (p.get("title") or "")[:MAX_TITLE_CHARS],
                     "abstract": (p.get("abstract") or "")[:MAX_ABSTRACT_CHARS]} for p in papers]
+    sent_terms = [{"term": t["term"],
+                   "papers": [{"key": e["key"], "title": (e.get("title") or "")[:MAX_TITLE_CHARS],
+                               "abstract": (e.get("abstract") or "")[:EXPLORATION_ABSTRACT_CHARS]}
+                              for e in t.get("evidence") or []]} for t in (exploration or [])]
+    keys = [p["key"] for p in sent_papers]
+    keys += [e["key"] for t in sent_terms for e in t["papers"] if e["key"] not in keys]
     return {
         "core_by_tier": {str(t): sorted(v) for t, v in sorted(by_tier.items(), reverse=True)},
         "allowed_tiers": sorted({float(w) for w in by_tier}, reverse=True),
         "s2_seeds": sorted(profile.get("s2_seeds") or []),
         "papers": sent_papers,
-        "sent_paper_keys": [p["key"] for p in sent_papers],
+        "exploration": sent_terms,
+        "sent_paper_keys": keys,
     }
 
 
@@ -163,7 +176,11 @@ def render_prompt(sent: dict) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     core = "\n".join(f"- 계층 {t}: " + ", ".join(v) for t, v in sent["core_by_tier"].items())
     papers = "\n\n".join(f"[{p['key']}] {p['title']}\n{p['abstract'] or '(초록 없음)'}" for p in sent["papers"])
+    explo = "\n\n".join(
+        f"- 용어: {t['term']}\n" + "\n".join(f"  [{e['key']}] {e['title']}\n  {e['abstract'] or '(초록 없음)'}" for e in t["papers"])
+        for t in sent.get("exploration") or []) or "(이번 기간에는 없음)"
     text = (template.replace("{{CORE_BY_TIER}}", core)
+                    .replace("{{EXPLORATION}}", explo)
                     .replace("{{ALLOWED_TIERS}}", ", ".join(str(t) for t in sent["allowed_tiers"]))
                     .replace("{{SEEDS}}", ", ".join(sent["s2_seeds"]) or "(없음)")
                     .replace("{{PAPERS}}", papers))
@@ -215,6 +232,10 @@ def validate_proposals(data: dict, sent: dict, profile: dict) -> list[dict]:
     tiers = set(sent["allowed_tiers"])
     sent_keys = set(sent["sent_paper_keys"])
     corpus = {p["key"]: (p["title"] + " " + p["abstract"]).lower() for p in sent["papers"]}
+    # 탐색 차선의 증거 논문도 실제로 전송된 텍스트다 — R7(문자열 실재)을 같은 corpus 로 본다.
+    for t in sent.get("exploration") or []:
+        for p in t.get("papers") or []:
+            corpus.setdefault(p["key"], (p["title"] + " " + p["abstract"]).lower())
     seen_terms: set[str] = set()
     for i, p in enumerate(proposals):
         errors: list[str] = []
@@ -374,8 +395,17 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if client is None or not engine.gemini_key_names():
         return finish("skipped", "budget_unknown")   # provider 잔여를 모르면 보내지 않는다(§8.5)
 
-    papers = select_papers(snap, profile)
-    sent = build_input(snap, profile, papers)
+    papers = select_papers(snap, profile, limit=DELIVERY_PAPERS)
+    # 탐색 차선(②): 키워드에 안 걸려 탈락한 논문에서 로컬로 찾은 용어 + 증거 논문.
+    # 실패해도 제안기는 대표 논문만으로 간다 — 탐색이 주간 제안을 막으면 안 된다.
+    try:
+        import term_discovery
+        exploration = term_discovery.discover(
+            term_discovery.exploration_pool(db, profile_id, start, end), profile)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [탐색] 실패(무시) {type(e).__name__}: {str(e)[:80]}", flush=True)
+        exploration = []
+    sent = build_input(snap, profile, papers, exploration)
     try:
         prompt = render_prompt(sent)
     except ValueError as e:
