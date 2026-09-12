@@ -61,7 +61,7 @@ def test_스캔당_지표는_당시_스냅샷으로_재채점하고_분모를_�
     _run(db, monkeypatch, PAPERS)
     m = ph.scan_metrics(db, _scan_ids(db)[0])
     assert m["observations"] == 5 and m["eligible"] == 3 and m["topk"] == 2 and m["k"] == 2
-    assert "first_scan_snapshot" in m["anchor_basis"] and m["anchors"] == 2 and m["auto"] == []
+    assert m["anchor_basis"] == "frozen" and m["anchors"] == 2 and m["auto"] == [] and m["mode"] == "as_observed"
     # auto 가 없으면 anchor 적중은 정의상 전부 — 재채점이 스냅샷을 쓰는지 여기서 드러난다
     assert m["anchor_share_topk"] == 1.0 and m["anchor_share_eligible"] == 1.0
     # 상위 2 = a1(계층0·1일) + a3(계층0·5일) — 계층이 날짜를 이긴다(rank-tuple-v1). a2(계층1)는 3위.
@@ -96,6 +96,11 @@ def test_직전_프로필_대비_상위K_유지는_prev_profile_로_재채점한
     db = tmp_path / "t.db"; _profile(db)
     _run(db, monkeypatch, PAPERS)
     sid = _scan_ids(db)[0]
+    # 얼린 행이 있으면 인자로 준 prev_profile 은 무시한다 — 얼린 값이 기준이다
+    assert ph.scan_metrics(db, sid, prev_profile={"core_topics": ["trend term"], "core_weights": {},
+                                                  "exclude": [], "target_domain": [], "max_items": 2})["topk_retention_vs_prev"] is None
+    with sqlite3.connect(db) as con:                       # 얼리기 전 스캔을 흉내
+        con.execute("DELETE FROM scan_health WHERE scan_id=?", (sid,))
     same = ph.scan_metrics(db, sid, prev_profile={"core_topics": ["target term", "trend term"],
                                                   "core_weights": {"target term": 1.0, "trend term": 0.6},
                                                   "exclude": ["banned"], "target_domain": [], "max_items": 2})
@@ -106,6 +111,7 @@ def test_직전_프로필_대비_상위K_유지는_prev_profile_로_재채점한
                                                      "exclude": ["banned"], "target_domain": [], "max_items": 2})
     assert flipped["topk_retention_vs_prev"] == 0.5
     assert ph.scan_metrics(db, sid)["topk_retention_vs_prev"] is None, "직전 프로필 없으면 미측정"
+    assert ph.scan_metrics(db, sid)["mode"] == "partial", "적중은 저장됐지만 anchor/H7 는 재계산 — 한 모드가 아니다"
 
 
 def _row(i, **over):
@@ -155,7 +161,12 @@ def test_규칙이_요구하는_지표가_미측정이면_통과가_아니다():
     assert r["status"] == ph.DETERIORATED and "new_eligible_from_auto=0.000 <" in r["reasons"][0]
     # 모드 섞임
     mixed = good[:-1] + [_row(14, mode="recomputed")]
-    assert ph.assess(mixed, [_row(20)], {"min_anchor_share_topk": 0.5})["status"] == ph.MIXED_MODES
+    assert ph.assess(mixed, [_row(20 + i) for i in range(3)], {"min_anchor_share_topk": 0.5})["status"] == ph.MIXED_MODES
+    # 최근 창도 표본이 있어야 한다 — 1회면 한 번 튄 값이 곧 중앙값이다
+    assert ph.assess(good, [_row(20, anchor_share_topk=0.0)], {"min_anchor_share_topk": 0.5})["status"] == ph.INSUFFICIENT_RECENT
+    # 보조 규칙(max_drop)도 못 쟀으면 통과가 아니다
+    r = ph.assess(good, [_row(20 + i, freshness_topk=None) for i in range(3)], {"max_drop_from_baseline": 0.3})
+    assert r["status"] == ph.UNMEASURED_REQUIRED and "freshness_topk unmeasured" in " ".join(r["reasons"])
 
 
 def test_적중은_관측_시점_값을_쓰고_없을_때만_다시_센다(tmp_path, monkeypatch):
@@ -173,8 +184,11 @@ def test_적중은_관측_시점_값을_쓰고_없을_때만_다시_센다(tmp_p
     with sqlite3.connect(db) as con:                       # 옛 관측: 적중 컬럼 없음
         con.execute("UPDATE candidate_observations SET core_hits=NULL, exclude_hits=NULL, domain_hits=NULL")
     m = ph.scan_metrics(db, sid)
-    assert m["mode"] == "recomputed" and m["keyword_hits"]["target term"] == 3
-    assert "recomputed" in "\n".join(ph.format_health([m]))
+    assert m["mode"] == "partial" and m["hits_mode"] == "recomputed" and m["keyword_hits"]["target term"] == 3
+    assert "partial" in "\n".join(ph.format_health([m]))
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM scan_health")
+    assert ph.scan_metrics(db, sid)["mode"] == "recomputed", "적중도 얼림도 없으면 recomputed"
 
 
 def test_상위K_유지율은_운영_경로에서_직전_스냅샷이_다를_때_계산된다(tmp_path, monkeypatch):
@@ -218,3 +232,47 @@ def test_주간_리뷰에_건강_지표_절이_붙고_실패해도_리뷰는_나
     monkeypatch.setattr(ph, "series", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     report = asyncio.run(trend_report.build(db, profile, None))
     assert "■ 주간 동향 리뷰" in report and "건강 지표: 집계 실패" in report
+
+
+def test_사람이_설정만_고쳐_저장해도_자동_키워드는_anchor_가_되지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: user revision 의 core 를 통째로 anchor 로 잡아 자동 키워드가
+    소급해서 anchor 가 되는 것(외부 검토 시나리오), 얼린 anchor 가 뒤 이력에 따라 바뀌는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)                                           # 1일: 사람 A,B
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term", "nothing"],
+                      core_weights={"target term": 1.0, "trend term": 0.6, "nothing": 0.6},
+                      exclude=["banned"], max_items=2, s2_seeds=["target term"], origin="advisor")
+    _run(db, monkeypatch, PAPERS)                                           # 10일: X 자동 추가
+    mid = _scan_ids(db)[1]
+    assert ph.scan_metrics(db, mid)["auto"] == ["nothing"]
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term", "nothing"],
+                      core_weights={"target term": 1.0, "trend term": 0.6, "nothing": 0.6},
+                      exclude=["banned"], max_items=3, s2_seeds=["target term"])   # 20일: 사람이 설정만 저장(origin=user)
+    _run(db, monkeypatch, PAPERS)
+    prov = rp.keyword_provenance(db, "p")
+    assert prov["nothing"]["origin"] == "advisor", "처음 나타난 revision 의 origin 이 남는다"
+    assert ph.scan_metrics(db, mid)["auto"] == ["nothing"], "과거 스캔의 auto 가 소급해서 바뀌면 안 된다"
+    assert ph.scan_metrics(db, _scan_ids(db)[2])["auto"] == ["nothing"], "이후 스캔에서도 auto 다"
+    # 얼리기 전 스캔이라도 그 시점 이력으로 도출하면 같은 답이다
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM scan_health")
+    assert ph.scan_metrics(db, mid)["auto"] == ["nothing"]
+
+
+def test_H7_반사실은_스캔_시점에_얼려_뒤의_채점_변경에_흔들리지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 얼린 retention 을 두고 지표 계산 시점의 채점 코드로 다시 세는 것,
+    freeze 가 직전(다른) 프로필을 못 찾는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "nothing"],
+                      core_weights={"target term": 1.0, "nothing": 1.0},
+                      exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    _run(db, monkeypatch, PAPERS)
+    sid = _scan_ids(db)[1]
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        row = dict(con.execute("SELECT * FROM scan_health WHERE scan_id=?", (sid,)).fetchone())
+    assert row["retention"] == 0.5 and row["prev_profile_sha"] and json.loads(row["prev_topk"]) == ["a1", "a3"]
+    # 채점 코드가 뒤에 바뀌어도(여기서는 score_and_rank 를 빈 결과로 흉내) 얼린 값이 남는다
+    monkeypatch.setattr(ph.profile_scoring, "score_and_rank", lambda *a, **k: {"papers": []})
+    assert ph.scan_metrics(db, sid)["topk_retention_vs_prev"] == 0.5

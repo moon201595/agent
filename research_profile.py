@@ -198,6 +198,24 @@ def init_db(db_path: Path) -> None:
         # 모든 저장 경로(사용자 UI·create_profile·자동 적용)가 같은 트랜잭션 안에서
         # 올린다. 그래야 "분석 당시 revision 과 지금 revision 이 같은가"(stale 검사)가
         # 실제로 무언가를 지킨다. 행은 추가만 되고 지우지 않는다.
+        # **스캔 시점에 얼린 건강 지표 입력**(2026-09-12, §8-96). anchor/auto 구분과
+        # "직전 프로필이었다면 상위 K" 반사실은 나중에 세면 그 시점의 이력·채점 코드에
+        # 따라 바뀐다(외부 검토 두 번째). 스캔이 끝날 때 한 번 계산해 여기 둔다.
+        # 기존 테이블을 바꾸지 않는 새 테이블이다.
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS scan_health ("
+            " scan_id          TEXT PRIMARY KEY,"
+            " profile_id       TEXT NOT NULL,"
+            " anchor_terms     TEXT NOT NULL,"   # JSON — 스캔 시점 이력으로 도출한 anchor
+            " auto_terms       TEXT NOT NULL,"   # JSON — core − anchor
+            " provenance_json  TEXT NOT NULL,"   # JSON — 키워드별 {origin, first_seen, source}
+            " topk             TEXT NOT NULL,"   # JSON — 이 스캔의 상위 K 키
+            " prev_profile_sha TEXT,"            # 직전(다른) 프로필 스냅샷 해시. 없으면 NULL
+            " prev_topk        TEXT,"            # JSON — 직전 프로필로 같은 후보를 채점한 상위 K
+            " retention        REAL,"            # |topk ∩ prev_topk| / |topk|. 직전 없으면 NULL
+            " policy_version   TEXT NOT NULL,"
+            " computed_at      TEXT NOT NULL)"
+        )
         con.execute(
             "CREATE TABLE IF NOT EXISTS profile_revisions ("
             " profile_id  TEXT NOT NULL,"
@@ -357,6 +375,59 @@ def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
         " VALUES (?,?,?,?,?,?,?)",
         (profile_id, cur + 1, now, origin, sha, json.dumps(snapshot, ensure_ascii=False), note))
     return cur + 1
+
+
+def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
+    """키워드별 {origin, first_seen, source} — **처음 나타난** 이력 항목의 origin 이다.
+
+    profile_keywords 에는 origin 컬럼이 없고 revision 의 origin 은 revision 전체에 붙는다.
+    사람이 설정만 고쳐 저장하면 그 revision(origin='user')의 스냅샷에 자동 키워드도
+    들어 있어, "user revision 의 core = anchor" 로 두면 자동 키워드가 **소급해서**
+    anchor 가 된다(외부 검토 2026-09-12 시나리오). 이력은 추가만 되고 지우지 않으므로
+    "처음 나타난 곳"은 시점에 고정된다 — 뒤 이력이 앞 결과를 바꿀 수 없어 as_of 가
+    필요 없다(돌연변이로 확인: as_of 를 무시해도 결과가 같았다).
+
+    이력 = scan_runs 스냅샷(origin 없음 → 'user'; revision 기록 전 프로필) ∪
+    profile_revisions(origin 그대로). 시간순으로 훑어 처음 보는 core 키워드에 origin 을 준다.
+    rollback 으로 돌아온 키워드는 이미 처음이 있으므로 바뀌지 않는다.
+    """
+    import json
+    init_db(db_path)
+    events: list[tuple[str, str, str, list[str]]] = []   # (시각, 출처, origin, core 목록)
+    with sqlite3.connect(db_path) as con:
+        for started_at, snap in con.execute(
+                "SELECT started_at, profile_snapshot FROM scan_runs WHERE profile_id=?", (profile_id,)):
+            events.append((started_at, "scan", "user", list(json.loads(snap).get("core_topics") or [])))
+        for created_at, origin, snap in con.execute(
+                "SELECT created_at, origin, snapshot FROM profile_revisions WHERE profile_id=?", (profile_id,)):
+            core = [k for k, kind, _w in (json.loads(snap).get("keywords") or []) if kind == "core"]
+            events.append((created_at, "revision", origin, core))
+    events.sort(key=lambda e: e[0])
+    out: dict[str, dict] = {}
+    for when, source, origin, core in events:
+        for kw in core:
+            key = kw.lower()
+            if key not in out:
+                out[key] = {"origin": origin, "first_seen": when, "source": source}
+    return out
+
+
+def record_scan_health(db_path: Path, scan_id: str, profile_id: str, *, anchor_terms: list[str],
+                       auto_terms: list[str], provenance: dict, topk: list[str],
+                       prev_profile_sha: str | None, prev_topk: list[str] | None,
+                       retention: float | None) -> None:
+    """스캔 시점의 건강 지표 입력을 얼린다. 한 스캔에 한 행."""
+    import json
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO scan_health (scan_id, profile_id, anchor_terms, auto_terms,"
+            " provenance_json, topk, prev_profile_sha, prev_topk, retention, policy_version, computed_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (scan_id, profile_id, json.dumps(sorted(anchor_terms), ensure_ascii=False),
+             json.dumps(sorted(auto_terms), ensure_ascii=False), json.dumps(provenance, ensure_ascii=False),
+             json.dumps(topk), prev_profile_sha, json.dumps(prev_topk) if prev_topk is not None else None,
+             retention, RANK_POLICY_VERSION, _now()))
 
 
 def profile_from_snapshot(snapshot: dict) -> dict:
@@ -642,7 +713,11 @@ FILTER_ALREADY_SHOWN = "already_shown"   # 이미 배달·소비된 논문
 
 def begin_scan(db_path: Path, profile_id: str, profile: dict,
                started_at: str | None = None) -> str:
-    """스캔 실행 기록을 열고 scan_id 를 돌려준다. 프로필 스냅샷을 그대로 박는다."""
+    """스캔 실행 기록을 열고 scan_id 를 돌려준다. 프로필 스냅샷을 그대로 박는다.
+    started_at 은 **마이크로초**까지 적는다(2026-09-12, §8-96). 초 단위면 같은 초의 두
+    스캔이 같은 시각이 되어 "직전 스캔"을 SQLite rowid 로 갈라야 했다 — 시간 순서를
+    암묵적 rowid 에 맡기지 않는다.
+    """
     import json
     init_db(db_path)
     scan_id = uuid.uuid4().hex[:12]
@@ -652,7 +727,7 @@ def begin_scan(db_path: Path, profile_id: str, profile: dict,
         con.execute(
             "INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version)"
             " VALUES (?,?,?,?,?)",
-            (scan_id, profile_id, started_at or _now(),
+            (scan_id, profile_id, started_at or datetime.now(timezone.utc).isoformat(timespec="microseconds"),
              json.dumps(snapshot, ensure_ascii=False), RANK_POLICY_VERSION))
     return scan_id
 

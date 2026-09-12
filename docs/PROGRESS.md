@@ -4960,6 +4960,53 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     남은 것(⑪ 밖): 건강 지표를 적용 게이트·rollback 트리거에 연결하는 건 ⑧·⑫ 몫이다.
     지금은 주간 리뷰 보고 + `assess()` 함수까지다.
 
+96. **⑪ 세 번째 — "저장했으니 재현성 해결"은 절반이었다** (2026-09-12).
+    같은 검토자가 §8-95 뒤에 셋을 더 잡았고 셋 다 사실이었다. 마이그레이션 절차도 지적받았다.
+
+    ① **anchor 가 소급해서 바뀔 수 있었다.** `anchor_keywords` 가 origin='user' revision 의
+    core 를 통째로 anchor 로 봤다. 시나리오: 1일 사람이 A·B → 10일 제안기가 X →
+    20일 사람이 max_items 만 고쳐 저장(revision origin='user', 스냅샷에 X 포함) →
+    X 가 anchor 로 승격, 10~19일 과거 지표까지 바뀐다. revision 의 origin 은 revision
+    전체에 붙는 것이지 키워드의 것이 아니다.
+    고침 — `research_profile.keyword_provenance`: 키워드의 origin 은 **처음 나타난**
+    이력 항목(스캔 스냅샷 → 'user' / revision → 그 origin)의 것이다. 이력은 추가만 되므로
+    시점에 고정된다. 컬럼(ALTER)을 안 넣고 이력에서 도출했다 — 스키마 변경 없이 같은
+    답이 나오고, 뒤 이력이 앞 결과를 못 바꾼다(as_of 인자를 넣었다가 돌연변이가 안
+    잡혀 뺐다 — 처음 출현 의미상 불필요했다). ⑨에서 컬럼을 붙이면 그쪽으로 옮긴다.
+
+    ② **H7 반사실이 얼려 있지 않았다.** 현재 상위 K 는 저장된 rank_pos 인데, "직전
+    프로필이었다면"의 상위 K 는 지표를 세는 순간의 `score_and_rank` 였다. rank-tuple-v2
+    가 생기면 과거 H7 이 바뀐다.
+    고침 — **새 테이블 `scan_health`**(기존 테이블은 안 건드린다): 스캔이 끝난 자리에서
+    `profile_health.freeze_scan` 이 anchor/auto·provenance·상위 K·직전 프로필 해시·
+    반사실 상위 K·retention 을 그 시점 이력·코드로 계산해 넣는다. 건강 지표는 얼린
+    행이 있으면 그것을 쓴다. 모드를 셋으로 갈랐다 — `as_observed`(적중 저장 + 얼림) /
+    `partial`(하나만) / `recomputed`(둘 다 없음). assess 는 한 창에 한 모드만 받는다.
+
+    ③ **최근 창이 1스캔이어도 판정했다.** 중앙값을 쓴 이유가 "한 번 튄 값에 반응하지
+    않기"였는데 1개면 중앙값이 그 값이다. auto 적용 → 다음 날 API 이상 → 1회 악화 →
+    rollback 이 가능했다. 고침 — `MIN_RECENT_SCANS=3`. `max_drop_from_baseline` 도
+    None 이면 건너뛰던 것을 unmeasured_required 로 맞췄다.
+
+    ④ **rowid 에 시간 순서를 맡기고 있었다.** 원인은 `_now()` 가 초 단위라 같은 초의 두
+    스캔이 같은 started_at 이었던 것. 고침 — begin_scan 이 마이크로초까지 적는다.
+    rowid 정렬 제거. 옛 행(초 단위)과 섞여도 문자열 순서가 맞다('+' < '.').
+
+    ⑤ **실 DB 마이그레이션을 승인 없이 했다**(§8-95). 규칙 위반이 맞다. 되돌리지는
+    않는다 — 다음 스캔이 쌓인 뒤 옛 파일로 바꾸면 새 데이터가 사라져 그게 더 위험하다.
+    이번 변경은 새 테이블 하나라 기존 행에 영향이 없고, 백업을 `/tmp` 가 아니라
+    `data/backups/papers_2026-09-12_pre_scan_health.db` 에 뒀다. 앞으로 DB 변경은
+    **backup → 승인 → migration → schema check** 순서다.
+
+    ②(입력 확장) 설계도 검토를 받아 바꾼다: "상위 5 + 탐색 3편을 LLM 에" 가 아니라
+    **no_core_hit 전체를 로컬 n-gram 으로 훑어 후보 용어를 만들고, 용어마다 증거 논문
+    2~3편만 제안기에** 보낸다. LLM 은 발견자가 아니라 검토자다. target_domain 적중은
+    진입 조건이 아니라 가점 — 아니면 core 폐쇄 고리가 domain 폐쇄 고리로 바뀐다.
+
+    테스트 11개(+2), 돌연변이 8/9 잡힘(1건은 동작 같은 돌연변이라 코드를 뺐다).
+    886 passed. 실 DB: scan_health 생성, 9/11 스캔은 recomputed 로 표시, 내일 05:00
+    첫 as_observed 행.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

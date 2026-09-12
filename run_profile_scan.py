@@ -594,6 +594,10 @@ async def scan_profile(
         n = research_profile.record_observations(
             db_path, scan_id, profile_id, obs,
             core_signature=signature, seed_signature=s2_signature)
+        # 건강 지표 입력을 **지금** 얼린다(§8-96): anchor/auto 는 이 시점 이력으로, 반사실
+        # 상위 K 는 이 시점 채점 코드로. 나중에 세면 둘 다 그 뒤 이력·코드에 따라 흔들린다.
+        import profile_health
+        profile_health.freeze_scan(db_path, scan_id, profile_id, obs, profile)
         research_profile.finish_scan(
             db_path, scan_id, arxiv_run_id=arxiv_run_id, s2_run_id=s2_run_id,
             seed_attempts=(s2_result or {}).get("per_keyword") if s2_keywords else [],
