@@ -96,6 +96,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `term_discovery.py` | 탐색 차선 — 키워드에 안 걸려 탈락한 논문에서 n-gram 후보 용어를 로컬로 찾고 용어당 증거 논문만 제안기에 넘긴다(LLM 은 검토자) |
 | `schema_guard.py` · `migrate.py` | DDL 은 `PAPER_HARNESS_APPLY_DDL=1` 일 때만 실행, 아니면 대조만 하고 뒤처지면 멈춘다. 모든 스키마 변경(새 설치 포함)은 `migrate.py --apply [--scope operational\|evaluation\|all]` 하나로 — WAL 을 포함한 일관 백업 → 적용 → 재대조 |
 | `shadow_search.py` | ⑦ shadow 검색 — 검색 집합을 바꾸는 변경안(씨앗·질의)을 두 팔로 격리 실측. 운영 커서·후보·배달 기록 불변, 결과는 shadow_runs 한 표. 게이트의 needs_shadow_search 를 푼다 |
+| (research_profile) `profile_keyword_events` · (profile_impact) `gate_decisions` | 키워드 세대 이력(전후 논리 diff, actor/provenance 분리, rollback 은 세대 복원) · 게이트 판정마다 실제 규칙을 남기는 감사 표. 적용기는 판정 기록을 대조한다 |
 
 기존 도구·요약·재현 계층은 그대로 재사용한다.
 

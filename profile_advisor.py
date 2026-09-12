@@ -296,7 +296,7 @@ def apply_actions(profile: dict, proposals: list[dict]) -> dict:
     after["core_weights"] = dict(after.get("core_weights") or {})
     after["s2_seeds"] = list(after.get("s2_seeds") or [])
     for p in proposals:
-        if p.get("errors") or p.get("deferred"):
+        if p.get("errors") or p.get("deferred") or p.get("suppressed"):   # 억제된 제안은 변경안에 안 들어간다
             continue
         if p["action"] == "add_core_term":
             after["core_topics"].append(p["term"]); after["core_weights"][p["term"]] = float(p["proposed_tier"])
@@ -449,17 +449,18 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if parsed is None:
         return finish("failed", "no_valid_response", attempts=attempts)
 
-    validated = validate_proposals(parsed, sent, profile)
+    validated = suppress_rejected(db, profile_id, validate_proposals(parsed, sent, profile), sent, profile)
     after = apply_actions(profile, validated)
     mode, rules = get_mode(db, profile_id)
     consumed = research_profile.already_shown(db, profile_id)
     analysis = None
-    if any(not p.get("errors") and not p.get("deferred") for p in validated):
+    if any(not p.get("errors") and not p.get("deferred") and not p.get("suppressed") for p in validated):
         analysis = profile_impact.analyze_and_store(db, snap, profile, after, k or int(profile.get("max_items") or 6),
                                                     rules=rules, consumed_keys=consumed)
     with sqlite3.connect(db) as con:
         for i, p in enumerate(validated, start=1):
-            status = ("deferred" if p.get("deferred") else "invalid" if p.get("errors") else "analyzed")
+            status = ("deferred" if p.get("deferred") else "invalid" if p.get("errors")
+                      else "suppressed" if p.get("suppressed") else "analyzed")
             con.execute("INSERT INTO advisor_proposals (proposal_id, run_id, ordinal, action, term, proposed_tier,"
                         " evidence_json, reason, risks_json, validation_json, status, analysis_id, bundle_analysis_id)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -477,6 +478,69 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
 
 
 # ── 적용 (기본 닫힘) ─────────────────────────────────────────────────────
+# ── 기각 기억(⑨ 준비, §8-102) ────────────────────────────────────────────
+def proposal_signature(p: dict) -> str:
+    """action + 정규화 용어(canonical) + 정규화 계층. 표기 변형·소수점 표기 차이로 같은 제안이
+    다른 제안이 되지 않게."""
+    import term_discovery
+    tier = p.get("proposed_tier")
+    tier_s = f"{float(tier):.4f}" if isinstance(tier, (int, float)) else "-"
+    return f"{p.get('action')}|{term_discovery.canonical(p.get('term') or '')}|{tier_s}"
+
+
+def evidence_sha(p: dict, sent: dict) -> str:
+    """정렬한 근거 키 + 그 키의 **전송 텍스트**(제목·초록). 순서가 달라도, 같은 키의 텍스트가
+    바뀌면(초록 갱신) 다른 증거다."""
+    texts = {}
+    for pp in sent.get("papers") or []:
+        texts[pp["key"]] = (pp.get("title") or "") + "\n" + (pp.get("abstract") or "")
+    for t in sent.get("exploration") or []:
+        for pp in t.get("papers") or []:
+            texts.setdefault(pp["key"], (pp.get("title") or "") + "\n" + (pp.get("abstract") or ""))
+    keys = sorted(p.get("evidence_paper_keys") or [])
+    return _sha("\n".join(f"{k}\t{texts.get(k, '')}" for k in keys))
+
+
+def record_rejection(db: Path, profile_id: str, p: dict, sent: dict, profile: dict, reason: str,
+                     base_revision: int | None = None) -> str:
+    """사람이 제안을 기각했다 — advisor_events(kind=rejected). 억제 조건은 proposal_sig +
+    evidence_sha + base_profile_hash 셋이 같을 때(revision 은 감사용: A→B→A 면 숫자만 다르다).
+    이 이력은 LLM 프롬프트에 안 나간다 — 제안이 나온 뒤 로컬에서만 거른다."""
+    init_db(db)
+    detail = {"proposal_sig": proposal_signature(p), "evidence_sha": evidence_sha(p, sent),
+              "base_profile_hash": profile_impact.profile_hash(profile),
+              "base_revision": base_revision if base_revision is not None else research_profile.current_revision(db, profile_id),
+              "term": p.get("term"), "action": p.get("action"), "reason": reason}
+    with sqlite3.connect(db) as con:
+        _event(con, profile_id, "rejected", p.get("proposal_id"), detail)
+    return detail["proposal_sig"]
+
+
+def rejected_signatures(db: Path, profile_id: str) -> set[tuple[str, str, str]]:
+    init_db(db)
+    with sqlite3.connect(db) as con:
+        rows = con.execute("SELECT detail_json FROM advisor_events WHERE profile_id=? AND kind='rejected'", (profile_id,)).fetchall()
+    out = set()
+    for (dj,) in rows:
+        d = json.loads(dj or "{}")
+        if d.get("proposal_sig") and d.get("evidence_sha") and d.get("base_profile_hash"):
+            out.add((d["proposal_sig"], d["evidence_sha"], d["base_profile_hash"]))
+    return out
+
+
+def suppress_rejected(db: Path, profile_id: str, validated: list[dict], sent: dict, profile: dict) -> list[dict]:
+    """같은 제안·같은 증거·같은 프로필이면 `suppressed` 표시. 새 증거나 바뀐 프로필이면 다시 올라온다."""
+    memo = rejected_signatures(db, profile_id)
+    if not memo:
+        return validated
+    ph = profile_impact.profile_hash(profile)
+    out = []
+    for p in validated:
+        key = (proposal_signature(p), evidence_sha(p, sent), ph)
+        out.append({**p, "suppressed": True, "suppressed_by": key[0]} if key in memo and not p.get("errors") else p)
+    return out
+
+
 def apply_analysis(db: Path, profile_id: str, analysis_id: str, *, origin: str = "advisor") -> dict:
     """저장된 분석 하나를 프로필에 적용한다. **호출자의 말을 믿지 않는다** — 저장된
     게이트 상태·기준 revision·현재 revision·운영 모드를 여기서 다시 확인한다.
@@ -496,6 +560,13 @@ def apply_analysis(db: Path, profile_id: str, analysis_id: str, *, origin: str =
         if mode != MODE_AUTO_APPLY:
             _event(con, profile_id, "apply_refused", analysis_id, {"reason": f"mode:{mode}"})
             return {"applied": False, "reason": f"mode:{mode}"}
+        # 감사 대조(§8-102): 마지막 판정 기록이 없거나 그 판정이 eligible 이 아니면 적용하지 않는다 —
+        # gate_status 문자열 하나를 믿지 않는다. (규칙에 None 이 남은 eligible 판정은 gate 가 만들
+        # 수 없어 따로 검사하지 않는다 — 검사를 넣었다가 돌연변이가 안 잡혀 뺐다.)
+        dec = profile_impact.latest_decision(db, analysis_id)
+        if not dec or dec["gate_status"] != profile_impact.ELIGIBLE:
+            _event(con, profile_id, "apply_refused", analysis_id, {"reason": "no_eligible_decision_record"})
+            return {"applied": False, "reason": "no_eligible_decision_record"}
         if con.execute("SELECT 1 FROM advisor_events WHERE kind='applied' AND ref_id=?", (analysis_id,)).fetchone():
             return {"applied": False, "reason": "already_applied"}
         # 기준: 분석의 before 가 **지금** 프로필과 같아야 한다(stale 검사). revision 도 같이 본다.
@@ -527,12 +598,17 @@ def rollback(db: Path, profile_id: str, to_revision: int, reason: str) -> dict:
     kws = snap["keywords"]
     core = [k for k, kind, w in kws if kind == "core"]
     weights = {k: float(w if w is not None else 1.0) for k, kind, w in kws if kind == "core"}
+    # 되살아나는 키워드의 provenance 는 **그 revision 에 활성이던 세대**의 것이다 — actor 는
+    # rollback 이지만 사람이 넣었던 것은 user 로, 제안기가 넣었던 것은 advisor 로 돌아온다(§8-102).
+    restore = {kk: v["provenance_origin"] for kk, v in
+               research_profile.active_generations(db, profile_id, as_of_revision=to_revision).items()}
     rev = research_profile.create_profile(
         db, profile_id, current["name"], core_topics=core, core_weights=weights,
         target_domain=[k for k, kind, w in kws if kind == "target"],
         exclude=[k for k, kind, w in kws if kind == "exclude"], venues=current.get("venues") or [],
         max_items=snap.get("max_items") or current["max_items"],
-        s2_seeds=[k for k, kind, w in kws if kind == "s2_seed"], origin="rollback", note=reason)
+        s2_seeds=[k for k, kind, w in kws if kind == "s2_seed"], origin="rollback", note=reason,
+        restore_provenance=restore)
     with sqlite3.connect(db) as con:
         _event(con, profile_id, "rolled_back", str(to_revision), {"new_revision": rev, "reason": reason})
     return {"rolled_back": True, "revision": rev}

@@ -216,6 +216,27 @@ def _ddl(con: sqlite3.Connection) -> None:
         " policy_version   TEXT NOT NULL,"
         " computed_at      TEXT NOT NULL)"
     )
+    # **키워드 세대 이력**(2026-09-12, ⑨ 준비 §8-102). profile_keywords 는 저장할 때마다
+    # DELETE/INSERT 라 컬럼 provenance 는 못 살아남는다. 여기는 **논리 집합의 전후 diff** 만
+    # 이벤트로 남긴다 — 바뀌지 않은 키워드는 이벤트가 없다. actor_origin(이번 변경을 일으킨 것:
+    # user|advisor|rule|rollback|bootstrap)과 provenance_origin(이 세대의 원래 출처: user|advisor|rule)
+    # 을 가른다 — rollback 은 actor 가 rollback 이지만 되살린 세대의 provenance 를 복원한다.
+    # 제거 후 재추가는 새 세대(generation+1)다. 추가만 하고 고치지 않는다.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS profile_keyword_events ("
+        " event_id     INTEGER PRIMARY KEY,"
+        " profile_id   TEXT NOT NULL,"
+        " revision     INTEGER NOT NULL,"
+        " created_at   TEXT NOT NULL,"
+        " keyword      TEXT NOT NULL,"    # 소문자 정규화 — 표기는 profile_keywords 가 갖는다
+        " kind         TEXT NOT NULL,"    # core | target | exclude | s2_seed
+        " change       TEXT NOT NULL,"    # added | removed
+        " actor_origin TEXT NOT NULL,"
+        " provenance_origin TEXT,"        # added 일 때만
+        " generation   INTEGER,"          # added 일 때만 — 같은 (keyword, kind) 의 몇 번째 세대인가
+        " note         TEXT)"
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_keyword_events_profile ON profile_keyword_events(profile_id, keyword, kind, event_id)")
     # 얼린 H7 의 정의가 바뀌면(health-v2: already_shown 제외) 옛 행과 새 행을 한 기준선에
     # 못 섞는다 — 행마다 지표 버전을 적는다(2026-09-12). 기존 DB 에는 ALTER 로 붙는다(migrate).
     sh_cols = {row[1] for row in con.execute("PRAGMA table_info(scan_health)")}
@@ -310,6 +331,7 @@ def create_profile(
     core_weights: dict[str, float] | None = None,
     s2_seeds: list[str] | None = None,
     origin: str = "user", note: str | None = None,
+    restore_provenance: dict[tuple[str, str], str] | None = None,
 ) -> int:
     """기존 프로필이면 통째로 덮어쓴다(키워드도 전부 지우고 다시 씀) —
     "일부만 바뀐 것"과 "이전 키워드가 실수로 안 지워진 것"을 구분 못 하게
@@ -350,6 +372,8 @@ def create_profile(
             kept_seeds = [r[0] for r in con.execute(
                 "SELECT keyword FROM profile_keywords WHERE profile_id=? AND kind='s2_seed'",
                 (profile_id,))]
+        before_set = {(r[0].lower(), r[1]) for r in con.execute(
+            "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,))}
         con.execute("DELETE FROM profile_keywords WHERE profile_id=?", (profile_id,))
         con.execute("DELETE FROM profile_venues WHERE profile_id=?", (profile_id,))
         seeds = kept_seeds if s2_seeds is None else list(s2_seeds)
@@ -369,7 +393,12 @@ def create_profile(
                 "INSERT INTO profile_venues (profile_id, venue) VALUES (?,?)",
                 (profile_id, v),
             )
-        return _bump_revision(con, profile_id, origin, note, now)
+        rev = _bump_revision(con, profile_id, origin, note, now)
+        after_set = {(r[0].lower(), r[1]) for r in con.execute(
+            "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,))}
+        _record_keyword_events(con, profile_id, rev, now, before_set, after_set, origin, note,
+                               restore_from=restore_provenance)
+        return rev
 
 
 def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
@@ -392,7 +421,92 @@ def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
     return cur + 1
 
 
+PROVENANCE_ORIGINS = ("user", "advisor", "rule")
+
+
+def _record_keyword_events(con: sqlite3.Connection, profile_id: str, revision: int, now: str,
+                           before: set, after: set, actor: str, note: str | None,
+                           restore_from: dict | None = None) -> int:
+    """전후 논리 집합의 diff 만 이벤트로. 이벤트 표에 이 프로필 기록이 아직 없으면 먼저 bootstrap
+    (현재 활성 키워드를 첫 세대로, provenance 는 처음 출현 이력에서). restore_from 은 rollback 이
+    되살린 세대의 provenance {(kw, kind): origin}."""
+    if not con.execute("SELECT 1 FROM profile_keyword_events WHERE profile_id=? LIMIT 1", (profile_id,)).fetchone():
+        if before:
+            _bootstrap_keyword_events(con, profile_id, revision, now, before)
+    n = 0
+    for kw, kind in sorted(before - after):
+        con.execute("INSERT INTO profile_keyword_events (profile_id, revision, created_at, keyword, kind, change,"
+                    " actor_origin, note) VALUES (?,?,?,?,?,'removed',?,?)", (profile_id, revision, now, kw, kind, actor, note))
+        n += 1
+    for kw, kind in sorted(after - before):
+        prov = (restore_from or {}).get((kw, kind)) or (actor if actor in PROVENANCE_ORIGINS else "user")
+        gen = 1 + (con.execute("SELECT count(*) FROM profile_keyword_events WHERE profile_id=? AND keyword=? AND kind=? AND change='added'",
+                               (profile_id, kw, kind)).fetchone()[0])
+        con.execute("INSERT INTO profile_keyword_events (profile_id, revision, created_at, keyword, kind, change,"
+                    " actor_origin, provenance_origin, generation, note) VALUES (?,?,?,?,?,'added',?,?,?,?)",
+                    (profile_id, revision, now, kw, kind, actor, prov, gen, note))
+        n += 1
+    return n
+
+
+def _bootstrap_keyword_events(con: sqlite3.Connection, profile_id: str, revision: int, now: str, active: set) -> None:
+    """이벤트 표 도입 전부터 있던 키워드를 첫 세대로 적는다. provenance 는 그때까지의 유일한
+    근거인 '처음 출현 이력'(_first_seen_provenance)에서 — 앞으로의 세대에는 안 쓰지만 시작점으로는 맞다."""
+    first = _first_seen_provenance(con, profile_id)
+    for kw, kind in sorted(active):
+        prov = first.get(kw, {}).get("origin", "user") if kind == "core" else "user"
+        con.execute("INSERT INTO profile_keyword_events (profile_id, revision, created_at, keyword, kind, change,"
+                    " actor_origin, provenance_origin, generation, note) VALUES (?,?,?,?,?,'added','bootstrap',?,1,?)",
+                    (profile_id, revision, now, kw, kind, prov if prov in PROVENANCE_ORIGINS else "user",
+                     "이벤트 표 도입 시점의 활성 키워드"))
+
+
+def bootstrap_keyword_events(db_path: Path, profile_id: str) -> int:
+    """이관 뒤 한 번 — 이벤트가 없는 프로필의 현재 키워드를 첫 세대로 적는다. 이미 있으면 0."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        if con.execute("SELECT 1 FROM profile_keyword_events WHERE profile_id=? LIMIT 1", (profile_id,)).fetchone():
+            return 0
+        active = {(r[0].lower(), r[1]) for r in con.execute(
+            "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,))}
+        rev = con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?", (profile_id,)).fetchone()[0]
+        _bootstrap_keyword_events(con, profile_id, rev, _now(), active)
+        return len(active)
+
+
+def active_generations(db_path: Path, profile_id: str, as_of_revision: int | None = None) -> dict[tuple[str, str], dict]:
+    """(keyword, kind) → {provenance_origin, generation, actor_origin, revision} — 마지막 이벤트가 added 인 것만.
+    as_of_revision 을 주면 그 revision 까지의 이벤트로 본다(rollback 이 되살릴 세대의 provenance)."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        q = "SELECT keyword, kind, change, actor_origin, provenance_origin, generation, revision FROM profile_keyword_events WHERE profile_id=?"
+        args: tuple = (profile_id,)
+        if as_of_revision is not None:
+            q += " AND revision <= ?"; args += (as_of_revision,)
+        rows = con.execute(q + " ORDER BY event_id", args).fetchall()
+    out: dict[tuple[str, str], dict] = {}
+    for kw, kind, change, actor, prov, gen, rev in rows:
+        if change == "added":
+            out[(kw, kind)] = {"provenance_origin": prov, "generation": gen, "actor_origin": actor, "revision": rev}
+        else:
+            out.pop((kw, kind), None)
+    return out
+
+
 def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
+    """core 키워드별 {origin, first_seen, source}. 이벤트 표에 기록이 있으면 **활성 세대**의
+    provenance_origin 이다(제거 후 사람이 재추가하면 user 세대). 없으면 처음 출현 이력으로
+    떨어진다(도입 전 프로필)."""
+    gens = active_generations(db_path, profile_id)
+    if gens:
+        return {kw: {"origin": v["provenance_origin"], "first_seen": str(v["revision"]),
+                     "source": f"generation:{v['generation']}"} for (kw, kind), v in gens.items() if kind == "core"}
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        return _first_seen_provenance(con, profile_id)
+
+
+def _first_seen_provenance(con: sqlite3.Connection, profile_id: str) -> dict[str, dict]:
     """키워드별 {origin, first_seen, source} — **처음 나타난** 이력 항목의 origin 이다.
 
     profile_keywords 에는 origin 컬럼이 없고 revision 의 origin 은 revision 전체에 붙는다.
@@ -407,9 +521,8 @@ def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
     rollback 으로 돌아온 키워드는 이미 처음이 있으므로 바뀌지 않는다.
     """
     import json
-    init_db(db_path)
     events: list[tuple[str, str, str, list[str]]] = []   # (시각, 출처, origin, core 목록)
-    with sqlite3.connect(db_path) as con:
+    if True:
         for started_at, snap in con.execute(
                 "SELECT started_at, profile_snapshot FROM scan_runs WHERE profile_id=?", (profile_id,)):
             events.append((started_at, "scan", "user", list(json.loads(snap).get("core_topics") or [])))

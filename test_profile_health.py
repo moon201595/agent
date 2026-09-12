@@ -352,3 +352,18 @@ def test_정책이나_지표_버전이_섞인_창은_판정하지_않는다():
     assert r["status"] == ph.MIXED_MODES and r["reasons"][0].startswith("policy_version=")
     oldh = [_row(0, policy_version="rank-tuple-v1+match-v2", health_version="health-v1")] + good[1:]
     assert ph.assess(oldh, recent, rules)["reasons"][0].startswith("health_version=")
+
+
+def test_버전을_안_적은_옛_얼린_행은_현재_버전으로_승격되지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: scan_health.health_version 이 NULL(ALTER 전 행)인데 현재 HEALTH_VERSION 으로
+    읽어 v1 시절 H7 이 v2 기준선에 섞이는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    sid = _scan_ids(db)[0]
+    assert ph.scan_metrics(db, sid)["health_version"] == ph.HEALTH_VERSION
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE scan_health SET health_version=NULL WHERE scan_id=?", (sid,))
+    assert ph.scan_metrics(db, sid)["health_version"] == "health-v1"
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM scan_health")
+    assert ph.scan_metrics(db, sid)["health_version"] == ph.HEALTH_VERSION, "얼린 행이 없으면 지금 계산 = 현재 버전"

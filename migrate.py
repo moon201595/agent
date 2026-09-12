@@ -116,6 +116,13 @@ def main(argv: list[str] | None = None) -> int:
     after = {k: v for k, v in pending(db, args.scope).items() if v}
     if after:
         print("적용 뒤에도 빠진 것: " + str(after)); return 3
+    if args.scope == "operational" and any("profile_keyword_events" in m for m in sum(before.values(), [])):
+        # 키워드 세대 이력(§8-102) 도입: 활성 키워드를 첫 세대로 적는다. 두 번 불러도 0.
+        import research_profile
+        with sqlite3.connect(db) as con:
+            profiles = [r[0] for r in con.execute("SELECT profile_id FROM profiles")]
+        for pid in profiles:
+            print(f"[bootstrap] {pid}: 키워드 이벤트 {research_profile.bootstrap_keyword_events(db, pid)}건")
     print("대조 완료 — 스키마 최신"); return 0
 
 

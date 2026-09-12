@@ -5218,7 +5218,7 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     policy_version·health_version 을 노출하고 assess 가 섞이면 mixed_modes — match-v1 시절과
     v2 시절이 한 중앙값에 못 들어간다. `HEALTH_VERSION=health-v2`, scan_health 에
     health_version 컬럼(ALTER, 이번 이관에 포함). **기준선은 내일 05:00 첫 정상 스캔부터 14회
-    +14일 — 9/27 이후.** 9/11 스캔(recomputed·v1 정책)은 기준선에 안 들어간다.
+    +14일 — 9/27 이후.** 9/11 스캔은 '자동으로 빠지는' 게 아니다 — series() 는 그대로 돌려주고 assess() 가 버전이 섞이면 mixed_modes 로 판정을 막는다. 기준선 창의 시작을 health-v2 첫 정상 스캔(9/13 05:00) 이후로 **명시적으로** 잡는다(외부 검토 정정).
 
     **이관 실행(승인 조건 충족 뒤):** 일관 백업 → scan_health.health_version + shadow_runs 생성
     → 재대조 최신.
@@ -5233,6 +5233,43 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     합집합 게이트를 통과한 것이 아니다. 이 실행값은 ⑧ 임계값 보정 표본으로 쓰지 않는다.
 
     테스트 +5, 돌연변이 8/8. 911 passed. ⑨ 준비(세대 provenance·기각 기억)는 다음 항목.
+
+102. **⑨ 준비 — 세대 provenance · 기각 기억 · 게이트 판정 감사, 그리고 옛 얼린 행의 버전** (2026-09-12, 외부 검토 여덟째).
+
+    **① 옛 scan_health 행의 NULL health_version 을 현재 버전으로 읽고 있었다.** ALTER 로 붙은
+    컬럼이라 과거 행은 NULL 인데 `scan_metrics` 가 `or HEALTH_VERSION` 으로 채워 v1 시절 H7 이
+    v2 로 위장할 수 있었다. NULL 은 명시적으로 `health-v1`. 회귀 테스트.
+
+    **② 세대 provenance(`profile_keyword_events`, append-only).** §8-96 의 "처음 출현 origin" 은
+    반대 문제가 남았다 — 제안기가 X 추가 → 사람이 제거 → 몇 달 뒤 사람이 직접 X 추가해도
+    영원히 auto. 고침: `create_profile` 이 **전후 논리 집합의 diff** 만 이벤트로 남긴다
+    (물리 DELETE/INSERT 가 아니다 — 바뀌지 않은 키워드는 이벤트 없음, kind 까지 식별자).
+    `actor_origin`(이번 변경을 일으킨 것: user|advisor|rule|rollback|bootstrap)과
+    `provenance_origin`(세대의 원래 출처: user|advisor|rule)을 가른다 — rollback 은 actor 가
+    rollback 이지만 **되살린 revision 에 활성이던 세대의 provenance 를 복원**한다
+    (`active_generations(as_of_revision)`). 제거 후 재추가는 generation+1. `keyword_provenance`
+    는 이벤트가 있으면 활성 세대의 provenance, 없으면 처음 출현 이력으로 떨어진다 —
+    후자는 도입 시점 bootstrap 의 근거로만 쓴다. 이관 시 `bootstrap_keyword_events` 가 활성
+    키워드를 첫 세대로 적는다(actor=bootstrap). 실 DB 미리보기: 활성 68(core 38 · target 21 ·
+    exclude 7 · s2_seed 2), core provenance 전부 user, revision 1 하나.
+
+    **③ 기각 기억(advisor_events kind=rejected).** 제안 서명 = action + canonical(용어) +
+    정규화 계층, 증거 해시 = **정렬한** 근거 키 + 그 키의 전송 텍스트. 억제 조건은
+    `proposal_sig + evidence_sha + base_profile_hash` 셋 동일 — revision 은 감사용(A→B→A 는
+    숫자만 다르다). 새 증거·바뀐 텍스트·바뀐 프로필이면 다시 올라온다. `run_weekly` 가 검증
+    뒤 로컬에서 `suppressed` 표시하고 변경안에서 뺀다. **기각 이력은 LLM 에 안 나간다.**
+    사람이 기각하는 입구(`record_rejection`)는 함수만 — UI 는 다음.
+
+    **④ 게이트 판정 감사(`gate_decisions`, append-only).** 재판정이 gate_status 만 바꿔
+    "eligible 인데 rules_json 은 전부 None" 이 가능했다. 판정마다 source · shadow_id · 상태 ·
+    사유 · **실제로 쓴 규칙·shadow 규칙** · 규칙 해시를 남기고, `apply_analysis` 는 gate_status
+    문자열이 아니라 **마지막 판정 기록이 eligible 인가**를 대조한다(임의로 gate_status 를 바꿔
+    놓아도 거부 — 테스트). "규칙에 None 이 남은 eligible" 검사는 gate 가 만들 수 없는 상태라
+    넣었다가 돌연변이가 안 잡혀 뺐다.
+
+    테스트 +7(이벤트 6 · 버전 1), 돌연변이 10/10(1건은 동작 같은 돌연변이라 코드를 뺐다).
+    918 passed. **DDL 미적용**: profile_keyword_events(+index) · gate_decisions — 승인 뒤
+    `migrate.py --apply`(bootstrap 은 migrate 가 이어서 한다).
 
 ## 9. 폐기된 것
 
