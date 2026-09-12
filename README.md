@@ -95,6 +95,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `profile_health.py` | 프로필 건강 지표 — 스캔별 당시 스냅샷 재채점으로 anchor 적중·계층·최신성·제외어 충돌을 센다. "적용 후 악화"의 정의(규칙은 미설정으로 시작) |
 | `term_discovery.py` | 탐색 차선 — 키워드에 안 걸려 탈락한 논문에서 n-gram 후보 용어를 로컬로 찾고 용어당 증거 논문만 제안기에 넘긴다(LLM 은 검토자) |
 | `schema_guard.py` · `migrate.py` | DDL 은 `PAPER_HARNESS_APPLY_DDL=1` 일 때만 실행, 아니면 대조만 하고 뒤처지면 멈춘다. 모든 스키마 변경(새 설치 포함)은 `migrate.py --apply [--scope operational\|evaluation\|all]` 하나로 — WAL 을 포함한 일관 백업 → 적용 → 재대조 |
+| `shadow_search.py` | ⑦ shadow 검색 — 검색 집합을 바꾸는 변경안(씨앗·질의)을 두 팔로 격리 실측. 운영 커서·후보·배달 기록 불변, 결과는 shadow_runs 한 표. 게이트의 needs_shadow_search 를 푼다 |
 
 기존 도구·요약·재현 계층은 그대로 재사용한다.
 

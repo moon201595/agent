@@ -295,10 +295,23 @@ def impact(snap: dict, before: dict, after: dict, k: int,
 
 
 # ── 게이트 ────────────────────────────────────────────────────────────────
-def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None) -> tuple[str, list[str]]:
+# shadow 검색 결과를 읽는 규칙(⑦, §8-100). DEFAULT_APPLY_RULES 와 같은 이유로 None 으로 시작 —
+# 첫 실험 결과를 보고 숫자를 정한다. None 이면 shadow 가 있어도 insufficient_evidence.
+DEFAULT_SHADOW_RULES: dict = {
+    "max_eligible_lost": None,      # 후보 팔에서 사라진 적격 논문 수 상한
+    "min_topk_overlap": None,       # 상위 K 겹침 하한
+    "max_noise_after": None,        # 후보 팔의 잡음(제외어·무적중) 편수 상한
+}
+
+
+def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
+         shadow: dict | None = None, shadow_rules: dict | None = None) -> tuple[str, list[str]]:
     """상태 하나 + 사유 전부. 차단 사유가 여럿이면 다 남긴다.
-    우선순위: invalid > needs_shadow_search > insufficient_evidence > held > eligible."""
+    우선순위: invalid > needs_shadow_search > insufficient_evidence > held > eligible.
+    `shadow` 는 shadow_runs 의 metrics(diff 포함) — 있으면 needs_shadow_search 를 넘어가되
+    shadow 규칙이 미설정이면 insufficient, 설정돼 있고 한도를 넘으면 held."""
     rules = {**DEFAULT_APPLY_RULES, **(rules or {})}
+    srules = {**DEFAULT_SHADOW_RULES, **(shadow_rules or {})}
     reasons: list[str] = []
     if diff["errors"]:
         return INVALID, [f"structure:{e}" for e in diff["errors"]]
@@ -310,8 +323,26 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None) -> tuple[
         reasons.append("effective_s2_seeds_changed")
     if diff["arxiv_query_changed"]:
         reasons.append("arxiv_query_changed")
+    shadow_held: list[str] = []
     if reasons:
-        return NEEDS_SHADOW, reasons     # 로컬 영향은 계산했지만 검색 효과는 못 잰다(§7.4)
+        if shadow is None:
+            return NEEDS_SHADOW, reasons     # 로컬 영향은 계산했지만 검색 효과는 못 잰다(§7.4)
+        if shadow.get("status") not in ("done",):
+            return INSUFFICIENT, reasons + [f"shadow_status:{shadow.get('status')}"]
+        sd = shadow["diff"]
+        unconfigured = [n for n, v in srules.items() if v is None]
+        if unconfigured:
+            return INSUFFICIENT, reasons + ["shadow_rules_unconfigured:" + ",".join(unconfigured)]
+        if len(sd["eligible_lost"]) > srules["max_eligible_lost"]:
+            shadow_held.append(f"shadow_eligible_lost:{len(sd['eligible_lost'])}>{srules['max_eligible_lost']}")
+        if sd["topk_overlap"] is not None and sd["topk_overlap"] < srules["min_topk_overlap"]:
+            shadow_held.append(f"shadow_topk_overlap:{sd['topk_overlap']:.2f}<{srules['min_topk_overlap']}")
+        if sd["noise_after"] > srules["max_noise_after"]:
+            shadow_held.append(f"shadow_noise_after:{sd['noise_after']}>{srules['max_noise_after']}")
+        shadow_tag = [f"shadow:{shadow.get('shadow_id', '?')}"]   # 검색 효과를 쟀다 — 아래 로컬 규칙으로 계속
+        reasons = []
+    else:
+        shadow_tag = []
     if snap["paper_count"] == 0:
         return INSUFFICIENT, ["no_observations"]
     if snap["scans"]["total"] == 0:
@@ -322,11 +353,11 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None) -> tuple[
         if n == 0:
             reasons.append(f"added_core_zero_hits:{term}")
     if reasons:
-        return INSUFFICIENT, reasons
+        return INSUFFICIENT, shadow_tag + reasons
     unconfigured = [name for name, v in rules.items() if v is None]
     if unconfigured:
-        return INSUFFICIENT, ["apply_rules_unconfigured:" + ",".join(unconfigured)]
-    held: list[str] = []
+        return INSUFFICIENT, shadow_tag + ["apply_rules_unconfigured:" + ",".join(unconfigured)]
+    held: list[str] = list(shadow_held)
     n_changes = len(diff["added_core"]) + len(diff["tier_changes"])
     if n_changes > rules["max_core_changes"]:
         held.append(f"core_changes_exceed_limit:{n_changes}>{rules['max_core_changes']}")
@@ -337,8 +368,32 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None) -> tuple[
     if rate is not None and rate > rules["max_exclude_risk"]:
         held.append(f"exclude_risk_exceeds_limit:{rate:.2f}>{rules['max_exclude_risk']}")
     if held:
-        return HELD, held
-    return ELIGIBLE, ["all_rules_passed"]
+        return HELD, shadow_tag + held
+    return ELIGIBLE, shadow_tag + ["all_rules_passed"]
+
+
+def regate_with_shadow(db: Path, analysis_id: str, shadow: dict,
+                       rules: dict | None = None, shadow_rules: dict | None = None) -> dict:
+    """저장된 분석(needs_shadow_search)에 shadow 결과를 붙여 게이트를 다시 계산하고 **그
+    행의 gate_status·reasons 를 갱신**한다. 스냅샷·diff·impact 는 그대로 — 검색 효과만 더해진다.
+    shadow 의 before/after 해시가 분석과 다르면 붙이지 않는다(다른 변경안의 실험이다)."""
+    init_db(db)
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        an = con.execute("SELECT * FROM impact_analyses WHERE analysis_id=?", (analysis_id,)).fetchone()
+        if not an:
+            return {"updated": False, "reason": "analysis_not_found"}
+        if an["before_hash"] != shadow["before_hash"] or an["after_hash"] != shadow["after_hash"]:
+            return {"updated": False, "reason": "hash_mismatch"}
+        diff, imp = json.loads(an["diff_json"]), json.loads(an["impact_json"])
+        scope = json.loads(an["scope_json"])
+        # 스냅샷 자체는 저장 안 한다 — 편수는 scope 에 있고, 손상 초록은 분석 때 이미 사유로 남았다.
+        snap = {"paper_count": scope.get("papers", 0), "scans": {"total": 1}, "abstract_corrupt": []}
+        metrics = {**shadow["metrics"], "status": shadow["status"], "shadow_id": shadow["shadow_id"]}
+        status, reasons = gate(diff, imp, snap, rules or json.loads(an["rules_json"]), metrics, shadow_rules)
+        con.execute("UPDATE impact_analyses SET gate_status=?, reasons_json=? WHERE analysis_id=?",
+                    (status, json.dumps(reasons), analysis_id))
+    return {"updated": True, "gate_status": status, "reasons": reasons}
 
 
 # ── 저장 ─────────────────────────────────────────────────────────────────

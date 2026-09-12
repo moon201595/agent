@@ -30,10 +30,10 @@ DEFAULT_EVAL_DB = ROOT / "data" / "evaluation.db"
 
 def owners(scope: str = "operational") -> list[tuple[str, object]]:
     """scope: operational(운영 DB) | evaluation(평가 DB — 다른 파일) | all."""
-    import evaluation, evidence_state, profile_advisor, profile_impact, research_profile, storage
+    import evaluation, evidence_state, profile_advisor, profile_impact, research_profile, shadow_search, storage
     op = [("storage", storage._ddl), ("research_profile", research_profile._ddl),
           ("profile_impact", profile_impact._ddl), ("profile_advisor", profile_advisor._ddl),
-          ("evidence_state", evidence_state._ddl)]
+          ("evidence_state", evidence_state._ddl), ("shadow_search", shadow_search._ddl)]
     ev = [("evaluation", evaluation._ddl)]
     return {"operational": op, "evaluation": ev, "all": op + ev}[scope]
 
@@ -59,15 +59,18 @@ def backup(db: Path) -> Path:
     dest = BACKUP_DIR / f"{db.stem}_{stamp}_pre_migration.db"
     if dest.exists():
         raise BackupFailed(f"백업 경로가 이미 있다 — 덮어쓰지 않는다: {dest}")
-    with sqlite3.connect(db) as src, sqlite3.connect(dest) as dst:
-        _copy_pages(src, dst)
-        n_src = src.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-    with sqlite3.connect(dest) as chk:
-        verdict = chk.execute("PRAGMA integrity_check").fetchone()[0]
-        n_dst = chk.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-    if verdict != "ok" or n_dst != n_src:
+    try:
+        with sqlite3.connect(db) as src, sqlite3.connect(dest) as dst:
+            _copy_pages(src, dst)
+            n_src = src.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+        with sqlite3.connect(dest) as chk:
+            verdict = chk.execute("PRAGMA integrity_check").fetchone()[0]
+            n_dst = chk.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+        if verdict != "ok" or n_dst != n_src:
+            raise BackupFailed(f"백업 검증 실패: integrity={verdict}, tables {n_dst}/{n_src}")
+    except Exception as e:  # noqa: BLE001 — backup API 자체 실패도 부분 파일을 남기면 안 된다(외부 검토)
         dest.unlink(missing_ok=True)
-        raise BackupFailed(f"백업 검증 실패: integrity={verdict}, tables {n_dst}/{n_src}")
+        raise e if isinstance(e, BackupFailed) else BackupFailed(f"백업 실패: {type(e).__name__}: {e}") from e
     return dest
 
 
@@ -77,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scope", choices=("operational", "evaluation", "all"), default="operational")
     ap.add_argument("--apply", action="store_true", help="백업 뒤 적용한다(사람 승인 뒤에만)")
     args = ap.parse_args(argv)
+    if args.scope == "all" and args.db is not None:
+        print("--scope all 은 --db 와 같이 쓸 수 없다 — 운영·평가 스키마가 한 파일에 섞인다"); return 2
     if args.scope == "all" and args.db is None:
         rc = 0
         for scope in ("operational", "evaluation"):
