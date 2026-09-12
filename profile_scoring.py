@@ -65,6 +65,18 @@ def _paper_text(paper: dict) -> str:
     return f"{paper.get('title') or ''} {paper.get('abstract') or ''}"
 
 
+def raw_hits(paper: dict, profile: dict) -> dict:
+    """제외·적격과 무관하게 세 목록을 다 준다 — {core_hits, exclude_hits, domain_hits}.
+    score_paper 는 제외되면 core_hits 를, 무적중이면 domain_hits 를 비우므로 관측 저장과
+    탐색용(②)에는 이쪽을 쓴다(2026-09-12). 다의어 가드는 score_paper 와 같은 규칙을 탄다."""
+    text = _paper_text(paper)
+    core = _drop_subsumed([kw for kw in profile.get("core_topics", [])
+                           if _keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)])
+    return {"core_hits": core,
+            "exclude_hits": _find_hits(text, profile.get("exclude", [])),
+            "domain_hits": _find_hits(text, profile.get("target_domain", []))}
+
+
 def recency_score(published: str | None, half_life_days: float) -> float | None:
     """published(ISO 8601, 'Z' 종료)를 오늘 기준 지수 감쇠 점수(0~1)로.
     파싱 실패(형식이 다르거나 S2처럼 연도만 있는 경우)는 None을 돌려준다 —

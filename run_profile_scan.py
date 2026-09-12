@@ -579,6 +579,8 @@ async def scan_profile(
                 sc = paper.get("_score") or {}
                 row = dict(paper)
                 row["outcome"] = outcome
+                # 관측 시점의 적중을 같이 남긴다 — 제외·무적중이어도(§8-95).
+                row["_hits"] = profile_scoring.raw_hits(paper, profile)
                 if outcome == research_profile.OUTCOME_FILTERED:
                     row["filter_reason"] = research_profile.FILTER_ALREADY_SHOWN
                 elif sc.get("excluded"):

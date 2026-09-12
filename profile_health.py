@@ -16,6 +16,12 @@ profile_keywords 에 provenance 컬럼이 아직 없으므로(⑨ 때 붙인다)
 
 외부 검토(2026-09-11)가 지적한 것: "악화의 정의가 없으면 auto-apply 를 열면 안 된다."
 이 모듈이 그 정의다. astra 판정은 못 받았다(Codex 한도, 9/15 이후 재요청).
+
+**재현 모드**(2026-09-12 두 번째 검토, §8-95). 적중은 관측 시점에 저장된 값
+(candidate_observations.core_hits 등)을 쓴다 = `as_observed`. 그 컬럼이 없는 옛 관측
+(9/11 스캔)만 현재 코드로 다시 세고 `recomputed` 로 표시한다 — 두 모드를 한 창에서
+섞어 판정하지 않는다. 처음 구현은 순위는 당시 값, 적중은 현재 코드로 세어 어느 쪽도
+아니었다.
 """
 from __future__ import annotations
 
@@ -40,13 +46,17 @@ DEFAULT_HEALTH_RULES: dict = {
     "min_top_tier_share_topk": None,     # H5 상위 K 중 최상위 계층 비율 하한
     "min_topk_retention": None,          # H7 직전 프로필 대비 상위 K 유지 비율 하한
     "min_freshness_topk": None,          # H9 상위 K 중 최신일 논문 비율 하한
+    "min_new_eligible_from_auto": None,  # H8 auto 덕에 새로 적격이 된 편수 하한 — 0 이면 변경이 헛것
     "max_drop_from_baseline": None,      # 보조: 기준선 중앙값 대비 허용 하락 폭(비율)
 }
-MIN_BASELINE_SCANS = 14   # E2 의 "기준선 2주"와 같은 수
+MIN_BASELINE_SCANS = 14   # E2 의 "기준선 2주"와 같은 수 —
+MIN_BASELINE_DAYS = 14    # 수동 스캔이 섞이면 14회가 14일보다 훨씬 빨리 찬다. 둘 다 본다.
 
 UNCONFIGURED = "unconfigured"
 INSUFFICIENT_BASELINE = "insufficient_baseline"
 INSUFFICIENT_RECENT = "insufficient_recent"
+UNMEASURED_REQUIRED = "unmeasured_required"   # 규칙이 요구하는 지표가 미측정 — fail-closed
+MIXED_MODES = "mixed_modes"                   # as_observed 와 recomputed 가 한 창에 섞임
 OK = "ok"
 DETERIORATED = "deteriorated"
 
@@ -121,11 +131,18 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
         auto = core - anchors
 
         papers: list[dict] = []
+        modes: set[str] = set()
         for r in rows:
             abstract, _status = profile_impact._restore_abstract(con, r)
             paper = {"_paper_key": r["paper_key"], "title": r["title"] or "",
                      "abstract": abstract or "", "published": r["published"]}
-            hits, excluded = _hits(paper, profile)
+            if r.get("core_hits") is not None:
+                hits = {h.lower() for h in json.loads(r["core_hits"])}
+                excluded = bool(json.loads(r["exclude_hits"] or "[]"))
+                modes.add("as_observed")
+            else:
+                hits, excluded = _hits(paper, profile)
+                modes.add("recomputed")
             papers.append({**paper, "hits": hits, "excluded": excluded,
                            "eligible": r["filter_reason"] is None,
                            "rank_pos": r["rank_pos"], "tier_rank": r["tier_rank"],
@@ -145,6 +162,7 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
 
     out = {
         "scan_id": scan_id, "profile_id": run["profile_id"], "started_at": run["started_at"],
+        "mode": "mixed" if len(modes) > 1 else next(iter(modes)),
         "k": k, "observations": len(papers), "eligible": len(eligible), "topk": len(topk),
         "anchor_basis": basis, "anchors": len(anchors), "auto": sorted(auto),
         # H1·H2 드리프트
@@ -176,18 +194,54 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
 
 
 # ── 창 ────────────────────────────────────────────────────────────────────
+def previous_profile(db: Path, profile_id: str, scan_id: str) -> dict | None:
+    """H7 의 기준 — 이 스캔보다 앞선 스캔 중 **프로필 스냅샷이 다른** 가장 최근 것.
+    revision 표가 아니라 스캔 스냅샷을 쓴다: 그때 실제로 쓰인 프로필이 그것이고,
+    revision 을 기록하기 전(2026-09-11 이전) 프로필도 다룰 수 있다. 앞선 스캔이 전부
+    같은 프로필이면 None — 유지율은 프로필이 바뀐 뒤에만 뜻이 있다."""
+    with sqlite3.connect(db) as con:
+        cur = con.execute("SELECT started_at, profile_snapshot, rowid FROM scan_runs WHERE scan_id=?",
+                          (scan_id,)).fetchone()
+        if not cur:
+            return None
+        # 같은 초에 두 스캔이 들어오면 started_at 이 같다 — rowid 로 순서를 가른다.
+        for (snap,) in con.execute(
+                "SELECT profile_snapshot FROM scan_runs WHERE profile_id=? AND "
+                "(started_at < ? OR (started_at = ? AND rowid < ?)) ORDER BY started_at DESC, rowid DESC",
+                (profile_id, cur[0], cur[0], cur[2])):
+            if snap != cur[1]:
+                return json.loads(snap)
+    return None
+
+
 def series(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dict]:
     """기간 안 스캔들의 지표(시간순). 관측 없는 스캔은 건너뛴다(0 으로 안 채운다).
-    H7 은 직전 revision 이 있을 때만 — 없으면 None 그대로(§8-94 3번)."""
+    H7 은 `previous_profile` 이 있을 때 센다 — 처음 구현은 여기서 prev_profile 을 안 넘겨
+    운영 경로에서 늘 미측정이었다(외부 검토 2026-09-12)."""
     with sqlite3.connect(db) as con:
         ids = [r[0] for r in con.execute(
             "SELECT scan_id FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? "
-            "ORDER BY started_at", (profile_id, start.isoformat(), end.isoformat()))]
-    return [m for m in (scan_metrics(db, sid) for sid in ids) if m]
+            "ORDER BY started_at, rowid", (profile_id, start.isoformat(), end.isoformat()))]
+    out = []
+    for sid in ids:
+        m = scan_metrics(db, sid, prev_profile=previous_profile(db, profile_id, sid))
+        if m:
+            out.append(m)
+    return out
 
 
 _COMPARED = ("anchor_share_topk", "exclude_collision_auto", "top_tier_share_topk",
-             "topk_retention_vs_prev", "freshness_topk")
+             "topk_retention_vs_prev", "freshness_topk", "new_eligible_from_auto")
+
+
+def _span_days(rows: list[dict]) -> float | None:
+    ts = []
+    for r in rows:
+        v = r.get("started_at")
+        if not v:
+            return None
+        ts.append(datetime.fromisoformat(v.replace("Z", "+00:00")))
+    return (max(ts) - min(ts)).total_seconds() / 86400 if ts else None
 
 
 def _median(values: list) -> float | None:
@@ -205,24 +259,35 @@ def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) 
            "baseline": base_med, "recent": rec_med, "rules": rules, "reasons": []}
     if all(v is None for v in rules.values()):
         return {**out, "status": UNCONFIGURED}
-    if len(baseline) < MIN_BASELINE_SCANS:
+    span = _span_days(baseline)
+    out["baseline_days"] = span
+    if len(baseline) < MIN_BASELINE_SCANS or span is None or span < MIN_BASELINE_DAYS:
         return {**out, "status": INSUFFICIENT_BASELINE}
     if not recent:
         return {**out, "status": INSUFFICIENT_RECENT}
+    modes = {r.get("mode") for r in baseline + recent} - {None}
+    if len(modes) > 1 or "mixed" in modes:
+        return {**out, "status": MIXED_MODES, "reasons": [f"modes={sorted(modes)}"]}
 
     checks = [("min_anchor_share_topk", "anchor_share_topk", "min"),
               ("max_exclude_collision_auto", "exclude_collision_auto", "max"),
               ("min_top_tier_share_topk", "top_tier_share_topk", "min"),
               ("min_topk_retention", "topk_retention_vs_prev", "min"),
-              ("min_freshness_topk", "freshness_topk", "min")]
-    reasons = []
+              ("min_freshness_topk", "freshness_topk", "min"),
+              ("min_new_eligible_from_auto", "new_eligible_from_auto", "min")]
+    reasons, unmeasured = [], []
     for rule, metric, kind in checks:
         limit = rules.get(rule)
+        if limit is None:
+            continue
         val = rec_med[metric]
-        if limit is None or val is None:
+        if val is None:                 # 규칙이 요구하는데 못 쟀다 — 통과가 아니다(fail-closed)
+            unmeasured.append(f"{metric} unmeasured (required by {rule})")
             continue
         if (kind == "min" and val < limit) or (kind == "max" and val > limit):
             reasons.append(f"{metric}={val:.3f} {'<' if kind == 'min' else '>'} {rule}={limit}")
+    if unmeasured:
+        return {**out, "status": UNMEASURED_REQUIRED, "reasons": unmeasured + reasons}
     drop = rules.get("max_drop_from_baseline")
     if drop is not None:
         for metric in ("anchor_share_topk", "top_tier_share_topk", "freshness_topk"):
@@ -246,14 +311,19 @@ def format_health(rows: list[dict]) -> list[str]:
     n = len(rows)
     med = {m: _median([r.get(m) for r in rows]) for m in
            ("anchor_share_topk", "anchor_share_eligible", "top_tier_share_topk",
-            "freshness_topk", "mean_delay_days_topk", "exclude_collision_auto", "topk_retention_vs_prev")}
+            "freshness_topk", "mean_delay_days_topk", "exclude_collision_auto",
+            "topk_retention_vs_prev", "new_eligible_from_auto")}
+    modes = sorted({r.get("mode") for r in rows} - {None})
     lines.append(f"  스캔 {n}회 · anchor {rows[-1]['anchors']}개({rows[-1]['anchor_basis']})"
-                 + (f" · auto {len(rows[-1]['auto'])}개" if rows[-1]["auto"] else " · auto 없음"))
+                 + (f" · auto {len(rows[-1]['auto'])}개" if rows[-1]["auto"] else " · auto 없음")
+                 + f" · 적중 근거 {'/'.join(modes)}"
+                 + (" (recomputed 는 관측 시점 적중이 없는 옛 스캔 — 현재 코드로 다시 셈)" if "recomputed" in modes else ""))
     lines.append(f"  상위 K: anchor 적중 {_fmt(med['anchor_share_topk'])} · 최상위 계층 "
                  f"{_fmt(med['top_tier_share_topk'])} · 최신일 {_fmt(med['freshness_topk'])} · "
                  f"평균 지연 {_fmt(med['mean_delay_days_topk'])}일 (중앙값)")
     lines.append(f"  적격 풀: anchor 적중 {_fmt(med['anchor_share_eligible'])}")
     lines.append(f"  auto 계열: 제외어 충돌 {_fmt(med['exclude_collision_auto'])} · "
+                 f"auto 덕에 새로 적격 {_fmt(med['new_eligible_from_auto'])}편 · "
                  f"직전 프로필 대비 상위 K 유지 {_fmt(med['topk_retention_vs_prev'])}")
     dead = [kw for kw, c in rows[-1]["keyword_hits"].items() if c == 0]
     if dead:

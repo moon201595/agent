@@ -108,26 +108,90 @@ def test_직전_프로필_대비_상위K_유지는_prev_profile_로_재채점한
     assert ph.scan_metrics(db, sid)["topk_retention_vs_prev"] is None, "직전 프로필 없으면 미측정"
 
 
+def _row(i, **over):
+    """assess 용 합성 스캔 — i 일째. 모드는 as_observed."""
+    base = {"started_at": (datetime(2026, 9, 1, tzinfo=timezone.utc) + timedelta(days=i)).isoformat(),
+            "mode": "as_observed", "anchor_share_topk": 1.0, "exclude_collision_auto": 0.0,
+            "top_tier_share_topk": 1.0, "topk_retention_vs_prev": 1.0, "freshness_topk": 1.0,
+            "new_eligible_from_auto": 2}
+    return {**base, **over}
+
+
 def test_판정은_미설정이면_하지_않고_기준선이_짧아도_하지_않는다():
     """이 테스트가 잡는 것: 규칙이 None 인데 판정을 내리는 것, 기준선 1스캔으로 악화를
-    선언하는 것, 걸린 사유를 하나만 남기는 것."""
-    good = {"anchor_share_topk": 1.0, "exclude_collision_auto": 0.0, "top_tier_share_topk": 1.0,
-            "topk_retention_vs_prev": 1.0, "freshness_topk": 1.0}
-    bad = {**good, "anchor_share_topk": 0.2, "exclude_collision_auto": 0.6}
-    assert ph.assess([good] * 20, [bad] * 3)["status"] == ph.UNCONFIGURED
+    선언하는 것, 14회가 찼는데 14일이 안 지난 것을 기준선으로 받는 것, 걸린 사유를
+    하나만 남기는 것, 평균으로 한 번 튄 값에 걸리는 것."""
+    good = [_row(i) for i in range(14)]                      # 14회 · 13일 간격
+    bad = [_row(20 + i, anchor_share_topk=0.2, exclude_collision_auto=0.6) for i in range(3)]
+    assert ph.assess(good, bad)["status"] == ph.UNCONFIGURED
     rules = {"min_anchor_share_topk": 0.5, "max_exclude_collision_auto": 0.3}
-    assert ph.assess([good] * 5, [bad] * 3, rules)["status"] == ph.INSUFFICIENT_BASELINE
-    assert ph.assess([good] * 14, [], rules)["status"] == ph.INSUFFICIENT_RECENT
-    ok = ph.assess([good] * 14, [good] * 3, rules)
-    assert ok["status"] == ph.OK and ok["reasons"] == []
-    det = ph.assess([good] * 14, [bad] * 3, rules)
+    assert ph.assess(good[:5], bad, rules)["status"] == ph.INSUFFICIENT_BASELINE
+    assert ph.assess([_row(0)] * 14, bad, rules)["status"] == ph.INSUFFICIENT_BASELINE, "14회여도 같은 날이면 기준선이 아니다"
+    good = [_row(i) for i in range(15)]                      # 15회 · 14일
+    assert ph.assess(good, [], rules)["status"] == ph.INSUFFICIENT_RECENT
+    ok = ph.assess(good, [_row(20 + i) for i in range(3)], rules)
+    assert ok["status"] == ph.OK and ok["reasons"] == [] and ok["baseline_days"] == 14
+    det = ph.assess(good, bad, rules)
     assert det["status"] == ph.DETERIORATED and len(det["reasons"]) == 2, det["reasons"]
     # 최근 창은 중앙값 — 한 번 튄 값으로 악화를 선언하지 않는다(평균이면 충돌 0.33 > 0.3 로 걸린다)
-    spike = {**good, "anchor_share_topk": 0.0, "exclude_collision_auto": 1.0}
-    assert ph.assess([good] * 14, [good, good, spike], rules)["status"] == ph.OK
+    spike = _row(22, anchor_share_topk=0.0, exclude_collision_auto=1.0)
+    assert ph.assess(good, [_row(20), _row(21), spike], rules)["status"] == ph.OK
     # 보조 규칙: 기준선 대비 하락 폭
-    drop = ph.assess([good] * 14, [{**good, "top_tier_share_topk": 0.5}] * 3, {"max_drop_from_baseline": 0.3})
+    drop = ph.assess(good, [_row(20 + i, top_tier_share_topk=0.5) for i in range(3)], {"max_drop_from_baseline": 0.3})
     assert drop["status"] == ph.DETERIORATED and "top_tier_share_topk fell" in drop["reasons"][0]
+
+
+def test_규칙이_요구하는_지표가_미측정이면_통과가_아니다():
+    """이 테스트가 잡는 것: None 지표를 건너뛰고 OK 를 내는 것(fail-closed 위반),
+    이득 지표를 판정에서 안 보는 것, 재현 모드가 섞인 창을 판정하는 것."""
+    good = [_row(i) for i in range(15)]
+    recent_none = [_row(20 + i, topk_retention_vs_prev=None) for i in range(3)]
+    r = ph.assess(good, recent_none, {"min_topk_retention": 0.7})
+    assert r["status"] == ph.UNMEASURED_REQUIRED and "topk_retention_vs_prev unmeasured" in r["reasons"][0]
+    assert ph.assess(good, recent_none, {"min_anchor_share_topk": 0.5})["status"] == ph.OK, "요구하지 않는 지표의 미측정은 막지 않는다"
+    # 이득: auto 가 아무것도 안 가져오면 악화
+    zero = [_row(20 + i, new_eligible_from_auto=0) for i in range(3)]
+    r = ph.assess(good, zero, {"min_new_eligible_from_auto": 1})
+    assert r["status"] == ph.DETERIORATED and "new_eligible_from_auto=0.000 <" in r["reasons"][0]
+    # 모드 섞임
+    mixed = good[:-1] + [_row(14, mode="recomputed")]
+    assert ph.assess(mixed, [_row(20)], {"min_anchor_share_topk": 0.5})["status"] == ph.MIXED_MODES
+
+
+def test_적중은_관측_시점_값을_쓰고_없을_때만_다시_센다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 저장된 적중을 두고 현재 코드로 다시 세는 것(가드가 나중에
+    들어가면 과거 지표가 바뀐다), 옛 관측을 recomputed 로 표시하지 않는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    sid = _scan_ids(db)[0]
+    assert ph.scan_metrics(db, sid)["mode"] == "as_observed"
+    # 관측 뒤에 채점 규칙이 바뀌어도(여기서는 저장된 적중을 비워 흉내) 과거 지표는 그대로다
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE candidate_observations SET core_hits='[]' WHERE paper_key='a1'")
+    m = ph.scan_metrics(db, sid)
+    assert m["keyword_hits"]["target term"] == 2, "저장된 적중(a1 제외)을 그대로 읽어야 한다"
+    with sqlite3.connect(db) as con:                       # 옛 관측: 적중 컬럼 없음
+        con.execute("UPDATE candidate_observations SET core_hits=NULL, exclude_hits=NULL, domain_hits=NULL")
+    m = ph.scan_metrics(db, sid)
+    assert m["mode"] == "recomputed" and m["keyword_hits"]["target term"] == 3
+    assert "recomputed" in "\n".join(ph.format_health([m]))
+
+
+def test_상위K_유지율은_운영_경로에서_직전_스냅샷이_다를_때_계산된다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: series() 가 prev_profile 을 안 넘겨 H7 이 늘 미측정인 것(처음
+    구현의 결함), 프로필이 안 바뀌었는데 1.0 을 채우는 것, 직전이 아니라 아무 스냅샷을 잡는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    _run(db, monkeypatch, PAPERS)                                  # 같은 프로필 두 번
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "nothing"],
+                      core_weights={"target term": 1.0, "nothing": 1.0},
+                      exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    _run(db, monkeypatch, PAPERS)                                  # 바뀐 프로필
+    now = datetime.now(timezone.utc)
+    rows = ph.series(db, "p", now - timedelta(days=1), now + timedelta(days=1))
+    assert [r["topk_retention_vs_prev"] for r in rows[:2]] == [None, None], "프로필이 안 바뀐 스캔은 미측정"
+    assert rows[2]["topk_retention_vs_prev"] == 0.5, "옛 프로필 상위 {a1,a3} vs 새 {a1,x1}(같은 날·같은 계층은 키 순)"
+    assert ph.previous_profile(db, "p", rows[2]["scan_id"])["core_weights"] == {"target term": 1.0, "trend term": 0.6}
 
 
 def test_창_집계는_관측_없는_스캔을_0으로_채우지_않는다(tmp_path, monkeypatch):
