@@ -276,3 +276,43 @@ def test_H7_반사실은_스캔_시점에_얼려_뒤의_채점_변경에_흔들�
     # 채점 코드가 뒤에 바뀌어도(여기서는 score_and_rank 를 빈 결과로 흉내) 얼린 값이 남는다
     monkeypatch.setattr(ph.profile_scoring, "score_and_rank", lambda *a, **k: {"papers": []})
     assert ph.scan_metrics(db, sid)["topk_retention_vs_prev"] == 0.5
+
+
+def test_얼린_값은_재호출로도_바뀌지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: record_scan_health 가 INSERT OR REPLACE 라 두 번째 freeze 가
+    처음 값을 조용히 덮는 것(외부 검토 2026-09-12)."""
+    db = tmp_path / "t.db"; _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "nothing"],
+                      core_weights={"target term": 1.0, "nothing": 1.0},
+                      exclude=["banned"], max_items=2, s2_seeds=["target term"])
+    _run(db, monkeypatch, PAPERS)
+    sid = _scan_ids(db)[1]
+    with sqlite3.connect(db) as con:
+        first = con.execute("SELECT retention, prev_topk, anchor_terms FROM scan_health WHERE scan_id=?", (sid,)).fetchone()
+    assert first[0] == 0.5
+    # 채점 코드가 바뀐 뒤 같은 스캔을 다시 얼리려 해도 처음 값이 남는다
+    monkeypatch.setattr(ph.profile_scoring, "score_and_rank", lambda *a, **k: {"papers": []})
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        obs = [dict(r) for r in con.execute("SELECT * FROM candidate_observations WHERE scan_id=?", (sid,))]
+    for o in obs:
+        o["arxiv_id"] = o["paper_key"]
+    out = ph.freeze_scan(db, sid, "p", obs, rp.get_profile(db, "p"))
+    assert out["written"] is False
+    with sqlite3.connect(db) as con:
+        again = con.execute("SELECT retention, prev_topk, anchor_terms FROM scan_health WHERE scan_id=?", (sid,)).fetchone()
+    assert again == first
+
+
+def test_얼리기_실패는_관측_저장_실패로_기록되지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: freeze_scan 이 record_observations 와 같은 try 안에 있어
+    얼리기 예외가 scan_runs.observation_error 로 남는 것."""
+    db = tmp_path / "t.db"; _profile(db)
+    monkeypatch.setattr(ph, "freeze_scan", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    _run(db, monkeypatch, PAPERS)
+    with sqlite3.connect(db) as con:
+        n, err = con.execute("SELECT observations, observation_error FROM scan_runs").fetchone()
+        frozen = con.execute("SELECT count(*) FROM scan_health").fetchone()[0]
+    assert n == 5 and err is None, "관측은 저장됐고 실패로 기록되면 안 된다"
+    assert frozen == 0

@@ -47,7 +47,7 @@ MAX_PAPERS = 8
 # 탐색 차선(②, §8-97): 대표 논문은 5편으로 줄이고 탐색 용어 3개 × 증거 2편을 더한다.
 # 증거 초록은 짧게 — 프롬프트 상한(MAX_PROMPT_CHARS) 안에서 11편이 들어가야 한다.
 DELIVERY_PAPERS = 5
-EXPLORATION_ABSTRACT_CHARS = 500
+EXPLORATION_ABSTRACT_CHARS = 500   # term_discovery.EVIDENCE_CHARS 와 같다(조각 앞뒤 '…' 2자 허용)
 MAX_TITLE_CHARS = 240
 MAX_ABSTRACT_CHARS = 1200
 MAX_PROMPT_CHARS = 16000
@@ -63,45 +63,48 @@ MODE_AUTO_APPLY = "auto_apply"
 
 
 # ── 저장 구조 ────────────────────────────────────────────────────────────
+def _ddl(con: sqlite3.Connection) -> None:
+    """이 모듈의 스키마. schema_guard 를 통해서만 돈다(§8-98)."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_runs ("
+        " run_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
+        " base_revision INTEGER NOT NULL, week TEXT NOT NULL,"
+        " window_start TEXT NOT NULL, window_end TEXT NOT NULL,"
+        " snapshot_id TEXT, snapshot_sha256 TEXT,"           # 전체 분석 스냅샷 (로컬)
+        " sent_input_json TEXT, sent_input_sha256 TEXT,"     # 모델이 실제로 본 부분집합
+        " prompt_version TEXT, prompt_sha256 TEXT, prompt_text TEXT,"
+        " status TEXT NOT NULL, status_reason TEXT)")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_attempts ("
+        " attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, attempt INTEGER NOT NULL,"
+        " purpose TEXT NOT NULL, requested_model TEXT, response_model TEXT,"
+        " key_name TEXT, started_at TEXT NOT NULL, finished_at TEXT,"
+        " outcome TEXT NOT NULL, http_status INTEGER, raw_response TEXT,"
+        " usage_json TEXT, usage_kind TEXT)")   # usage_kind: provider_reported | estimated | unknown
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_proposals ("
+        " proposal_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL,"
+        " action TEXT NOT NULL, term TEXT, proposed_tier REAL,"
+        " evidence_json TEXT, reason TEXT, risks_json TEXT,"
+        " validation_json TEXT NOT NULL, status TEXT NOT NULL,"
+        " analysis_id TEXT, bundle_analysis_id TEXT)")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_events ("
+        " event_id TEXT PRIMARY KEY, at TEXT NOT NULL, profile_id TEXT NOT NULL,"
+        " kind TEXT NOT NULL, ref_id TEXT, detail_json TEXT)")
+    # 영속 예산 장부 — (profile_id, week) 하나에 요청 수. 전송 직전에 올린다.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_budget ("
+        " profile_id TEXT NOT NULL, week TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 0,"
+        " runs INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (profile_id, week))")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS advisor_settings ("
+        " profile_id TEXT PRIMARY KEY, mode TEXT NOT NULL, rules_json TEXT)")
+
+
 def init_db(db: Path) -> None:
-    with sqlite3.connect(db) as con:
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_runs ("
-            " run_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
-            " base_revision INTEGER NOT NULL, week TEXT NOT NULL,"
-            " window_start TEXT NOT NULL, window_end TEXT NOT NULL,"
-            " snapshot_id TEXT, snapshot_sha256 TEXT,"           # 전체 분석 스냅샷 (로컬)
-            " sent_input_json TEXT, sent_input_sha256 TEXT,"     # 모델이 실제로 본 부분집합
-            " prompt_version TEXT, prompt_sha256 TEXT, prompt_text TEXT,"
-            " status TEXT NOT NULL, status_reason TEXT)")
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_attempts ("
-            " attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, attempt INTEGER NOT NULL,"
-            " purpose TEXT NOT NULL, requested_model TEXT, response_model TEXT,"
-            " key_name TEXT, started_at TEXT NOT NULL, finished_at TEXT,"
-            " outcome TEXT NOT NULL, http_status INTEGER, raw_response TEXT,"
-            " usage_json TEXT, usage_kind TEXT)")   # usage_kind: provider_reported | estimated | unknown
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_proposals ("
-            " proposal_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL,"
-            " action TEXT NOT NULL, term TEXT, proposed_tier REAL,"
-            " evidence_json TEXT, reason TEXT, risks_json TEXT,"
-            " validation_json TEXT NOT NULL, status TEXT NOT NULL,"
-            " analysis_id TEXT, bundle_analysis_id TEXT)")
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_events ("
-            " event_id TEXT PRIMARY KEY, at TEXT NOT NULL, profile_id TEXT NOT NULL,"
-            " kind TEXT NOT NULL, ref_id TEXT, detail_json TEXT)")
-        # 영속 예산 장부 — (profile_id, week) 하나에 요청 수. 전송 직전에 올린다.
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_budget ("
-            " profile_id TEXT NOT NULL, week TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 0,"
-            " runs INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (profile_id, week))")
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS advisor_settings ("
-            " profile_id TEXT PRIMARY KEY, mode TEXT NOT NULL, rules_json TEXT)")
-
-
+    import schema_guard
+    schema_guard.ensure(db, _ddl, "profile_advisor")
 def _event(con: sqlite3.Connection, profile_id: str, kind: str, ref_id: str | None, detail: dict | None) -> None:
     con.execute("INSERT INTO advisor_events (event_id, at, profile_id, kind, ref_id, detail_json) VALUES (?,?,?,?,?,?)",
                 (uuid.uuid4().hex[:12], _now(), profile_id, kind, ref_id,
@@ -156,9 +159,11 @@ def build_input(snap: dict, profile: dict, papers: list[dict],
     sent_papers = [{"key": p["_paper_key"] if "_paper_key" in p else research_profile.paper_key(p),
                     "title": (p.get("title") or "")[:MAX_TITLE_CHARS],
                     "abstract": (p.get("abstract") or "")[:MAX_ABSTRACT_CHARS]} for p in papers]
+    # 증거 초록은 term_discovery.snippet 이 이미 **용어 중심** 조각으로 잘라 뒀다 — 여기서
+    # 앞 N 자를 다시 자르면 용어가 잘려 나가 R7 에서 죽는다. 상한만 확인한다.
     sent_terms = [{"term": t["term"],
                    "papers": [{"key": e["key"], "title": (e.get("title") or "")[:MAX_TITLE_CHARS],
-                               "abstract": (e.get("abstract") or "")[:EXPLORATION_ABSTRACT_CHARS]}
+                               "abstract": (e.get("abstract") or "")[:EXPLORATION_ABSTRACT_CHARS + 2]}
                               for e in t.get("evidence") or []]} for t in (exploration or [])]
     keys = [p["key"] for p in sent_papers]
     keys += [e["key"] for t in sent_terms for e in t["papers"] if e["key"] not in keys]

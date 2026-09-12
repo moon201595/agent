@@ -1014,7 +1014,9 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
         with sqlite3.connect(db) as con:
             has_obs = con.execute("SELECT 1 FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? LIMIT 1",
                                   (profile["profile_id"], start.isoformat(), end.isoformat())).fetchone()
-        block = term_discovery.format_discovery(term_discovery.discover(pool, profile), len(pool) if has_obs else None)
+        block = term_discovery.format_discovery(
+            term_discovery.discover(pool, profile), len(pool) if has_obs else None,
+            term_discovery.known_variants(pool, profile))
         report += "\n" + "\n".join(block) + "\n"
     except Exception as e:  # noqa: BLE001
         report += f"\n▶ 키워드에 안 걸린 논문의 반복어: 집계 실패 — {type(e).__name__}\n"

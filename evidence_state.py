@@ -27,19 +27,22 @@ NOTICE_LIMIT = 10
 REPRO_REVIEW_DAYS = 14
 
 
+def _ddl(con: sqlite3.Connection) -> None:
+    """이 모듈의 스키마. schema_guard 를 통해서만 돈다(§8-98)."""
+    con.execute("CREATE TABLE IF NOT EXISTS evidence_notifications ("
+                "id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, profile_id TEXT NOT NULL, "
+                "recipient TEXT NOT NULL, paper_key TEXT NOT NULL, arxiv_id TEXT, title TEXT, "
+                "state_json TEXT NOT NULL, sent_at TEXT NOT NULL, "
+                "UNIQUE(delivery_id,recipient,paper_key))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_evidence_delivered ON "
+                "evidence_notifications(profile_id,recipient,paper_key,id)")
+    con.execute("CREATE TABLE IF NOT EXISTS evidence_rechecks ("
+                "arxiv_id TEXT PRIMARY KEY,last_attempt TEXT NOT NULL,last_result INTEGER)")
+
+
 def init_db(db: Path) -> None:
-    with sqlite3.connect(db) as con:
-        con.execute("CREATE TABLE IF NOT EXISTS evidence_notifications ("
-                    "id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, profile_id TEXT NOT NULL, "
-                    "recipient TEXT NOT NULL, paper_key TEXT NOT NULL, arxiv_id TEXT, title TEXT, "
-                    "state_json TEXT NOT NULL, sent_at TEXT NOT NULL, "
-                    "UNIQUE(delivery_id,recipient,paper_key))")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_evidence_delivered ON "
-                    "evidence_notifications(profile_id,recipient,paper_key,id)")
-        con.execute("CREATE TABLE IF NOT EXISTS evidence_rechecks ("
-                    "arxiv_id TEXT PRIMARY KEY,last_attempt TEXT NOT NULL,last_result INTEGER)")
-
-
+    import schema_guard
+    schema_guard.ensure(db, _ddl, "evidence_state")
 def _time(value: str | None) -> datetime | None:
     try:
         dt = datetime.fromisoformat(value or "")

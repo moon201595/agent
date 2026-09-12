@@ -5049,6 +5049,64 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
 
     테스트 6개, 돌연변이 10/10. 892 passed. astra 판정은 아직 못 받았다(9/15 이후).
 
+98. **⑪·② 마감 보완 — 외부 검토 넷째: 일곱 지적 전부 사실, 그리고 DDL 을 코드로 막았다** (2026-09-12).
+
+    ⑪ 쪽 둘. ① `record_scan_health` 가 `INSERT OR REPLACE` 였다 — "얼린다"는 표의 계약과
+    정반대로 재호출이 값을 조용히 덮었다. INSERT 만 하고 이미 있으면 False. 테스트:
+    얼림 → 채점 코드 교체 → 같은 스캔 재얼림 → DB 값 그대로. ② `freeze_scan` 이
+    `record_observations` 와 같은 try 안에 있어 얼리기 실패가 `observation_error` 로 남았다
+    — "관측 저장 성공 + 건강 얼림 실패"가 "관측 실패"로 둔갑. finish_scan 뒤 별도 try.
+
+    ② 쪽 다섯. ③ `exploration_pool` 이 no_core_hit 로 **먼저** 자르고 최신을 골라
+    "월요일 탈락 → 수요일 키워드 추가 → 금요일 적중"인 논문이 월요일 행으로 살아남았다.
+    논문별 최신 관측을 먼저 고르고 그 상태가 no_core_hit 인 것만. 양방향 테스트.
+    같은 초의 두 관측이 같은 observed_at 이라 "최신"이 scan_id 해시로 갈리던 것도 잡혔다 —
+    `_now()` 를 마이크로초로(§8-96 은 begin_scan 만 고쳤었다).
+    ④ 정렬키 `(-support, -dom, -seed, …)` 에서 도메인·씨앗은 동률 깨기였다 — support 가
+    절대 1순위라 잡음이 커질수록 범용 용어가 독식(실측 random forest). 가중합은 안 만들고
+    **차선 선발**: 자리 셋을 support / 도메인 비율 / 씨앗 비율·최신 축의 1등에게 하나씩.
+    ⑤ 기존 키워드의 표기 변형이 후보로 새어 R 이 `vision language models` 를 제안했다 —
+    shadow 검색 비용을 매칭 결함에 쓸 판. `canonical()`(하이픈↔공백·연속 공백·마지막 낱말
+    복수형)로 동치면 후보에서 빼고 주간 리뷰에 "표기 변형" 줄로 보고. 검색 매처는 안 건드린다.
+    ⑥ R 이 일반 차선으로 3자리를 먼저 채워 탐색 후보는 경쟁도 못 했다 — 두 차선을 같이
+    놓고 탐색에 자리 하나 예약(exploration_slots). `min_support`(일반, 전송 5편 기준)와
+    `min_exploration_evidence`(탐색, 전송 2편 기준)를 갈랐다 — 전자를 올리면 후자가 통째로
+    죽었다. ⑦ 증거 초록을 앞 500자로 잘라 용어가 뒤쪽에만 있으면 R7(문자열 실재)에서 죽었다
+    — `snippet()` 이 용어를 가운데 둔 조각을 만든다. 문장 경계를 넘는 n-gram
+    ("factory item. spiking sensor" → "item spiking sensor")도 실측에서 나와 문장 단위로 잘랐다.
+
+    **DDL 을 코드로 막았다(`schema_guard.py`·`migrate.py`).** 두 번 연속 "승인 전에 했지만
+    추가형이라 했다"(§8-95·96)가 난 원인은 구조였다 — 각 모듈 init_db 의 `CREATE TABLE IF NOT
+    EXISTS`·`ALTER` 가 코드 실행만으로 운영 DB 를 바꿨다. 이제 모든 DDL 은
+    `schema_guard.ensure(db, _ddl, owner)` 를 통해서만: 빈 DB(새 설치·테스트) 또는
+    `PAPER_HARNESS_APPLY_DDL=1` 일 때만 적용, 아니면 기대 스키마(같은 DDL 을 :memory: 에
+    적용해 얻는다)와 대조만 하고 빠진 게 있으면 `SchemaOutOfDate` 로 멈춘다.
+    `migrate.py` 가 유일한 입구 — 인자 없이는 대조만, `--apply` 는 `data/backups/` 백업 →
+    적용 → 재대조. 테스트는 conftest 가 플래그를 켠다(임시 DB). storage·research_profile·
+    profile_impact·profile_advisor·evidence_state·evaluation 여섯 모듈을 옮겼다.
+    **운영 DB 대조 결과: `impact_analyses` 1 + `advisor_*` 6 이 빠져 있다** — 월요일 첫 주간
+    실행이 만들 예정이던 것. 이제 승인 없이는 안 만들어지고, 그때까지 주간 제안기는
+    `error` 로 끝난다(메일 무관). **적용은 사람 승인 뒤 `migrate.py --apply`.**
+
+    **탐색 차선 실측(9/11 탈락 429편, 고친 뒤).**
+    [support] reinforcement learning 15 · [domain] learning algorithms 3(도메인 2) ·
+    [seed] foreign language 4(EFL 교사 — S2 관련도 잡음). 표기 변형으로 뺀 것:
+    **`llm agents` ≈ LLM agent · 10편** · `vision language models` ≈ vision-language model · 9편 ·
+    `vision--language models` 5편. R 제안은 위 셋(exploration). 프롬프트 13,230자.
+
+    **키워드 매칭 구멍 둘 — 미해결로 적는다(범위 밖, 규칙 12).**
+    (a) 하이픈↔공백: `vision-language model` 이 "vision language models" 를 못 잡는다(9편).
+    (b) 괄호: 최상위 키워드 `LLM agent` 가 **"large language model (LLM) agents"** 를 못 잡는다
+    — 실측 10편 전부 이 표기. 1.0 계층 키워드가 가장 흔한 표기를 놓치고 있었다. 고치려면
+    `_keyword_pattern` 이 낱말 사이 구두점·하이픈을 허용해야 하는데 오탐 실측 뒤에 정한다.
+    탐색 차선이 첫 실행에서 둘 다 찾아냈다 — 이 기능의 첫 실질 성과다.
+
+    차선 2·3이 support 낮은 후보(3~4편)를 올리는 건 설계대로다 — 그 축의 1등이니까.
+    검토자(LLM/사람)가 버릴 몫이고, 편수는 메일에 같이 보인다.
+
+    테스트 +7(건강 2 · 탐색 3 · 가드 2), 돌연변이 11/11(둘은 처음에 새서 테스트 자료를
+    키웠다). 899 passed, 캐시 없이 두 번 재실행 동일.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

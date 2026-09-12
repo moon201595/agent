@@ -594,15 +594,20 @@ async def scan_profile(
         n = research_profile.record_observations(
             db_path, scan_id, profile_id, obs,
             core_signature=signature, seed_signature=s2_signature)
-        # 건강 지표 입력을 **지금** 얼린다(§8-96): anchor/auto 는 이 시점 이력으로, 반사실
-        # 상위 K 는 이 시점 채점 코드로. 나중에 세면 둘 다 그 뒤 이력·코드에 따라 흔들린다.
-        import profile_health
-        profile_health.freeze_scan(db_path, scan_id, profile_id, obs, profile)
         research_profile.finish_scan(
             db_path, scan_id, arxiv_run_id=arxiv_run_id, s2_run_id=s2_run_id,
             seed_attempts=(s2_result or {}).get("per_keyword") if s2_keywords else [],
             observations=n)
         print(f"  [관측] {n}편을 스캔 {scan_id} 에 묶어 남겼다")
+        # 건강 지표 입력을 **지금** 얼린다(§8-96): anchor/auto 는 이 시점 이력으로, 반사실
+        # 상위 K 는 이 시점 채점 코드로. 나중에 세면 둘 다 그 뒤 이력·코드에 따라 흔들린다.
+        # 관측 저장이 확정된 **뒤** 별도 try — 얼리기 실패가 "관측 저장 실패"로 둔갑하면
+        # 안 된다(외부 검토 2026-09-12). 실패는 stdout 에만 남고 scan_runs 는 건드리지 않는다.
+        try:
+            import profile_health
+            profile_health.freeze_scan(db_path, scan_id, profile_id, obs, profile)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [건강] 얼리기 실패(관측은 저장됨) {type(e).__name__}: {str(e)[:120]}", flush=True)
     except Exception as e:  # noqa: BLE001 — 관측 실패가 배달을 막으면 안 된다
         print(f"  [관측] 기록 실패(무시): {type(e).__name__}: {e}")
         try:

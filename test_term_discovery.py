@@ -158,3 +158,71 @@ def test_탐색이_실패해도_주간_제안은_대표_논문만으로_간다(t
     with sqlite3.connect(db) as con:
         row = con.execute("SELECT sent_input_json FROM advisor_runs ORDER BY rowid DESC LIMIT 1").fetchone()
     assert row is None or row[0] is None or json.loads(row[0]).get("exploration") in (None, [])
+
+
+def test_최신_관측이_적중이면_탐색_풀에서_빠지고_반대는_들어온다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: no_core_hit 로 먼저 자르고 최신을 골라 '이제는 잡히는 논문'이
+    옛 탈락 행으로 살아남는 것(외부 검토 2026-09-12). 반대 방향(적중 → 탈락)은 들어와야 한다."""
+    db = tmp_path / "t.db"; _profile(db)
+    a = {"arxiv_id": "a", "title": "spiking sensor alpha", "abstract": "", "published": _day(1)}
+    b = {"arxiv_id": "b", "title": "target term beta", "abstract": "", "published": _day(1)}
+    _run(db, monkeypatch, [a, b])                              # a 탈락, b 적중
+    rp.create_profile(db, "p", "이름", core_topics=["spiking sensor"], core_weights={"spiking sensor": 1.0},
+                      target_domain=["factory"], exclude=["banned"], max_items=2, s2_seeds=["x"])
+    _run(db, monkeypatch, [a, b])                              # 키워드 교체: a 적중, b 탈락
+    keys = {p["_paper_key"] for p in td.exploration_pool(db, "p", *_win())}
+    assert keys == {"b"}, "a 는 이제 잡히므로 탐색 대상이 아니고, b 는 이제 안 잡히므로 대상이다"
+
+
+def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서_뺀다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 도메인·씨앗이 동률 깨기에 그쳐 범용 용어가 상위를 독식하는 것,
+    기존 키워드의 하이픈·복수형 변형이 후보로 나가는 것, 스니펫이 앞 N 자라 용어가 잘리는 것."""
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p", "이름", core_topics=["vision-language model"], core_weights={"vision-language model": 1.0},
+                      target_domain=["factory"], exclude=["banned"], max_items=2, s2_seeds=["x"])
+    long_tail = "filler words here. " * 40 + "we use a spiking sensor at the end."   # 용어가 700자 뒤
+    papers = ([{"arxiv_id": f"g{i}", "title": f"generic thing {i}", "abstract": "generic thing everywhere", "published": _day(1)} for i in range(6)]
+              + [{"arxiv_id": f"h{i}", "title": f"other stuff {i}", "abstract": "other stuff abounds", "published": _day(1)} for i in range(6)]
+              + [{"arxiv_id": f"j{i}", "title": f"plain noise {i}", "abstract": "plain noise persists", "published": _day(1)} for i in range(6)]
+              + [{"arxiv_id": f"d{i}", "title": f"factory item {i}", "abstract": "spiking sensor in a factory line", "published": _day(1)} for i in range(4)]
+              + [{"arxiv_id": f"v{i}", "title": f"vision language models {i}", "abstract": "", "published": _day(1)} for i in range(3)]
+              + [{"arxiv_id": "t1", "title": "tail paper", "abstract": long_tail, "published": _day(1)}])
+    _run(db, monkeypatch, papers)
+    profile = rp.get_profile(db, "p")
+    pool = td.exploration_pool(db, "p", *_win())
+    terms = td.discover(pool, profile)
+    by = {t["term"]: t for t in terms}
+    generic = [t for t in terms if t["term"].startswith("generic thing")]   # 3-gram 이 2-gram 을 흡수한다
+    assert generic and generic[0]["lane"] == "support" and generic[0]["support"] == 6
+    # support 만 보면 generic(6)·stuff(6)·plain(6) 이 세 자리를 다 가져가 spiking(5)은 못 들어온다
+    assert "spiking sensor" in by and by["spiking sensor"]["lane"] == "domain", "도메인 축 자리는 도메인 비율 1등에게"
+    assert "vision language models" not in by, "vision-language model 의 표기 변형은 후보가 아니다"
+    var = td.known_variants(pool, profile)
+    assert var and var[0]["term"] == "vision language models" and var[0]["known"] == "vision-language model"
+    # 스니펫: 용어가 초록 뒤쪽에 있어도 전송 조각 안에 있다
+    tail = td.snippet(long_tail, "spiking sensor", 200)
+    assert "spiking sensor" in tail and len(tail) <= 204 and tail.startswith("…")
+    ev_texts = [e["abstract"] for e in by["spiking sensor"]["evidence"]]
+    assert all("spiking sensor" in e for e in ev_texts)
+
+
+def test_규칙_제안기는_두_차선을_같이_경쟁시키고_문턱을_가른다():
+    """이 테스트가 잡는 것: 일반 차선이 3자리를 선점해 탐색 후보가 경쟁도 못 하는 것,
+    min_support 를 올리면 탐색 증거 2편이 통째로 죽는 것, 표기 변형 제안."""
+    profile = {"core_topics": ["core term"], "core_weights": {"core term": 1.0}, "target_domain": [], "exclude": []}
+    papers = [{"key": f"n{i}", "title": "core term paper", "abstract": "alpha beta gamma delta epsilon zeta"} for i in range(4)]
+    sent = {"allowed_tiers": [1.0], "papers": papers, "sent_paper_keys": [p["key"] for p in papers],
+            "exploration": [{"term": "spiking sensor", "papers": [{"key": "e1", "title": "", "abstract": "spiking sensor"},
+                                                                  {"key": "e2", "title": "", "abstract": "spiking sensor"}]},
+                            {"term": "core terms", "papers": [{"key": "e3", "title": "", "abstract": "core terms"},
+                                                              {"key": "e4", "title": "", "abstract": "core terms"}]}]}
+    out = rule_advisor.propose(sent, profile)
+    terms = [p["term"] for p in out["proposals"]]
+    assert len(terms) <= 3 and "spiking sensor" in terms, "탐색 자리 하나는 예약된다"
+    assert "core terms" not in terms, "기존 키워드의 복수형은 제안이 아니다"
+    only_variant = {**sent, "exploration": [sent["exploration"][1]]}
+    assert not any(p["term"] == "core terms" for p in rule_advisor.propose(only_variant, profile)["proposals"]), "자리가 남아도 표기 변형은 안 낸다"
+    out = rule_advisor.propose(sent, profile, {"min_support": 3})
+    assert "spiking sensor" in [p["term"] for p in out["proposals"]], "min_support 는 탐색 문턱이 아니다"
+    out = rule_advisor.propose(sent, profile, {"min_exploration_evidence": 3})
+    assert "spiking sensor" not in [p["term"] for p in out["proposals"]]

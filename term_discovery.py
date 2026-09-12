@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from datetime import datetime
@@ -33,8 +34,12 @@ DEFAULT_RULES: dict = {
 
 
 def exploration_pool(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dict]:
-    """기간 안 관측 중 **키워드에 안 걸려 탈락한** 논문(no_core_hit). 같은 논문은 최신 관측
-    하나. 제외어에 걸린 것은 다른 사유(exclude_hit)라 여기 없다.
+    """기간 안 관측에서 논문별 **최신 관측**을 먼저 고르고, 그 최신 상태가 no_core_hit
+    인 논문만. 제외어에 걸린 것은 다른 사유(exclude_hit)라 여기 없다.
+
+    순서가 중요하다 — no_core_hit 로 먼저 자르고 최신을 고르면 "월요일 탈락 → 수요일
+    키워드 추가 → 금요일 적중"인 논문이 월요일 행으로 살아남는다(외부 검토 2026-09-12).
+    이제는 잡히는 논문은 탐색 대상이 아니다. 반대(적중 → 탈락)는 들어온다.
 
     도메인 적중은 관측 시점 저장값(domain_hits)을 쓰고, 없는 옛 관측만 당시 스냅샷으로
     다시 센다. 초록은 abstract_ref 를 따라 복원한다(profile_impact 와 같은 규칙)."""
@@ -43,11 +48,11 @@ def exploration_pool(db: Path, profile_id: str, start: datetime, end: datetime) 
         rows = [dict(r) for r in con.execute(
             "SELECT o.*, s.profile_snapshot FROM candidate_observations o "
             "JOIN scan_runs s ON s.scan_id = o.scan_id "
-            "WHERE o.profile_id=? AND o.filter_reason='no_core_hit' "
-            "AND o.observed_at >= ? AND o.observed_at < ? ORDER BY o.observed_at, o.scan_id, o.paper_key",
+            "WHERE o.profile_id=? AND o.observed_at >= ? AND o.observed_at < ? "
+            "ORDER BY o.observed_at, o.scan_id, o.paper_key",
             (profile_id, start.isoformat(), end.isoformat()))]
         by: dict[str, dict] = {}
-        for r in rows:                       # 뒤 행이 앞 행을 덮는다 = 최신 관측
+        for r in rows:                       # 뒤 행이 앞 행을 덮는다 = 최신 관측(사유 무관)
             cur = by.setdefault(r["paper_key"], {"seeds": set(), "sources": set()})
             cur["row"] = r
             cur["seeds"].update(json.loads(r["s2_seeds"]) if r["s2_seeds"] else [])
@@ -56,6 +61,8 @@ def exploration_pool(db: Path, profile_id: str, start: datetime, end: datetime) 
         pool = []
         for key, cur in by.items():
             r = cur["row"]
+            if r["filter_reason"] != "no_core_hit":
+                continue
             abstract, _ = profile_impact._restore_abstract(con, r)
             paper = {"_paper_key": key, "title": r["title"] or "", "abstract": abstract or "",
                      "published": r["published"]}
@@ -80,12 +87,52 @@ neural network networks multimodal generative pretrained pre trained transformer
 """.split())
 
 
+_SEGMENT_RE = re.compile(r"[.;:!?\n]+")
+
+
+def _grams(text: str) -> set[str]:
+    """문장 경계를 넘는 조합을 만들지 않는다 — 제목과 초록을 이어 붙이면 'factory item.
+    spiking sensor' 에서 'item spiking sensor' 가 생겨 진짜 용어를 흡수한다(실측 2026-09-12)."""
+    grams: set[str] = set()
+    for seg in _SEGMENT_RE.split(text):
+        for n in (2, 3):
+            grams.update(trend_report._ngrams(seg, n))
+    return grams
+
+
 def _generic(term: str) -> bool:
     return all(w in _GENERIC_WORDS for w in term.split())
 
 
+def canonical(term: str) -> str:
+    """표기 변형을 한 형태로 — 하이픈↔공백, 연속 공백, 마지막 낱말의 단순 복수형.
+    'vision-language model' 과 'vision language models' 가 같아진다. 검색 매처를 바꾸는 게
+    아니라 **제안 전 동치 판정**에만 쓴다 — recall 은 그대로고 오탐도 안 는다(2026-09-12,
+    외부 검토: 매칭 결함이 만든 표기 변형에 shadow 검색 비용을 쓰면 안 된다)."""
+    words = " ".join(term.lower().replace("-", " ").split()).split()
+    if words:
+        last = words[-1]
+        if last.endswith("ies") and len(last) > 4:
+            words[-1] = last[:-3] + "y"
+        elif last.endswith("es") and len(last) > 4 and last[-3] in "sxz":
+            words[-1] = last[:-2]
+        elif last.endswith("s") and not last.endswith("ss") and len(last) > 3:
+            words[-1] = last[:-1]
+    return " ".join(words)
+
+
 def _known_terms(profile: dict) -> set[str]:
     return {t.lower() for k in ("core_topics", "target_domain", "exclude") for t in (profile.get(k) or [])}
+
+
+def is_variant_of_known(term: str, profile: dict) -> str | None:
+    """기존 키워드·도메인·제외어의 표기 변형이면 그 원형을 돌려준다."""
+    c = canonical(term)
+    for k in ("core_topics", "target_domain", "exclude"):
+        for t in profile.get(k) or []:
+            if canonical(t) == c:
+                return t
+    return None
 
 
 def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list[dict]:
@@ -96,27 +143,45 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
     known = _known_terms(profile)
     papers_of: dict[str, list[dict]] = defaultdict(list)
     for p in pool:
-        text = f"{p['title']}. {p['abstract']}"
-        grams: set[str] = set()
-        for n in (2, 3):
-            grams.update(trend_report._ngrams(text, n))
-        for g in grams:
+        for g in _grams(f"{p['title']}. {p['abstract']}"):
             if _generic(g) or any(k in g or g in k for k in known):
                 continue
             papers_of[g].append(p)
     cand = [g for g, ps in papers_of.items() if len(ps) >= r["min_papers"]]
     cand = [g for g in cand if not trend_report._subsumed(g, set(cand))]
+    # 기존 키워드의 표기 변형은 후보가 아니다 — 매칭 구멍은 여기서 제안으로 새지 않고
+    # 주간 리뷰의 "표기 변형" 줄로만 보고한다(호출부가 variants 를 따로 받는다).
+    variants = {g: is_variant_of_known(g, profile) for g in cand}
+    cand = [g for g in cand if variants[g] is None]
 
-    def stats(g: str) -> tuple:
+    def dom_ratio(g: str) -> float:
         ps = papers_of[g]
-        dom = sum(1 for p in ps if p["domain_hits"])
-        seed = sum(1 for p in ps if p["s2_seeds"])
-        newest = max((p["day"] for p in ps if p["day"] is not None), default=0)
-        return (-len(ps), -dom, -seed, -newest, g)
+        return sum(1 for p in ps if p["domain_hits"]) / len(ps)
 
-    cand.sort(key=stats)
+    def seed_ratio(g: str) -> float:
+        ps = papers_of[g]
+        return sum(1 for p in ps if p["s2_seeds"]) / len(ps)
+
+    def newest(g: str) -> int:
+        return max((p["day"] for p in papers_of[g] if p["day"] is not None), default=0)
+
+    # **차선(lane) 선발** — support 를 절대 1순위로 두면 잡음이 커질수록 범용 용어가
+    # 위를 독식한다(실측 9/12: reinforcement learning · random forest). 가중합도 안 만든다.
+    # 자리를 셋으로 나눠 각 자리를 다른 축의 1등에게 준다: ① support ② 도메인 연관 비율
+    # ③ 씨앗 연관 비율·최신. 자리가 남으면(후보 부족·중복) support 순으로 채운다.
+    lanes = [
+        sorted(cand, key=lambda g: (-len(papers_of[g]), -dom_ratio(g), g)),
+        sorted(cand, key=lambda g: (-dom_ratio(g), -len(papers_of[g]), g)),
+        sorted(cand, key=lambda g: (-seed_ratio(g), -newest(g), -len(papers_of[g]), g)),
+    ]
+    chosen: list[str] = []
+    for i in range(r["top_terms"]):
+        lane = lanes[i % len(lanes)]
+        pick = next((g for g in lane if g not in chosen), None)
+        if pick is not None:
+            chosen.append(pick)
     out = []
-    for g in cand[:r["top_terms"]]:
+    for g in chosen:
         ps = papers_of[g]
         # 증거: 초록 있는 것 → 도메인 적중 → 최신 → 키. 모델이 볼 텍스트가 있어야 근거다.
         ev = sorted(ps, key=lambda p: (not p["abstract"], -len(p["domain_hits"]),
@@ -124,12 +189,52 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
         out.append({"term": g, "support": len(ps),
                     "domain_papers": sum(1 for p in ps if p["domain_hits"]),
                     "seed_papers": sum(1 for p in ps if p["s2_seeds"]),
-                    "evidence": [{"key": p["_paper_key"], "title": p["title"], "abstract": p["abstract"],
+                    "lane": ("support", "domain", "seed")[chosen.index(g) % 3],
+                    "evidence": [{"key": p["_paper_key"], "title": p["title"],
+                                  "abstract": snippet(p["abstract"], g, EVIDENCE_CHARS),
                                   "published": p["published"]} for p in ev]})
     return out
 
 
-def format_discovery(terms: list[dict], pool_size: int | None) -> list[str]:
+def known_variants(pool: list[dict], profile: dict, rules: dict | None = None) -> list[dict]:
+    """탐색 풀에서 발견됐지만 기존 키워드의 표기 변형이라 후보에서 뺀 것 — 주간 리뷰 보고용.
+    (용어, 원형, 편수). 이건 키워드 매칭 구멍의 실측이다(§8-97 vision language models)."""
+    r = {**DEFAULT_RULES, **(rules or {})}
+    counts: dict[str, int] = defaultdict(int)
+    for p in pool:
+        for g in _grams(f"{p['title']}. {p['abstract']}"):
+            counts[g] += 1
+    out = []
+    for g, n in counts.items():
+        if n < r["min_papers"]:
+            continue
+        orig = is_variant_of_known(g, profile)
+        if orig and g != orig.lower():
+            out.append({"term": g, "known": orig, "support": n})
+    out.sort(key=lambda x: (-x["support"], x["term"]))
+    return out
+
+
+EVIDENCE_CHARS = 500
+
+
+def snippet(text: str, term: str, chars: int) -> str:
+    """용어를 **가운데** 둔 조각. 앞 N 자를 자르면 용어가 초록 뒤쪽에만 있을 때 전송 텍스트에
+    용어가 없어 R7(문자열 실재) 검증에서 죽는다(외부 검토 2026-09-12). 용어가 없으면 앞부터."""
+    if not text or len(text) <= chars:
+        return text or ""
+    pat = profile_scoring._keyword_pattern(term)
+    m = pat.search(text)
+    if not m:
+        return text[:chars]
+    mid = (m.start() + m.end()) // 2
+    start = max(0, min(mid - chars // 2, len(text) - chars))
+    piece = text[start:start + chars]
+    return ("…" if start > 0 else "") + piece + ("…" if start + chars < len(text) else "")
+
+
+def format_discovery(terms: list[dict], pool_size: int | None,
+                     variants: list[dict] | None = None) -> list[str]:
     """주간 리뷰용 — 코드가 만든 절, 편수를 쓴다(메일에는 써도 된다, 프롬프트에는 안 간다)."""
     if pool_size is None:
         return ["▶ 키워드에 안 걸린 논문의 반복어: 관측 이력 없음 — 미측정"]
@@ -137,6 +242,10 @@ def format_discovery(terms: list[dict], pool_size: int | None) -> list[str]:
     if not terms:
         lines.append("   없음 — 3편 이상 반복된 미등록 조합이 없다")
     for t in terms:
-        lines.append(f"   {t['term']}: {t['support']}편 · 도메인 적중 {t['domain_papers']} · 씨앗 유입 {t['seed_papers']}"
-                     f" · 예: {t['evidence'][0]['title'][:60] if t['evidence'] else '-'}")
+        lines.append(f"   [{t.get('lane', '-')}] {t['term']}: {t['support']}편 · 도메인 적중 {t['domain_papers']}"
+                     f" · 씨앗 유입 {t['seed_papers']} · 예: {t['evidence'][0]['title'][:60] if t['evidence'] else '-'}")
+    if variants:
+        lines.append("   기존 키워드의 표기 변형이라 제안하지 않은 것 (키워드 매칭이 놓치는 표기):")
+        for v in variants[:5]:
+            lines.append(f"     {v['term']} ≈ {v['known']} · {v['support']}편")
     return lines

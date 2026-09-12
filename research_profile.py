@@ -104,187 +104,197 @@ def topic_signature(core_topics: list[str]) -> str:
     return hashlib.sha256("\u0000".join(normalized).encode("utf-8")).hexdigest()[:16]
 
 
+def _ddl(con: sqlite3.Connection) -> None:
+    """이 모듈의 스키마 전부. 직접 부르지 않는다 — init_db 가 schema_guard 를 통해 돌린다."""
+    con.executescript(_SCHEMA)
+    # 2026-09-09: 평가 이력은 덮어쓰지 않는다. 모델 개선 전후 비교의 원자료다.
+    con.execute("CREATE TABLE IF NOT EXISTS briefing_feedback ("
+                "feedback_id INTEGER PRIMARY KEY, profile_id TEXT NOT NULL, "
+                "paper_key TEXT NOT NULL, usefulness TEXT NOT NULL, claim TEXT NOT NULL, "
+                "support TEXT NOT NULL, created_at TEXT NOT NULL)")
+    # 2026-08-24: 다이제스트를 st.session_state(브라우저 세션 전용)에만
+    # 두면 cron이 새벽에 혼자 스캔을 돌려도 그 결과가 review_app.py
+    # 화면 어디에도 안 남는다 — "이제 매일 아침 알아서 돌게 하자"
+    # 단계에서 나온 실제 요구사항. profiles 테이블에 컬럼 두 개만
+    # 얹는다(기존 DB를 지우지 않고 멱등하게, server.py의 ALTER TABLE
+    # 패턴과 동일) — 프로필당 다이제스트 이력 전체가 아니라 "가장
+    # 최근 것"만 필요해서 별도 테이블 대신 컬럼으로 충분하다.
+    existing = {row[1] for row in con.execute("PRAGMA table_info(profiles)")}
+    if "last_digest" not in existing:
+        con.execute("ALTER TABLE profiles ADD COLUMN last_digest TEXT")
+    if "last_digest_at" not in existing:
+        con.execute("ALTER TABLE profiles ADD COLUMN last_digest_at TEXT")
+    # 2026-08-31: 실행마다 그때의 핵심 키워드 지문을 같이 남긴다.
+    # next_since 가 "지금 키워드가 지난 실행과 같은가"를 확인해야
+    # 커서를 이어받을지 되돌릴지 판단할 수 있다.
+    run_cols = {row[1] for row in con.execute("PRAGMA table_info(search_runs)")}
+    if "topic_signature" not in run_cols:
+        con.execute("ALTER TABLE search_runs ADD COLUMN topic_signature TEXT")
+    # 2026-09-06: 다이제스트에 **내용 자리로** 실린 논문을 기록한다.
+    # 왜 필요한지는 mark_shown() 의 주석에 있다.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS profile_shown ("
+        " profile_id TEXT NOT NULL,"
+        " paper_key  TEXT NOT NULL,"
+        " title      TEXT,"
+        " shown_at   TEXT NOT NULL,"
+        " PRIMARY KEY (profile_id, paper_key))"
+    )
+
+    # ① 검색 후보를 **선택 이전에** 저장한다(2026-09-07, 외부 검토서 §182).
+    #
+    # 그전까지 후보는 그 실행의 메모리에만 있었다. 다이제스트에 실린
+    # 논문만 papers/summaries 에 남고, 걸렸다가 밀린 논문은 흔적이 없다.
+    # 그래서 답할 수 없던 질문들이 있다 — "왜 이 논문이 안 뽑혔나",
+    # "이번 주에 후보로는 몇 편이 걸렸나", "저 저널 논문은 언제 처음
+    # 보였나". 재채점도 못 한다. 채점 규칙을 바꿔도 **같은 후보 집합**이
+    # 없으면 전후 비교가 안 된다.
+    #
+    # 테이블 **하나만** 만든다. 검토서는 관계 6개를 제안했지만 이 레포는
+    # 결함 하나가 요구할 때 테이블 하나씩 늘려 왔다(규칙 6·12).
+    # 이 하나가 ①(발표일 기준 집계) ④(저널 보존) ⑧(venue·citation 보존)
+    # 과 "0점 후보 분석"을 동시에 연다.
+    #
+    # 키는 profile_shown 과 **같은 paper_key** 다 — 같은 논문을 두 테이블이
+    # 다른 이름으로 부르면 조인이 안 된다(§8-64 에서 겪은 그 문제다).
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS search_candidates ("
+        " profile_id     TEXT NOT NULL,"
+        " paper_key      TEXT NOT NULL,"
+        " title          TEXT,"
+        " abstract       TEXT,"
+        " source         TEXT,"          # 'arxiv' | 's2' — 어디서 왔나
+        " arxiv_id       TEXT,"
+        " doi            TEXT,"
+        " venue          TEXT,"
+        " published      TEXT,"          # 발표일 (① 발표일 기준 집계)
+        " citation_count INTEGER,"       # ⑧ 보존 — 나중에 다시 못 받는다
+        " score          REAL,"          # 채점 결과 (0점 후보도 남는다)
+        " outcome        TEXT,"          # 아래 OUTCOME_* 참고
+        " signature      TEXT,"          # 그때의 키워드 지문 = 채점 설정 버전
+        " window_from    TEXT,"
+        " window_to      TEXT,"
+        " first_seen     TEXT NOT NULL," # 처음 후보로 걸린 날
+        " last_seen      TEXT NOT NULL,"
+        " PRIMARY KEY (profile_id, paper_key))"
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_seen "
+                "ON search_candidates (profile_id, last_seen)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_published "
+                "ON search_candidates (profile_id, published)")
+
+    # ── 실행별 관측 (2026-09-11, B단계 — docs/ASTRA_PLAN_2026-09-10.md §6.1)
+    #
+    # search_candidates 는 논문 **개체**의 최신 상태다 — 같은 논문이 다음 날
+    # 또 보이면 last_seen·outcome 만 덮어써서 "지난 실행에서는 어떤 자리였나"가
+    # 사라진다. 그러면 정책을 바꾼 뒤 "당시 선택"을 재생할 수 없고, 씨앗별
+    # 수율("이 씨앗이 이번 실행에서 몇 편을 데려왔나")도 셀 수 없다.
+    #
+    # 그래서 **관측**을 따로 둔다. 실행 하나 × 논문 하나 = 행 하나. 개체
+    # 테이블은 손대지 않는다(추가형, §12.1). 초록은 복사하지 않고 해시만
+    # 남긴다 — 본문은 search_candidates 에 있고, 해시가 같으면 같은 초록이다.
+    # **프로필 revision**(2026-09-11, D단계 §9.2). 내용 해시와 별개다 —
+    # A→B→A 로 돌아오면 해시는 같지만 처음 A 에서 쓴 제안은 낡은 제안이다.
+    # 모든 저장 경로(사용자 UI·create_profile·자동 적용)가 같은 트랜잭션 안에서
+    # 올린다. 그래야 "분석 당시 revision 과 지금 revision 이 같은가"(stale 검사)가
+    # 실제로 무언가를 지킨다. 행은 추가만 되고 지우지 않는다.
+    # **스캔 시점에 얼린 건강 지표 입력**(2026-09-12, §8-96). anchor/auto 구분과
+    # "직전 프로필이었다면 상위 K" 반사실은 나중에 세면 그 시점의 이력·채점 코드에
+    # 따라 바뀐다(외부 검토 두 번째). 스캔이 끝날 때 한 번 계산해 여기 둔다.
+    # 기존 테이블을 바꾸지 않는 새 테이블이다.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS scan_health ("
+        " scan_id          TEXT PRIMARY KEY,"
+        " profile_id       TEXT NOT NULL,"
+        " anchor_terms     TEXT NOT NULL,"   # JSON — 스캔 시점 이력으로 도출한 anchor
+        " auto_terms       TEXT NOT NULL,"   # JSON — core − anchor
+        " provenance_json  TEXT NOT NULL,"   # JSON — 키워드별 {origin, first_seen, source}
+        " topk             TEXT NOT NULL,"   # JSON — 이 스캔의 상위 K 키
+        " prev_profile_sha TEXT,"            # 직전(다른) 프로필 스냅샷 해시. 없으면 NULL
+        " prev_topk        TEXT,"            # JSON — 직전 프로필로 같은 후보를 채점한 상위 K
+        " retention        REAL,"            # |topk ∩ prev_topk| / |topk|. 직전 없으면 NULL
+        " policy_version   TEXT NOT NULL,"
+        " computed_at      TEXT NOT NULL)"
+    )
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS profile_revisions ("
+        " profile_id  TEXT NOT NULL,"
+        " revision    INTEGER NOT NULL,"
+        " created_at  TEXT NOT NULL,"
+        " origin      TEXT NOT NULL,"    # 'user' | 'advisor' | 'rollback'
+        " content_sha TEXT NOT NULL,"    # 정규화 프로필 내용 해시
+        " snapshot    TEXT NOT NULL,"    # 프로필 JSON (복구용)
+        " note        TEXT,"
+        " PRIMARY KEY (profile_id, revision))"
+    )
+
+    # **스캔 단위 실행 기록.** search_runs 는 출처(arXiv·S2)마다 행 하나라
+    # "이 스캔"을 가리키는 ID 가 없었다. 관측을 어느 스캔에 묶을지, 그 스캔이
+    # 어떤 프로필·정책으로 돌았는지, 관측 저장이 끝났는지를 여기 남긴다.
+    # 두 검색 지문은 키워드 집합의 해시라 가중치·제외어·도메인·K 를 복원하지
+    # 못하므로 **프로필 스냅샷을 통째로** 둔다(외부 점검 2026-09-11 지적).
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS scan_runs ("
+        " scan_id          TEXT PRIMARY KEY,"
+        " profile_id       TEXT NOT NULL,"
+        " started_at       TEXT NOT NULL,"
+        " profile_snapshot TEXT NOT NULL,"  # JSON — core/weights/target/exclude/seeds/max_items
+        " policy_version   TEXT NOT NULL,"
+        " arxiv_run_id     TEXT,"           # search_runs.run_id
+        " s2_run_id        TEXT,"
+        " seed_attempts    TEXT,"           # JSON — 씨앗별 {status, returned, reason}
+        " observations     INTEGER,"        # 저장된 관측 행 수. NULL = 저장 실패/미완
+        " observation_error TEXT)"
+    )
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS candidate_observations ("
+        " scan_id        TEXT NOT NULL,"   # scan_runs.scan_id
+        " profile_id     TEXT NOT NULL,"
+        " paper_key      TEXT NOT NULL,"
+        " title          TEXT,"
+        " abstract_sha   TEXT,"            # 초록 sha256 앞 16자리
+        " abstract       TEXT,"            # **바뀐 경우에만** 저장. 같으면 NULL + 아래 참조
+        " abstract_ref   TEXT,"            # 같은 초록을 실제로 가진 관측의 scan_id
+        " source         TEXT,"
+        " retrieval_sources TEXT,"         # JSON — 실제 발견 출처 합집합
+        " s2_seeds       TEXT,"            # JSON 목록 — 어느 씨앗이 데려왔나 (arXiv 면 NULL)
+        " published      TEXT,"
+        " date_precision TEXT,"            # profile_scoring.publication_day 의 둘째 값
+        " tier_rank      INTEGER,"         # 적중 없으면 NULL
+        " rank_pos       INTEGER,"         # 그 실행·정책에서의 순위 (무적격이면 NULL)
+        " outcome        TEXT,"
+        " filter_reason  TEXT,"            # 아래 FILTER_* 참고, 적격이면 NULL
+        " core_signature TEXT,"
+        " seed_signature TEXT,"
+        " policy_version TEXT,"            # 정렬 계약 버전 — rank_pos 는 이 정책의 값이다
+        " observed_at    TEXT NOT NULL,"
+        " PRIMARY KEY (scan_id, paper_key))"
+    )
+    # 관측 시점의 적중을 그대로 남긴다(2026-09-12, §8-95). 없으면 건강 지표가 **현재**
+    # 채점 코드로 과거를 다시 세게 되고, 가드 하나가 들어갈 때마다 과거 지표가 바뀐다
+    # (외부 검토가 잡았다 — 9/11 스캔의 anchor 적중이 0.83 으로 "변한" 것이 그 증거).
+    obs_cols = {row[1] for row in con.execute("PRAGMA table_info(candidate_observations)")}
+    for col in ("core_hits", "exclude_hits", "domain_hits"):
+        if col not in obs_cols:
+            con.execute(f"ALTER TABLE candidate_observations ADD COLUMN {col} TEXT")  # JSON 목록
+    con.execute("CREATE INDEX IF NOT EXISTS idx_observations_paper "
+                "ON candidate_observations (profile_id, paper_key, observed_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_observations_profile_time "
+                "ON candidate_observations (profile_id, observed_at)")
+
+
+
 def init_db(db_path: Path) -> None:
-    with sqlite3.connect(db_path) as con:
-        con.executescript(_SCHEMA)
-        # 2026-09-09: 평가 이력은 덮어쓰지 않는다. 모델 개선 전후 비교의 원자료다.
-        con.execute("CREATE TABLE IF NOT EXISTS briefing_feedback ("
-                    "feedback_id INTEGER PRIMARY KEY, profile_id TEXT NOT NULL, "
-                    "paper_key TEXT NOT NULL, usefulness TEXT NOT NULL, claim TEXT NOT NULL, "
-                    "support TEXT NOT NULL, created_at TEXT NOT NULL)")
-        # 2026-08-24: 다이제스트를 st.session_state(브라우저 세션 전용)에만
-        # 두면 cron이 새벽에 혼자 스캔을 돌려도 그 결과가 review_app.py
-        # 화면 어디에도 안 남는다 — "이제 매일 아침 알아서 돌게 하자"
-        # 단계에서 나온 실제 요구사항. profiles 테이블에 컬럼 두 개만
-        # 얹는다(기존 DB를 지우지 않고 멱등하게, server.py의 ALTER TABLE
-        # 패턴과 동일) — 프로필당 다이제스트 이력 전체가 아니라 "가장
-        # 최근 것"만 필요해서 별도 테이블 대신 컬럼으로 충분하다.
-        existing = {row[1] for row in con.execute("PRAGMA table_info(profiles)")}
-        if "last_digest" not in existing:
-            con.execute("ALTER TABLE profiles ADD COLUMN last_digest TEXT")
-        if "last_digest_at" not in existing:
-            con.execute("ALTER TABLE profiles ADD COLUMN last_digest_at TEXT")
-        # 2026-08-31: 실행마다 그때의 핵심 키워드 지문을 같이 남긴다.
-        # next_since 가 "지금 키워드가 지난 실행과 같은가"를 확인해야
-        # 커서를 이어받을지 되돌릴지 판단할 수 있다.
-        run_cols = {row[1] for row in con.execute("PRAGMA table_info(search_runs)")}
-        if "topic_signature" not in run_cols:
-            con.execute("ALTER TABLE search_runs ADD COLUMN topic_signature TEXT")
-        # 2026-09-06: 다이제스트에 **내용 자리로** 실린 논문을 기록한다.
-        # 왜 필요한지는 mark_shown() 의 주석에 있다.
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS profile_shown ("
-            " profile_id TEXT NOT NULL,"
-            " paper_key  TEXT NOT NULL,"
-            " title      TEXT,"
-            " shown_at   TEXT NOT NULL,"
-            " PRIMARY KEY (profile_id, paper_key))"
-        )
-
-        # ① 검색 후보를 **선택 이전에** 저장한다(2026-09-07, 외부 검토서 §182).
-        #
-        # 그전까지 후보는 그 실행의 메모리에만 있었다. 다이제스트에 실린
-        # 논문만 papers/summaries 에 남고, 걸렸다가 밀린 논문은 흔적이 없다.
-        # 그래서 답할 수 없던 질문들이 있다 — "왜 이 논문이 안 뽑혔나",
-        # "이번 주에 후보로는 몇 편이 걸렸나", "저 저널 논문은 언제 처음
-        # 보였나". 재채점도 못 한다. 채점 규칙을 바꿔도 **같은 후보 집합**이
-        # 없으면 전후 비교가 안 된다.
-        #
-        # 테이블 **하나만** 만든다. 검토서는 관계 6개를 제안했지만 이 레포는
-        # 결함 하나가 요구할 때 테이블 하나씩 늘려 왔다(규칙 6·12).
-        # 이 하나가 ①(발표일 기준 집계) ④(저널 보존) ⑧(venue·citation 보존)
-        # 과 "0점 후보 분석"을 동시에 연다.
-        #
-        # 키는 profile_shown 과 **같은 paper_key** 다 — 같은 논문을 두 테이블이
-        # 다른 이름으로 부르면 조인이 안 된다(§8-64 에서 겪은 그 문제다).
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS search_candidates ("
-            " profile_id     TEXT NOT NULL,"
-            " paper_key      TEXT NOT NULL,"
-            " title          TEXT,"
-            " abstract       TEXT,"
-            " source         TEXT,"          # 'arxiv' | 's2' — 어디서 왔나
-            " arxiv_id       TEXT,"
-            " doi            TEXT,"
-            " venue          TEXT,"
-            " published      TEXT,"          # 발표일 (① 발표일 기준 집계)
-            " citation_count INTEGER,"       # ⑧ 보존 — 나중에 다시 못 받는다
-            " score          REAL,"          # 채점 결과 (0점 후보도 남는다)
-            " outcome        TEXT,"          # 아래 OUTCOME_* 참고
-            " signature      TEXT,"          # 그때의 키워드 지문 = 채점 설정 버전
-            " window_from    TEXT,"
-            " window_to      TEXT,"
-            " first_seen     TEXT NOT NULL," # 처음 후보로 걸린 날
-            " last_seen      TEXT NOT NULL,"
-            " PRIMARY KEY (profile_id, paper_key))"
-        )
-        con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_seen "
-                    "ON search_candidates (profile_id, last_seen)")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_candidates_published "
-                    "ON search_candidates (profile_id, published)")
-
-        # ── 실행별 관측 (2026-09-11, B단계 — docs/ASTRA_PLAN_2026-09-10.md §6.1)
-        #
-        # search_candidates 는 논문 **개체**의 최신 상태다 — 같은 논문이 다음 날
-        # 또 보이면 last_seen·outcome 만 덮어써서 "지난 실행에서는 어떤 자리였나"가
-        # 사라진다. 그러면 정책을 바꾼 뒤 "당시 선택"을 재생할 수 없고, 씨앗별
-        # 수율("이 씨앗이 이번 실행에서 몇 편을 데려왔나")도 셀 수 없다.
-        #
-        # 그래서 **관측**을 따로 둔다. 실행 하나 × 논문 하나 = 행 하나. 개체
-        # 테이블은 손대지 않는다(추가형, §12.1). 초록은 복사하지 않고 해시만
-        # 남긴다 — 본문은 search_candidates 에 있고, 해시가 같으면 같은 초록이다.
-        # **프로필 revision**(2026-09-11, D단계 §9.2). 내용 해시와 별개다 —
-        # A→B→A 로 돌아오면 해시는 같지만 처음 A 에서 쓴 제안은 낡은 제안이다.
-        # 모든 저장 경로(사용자 UI·create_profile·자동 적용)가 같은 트랜잭션 안에서
-        # 올린다. 그래야 "분석 당시 revision 과 지금 revision 이 같은가"(stale 검사)가
-        # 실제로 무언가를 지킨다. 행은 추가만 되고 지우지 않는다.
-        # **스캔 시점에 얼린 건강 지표 입력**(2026-09-12, §8-96). anchor/auto 구분과
-        # "직전 프로필이었다면 상위 K" 반사실은 나중에 세면 그 시점의 이력·채점 코드에
-        # 따라 바뀐다(외부 검토 두 번째). 스캔이 끝날 때 한 번 계산해 여기 둔다.
-        # 기존 테이블을 바꾸지 않는 새 테이블이다.
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS scan_health ("
-            " scan_id          TEXT PRIMARY KEY,"
-            " profile_id       TEXT NOT NULL,"
-            " anchor_terms     TEXT NOT NULL,"   # JSON — 스캔 시점 이력으로 도출한 anchor
-            " auto_terms       TEXT NOT NULL,"   # JSON — core − anchor
-            " provenance_json  TEXT NOT NULL,"   # JSON — 키워드별 {origin, first_seen, source}
-            " topk             TEXT NOT NULL,"   # JSON — 이 스캔의 상위 K 키
-            " prev_profile_sha TEXT,"            # 직전(다른) 프로필 스냅샷 해시. 없으면 NULL
-            " prev_topk        TEXT,"            # JSON — 직전 프로필로 같은 후보를 채점한 상위 K
-            " retention        REAL,"            # |topk ∩ prev_topk| / |topk|. 직전 없으면 NULL
-            " policy_version   TEXT NOT NULL,"
-            " computed_at      TEXT NOT NULL)"
-        )
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS profile_revisions ("
-            " profile_id  TEXT NOT NULL,"
-            " revision    INTEGER NOT NULL,"
-            " created_at  TEXT NOT NULL,"
-            " origin      TEXT NOT NULL,"    # 'user' | 'advisor' | 'rollback'
-            " content_sha TEXT NOT NULL,"    # 정규화 프로필 내용 해시
-            " snapshot    TEXT NOT NULL,"    # 프로필 JSON (복구용)
-            " note        TEXT,"
-            " PRIMARY KEY (profile_id, revision))"
-        )
-
-        # **스캔 단위 실행 기록.** search_runs 는 출처(arXiv·S2)마다 행 하나라
-        # "이 스캔"을 가리키는 ID 가 없었다. 관측을 어느 스캔에 묶을지, 그 스캔이
-        # 어떤 프로필·정책으로 돌았는지, 관측 저장이 끝났는지를 여기 남긴다.
-        # 두 검색 지문은 키워드 집합의 해시라 가중치·제외어·도메인·K 를 복원하지
-        # 못하므로 **프로필 스냅샷을 통째로** 둔다(외부 점검 2026-09-11 지적).
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS scan_runs ("
-            " scan_id          TEXT PRIMARY KEY,"
-            " profile_id       TEXT NOT NULL,"
-            " started_at       TEXT NOT NULL,"
-            " profile_snapshot TEXT NOT NULL,"  # JSON — core/weights/target/exclude/seeds/max_items
-            " policy_version   TEXT NOT NULL,"
-            " arxiv_run_id     TEXT,"           # search_runs.run_id
-            " s2_run_id        TEXT,"
-            " seed_attempts    TEXT,"           # JSON — 씨앗별 {status, returned, reason}
-            " observations     INTEGER,"        # 저장된 관측 행 수. NULL = 저장 실패/미완
-            " observation_error TEXT)"
-        )
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS candidate_observations ("
-            " scan_id        TEXT NOT NULL,"   # scan_runs.scan_id
-            " profile_id     TEXT NOT NULL,"
-            " paper_key      TEXT NOT NULL,"
-            " title          TEXT,"
-            " abstract_sha   TEXT,"            # 초록 sha256 앞 16자리
-            " abstract       TEXT,"            # **바뀐 경우에만** 저장. 같으면 NULL + 아래 참조
-            " abstract_ref   TEXT,"            # 같은 초록을 실제로 가진 관측의 scan_id
-            " source         TEXT,"
-            " retrieval_sources TEXT,"         # JSON — 실제 발견 출처 합집합
-            " s2_seeds       TEXT,"            # JSON 목록 — 어느 씨앗이 데려왔나 (arXiv 면 NULL)
-            " published      TEXT,"
-            " date_precision TEXT,"            # profile_scoring.publication_day 의 둘째 값
-            " tier_rank      INTEGER,"         # 적중 없으면 NULL
-            " rank_pos       INTEGER,"         # 그 실행·정책에서의 순위 (무적격이면 NULL)
-            " outcome        TEXT,"
-            " filter_reason  TEXT,"            # 아래 FILTER_* 참고, 적격이면 NULL
-            " core_signature TEXT,"
-            " seed_signature TEXT,"
-            " policy_version TEXT,"            # 정렬 계약 버전 — rank_pos 는 이 정책의 값이다
-            " observed_at    TEXT NOT NULL,"
-            " PRIMARY KEY (scan_id, paper_key))"
-        )
-        # 관측 시점의 적중을 그대로 남긴다(2026-09-12, §8-95). 없으면 건강 지표가 **현재**
-        # 채점 코드로 과거를 다시 세게 되고, 가드 하나가 들어갈 때마다 과거 지표가 바뀐다
-        # (외부 검토가 잡았다 — 9/11 스캔의 anchor 적중이 0.83 으로 "변한" 것이 그 증거).
-        obs_cols = {row[1] for row in con.execute("PRAGMA table_info(candidate_observations)")}
-        for col in ("core_hits", "exclude_hits", "domain_hits"):
-            if col not in obs_cols:
-                con.execute(f"ALTER TABLE candidate_observations ADD COLUMN {col} TEXT")  # JSON 목록
-        con.execute("CREATE INDEX IF NOT EXISTS idx_observations_paper "
-                    "ON candidate_observations (profile_id, paper_key, observed_at)")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_observations_profile_time "
-                    "ON candidate_observations (profile_id, observed_at)")
-
+    """DDL 은 schema_guard 가 결정한다(§8-98): 빈 DB 나 PAPER_HARNESS_APPLY_DDL=1 일 때만 적용,
+    아니면 대조만 하고 뒤처져 있으면 SchemaOutOfDate 로 멈춘다."""
+    import schema_guard
+    schema_guard.ensure(db_path, _ddl, "research_profile")
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # 마이크로초(2026-09-12, §8-98). 초 단위면 같은 초의 두 스캔·관측이 같은 시각이 되어
+    # "최신 관측"을 scan_id(해시)로 가르게 된다 — 순서가 우연이 된다. begin_scan 만 고쳤다가
+    # observed_at 에서 같은 문제가 또 났다.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def create_profile(
@@ -415,19 +425,25 @@ def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
 def record_scan_health(db_path: Path, scan_id: str, profile_id: str, *, anchor_terms: list[str],
                        auto_terms: list[str], provenance: dict, topk: list[str],
                        prev_profile_sha: str | None, prev_topk: list[str] | None,
-                       retention: float | None) -> None:
-    """스캔 시점의 건강 지표 입력을 얼린다. 한 스캔에 한 행."""
+                       retention: float | None) -> bool:
+    """스캔 시점의 건강 지표 입력을 얼린다. 한 스캔에 한 행 — **한 번 얼리면 안 바뀐다.**
+    같은 scan_id 로 다시 부르면 아무것도 쓰지 않고 False 를 돌려준다. 처음 구현이
+    INSERT OR REPLACE 라 재호출이 얼린 값을 조용히 덮었다(외부 검토 2026-09-12) —
+    "미래의 코드·이력이 과거 값을 못 바꾼다"는 이 표의 계약과 정반대였다."""
     import json
     init_db(db_path)
     with sqlite3.connect(db_path) as con:
+        if con.execute("SELECT 1 FROM scan_health WHERE scan_id=?", (scan_id,)).fetchone():
+            return False
         con.execute(
-            "INSERT OR REPLACE INTO scan_health (scan_id, profile_id, anchor_terms, auto_terms,"
+            "INSERT INTO scan_health (scan_id, profile_id, anchor_terms, auto_terms,"
             " provenance_json, topk, prev_profile_sha, prev_topk, retention, policy_version, computed_at)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (scan_id, profile_id, json.dumps(sorted(anchor_terms), ensure_ascii=False),
              json.dumps(sorted(auto_terms), ensure_ascii=False), json.dumps(provenance, ensure_ascii=False),
              json.dumps(topk), prev_profile_sha, json.dumps(prev_topk) if prev_topk is not None else None,
              retention, RANK_POLICY_VERSION, _now()))
+    return True
 
 
 def profile_from_snapshot(snapshot: dict) -> dict:
@@ -727,7 +743,7 @@ def begin_scan(db_path: Path, profile_id: str, profile: dict,
         con.execute(
             "INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version)"
             " VALUES (?,?,?,?,?)",
-            (scan_id, profile_id, started_at or datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            (scan_id, profile_id, started_at or _now(),
              json.dumps(snapshot, ensure_ascii=False), RANK_POLICY_VERSION))
     return scan_id
 
