@@ -13,7 +13,7 @@ def _no_real_feedback_config(monkeypatch):
     """운영 `.env` 에 반응 버튼 설정이 들어간 뒤(2026-09-15)로는 테스트가 실제 웹앱 URL·비밀키로 링크를 서명하고 실패 출력에
     그 URL 을 찍었다. 테스트는 기본으로 설정 없음에서 돌고, 필요한 테스트만 가짜 값을 넣는다(test_feedback_links.configured)."""
     import summarize_engine as engine
-    for name in ("FEEDBACK_WEBAPP_URL", "FEEDBACK_HMAC_SECRET"):
+    for name in ("FEEDBACK_WEBAPP_URL", "FEEDBACK_HMAC_SECRET", "FEEDBACK_PAGE_URL"):
         monkeypatch.setitem(engine.ENV, name, "")
 
 
