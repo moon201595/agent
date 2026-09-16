@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>반응 기록</title>
+<!--
+  paper-harness 연구 동향 브리핑 — 메일 반응 버튼이 먼저 도착하는 "스스로 닫히는 페이지" (2026-09-16).
+
+  왜 필요한가: 기록은 Apps Script 웹앱이 한다. 그런데 Apps Script 응답은 **항상** 구글의 샌드박스 iframe 안에서 돌고
+  (ContentService 는 HTML MIME 을 아예 지원하지 않는다 — CSV·ICAL·JAVASCRIPT·JSON·TEXT·VCARD 뿐이다), 그 iframe 은
+  `allow-top-navigation-by-user-activation` 만 받아 사용자가 안에서 클릭하기 전에는 바깥 탭을 못 닫는다(2026-09-16 실측).
+  반면 메일 링크로 열린 새 탭은 **샌드박스가 아닌** 문서라면 스스로 `window.close()` 할 수 있다(크로미움 실측: 직접 열기·리다이렉트 경유 모두 닫힘).
+  그래서 버튼은 이 정적 페이지로 오고, 이 페이지가 웹앱에 기록을 요청한 뒤 탭을 닫는다.
+
+  **이 파일에는 웹앱 주소도 비밀키도 없다.** 저장소가 공개라서 그렇게 만들었다 — 주소는 메일 링크가 `?d=<배포 id>` 로 넘기고,
+  이 페이지는 `https://script.google.com/macros/s/<배포 id>/exec` 만 부른다(호스트·형식을 검사해 다른 곳은 부르지 않는다).
+  토큰(`?t=`)은 서명돼 있어 이 페이지가 위조할 수 없고, 스크립트를 돌리지 않는 메일 스캐너가 이 링크를 미리 열면 아무것도 기록되지 않는다.
+-->
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #F6F8FC; font-family: "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; color: #1B2036; }
+  main { max-width: 420px; margin: 16vh auto 0; padding: 0 20px; text-align: center; }
+  p { font-size: 17px; line-height: 1.5; margin: 0 0 18px; }
+  .muted { font-size: 13px; color: #64748B; }
+  button { font-size: 16px; padding: 12px 28px; border: 0; border-radius: 8px; background: #3B5BDB; color: #fff; cursor: pointer; }
+  a { color: #3B5BDB; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <p id="msg">기록 중…</p>
+  <div id="after" hidden>
+    <button id="close">탭 닫기</button>
+    <p id="hint" class="muted" hidden>브라우저가 닫기를 막았습니다 — Ctrl+W(맥은 ⌘W)로 닫아 주세요.</p>
+    <p id="undo" class="muted" hidden>잘못 눌렀다면 <a id="undoLink" href="#">취소</a></p>
+  </div>
+  <p class="muted">paper-harness 연구 동향 브리핑</p>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var q = new URLSearchParams(location.search);
+  var token = q.get("t") || "";
+  var deployId = q.get("d") || "";
+
+  function shut() { try { window.close(); } catch (e) {} }
+  function showAfter(undoToken) {
+    $("after").hidden = false;
+    if (undoToken) {
+      $("undoLink").href = location.pathname + "?t=" + encodeURIComponent(undoToken) + "&d=" + encodeURIComponent(deployId);
+      $("undo").hidden = false;
+    }
+  }
+  $("close").onclick = function () { shut(); setTimeout(function () { $("hint").hidden = false; }, 300); };
+
+  // 배포 id 형식 검사 — 이 페이지가 부를 수 있는 곳은 script.google.com 의 웹앱 하나뿐이다(열린 전달자가 되지 않게).
+  if (!token || !/^[A-Za-z0-9_-]{20,200}$/.test(deployId)) {
+    $("msg").textContent = "링크가 올바르지 않습니다.";
+    return;
+  }
+  var url = "https://script.google.com/macros/s/" + deployId + "/exec"
+          + "?t=" + encodeURIComponent(token) + "&mode=json";
+
+  // 1차: JSON 으로 결과를 읽는다. 2차: 교차 출처 읽기가 막히면 응답을 못 읽는 요청으로 한 번 더 보낸다 — 기록은 서버에서 되지만
+  // 결과를 확인할 수 없으므로 화면에는 "요청을 보냈다"고만 적는다(확인 못 한 것을 확인했다고 쓰지 않는다 — 규칙 7).
+  fetch(url, { method: "GET", mode: "cors", redirect: "follow", credentials: "omit" })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      $("msg").textContent = res.message || (res.ok ? "기록했어요." : "기록하지 못했어요.");
+      if (res.ok) { shut(); setTimeout(function () { showAfter(res.undo); }, 400); }
+      else { showAfter(""); }
+    })
+    .catch(function () {
+      fetch(url, { method: "GET", mode: "no-cors", redirect: "follow", credentials: "omit" })
+        .then(function () {
+          $("msg").textContent = "기록 요청을 보냈어요.";
+          shut(); setTimeout(function () { showAfter(""); }, 400);
+        })
+        .catch(function () {
+          $("msg").textContent = "기록 요청을 보내지 못했어요 — 잠시 후 다시 눌러 주세요.";
+          showAfter("");
+        });
+    });
+})();
+</script>
+</body>
+</html>

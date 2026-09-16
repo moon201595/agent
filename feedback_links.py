@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import sqlite3
 from collections import Counter
@@ -57,6 +58,29 @@ def config() -> tuple[str, str] | None:
     if not url.startswith("https://") or len(secret) < 32:
         return None
     return url, secret
+
+
+# Apps Script 웹앱 URL 에서 배포 id 를 꺼낸다 — `https://script.google.com/macros/s/<배포 id>/exec`
+_DEPLOY_ID_RE = re.compile(r"^https://script\.google\.com/macros/s/([A-Za-z0-9_-]{20,200})/exec/?$")
+
+
+def page_url() -> str:
+    """버튼이 먼저 가는 **스스로 닫히는 페이지**(`web/reaction/index.html`, GitHub Pages) 주소. 없으면 빈 문자열 = 웹앱으로 직행(종전 동작).
+
+    왜 페이지를 하나 더 두는가(2026-09-16, 사용자: "버튼 누르고 나서 그 탭이 자동으로 닫히게 할 순 없어?"): Apps Script 응답은 **항상**
+    구글 샌드박스 iframe 안에서 돌고(ContentService 는 HTML MIME 자체가 없다), 그 iframe 은 사용자가 안에서 클릭하기 전에는 바깥 탭을
+    못 닫는다(실측). 반면 메일 링크로 열린 새 탭은 샌드박스가 아닌 문서면 스스로 `window.close()` 할 수 있다(크로미움 실측: 직접 열기·
+    리다이렉트 경유 모두 닫힘). 그래서 버튼은 우리 정적 페이지로 가고, 그 페이지가 웹앱에 `mode=json` 으로 기록을 요청한 뒤 탭을 닫는다.
+    토큰·서명·수집 경로는 그대로다 — 바뀌는 건 "누가 웹앱을 부르느냐"(브라우저의 페이지 스크립트)뿐이다."""
+    url = _env("FEEDBACK_PAGE_URL")
+    return url if url.startswith("https://") else ""
+
+
+def deploy_id(webapp_url: str) -> str:
+    """웹앱 URL 의 배포 id. 형식이 다르면 빈 문자열 — 그때는 페이지를 쓰지 않고 웹앱으로 직행한다.
+    **저장소에 웹앱 주소를 넣지 않기 위해** 페이지가 주소를 하드코딩하지 않고 이 id 를 링크로 받는다(저장소가 공개다)."""
+    m = _DEPLOY_ID_RE.match(webapp_url.strip())
+    return m.group(1) if m else ""
 
 
 def _b64(raw: bytes) -> str:
@@ -142,6 +166,9 @@ def issue_links(db: Path, profile_id: str, issue_id: str, recipient: str, papers
     if not cfg or not papers:
         return {}
     url, secret = cfg
+    # 닫히는 페이지가 설정돼 있고 웹앱 주소에서 배포 id 를 꺼낼 수 있으면 버튼을 그 페이지로 보낸다(`?t=토큰&d=배포 id`).
+    page, did = page_url(), deploy_id(url)
+    relay = f"{page}?" + urlencode({"d": did}) + "&" if page and did else ""
     import research_profile
     init_db(db)
     now = now or _now()
@@ -155,8 +182,10 @@ def issue_links(db: Path, profile_id: str, issue_id: str, recipient: str, papers
             con.execute("INSERT INTO feedback_tokens (tid, issue_id, profile_id, item_no, paper_key, recipient_hash, "
                         "position, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
                         (tid, issue_id, profile_id, f"P{position}", key, rhash, position, now.isoformat(), expires))
-            links[key] = {action: f"{url}?{urlencode({'t': make_token(tid, action, expires, secret)})}"
-                          for action, _label in ACTIONS}
+            links[key] = {
+                action: (f"{relay}{urlencode({'t': make_token(tid, action, expires, secret)})}" if relay
+                         else f"{url}?{urlencode({'t': make_token(tid, action, expires, secret)})}")
+                for action, _label in ACTIONS}
     return links
 
 

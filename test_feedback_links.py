@@ -12,7 +12,9 @@ import digest
 import feedback_links as fl
 
 SECRET = "s" * 40
-URL = "https://script.google.com/macros/s/TEST/exec"
+DEPLOY = "AKfycb" + "x" * 40
+URL = f"https://script.google.com/macros/s/{DEPLOY}/exec"
+PAGE = "https://example.github.io/agent/reaction/"
 
 
 @pytest.fixture
@@ -277,3 +279,54 @@ def test_deliver_records_the_issue_ledger_even_without_buttons(tmp_path, monkeyp
     assert issues[0]["items"] == [{"position": 1, "paper_key": "2609.00001", "title": "A",
                                    "link": "https://arxiv.org/abs/2609.00001", "core_hits": ["alpha"]}]
     assert mail_ledger.counts(db, "p")["issues"] == 1
+
+
+# ── 스스로 닫히는 중계 페이지(2026-09-16) — 버튼 → 정적 페이지 → 웹앱(mode=json) → 탭 닫힘 ────────────────────
+def test_relay_page_carries_token_and_deploy_id_but_never_the_webapp_url(configured, db, monkeypatch):
+    """이 테스트가 잡는 것: 중계 페이지를 켰는데 버튼이 여전히 웹앱으로 직행하는 것, 토큰이 페이지 경유에서 달라지는 것,
+    **공개 저장소에 웹앱 주소가 실리는 것**(페이지는 배포 id 만 받는다), 배포 id 없이 링크를 만드는 것."""
+    import summarize_engine as engine
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", PAGE)
+    links = fl.issue_links(db, "p", "i1", "alice@x.com", _papers())
+    url = links["2609.00001"]["more"]
+    assert url.startswith(PAGE + "?d=" + DEPLOY + "&t=")
+    assert "script.google.com" not in url                      # 주소는 배포 id 로만 간다
+    token = url.split("&t=", 1)[1]
+    parts = token.split(".")
+    assert len(parts) == 5 and parts[0] == fl.TOKEN_VERSION and parts[2] == "more"
+    assert fl.sign(".".join(parts[:4]), SECRET) == parts[4]     # 서명은 페이지 경유와 무관하게 같다
+
+
+def test_relay_page_falls_back_to_the_webapp_when_unset_or_unusable(configured, db, monkeypatch):
+    """이 테스트가 잡는 것: 페이지를 설정하지 않았는데 링크 모양이 바뀌는 것(종전 메일과 달라진다), http·빈 값을 페이지로 받는 것,
+    웹앱 주소가 표준 형식이 아닐 때 배포 id 를 엉뚱하게 뽑아 링크를 깨는 것."""
+    import summarize_engine as engine
+    assert fl.issue_links(db, "p", "i1", "a@x.com", _papers())["2609.00001"]["more"].startswith(URL + "?t=")
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", "http://insecure.example/reaction/")
+    assert fl.issue_links(db, "p", "i2", "a@x.com", _papers())["2609.00001"]["more"].startswith(URL + "?t=")
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", PAGE)
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_WEBAPP_URL", "https://script.google.com/a/macros/x/exec")
+    got = fl.issue_links(db, "p", "i3", "a@x.com", _papers())["2609.00001"]["more"]
+    assert got.startswith("https://script.google.com/a/macros/x/exec?t=") and PAGE not in got
+
+
+def test_deploy_id_only_accepts_the_apps_script_web_app_form():
+    """이 테스트가 잡는 것: 다른 호스트·다른 경로의 URL 에서 id 를 뽑아 중계 페이지가 남의 주소를 부르게 되는 것(열린 전달자)."""
+    assert fl.deploy_id(URL) == DEPLOY
+    assert fl.deploy_id(URL + "/") == DEPLOY
+    for bad in ("https://evil.example.com/macros/s/%s/exec" % DEPLOY,
+                "https://script.google.com.evil.test/macros/s/%s/exec" % DEPLOY,
+                "https://script.google.com/macros/s/short/exec",
+                "https://script.google.com/macros/s/%s/dev" % DEPLOY, "", "not a url"):
+        assert fl.deploy_id(bad) == "", bad
+
+
+def test_relay_page_source_has_no_endpoint_or_secret():
+    """이 테스트가 잡는 것: 공개 저장소의 정적 페이지에 웹앱 주소·비밀키·배포 id 가 박히는 것, 페이지가 임의 호스트를 부르게 되는 것."""
+    from pathlib import Path
+    src = Path("web/reaction/index.html").read_text(encoding="utf-8")
+    assert '"https://script.google.com/macros/s/" + deployId + "/exec"' in src     # 주소는 배포 id 로 조립한다
+    assert "AKfycb" not in src and "FEEDBACK_HMAC_SECRET" not in src
+    code = src.split("<script>", 1)[1]                                             # 주석이 아니라 코드에서 세어야 한다
+    assert code.count('"https://') == 1                                            # 코드가 부를 수 있는 절대 주소는 하나뿐
+    assert "mode=json" in src and 'name="robots" content="noindex' in src
