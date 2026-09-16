@@ -59,43 +59,12 @@ def test_author_limit_and_model_interpretation_are_both_kept(db, tmp_path):
         assert "요약자의 해석" in text and "야외" in text
 
 
-def test_mmr_demotes_duplicate_but_preserves_all_candidates():
-    a = paper("a", "Robot tactile grasping", 0.90, "Tactile sensor feedback for grasping")
-    b = paper("b", a["title"], 0.89, a["abstract"])
-    c = paper("c", "Robot visual navigation", 0.88, "Map planning with camera observations")
-    d = paper("d", "Unrelated low priority", 0.10)
-    result = rps._diversify_content([a, b, c, d], 3)
-    assert [p["arxiv_id"] for p in result] == ["a", "c", "b", "d"]
-    assert rps._diversify_content([], 3) == []
-    assert a["_score"]["priority"] == 0.90
-
-
-def test_mmr_is_not_in_the_scan_selection_path(db, monkeypatch):
-    """A단계(2026-09-11) — MMR 재정렬을 핵심 선정 경로에서 뺐다.
-
-    이 테스트가 잡는 것: `_diversify_content` 를 scan_profile 에 다시 연결하는 것.
-    그전 판의 이 테스트는 정반대(연결돼 있음)를 요구했다. 합산 재정렬은
-    "계층 우선, 같은 계층이면 최신" 계약을 깨므로 새 계약이 그 자리를 대신한다
-    (docs/ASTRA_PLAN_2026-09-10.md §5.6). MMR 함수 자체의 동작은 위 단위
-    테스트가 계속 지킨다 — 이건 **연결 여부**만 본다.
-    """
-    async def arxiv(*args, **kwargs):
-        now = datetime.now(timezone.utc).isoformat()
-        return {"papers": [paper()], "status": "done", "query": "robot", "until": now}
-    async def s2(*args, **kwargs):
-        return {"papers": [], "status": "done", "query": "robot"}
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", arxiv)
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2)
-    monkeypatch.setattr(rps, "_already_summarized", lambda ids: set())
-    calls = []
-    for name in ("_diversify_content", "_spread_keywords", "_eligible_for_content"):
-        original = getattr(rps, name)
-        def spy(*a, _n=name, _o=original, **k):
-            calls.append(_n)
-            return _o(*a, **k)
-        monkeypatch.setattr(rps, name, spy)
-    asyncio.run(rps.scan_profile(db, "team", None))
-    assert calls == [], f"은퇴한 선별 단계가 다시 호출됐다: {calls}"
+def test_legacy_selection_helpers_are_gone(db):
+    """A단계(2026-09-11)에서 핵심 선정 경로에서 뺀 MMR·자리 상한·본문 링크 문지기를 2026-09-16 에 함수까지 지웠다(Codex 구조 검토:
+    테스트만 남은 죽은 코드). 이 테스트가 잡는 것: 그 함수들을 되살려 scan_profile 에 다시 연결하는 것 — 이름 자체가 없어야 한다.
+    선별은 `profile_scoring.score_and_rank` 의 순서 하나로 끝난다(test_rank_contract 가 그 계약을 지킨다)."""
+    for name in ("_diversify_content", "_spread_keywords", "_eligible_for_content", "_key", "KEYWORD_SLOT_SHARE"):
+        assert not hasattr(rps, name), name
 
 
 def test_source_evidence_resolves_real_sentences_and_ignores_out_of_range(db, tmp_path):

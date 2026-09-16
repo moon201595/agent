@@ -162,7 +162,7 @@ mcp = MCPServer("paper_harness_mcp")
 
 # 스토리지는 storage.py 가 소유한다(2026-09-04). 여기 있던 스키마·마이그레이션·
 # 연결 팩토리를 통째로 옮겼고, **아래 별칭은 기존 호출부를 위한 것**이다 —
-# digest·review_core·trend_report·docker_runner·code_finder 가 `server._db` 를
+# digest·trend_report·docker_runner·code_finder 가 `server._db` 를
 # 직접 부르고 있어서, 이동과 호출부 정리를 한 커밋에 섞지 않으려고 남긴다.
 # 호출부가 전부 storage 를 직접 쓰게 되면 이 별칭도 지운다.
 # **함수로 둔다(별칭이 아니라).** 별칭이면 storage.DB_PATH 를 읽는데,

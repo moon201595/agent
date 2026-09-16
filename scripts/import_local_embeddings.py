@@ -1,4 +1,4 @@
-"""import_local_embeddings.py — 사람이 공유 GPU 서버에서 직접 계산한 임베딩
+"""scripts/import_local_embeddings.py — 사람이 공유 GPU 서버에서 직접 계산한 임베딩
 결과(JSON)를 papers.db의 paper_embeddings 캐시로 가져온다.
 
 왜 이런 모양인가 (2026-08-24): 회사 GPU 서버는 여러 연구자가 같이 쓰는
@@ -37,8 +37,13 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]          # scripts/ 에서 저장소 루트의 모듈(storage·server)을 찾는다
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _now() -> str:
@@ -75,11 +80,11 @@ def import_embeddings(db_path: Path, records: list) -> int:
     if errors:
         raise ValueError("입력 JSON 형식 오류:\n" + "\n".join(errors))
 
+    # DDL 은 여기서 만들지 않는다 — `paper_embeddings` 의 소유자는 storage 이고 schema_guard·migrate 를 거친다
+    # (Codex 구조 검토 2026-09-16: 이 도구가 운영 DB 에 가드 밖 표를 만들 수 있었다). 표가 없으면 init_storage 가 가드 규칙대로 처리한다.
+    import storage
+    storage.init_storage(db_path)
     with sqlite3.connect(db_path) as con:
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS paper_embeddings ("
-            "arxiv_id TEXT PRIMARY KEY, model TEXT, embedding TEXT, updated_at TEXT)"
-        )
         for r in records:
             con.execute(
                 "INSERT OR REPLACE INTO paper_embeddings (arxiv_id, model, embedding, updated_at) "

@@ -95,31 +95,6 @@ def test_보고서는_미측정_목록을_내고_성과를_지어내지_않는�
 
 # ── R 제안기·실험 manifest (E1)
 
-def test_R_은_A_와_같은_입력에서_같은_계약으로_제안하고_D_검증을_통과한다(tmp_path):
-    """이 테스트가 잡는 것: R 이 전체 집계를 쓰는 것, 허용 계층 밖 값, 기존 core 재제안."""
-    import profile_advisor as adv, rule_advisor as R
-    prof = {"core_topics": ["target term"], "core_weights": {"target term": 1.0}, "target_domain": [],
-            "exclude": [], "s2_seeds": []}
-    papers = [{"_paper_key": f"p{i}", "title": "target term with graph neural network",
-               "abstract": "graph neural network results", "published": "2026-09-09"} for i in range(3)]
-    papers.append({"_paper_key": "q", "title": "unrelated stuff", "abstract": "graph neural network only", "published": "2026-09-09"})
-    snap = {"papers": papers, "paper_count": 4, "title_only": 0, "abstract_corrupt": [], "scans": {"total": 1}}
-    sent = adv.build_input(snap, prof, adv.select_papers(snap, prof))
-    out = R.propose(sent, prof)
-    assert out["decision"] == "propose" and out["proposals"][0]["term"] == "graph neural network"
-    assert out["proposals"][0]["proposed_tier"] == 1.0, "허용 계층 중 가장 낮은 것(여기선 1.0 하나)"
-    v = adv.validate_proposals(out, sent, prof)
-    assert v and not v[0]["errors"], f"D 검증기를 그대로 통과해야 한다: {v[0]['errors']}"
-    # 기존 core 는 재제안하지 않는다 — core 가 가장 빈번한 gram 인 상황에서도
-    core_heavy = [{"_paper_key": f"c{i}", "title": "target term", "abstract": "target term everywhere", "published": "2026-09-09"} for i in range(5)]
-    snap2 = {"papers": core_heavy + papers[:2], "paper_count": 7, "title_only": 0, "abstract_corrupt": [], "scans": {"total": 1}}
-    sent2 = adv.build_input(snap2, prof, adv.select_papers(snap2, prof, limit=7))
-    out3 = R.propose(sent2, prof, rules={"max_proposals": 10, "min_support": 1})
-    assert all("target term" not in p["term"] for p in out3["proposals"]), out3["proposals"]
-    # 동시 출현 비율 미달이면 no_change — 'unrelated' 논문만 있는 용어
-    out2 = R.propose(sent, prof, rules={"min_cooccurrence_ratio": 1.01})
-    assert out2["decision"] == "no_change"
-
 
 def test_실험은_기준선_뒤에_완전한_설정으로만_얼리고_얼린_뒤엔_불변이다(tmp_path):
     """이 테스트가 잡는 것: 임계값 미설정 실험을 얼리는 것, 기준선 전 freeze, frozen 행 수정."""

@@ -56,7 +56,7 @@ def db_with_summary_path(tmp_path, monkeypatch):
     storage.init_storage(db)
     monkeypatch.setattr(server, "DB_PATH", db)
     # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
-    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    # server 도구와 digest 양쪽이 같은 임시 DB 를 본다.
     monkeypatch.setattr(storage, "DB_PATH", db)
     monkeypatch.setattr(server, "REPRO_DIR", repro)
     return {"db": db, "dir": tmp_path}

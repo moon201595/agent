@@ -176,28 +176,6 @@ def is_weekly_review_day(now: datetime | None = None) -> bool:
     return moment.astimezone(READER_TZ).weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
-def _key(paper: dict) -> str:
-    """논문을 내용으로 식별한다.
-
-    `score_and_rank` 는 사본을 돌려주므로(dedupe 가 `dict(paper)` 를 만든다)
-    `id()` 로는 원본과 못 맞춘다 — 내용 기준 키가 필요하다.
-    """
-    return (paper.get("arxiv_id") or paper.get("doi")
-            or (paper.get("title") or "").strip().lower())
-
-
-# 한 키워드가 상위 목록에서 차지할 수 있는 자리의 상한 비율.
-# max_items=6 이면 3칸 — 절반이다.
-#
-# **이 숫자는 근거 없는 초기값이다**(2026-09-06 지적을 받고 명시한다).
-# 이 파일과 profile_scoring 의 다른 상수들은 전부 실측이나 역산 근거를 갖는다 —
-# `_BREADTH_BASE=0.8` 은 옛 계층 격차 0.20 을 재현하도록 역산했고,
-# `DOMAIN_HITS_CAP`·최신성 반감기는 실측 분포에서 나왔다. 0.5 는 "절반이니까"
-# 외에 근거가 없다. §8-62 에 종결 조건을 적어 뒀다: 며칠 운행해서 실제로 몇
-# 편이 뒤로 밀리는지, 밀린 자리를 다른 키워드가 채우는지 아니면 빈 채로
-# 관련도 낮은 논문이 올라오는지 보고 정한다.
-KEYWORD_SLOT_SHARE = 0.5
-
 # 주간 제안기의 배치 deadline 위에 얹는 여유(초). 배달을 오래 붙잡지 않기 위한 바깥 상한이다.
 ADVISOR_TIMEOUT_GRACE_S = 30
 
@@ -224,128 +202,6 @@ def _primary_keyword(paper: dict) -> str:
         return primary
     hits = score.get("core_hits") or []
     return hits[0] if hits else ""
-
-
-def _spread_keywords(ranked: list[dict], max_items: int,
-                     share: float = KEYWORD_SLOT_SHARE) -> list[dict]:
-    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
-
-    한 키워드가 상위 목록을 독식하지 못하게 뒤로 미룬다. 순위 자체는
-    안 바꾼다 — 상한을 넘은 논문을 **목록 뒤로 보낼 뿐**이라, 다른 키워드가
-    모자라면 그대로 다시 올라온다(없는 다양성을 지어내지 않는다).
-
-    **왜**(2026-09-06). 채점을 세 번 고쳐 상위 6칸을 전부 본문 확보된 ★★
-    논문으로 만들었는데, 그 6편이 **전부 같은 키워드**('defect detection')
-    였다. 그 키워드 하나가 한 창에 26편을 데려오고 나머지 26개 키워드는
-    가중치가 낮아 구조적으로 그 아래다. 그러면 메일이 매일 한 주제만 담고,
-    "이 분야가 어디로 가는가"(CLAUDE.md 목적 절)를 못 말한다.
-
-    **규칙 7 을 어기지 않는다.** 무엇이 좋은 논문인지 판단하지 않는다 —
-    같은 키워드가 몇 칸을 먹었는지 **세기만** 한다. LLM 도, 임의 판정도 없다.
-
-    §8-44 와도 다르다. 그때 실패한 건 관련도가 **다른** 논문들을 수집
-    사정으로 뒤집은 것이었다. 여기서 뒤로 가는 논문은 앞에 남는 같은 키워드
-    논문들과 관련도가 사실상 같다(실측: 상위 10편이 전부 0.983±0.008).
-    """
-    cap = max(1, int(max_items * share))
-    used: dict[str, int] = {}
-    keep, deferred = [], []
-    for paper in ranked:
-        kw = _primary_keyword(paper)
-        if kw and len(keep) < max_items and used.get(kw, 0) >= cap:
-            deferred.append(paper)
-            continue
-        used[kw] = used.get(kw, 0) + 1
-        keep.append(paper)
-    if deferred:
-        moved = len(deferred)
-        print(f"  [다양성] 한 키워드가 상위 {max_items}칸 중 {cap}칸을 넘지 않게 "
-              f"{moved}편을 뒤로 미뤘다")
-    return keep + deferred
-
-
-def _diversify_content(ranked: list[dict], max_items: int) -> list[dict]:
-    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
-
-    ② 관련성에 중복 감점을 더한다 — MMR(1998)의 로컬 적용이다.
-
-    2026-09-09: 대표 키워드가 달라도 제목·초록이 비슷하면 같은 이야기가
-    반복된다. 상위 후보만 단어 집합으로 비교하므로 새 API·모델은 없다.
-    감점 0.2는 초기 설계값이며 독자 평가로 최적화한 값은 아니다.
-    기존 키워드별 자리 상한은 이 재정렬 뒤에 그대로 적용한다.
-    """
-    import re
-    stop = {"the", "a", "an", "of", "and", "for", "to", "in", "with", "on", "we", "is"}
-    size = min(len(ranked), max(50, max_items * 10))
-    pool = list(enumerate(ranked[:size]))
-    tokens = {
-        i: set(re.findall(r"[a-z][a-z0-9-]+", ((p.get("title") or "") + " " +
-                                               (p.get("abstract") or "")).lower())) - stop
-        for i, p in pool
-    }
-    selected: list[int] = []
-    ordered: list[dict] = []
-    while pool and len(ordered) < max_items:
-        def value(item: tuple[int, dict]) -> tuple[float, int]:
-            i, paper = item
-            similarity = max((len(tokens[i] & tokens[j]) / len(tokens[i] | tokens[j])
-                              if tokens[i] | tokens[j] else 0.0 for j in selected), default=0.0)
-            return (0.8 * float(paper["_score"]["priority"]) - 0.2 * similarity, -i)
-        i, paper = max(pool, key=value)
-        ordered.append(paper)
-        selected.append(i)
-        pool = [(j, p) for j, p in pool if j != i]
-    return ordered + [p for _, p in pool] + ranked[size:]
-
-
-def _eligible_for_content(ranked: list[dict],
-                          max_items: int) -> tuple[list[dict], list[dict]]:
-    """**핵심 선정 경로에서 뺐다(2026-09-11, A단계). 호출부 없음 — 사유는 scan_and_digest 주석.**
-
-    내용 자리(번호가 붙는 상위 목록)의 **자격**을 가른다.
-    returns (자격 있는 논문 — 아직 안 자른 상태, 자격 없는 나머지).
-
-    **자르지 않는다.** 자르기 전에 `_spread_keywords` 가 한 번 더 손대야
-    하기 때문이다. 처음엔 여기서 max_items 로 잘랐는데, 그러면 문지기가
-    다양성 제한을 되돌린다 — 실측으로 defect detection 이 3칸 상한을 넘어
-    6칸 중 4칸을 먹었다. 순서는 **자격 → 다양성 → 자르기** 여야 한다.
-
-    **2026-09-06 에 "자리 보장"에서 "문지기"로 바꿨다.** 그전에는 본문 되는
-    논문에 최소 2칸만 보장하고 나머지는 관련도대로 뒀는데, 실측이 그걸
-    못 버티게 했다:
-
-      · 후보 478편 중 arXiv 밖이 222편, 그중 오픈액세스 링크가 있는 건 78편(35%)
-      · 그 링크를 **실제로 열어보니 20편 중 6편(30%)만** PDF 를 줬다
-      · 출판사별로 깨끗이 갈린다 — Springer·Wiley·Elsevier·SSRN·IOP **0/12**
-        (링크는 주는데 열면 HTML 로그인 페이지이거나 403),
-        소형·지역 OA 저널 **6/8**
-
-    즉 저널 222편 중 본문이 실제로 열리는 건 열 편 남짓이다. 나머지는
-    내용 자리를 먹고 "처리 실패" 한 줄을 싣는다 — 09-04·09-06 메일이 그랬다.
-    자리를 먹은 만큼 요약·검증·재현이 붙은 논문이 밀려난다.
-
-    **§8-44 와 다른 점.** 그때 실패한 건 본문 확보 여부로 갈라 놓고도
-    **자리를 받은 논문들 역시 본문을 못 받아서**(상위 6칸 중 5편 수집 실패)
-    아무것도 나아지지 않은 것이었다. 원인은 갈래 자체가 아니라 판정이
-    `open_access_pdf` **링크 유무**여서 30% 짜리 신호를 100% 로 믿은 데
-    있었다. 이제 그 위에 Deep Layer 의 실제 수집 결과로 한 번 더 거른다
-    (scan_and_digest 의 백필) — 링크를 믿는 게 아니라 받아본 결과를 믿는다.
-
-    **밀려난 논문은 사라지지 않는다.** 제목·링크 한 줄로 각주에 남고,
-    키워드 편수 집계와 동향 서술에는 그대로 들어간다 — "동향을 놓치지
-    않는다"(CLAUDE.md 목적 절)는 거기서 지켜지고, 값은 한 줄이다.
-    """
-    eligible, dropped = [], []
-    for paper in ranked:
-        (eligible if profile_scoring.has_full_text_route(paper) else dropped).append(paper)
-    if len(eligible) < max_items and dropped:
-        # 본문 되는 논문이 모자란 날은 빈 자리를 남기지 않는다 — 관련도 순으로
-        # 채운다. 매일 오는 메일 자체가 파이프라인 생존 신호다(_deliver 주석).
-        need = max_items - len(eligible)
-        eligible = sorted(eligible + dropped[:need],
-                          key=lambda x: -x["_score"]["priority"])
-        dropped = dropped[need:]
-    return eligible, dropped
 
 
 async def scan_profile(
@@ -549,7 +405,7 @@ async def scan_profile(
     #   · `_diversify_content` — `0.8×priority − 0.2×유사도` 로 재정렬. 합산이다.
     #   · `_spread_keywords` — 외부 점검(2026-09-11)이 합성 입력으로 실증:
     #     상한을 넘은 고계층 H4 를 미루고 저계층 L3 를 올렸다.
-    # 셋 다 핵심 경로에서 뺐다. 함수는 사유 기록으로 남겨 두되 호출부가 없다.
+    # 셋 다 핵심 경로에서 뺐고, 2026-09-16 에 함수도 지웠다(Codex 구조 검토: 테스트만 남은 죽은 코드). 사유는 이 주석과 PROGRESS §8-86.
     # 다양성은 통계로 보여 주고(키워드별 적중 편수 절) 선정에 끼워 넣지 않는다.
     #
     # reserve 도 같은 순서다 — Deep Layer 는 `papers + reserve` 를 순서대로
@@ -1166,7 +1022,6 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
     if failures:
         return f"{DELIVERY_FAILED_PREFIX}: {sent}/{len(recipients)}명 전송 수락 · " + " / ".join(failures)
     return f"{DELIVERY_SENT_PREFIX} → {sent}명"
-
 
 
 async def scan_all_profiles(

@@ -89,10 +89,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - `mail_ledger.py`(발송 회차·논문 기록) · `ops_dashboard.py`(운영 화면 자료 — 화면 `review_app.render_research_tab` 은 그리기만) ·
   `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시).
 - `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
-- **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 현재 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
-  `batch_summarize._process_paper`(새벽 스캔)와 `review_core._summarize_target`(옛 검색 화면의 로직 — 화면에서는 2026-09-16 에 빠져
-  지금 부르는 곳이 없다) 둘이다. 화면의 수동 재현 버튼 3개는 개편 때 없앴다.
-  시작점이 흩어지면 같은 논문 재현이 겹친다 — 새 호출 지점을 만들 때는 이 목록을 갱신한다.
+- **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
+  `batch_summarize._process_paper`(새벽 스캔) **하나**다(옛 검색 화면의 `review_core._summarize_target` 은 2026-09-16 에 파일째 지웠다 —
+  화면이 쓰던 `_relative_time`·`run_async` 만 `ui_helpers.py` 로). 시작점이 흩어지면 같은 논문 재현이 겹친다 — 새 호출 지점을 만들 때는 이 목록을 갱신한다.
 - 검증(`verify.py`)·재현 결과는 문자열 대조·Docker exit code·DB 기록으로 남는다. LLM 은 그 결과를 해석할 수 있지만
   결과 값 자체를 만들지 않는다(CLAUDE.md 규칙 7).
 
@@ -186,7 +185,7 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   놓쳤다 — 1.0 계층 키워드가 가장 흔한 표기를 못 잡고 있었다. 넓히고 싶어도 `\W+`·`.*` 로 가지
   않는다(사이에 다른 낱말이 끼면 다른 뜻이다). 정책 버전 `rank-tuple-v1+match-v2`.
 - **용어 후보 필터는 정확 토큰 일치가 아니다**(2026-09-13, §8-108·109). 후보 생성은 `term_hygiene.ngrams`(문장 경계·
-  `reject_reason`·우산어) 하나이고 세 소비자(`trend_report.emerging_terms` · `term_discovery.discover` · `rule_advisor`)가 같이 쓴다(2026-09-14 통일). 판정용 정규화
+  `reject_reason`·우산어) 하나이고 두 소비자(`trend_report.emerging_terms` · `term_discovery.discover`)가 같이 쓴다(2026-09-14 통일; `rule_advisor` 는 2026-09-16 삭제). 판정용 정규화
   (하이픈 분리·단수화)와 표시 문자열을 가르고, **낱말 목록(any-token)과 담화 구절, 우산어(all-token)를 합치지
   않는다** — `state` 를 낱말 목록에 넣으면 `state estimation` 이 죽고(실제로 죽어 있었다), 우산어를 any 로 바꾸면
   `world model` 이 죽는다. 새 금지어는 재생 픽스처에서 실제로 올라온 것만 넣는다(whack-a-mole 금지).

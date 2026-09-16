@@ -6010,6 +6010,16 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     785→1,111·파일 35→56, AGENTS conftest 문구). 나머지(모듈 분할·매칭/시간/키 정책 통합·옛 자산 연결 또는 제거·death code 삭제)는 **나중 과제**로 남긴다.
     테스트 1,111 통과.
 
+151. **죽은 코드 정리 1단계(S1)** (2026-09-16, 사용자: "죽은 코드 다 지우고, 모듈 분할, 매칭·시간·논문 키 정책 통합, 옛 자산 연결 또는 삭제 — Codex 와 상의").
+    Codex 에 계획 초안(`data/codex_research_2026-09-16/refactor_plan_draft.md`: A 옛 자산 결정표 · B `run_profile_scan` 분할 경계 · C 정책 통합 · D 단계·분업)을
+    넘겼으나 **Codex 사용 한도 초과**로 검토가 시작 직후 실패(재개 가능 시각 저녁). 추가 결제 없이 기다리되, 판단이 필요 없는 삭제분은 먼저 했다.
+    지운 것: `rule_advisor.py`(운영 호출 없음, 테스트 3개 정리) · `run_profile_scan` 의 옛 선별기 `_key`·`_spread_keywords`·`_diversify_content`·
+    `_eligible_for_content`·`KEYWORD_SLOT_SHARE`(9/11 부터 호출 없음, 테스트 11개 → "이름이 없어야 한다" 가드 1개로) · `review_core.py`(화면이 쓰던
+    `_relative_time`·`run_async` 만 `ui_helpers.py` 로; ⑦ 재현 시작점은 `batch_summarize._process_paper` 하나) · `gpu_embedding_smoke_test.py` ·
+    `import_local_embeddings.py` → `scripts/`(자체 `CREATE TABLE` 제거, `storage.init_storage` 경유 = schema_guard 규칙 안). 테스트 1,111 → 1,080(파일 55).
+    **남긴 것(Codex 상의 뒤 결정)**: `profile_advisor`(월요일 훅·rollback 이 살아 있어 삭제는 설계 판단) · `shadow_search`·`profile_impact`(연결 후보) ·
+    `evaluation.py`(논문 라벨용 보류) · `eval.py`(수동 기준선). AGENTS/README 갱신.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

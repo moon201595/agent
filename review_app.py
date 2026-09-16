@@ -5,7 +5,7 @@
 실행 기록, cron, DB·백업, 로그). 숫자는 전부 `ops_dashboard.py` 가 만들고 이 파일은 그리기만 한다 — `st.` 을 쓰는 코드와 안 쓰는
 코드가 섞이면 Streamlit 없이는 테스트할 수 없다(§8-31).
 
-옛 화면(검색·요약·검토·수동 재현 버튼)은 git 이력과 `review_core.py`(로직)에 남아 있다. 논문 검색·요약은 MCP 서버(`server.py`)와
+옛 화면(검색·요약·검토·수동 재현 버튼)의 로직은 git 이력에 남아 있다(`review_core.py` 는 2026-09-16 에 지웠다). 논문 검색·요약은 MCP 서버(`server.py`)와
 새벽 스캔이 맡는다.
 
 실행:
@@ -24,7 +24,7 @@ import ops_dashboard
 import research_profile
 import run_profile_scan
 import server
-from review_core import _relative_time, run_async
+from ui_helpers import _relative_time, run_async
 
 APP_TITLE = "최신 연구 동향 모니터링 에이전트"
 ROOT = Path(__file__).resolve().parent
