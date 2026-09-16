@@ -5940,6 +5940,21 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     보장 없음 → Worker 필요) + 논문별 3버튼 렌더링 미확인. AMP(발신≠수신 조건·등록)·Outlook 카드·mailto·픽셀·다운로드 트릭은 탈락.
     **결정: Chrome 확장 Force Background Tab**(새 탭이 포커스를 안 가져감) — 코드 변경 없음, 페이지의 "탭 닫기" 버튼은 유지. README 에 적음.
 
+146. **반응 버튼 탭이 스스로 닫힌다 — 닫는 일을 샌드박스 밖으로 옮겼다** (2026-09-16, 사용자: "그냥 코드에 반응 버튼 누르고 나서 그 탭이 자동으로 닫히게 할 순 없어?").
+    §8-144 에서 막힌 이유를 한 겹 더 파니 길이 있었다. 확인한 사실: `ContentService.MimeType` 에는 **HTML 이 없다**(CSV·ICAL·JAVASCRIPT·JSON·TEXT·VCARD)
+    — 즉 Apps Script 가 돌려주는 화면은 언제나 HtmlService 의 샌드박스 iframe 이고 거기서는 자동 닫기가 불가능하다. 반면 **메일 링크로 열린 새 탭은
+    샌드박스가 아닌 문서면 스스로 닫힌다**(크로미움 실측: 직접 열기·리다이렉트 경유 모두 `window.close()` 성공).
+    그래서 버튼 → 우리 정적 페이지(`web/reaction/index.html`, GitHub Pages `/agent/web/reaction/`) → 페이지가 웹앱 `mode=json` 호출 → 탭 닫기.
+    공개 저장소라 **페이지에 웹앱 주소·비밀키를 넣지 않았다** — 메일 링크가 `?d=<배포 id>` 로 주고 페이지가 `script.google.com/macros/s/<id>/exec` 만
+    조립한다(형식 검사로 열린 전달자 방지). `feedback_links.page_url()`·`deploy_id()`, 없으면 종전 직행(되돌리기는 `.env` 한 줄 삭제).
+    Apps Script `record_` 를 `{ok, message, undoToken}` 반환으로 바꿔 화면·JSON 두 출구가 같은 판정을 쓴다.
+    브라우저 실측(playwright, 웹앱은 가짜로 가로챔): ① 탭 스스로 닫힘 ② 웹앱 1회 호출 ③ 원래 메일 탭·주소 유지 ④ 잘못된 배포 id 는 호출 0회
+    ⑤ CORS 가 막혀도 요청은 가고 탭은 닫힌다(그때 화면 문구는 "요청을 보냈어요" — 확인 못 한 것을 확인했다고 쓰지 않는다).
+    **실험 함정**: sync playwright 에서 `time.sleep` 으로 기다리면 이벤트가 안 돌아 닫힌 탭도 `is_closed()==False` 로 보인다 — 한 번 "안 닫힌다"고 오판했다.
+    GitHub Pages 활성(`source: main /`, `.nojekyll`), 페이지 200 확인. 테스트 4 추가(페이지 경유 링크·직행 폴백·배포 id 형식·페이지 소스에 주소 없음), 전체 1102 통과.
+    **남은 것**: `.env` 에 `FEEDBACK_PAGE_URL` 한 줄 추가(권한이 막아 사용자가 직접) + Apps Script 재배포(새 버전). 둘 다 되면 내일 새벽 메일부터 적용된다.
+    확장 프로그램(Force Background Tab, §8-145)은 이제 필요 없다 — 탭이 스스로 닫히므로.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

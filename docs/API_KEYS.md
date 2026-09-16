@@ -13,6 +13,8 @@
 | 초록 기반 요약 | `GOOGLE_API_KEY` | **이미 있음** |
 | 동향 보고·리뷰 | `GOOGLE_API_KEY` | **이미 있음** |
 | 메일 발송 | `SMTP_USER`/`SMTP_PASSWORD` | **이미 있음** |
+| 메일 반응 버튼 | `FEEDBACK_WEBAPP_URL`(Apps Script 배포 URL) · `FEEDBACK_HMAC_SECRET`(32자 이상) | **이미 있음** |
+| 버튼 누른 탭이 스스로 닫히게 | `FEEDBACK_PAGE_URL` = `https://moon201595.github.io/agent/web/reaction/` (공개 주소, 비밀 아님) | 추가 필요 |
 | 하루 요약 편수 늘리기 | `GOOGLE_API_KEY2`, `_3` … | **추가 발급 권장** |
 | **저널 본문**(수치 검증·코드 재현용) | Elsevier·IEEE | **기관 구독 필요** |
 
