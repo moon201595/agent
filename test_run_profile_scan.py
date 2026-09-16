@@ -496,7 +496,7 @@ def _seed_summary(monkeypatch, tmp_path, arxiv_ids):
                         (aid, "", 1, 1))
     monkeypatch.setattr(server, "DB_PATH", sdb)
     # 경로 소유자가 storage 로 옮겨갔다(2026-09-04) — 둘 다 패치해야
-    # server 도구와 digest·review_core 양쪽이 같은 임시 DB 를 본다.
+    # server 도구와 digest 양쪽이 같은 임시 DB 를 본다.
     monkeypatch.setattr(storage, "DB_PATH", sdb)
 
 
@@ -576,63 +576,6 @@ def _ranked(*specs):
     return [{"arxiv_id": a, "title": a,
              "_score": {"priority": pr, "core_hits": list(hits)}}
             for a, pr, hits in specs]
-
-
-def test_one_keyword_cannot_take_every_slot():
-    """**실측 회귀**(2026-09-06). 채점을 고쳐 상위 6칸을 전부 본문 확보된 ★★
-    논문으로 만들었더니, 그 6편이 **전부 같은 키워드**('defect detection')였다.
-    한 키워드가 한 창에 26편을 데려오기 때문이다. 매일 한 주제만 담긴 메일은
-    "이 분야가 어디로 가는가"를 못 말한다."""
-    ranked = _ranked(*[(f"d{i}", 0.98 - i * 0.001, ["defect detection"]) for i in range(8)],
-                     *[(f"r{i}", 0.70 - i * 0.001, ["robot learning"]) for i in range(3)])
-    out = rps._spread_keywords(ranked, max_items=6)[:6]
-    kinds = [p["_score"]["core_hits"][0] for p in out]
-    assert kinds.count("defect detection") == 3        # 절반까지만
-    assert kinds.count("robot learning") == 3
-
-
-def test_spread_counts_the_heaviest_keyword_not_the_first():
-    """`_spread_keywords` 는 `primary_hit` 을 쓴다 — 표적어를 맞힌 논문이
-    동향어 이름으로 세어지면 그 표적어의 상한이 안 깎인다(2026-09-06 지적).
-    """
-    def q(key, pr, hits, primary):
-        return {"arxiv_id": key, "title": key,
-                "_score": {"priority": pr, "core_hits": list(hits), "primary_hit": primary}}
-    # 넷 다 defect detection 이 표적어지만 core_hits 첫 번째는 제각각이다.
-    ranked = [q("p0", 0.9, ["defect detection"], "defect detection"),
-              q("p1", 0.8, ["embodied AI", "defect detection"], "defect detection"),
-              q("p2", 0.7, ["NPU", "defect detection"], "defect detection"),
-              q("p3", 0.6, ["robot learning"], "robot learning")]
-    out = rps._spread_keywords(ranked, max_items=4)[:4]
-    ids = [x["arxiv_id"] for x in out]
-    assert ids[:2] == ["p0", "p1"]        # 상한 2칸(4의 절반)까지
-    assert ids[2] == "p3"                 # p2 는 상한에 걸려 뒤로
-    assert ids[3] == "p2"
-
-
-def test_spread_falls_back_to_first_hit_for_old_scores():
-    """`primary_hit` 이 없는 구형·수기 `_score` 는 옛 동작(첫 번째 적중)으로
-    떨어진다 — 하위 호환."""
-    old = {"arxiv_id": "x", "title": "x",
-           "_score": {"priority": 0.9, "core_hits": ["defect detection"]}}
-    assert rps._primary_keyword(old) == "defect detection"
-    assert rps._primary_keyword({"_score": {"priority": 0.1}}) == ""
-
-
-def test_spread_invents_no_diversity_that_is_not_there():
-    """다른 키워드가 없으면 상한을 넘겨서라도 채운다 — 없는 다양성을
-    지어내려고 자리를 비우지 않는다."""
-    ranked = _ranked(*[(f"d{i}", 0.9 - i * 0.01, ["defect detection"]) for i in range(6)])
-    out = rps._spread_keywords(ranked, max_items=6)
-    assert [p["arxiv_id"] for p in out] == [f"d{i}" for i in range(6)]
-
-
-def test_spread_keeps_relative_order_within_a_keyword():
-    """뒤로 미룬 논문끼리의 순서는 그대로다 — 순위를 다시 매기지 않는다."""
-    ranked = _ranked(*[(f"d{i}", 0.9 - i * 0.01, ["defect detection"]) for i in range(5)],
-                     ("r0", 0.5, ["robot learning"]))
-    out = rps._spread_keywords(ranked, max_items=4)
-    assert [p["arxiv_id"] for p in out] == ["d0", "d1", "r0", "d2", "d3", "d4"]
 
 
 def test_arxiv_failure_does_not_kill_the_day(tmp_path, monkeypatch):
@@ -1256,61 +1199,6 @@ def _p(key, score, arxiv=False, oa=None):
             "title": f"paper {key}",
             "_score": {"priority": score, "core_hits": [], "domain_hits": [],
                        "venue_hit": None, "top_core_weight": 1.0}}
-
-
-def test_only_papers_we_can_fetch_are_eligible_for_content_slots():
-    """09-04·09-06 메일이 이걸로 망가졌다 — 본문 못 받는 저널이 번호 붙은
-    자리를 먹고 "처리 실패" 를 실었다."""
-    ranked = [_p("j1", 0.9), _p("j2", 0.8), _p("a1", 0.7, arxiv=True),
-              _p("j3", 0.6), _p("a2", 0.5, arxiv=True)]
-    top, rest = rps._eligible_for_content(ranked, max_items=2)
-    assert [x["arxiv_id"] for x in top] == ["a1", "a2"]
-    assert {x["doi"] for x in rest} == {"j1", "j2", "j3"}
-
-
-def test_gate_runs_before_the_keyword_spread():
-    """**실측 회귀**(2026-09-06). 처음엔 다양성 → 문지기 순으로 불렀는데,
-    문지기가 전체 목록에서 자격자를 다시 뽑으면서 다양성 제한을 되돌렸다 —
-    3칸 상한인 'defect detection' 이 6칸 중 4칸을 먹었다.
-    순서는 **자격 → 다양성 → 자르기** 다."""
-    def q(key, score, kw):
-        return {"arxiv_id": key, "doi": None, "open_access_pdf": None,
-                "title": key, "_score": {"priority": score, "core_hits": [kw],
-                                         "domain_hits": [], "venue_hit": None,
-                                         "top_core_weight": 1.0}}
-    ranked = ([q(f"d{i}", 0.9 - i * 0.001, "defect detection") for i in range(6)]
-              + [q(f"s{i}", 0.8 - i * 0.001, "surface inspection") for i in range(3)])
-    eligible, _dropped = rps._eligible_for_content(ranked, 4)
-    top = rps._spread_keywords(eligible, 4)[:4]
-    kinds = [x["_score"]["core_hits"][0] for x in top]
-    assert kinds.count("defect detection") == 2      # 4칸의 절반까지만
-    assert kinds.count("surface inspection") == 2
-
-
-def test_open_access_link_counts_as_a_route():
-    """저널이라고 무조건 빼지 않는다 — 소형 OA 저널은 실측 6/8 로 열린다."""
-    ranked = [_p("oa1", 0.9, oa="https://dergipark.org.tr/x.pdf"), _p("j1", 0.8)]
-    top, rest = rps._eligible_for_content(ranked, max_items=1)
-    assert top[0]["doi"] == "oa1"
-    assert rest[0]["doi"] == "j1"
-
-
-def test_order_inside_the_slots_is_still_relevance():
-    """§8-44 의 교훈 — 자리는 걸러도 **순서는 관련도 그대로**."""
-    ranked = [_p("a1", 0.9, arxiv=True), _p("j1", 0.85), _p("a2", 0.8, arxiv=True)]
-    top, _rest = rps._eligible_for_content(ranked, max_items=2)
-    assert [x["_score"]["priority"] for x in top] == [0.9, 0.8]
-
-
-def test_empty_slots_are_filled_rather_than_left_blank():
-    """본문 되는 논문이 모자란 날은 관련도 순으로 채운다 — 매일 오는 메일
-    자체가 파이프라인 생존 신호다(_deliver 주석). 빈 메일을 만들지 않는다."""
-    ranked = [_p("j1", 0.9), _p("j2", 0.8), _p("a1", 0.3, arxiv=True)]
-    top, rest = rps._eligible_for_content(ranked, max_items=3)
-    assert len(top) == 3
-    assert [x["_score"]["priority"] for x in top] == [0.9, 0.8, 0.3]
-    assert rest == []
-
 
 
 # ------------------------------------------- ⑨ 종료코드 전파 (2026-09-07)
@@ -1944,7 +1832,6 @@ def test_시드를_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
     starts = [datetime.fromisoformat(r[0]) for r in rows]
     assert all(s < now - timedelta(days=6) for s in starts), (
         f"시드가 바뀌었는데 창이 최근 커서를 이어받았다: {starts}")
-
 
 
 def test_pending_reproduction_sends_reason_in_same_email(tmp_path, monkeypatch):

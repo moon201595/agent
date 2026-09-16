@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from import_local_embeddings import import_embeddings, validate_records
+from scripts.import_local_embeddings import import_embeddings, validate_records
 
 
 def test_validate_records_accepts_well_formed_list():

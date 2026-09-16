@@ -5,7 +5,6 @@ import term_hygiene as H
 import term_discovery as td
 import trend_report
 import profile_advisor
-import rule_advisor
 
 
 def _r(term: str):
@@ -74,12 +73,8 @@ def test_세_소비자가_같은_판정을_쓴다():
              "s2_seeds": {"seed-a", "seed-b"}} for i in range(3)]
     via_discovery = {term["term"] for term in td.discover(pool, profile, {"min_papers": 2,
                                                                             "top_terms": 50})}
-    sent = {"allowed_tiers": [1.0], "papers": [{"key": f"p{i}", "title": "Defect detection",
-             "abstract": text} for i in range(3)]}
-    via_rule = {proposal["term"] for proposal in rule_advisor.propose(sent, profile,
-                                                                        {"min_support": 2,
-                                                                         "max_proposals": 50})["proposals"]}
-    for names in (via_trend, via_discovery, via_rule):
+    # 규칙 제안기(rule_advisor)는 2026-09-16 에 지웠다(운영 호출 없음) — 소비자는 이제 둘이다.
+    for names in (via_trend, via_discovery):
         assert "world models" in names and "large language models" not in names
         assert "certain models" in names
         assert "previous studies" not in names

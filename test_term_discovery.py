@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 import http_client
 import profile_advisor as adv
 import research_profile as rp
-import rule_advisor
 import run_profile_scan as rps
 import term_discovery as td
 
@@ -116,26 +115,6 @@ def test_제안기_입력에는_용어와_증거만_나가고_편수는_안_나�
     assert validated and not validated[0].get("errors"), validated
 
 
-def test_규칙_제안기도_탐색_용어를_같은_입력에서_본다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: R 이 exploration 을 무시해 F/R/A 비교에서 A 만 탈락 후보를 보는 것,
-    증거가 min_support 미만인 탐색 용어를 내는 것, max_proposals 를 넘기는 것."""
-    db = tmp_path / "t.db"; _profile(db)
-    _run(db, monkeypatch, DROPPED + HIT)
-    profile = rp.get_profile(db, "p")
-    import profile_impact
-    snap = profile_impact.snapshot(db, "p", *_win())
-    terms = td.discover(td.exploration_pool(db, "p", *_win()), profile)
-    sent = adv.build_input(snap, profile, adv.select_papers(snap, profile, limit=adv.DELIVERY_PAPERS), terms)
-    out = rule_advisor.propose(sent, profile)
-    mine = [p for p in out["proposals"] if p["term"] == "spiking sensor"]
-    assert mine and mine[0]["evidence_paper_keys"] == ["d1", "d0"] and mine[0]["reason"].startswith("rule:exploration")
-    thin = {**sent, "exploration": [{"term": "lonely term", "papers": [{"key": "d0", "title": "", "abstract": ""}]}]}
-    assert not any(p["term"] == "lonely term" for p in rule_advisor.propose(thin, profile)["proposals"])
-    many = {**sent, "exploration": [{"term": f"t{i} x", "papers": [{"key": "d0", "title": "", "abstract": ""},
-                                                                   {"key": "d1", "title": "", "abstract": ""}]} for i in range(6)]}
-    assert len(rule_advisor.propose(many, profile)["proposals"]) <= rule_advisor.DEFAULT_RULES["max_proposals"]
-
-
 def test_주간_리뷰에_탐색_절이_붙고_관측_없는_기간은_미측정이다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: 절이 안 붙는 것, 관측 없는 기간을 '없음(0)'으로 쓰는 것."""
     import storage, trend_report
@@ -209,28 +188,6 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
     assert "spiking sensor" in tail and len(tail) <= 204 and tail.startswith("…")
     ev_texts = [e["abstract"] for e in by["spiking sensor"]["evidence"]]
     assert all("spiking sensor" in e for e in ev_texts)
-
-
-def test_규칙_제안기는_두_차선을_같이_경쟁시키고_문턱을_가른다():
-    """이 테스트가 잡는 것: 일반 차선이 3자리를 선점해 탐색 후보가 경쟁도 못 하는 것,
-    min_support 를 올리면 탐색 증거 2편이 통째로 죽는 것, 표기 변형 제안."""
-    profile = {"core_topics": ["core term"], "core_weights": {"core term": 1.0}, "target_domain": [], "exclude": []}
-    papers = [{"key": f"n{i}", "title": "core term paper", "abstract": "alpha beta gamma delta epsilon zeta"} for i in range(4)]
-    sent = {"allowed_tiers": [1.0], "papers": papers, "sent_paper_keys": [p["key"] for p in papers],
-            "exploration": [{"term": "spiking sensor", "papers": [{"key": "e1", "title": "", "abstract": "spiking sensor"},
-                                                                  {"key": "e2", "title": "", "abstract": "spiking sensor"}]},
-                            {"term": "core terms", "papers": [{"key": "e3", "title": "", "abstract": "core terms"},
-                                                              {"key": "e4", "title": "", "abstract": "core terms"}]}]}
-    out = rule_advisor.propose(sent, profile)
-    terms = [p["term"] for p in out["proposals"]]
-    assert len(terms) <= 3 and "spiking sensor" in terms, "탐색 자리 하나는 예약된다"
-    assert "core terms" not in terms, "기존 키워드의 복수형은 제안이 아니다"
-    only_variant = {**sent, "exploration": [sent["exploration"][1]]}
-    assert not any(p["term"] == "core terms" for p in rule_advisor.propose(only_variant, profile)["proposals"]), "자리가 남아도 표기 변형은 안 낸다"
-    out = rule_advisor.propose(sent, profile, {"min_support": 3})
-    assert "spiking sensor" in [p["term"] for p in out["proposals"]], "min_support 는 탐색 문턱이 아니다"
-    out = rule_advisor.propose(sent, profile, {"min_exploration_evidence": 3})
-    assert "spiking sensor" not in [p["term"] for p in out["proposals"]]
 
 
 def test_시드_축은_독립_시드_둘_이상이어야_하고_단일_시드_반복은_잡음_진단으로_간다():

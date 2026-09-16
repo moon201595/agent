@@ -81,7 +81,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `trend_report.py` | 매일 동향 서술, 주간 키워드·저자·출처 비교와 인용망 리뷰. 프로필이 있으면 주간 모집단은 최초 발견일(`search_candidates.first_seen`) 기준이고 두 기간 모두 현재 프로필로 채점한다(프로필 없는 구형 호출만 요약 저장일 기준) |
 | `email_delivery.py` | Gmail SMTP STARTTLS로 평문·HTML 메일 발송. `SMTP_USER` · `SMTP_PASSWORD`를 참조 |
 | `retraction.py` | arXiv ID에서 DOI를 만들어 OpenAlex 철회 신호를 조회하고 필요하면 Crossref 갱신 유형으로 확인. 미조회·의심·철회·비철회를 구분 |
-| `review_core.py` | Streamlit에서 분리한 요약·업로드·검증 상세·재현 상태 조회 로직. 수동 요약도 저장 직후 ⑦을 시작 |
+| `ui_helpers.py` | 화면이 쓰는 Streamlit 없는 보조(상대 시간·비동기 실행). 옛 `review_core.py`(수동 요약·업로드 경로)는 2026-09-16 삭제 |
 | `storage.py` | 저장 경로, 기본 DB 스키마·WAL 초기화, SQLite 연결과 arXiv ID 정규화 |
 | `http_client.py` · `pacing.py` | arXiv·S2 HTTP 요청·재시도와 공통 호출 간격 제어. S2 429가 반복되면 간격을 늘림 |
 | `api_usage.py` | provider·응답 결과별 프로세스 내 호출 계수와 실행·논문별 구간 집계. 별도 프로세스인 ⑦은 이 합계 밖 |
@@ -90,7 +90,6 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `observation_signals.py` | 스캔별 관측(`candidate_observations`·`scan_runs`)에서 시드 수율·출처 기여·탈락 사유를 센다. 관측 없는 기간은 0 이 아니라 미측정 (B, 2026-09-11) |
 | `profile_impact.py` | 프로필 변경 하나의 적용 전 영향 분석 — 고정 스냅샷에서 전후 재채점, 게이트 상태 7종. 임계값 미설정이면 `eligible_for_apply` 가 나오지 않는다 (C) |
 | `profile_advisor.py` · `prompts/profile_advisor_v1.md` | 주간 LLM 프로필 제안기. 밖에 나가는 것은 관심사와 논문 제목·초록·키뿐. HTTP 요청 2회 상한을 영속 장부로 지킨다. 운영 모드 기본 `proposal_only` — 적용은 닫혀 있다 (D) |
-| `rule_advisor.py` | 규칙 기반 제안기 R — LLM 제안기와 같은 입력·같은 계약·같은 게이트. F/R/A 비교의 R 팔 (E1) |
 | `evaluation.py` | 지연·비용·제안 효율·core 적중 비율, 독립 라벨이 있을 때만 의미상 지표, 시점 누수 없는 재생, 불변 실험 manifest (E1) |
 | `profile_health.py` | 프로필 건강 지표 — 스캔별 당시 스냅샷 재채점으로 anchor 적중·계층·최신성·제외어 충돌을 센다. "적용 후 악화"의 정의(규칙은 미설정으로 시작) |
 | `term_discovery.py` | 탐색 차선 — 키워드에 안 걸려 탈락한 논문에서 n-gram 후보 용어를 로컬로 찾고 용어당 증거 논문만 제안기에 넘긴다(LLM 은 검토자) |
@@ -114,7 +113,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 - `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
-- `test_*.py` — 테스트 파일 56개, 전체 pytest **1,111개 통과**(2026-09-16 실측; 2026-09-09 에는 35개 파일·785개). `test_smoke.py` 는 pytest 가 수집하지 않는 수동 네트워크 스모크다
+- `test_*.py` — 테스트 파일 55개, 전체 pytest **1,080개 통과**(2026-09-16 실측; 2026-09-09 에는 35개 파일·785개). `test_smoke.py` 는 pytest 가 수집하지 않는 수동 네트워크 스모크다
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL` · `OPENALEX_API_KEY` · `SMTP_USER` · `SMTP_PASSWORD` 등의 설정 (커밋 제외, 시크릿을 읽거나 출력하지 않는다)
 
@@ -178,7 +177,7 @@ arXiv·S2 공통 HTTP 경로는 일반 재시도 가능 오류에 최초 요청 
 ```bash
 python3 -m venv .venv                         # 새 환경에서만 생성
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest                    # 1,111개 통과 (2026-09-16 실측)
+.venv/bin/python -m pytest                    # 1,080개 통과 (2026-09-16 실측)
 .venv/bin/coverage run -m pytest && .venv/bin/coverage report   # 커버리지
 ```
 
@@ -288,7 +287,7 @@ pypdf 는 2단 조판과 표를 자주 뭉개고, 그게 ⑤ 의 거짓 불일�
 | 메일 | 1명 발송 완료 |
 | 같은 운행의 arXiv core 적중 | 388편 중 313편(80.7%) |
 | 같은 운행의 S2 core 적중 | 59편 중 13편(22.0%) |
-| 전체 테스트 | `.venv/bin/python -m pytest` 1,111개 통과 · 테스트 파일 56개 (2026-09-16) |
+| 전체 테스트 | `.venv/bin/python -m pytest` 1,080개 통과 · 테스트 파일 55개 (2026-09-16) |
 | 유지할 회귀 기준선 | `eval.py`, 39편 · pass_ratio 0.982 |
 
 출처별 적중률은 검색 후보의 core 적중이며, 검색 회수율이나 요약 정확도가 아니다. 수치 검증 통과도 요약 전체의 의미적 정확성을 보증하지 않는다. 현재 요약의 의미적 정확도와 전체 관련 논문 대비 검색 회수율은 **미실측**이다. 이 한 번의 운행을 평균 처리 시간이나 매일의 성능 보장으로 쓰지 않는다. 같은 날짜의 프로필·시드 개정 후 성능도 이 운행값만으로 입증되지 않는다.
