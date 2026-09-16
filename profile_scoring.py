@@ -181,25 +181,27 @@ DOMAIN_HITS_CAP = 2
 #                    1.0→0, 0.6→1, … 낮을수록 먼저. 적중 core 중 최고 계층.
 #                    부동소수 값 대신 순위를 쓴다 — 0.35 와 0.4 의 차이는
 #                    "계층이 다르다"이지 "0.05 만큼 덜 관련"이 아니다.
-#   -day_ordinal     공개일을 **일 단위**로 정규화. 시·분 차이로 한 출처를
-#                    우대하지 않는다. 날짜를 모르면 0 — ordinal 은 항상 양수라
-#                    같은 계층 안에서 날짜 있는 것 뒤로 간다(§5.4). 계층은
-#                    넘지 않는다. (처음엔 별도 플래그를 뒀는데 이 항과 동작이
-#                    같아 돌연변이가 안 잡혔다 — 중복이라 뺐다.)
-#   -core_breadth    같은 날이면 서로 다른 core 적중 수(상한 2). **날짜 아래**에
-#                    둔다 — 계획서 §5.3 은 결합을 최신성보다 앞세우지 말라고
-#                    했지 동률 안에서 무시하라고 하지 않았다. 없으면 같은 날
-#                    core 둘 맞힌 논문이 core 하나+도메인 하나 논문에 밀린다
-#                    (09-04 메일의 PhyHGNet 회귀가 그 모양이었다).
-#   -domain_hits     그 다음 도메인 적중 수(상한 2). 동의어 묶음은 확인된 것이
-#                    없어 아직 안 한다 — 문자열 적중 수 그대로다.
+#   date_band        (가장 최신 후보의 날짜 − 이 논문의 날짜) // DATE_BAND_DAYS.
+#                    **2026-09-16 개정(rank-tuple-v2)**: 그전엔 일 단위 날짜가 둘째 항이라
+#                    어제 나온 단일 적중 논문이 그제 나온 3중 적중 논문을 늘 밀어냈다.
+#                    실측(18회 스캔 재생): 핵심 계층 후보가 하루 60~160편인데 상위 5 는
+#                    "가장 최근 5편"일 뿐이었고 2개념 이상 적중은 90자리 중 16. 3일 띠로
+#                    묶으니 43 이 되고 평균 나이는 1.9일(최대 5일)로 최신성은 지켰다.
+#                    사용자 결정: "최신 우선이긴 한데 2~3일 차이는 동일 점수로".
+#                    기준은 **그 스캔의 가장 최신 후보** — 절대 달력 구간(월·수·토)을
+#                    쓰면 하루 차이가 띠 경계에 걸려 갈린다. 날짜 없음은 큰 띠(뒤로).
+#   -core_breadth    띠 안에서 서로 다른 **개념** 적중 수(상한 2). 문자열이 아니라
+#                    개념으로 세는 이유: 9/16 키워드 개정에서 'robot manipulation'/
+#                    'robotic manipulation', 'LLM agent'/'LLM-based agent' 같은 표기
+#                    변형을 따로 넣었다 — 문자열로 세면 변형 둘이 결합으로 승격된다
+#                    (재생에서 7편이 그랬다). `concept_key` 가 변형을 접는다.
+#   -day_ordinal     띠 안에서는 여전히 최신이 먼저(일 단위). 날짜 모르면 0.
+#   -domain_hits     그 다음 도메인 적중 수(상한 2).
 #   paper_key        동률 안정화. 입력 순서에 의존하지 않는다.
 #
 # `priority` 는 계속 계산해 **설명 필드로만** 남긴다. 정렬·자격 판정에는
-# 안 쓴다. 결합축(서로 다른 연구축 동시 적중)은 **최신성 위에** 놓지
-# 않는다(§5.3) — 지금 `core_hits` 는 연구축 수가 아니라 문자열 적중 목록이라,
-# 그걸 결합 개수로 쓰면 동의어 둘이 결합축으로 승격된다. 날짜 아래 동률
-# 가르개로만 쓰는 이유가 그것이다 — 피해가 같은 날 안으로 갇힌다.
+# 안 쓴다. 옛 계획서 §5.3 "결합을 최신성보다 앞세우지 말라"는 **3일 띠 안에서만**
+# 완화한 것이다 — 띠를 넘는 오래된 논문은 결합이 많아도 뒤로 간다.
 
 DATE_FORMATS = ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d")
 
@@ -258,18 +260,48 @@ def tier_rank(profile: dict, core_hits: list[str]) -> int | None:
     return table.index(best)
 
 
-def rank_key(paper: dict, result: dict, profile: dict) -> tuple:
+DATE_BAND_DAYS = 3        # "2~3일 차이는 같은 점수"(사용자, 2026-09-16)
+_NO_DATE_BAND = 10 ** 6   # 날짜 없는 논문은 어떤 띠보다 뒤 — 계층은 넘지 않는다
+
+# 표기 변형 접기 — 개념 폭을 셀 때만 쓴다(채점·적중 표시는 그대로). 실제로 프로필에 넣은 변형 쌍만 적는다(짐작으로 늘리지 않는다).
+_CONCEPT_FOLDS = (
+    (re.compile(r"\brobotic\b"), "robot"),                 # robot manipulation ↔ robotic manipulation
+    (re.compile(r"\blarge language model\b"), "llm"),      # LLM agent ↔ large language model agent
+    (re.compile(r"-based\b"), ""),                          # LLM agent ↔ LLM-based agent
+)
+
+
+def concept_key(keyword: str) -> str:
+    """키워드의 개념 키 — 표기 변형(하이픈·robotic·-based·large language model)을 접은 소문자 문자열."""
+    k = keyword.lower()
+    for pat, rep in _CONCEPT_FOLDS:
+        k = pat.sub(rep, k)
+    return re.sub(r"[\s\-‐-―_/]+", " ", k).strip()
+
+
+def concept_breadth(hits: list[str]) -> int:
+    """서로 다른 개념 적중 수(상한 2)."""
+    return min(len({concept_key(h) for h in hits}), 2)
+
+
+def rank_key(paper: dict, result: dict, profile: dict, newest_day: int | None = None) -> tuple:
     """선별 순서 계약(위 주석). 오름차순 정렬에 그대로 쓴다.
-    적중이 없는 논문은 애초에 순위 대상이 아니므로 호출부가 먼저 거른다."""
+    적중이 없는 논문은 애초에 순위 대상이 아니므로 호출부가 먼저 거른다.
+    `newest_day` 는 정렬 대상 후보 중 가장 최신 공개일(ordinal) — `score_and_rank` 가 넘긴다. None 이면 이 논문의 날짜를 기준으로
+    삼아 띠가 0 이 된다(단독 호출 호환)."""
     from research_profile import paper_key  # 순환 없음 — research_profile 은 이 모듈을 안 부른다
     hits = result.get("core_hits") or []
     tr = tier_rank(profile, hits)
     day, _precision = publication_day(paper.get("published"))
-    breadth = min(len(hits), 2)
+    if day is None:
+        band = _NO_DATE_BAND
+    else:
+        band = max(0, ((newest_day if newest_day is not None else day) - day)) // DATE_BAND_DAYS
     domain = min(len(result.get("domain_hits") or []), DOMAIN_HITS_CAP)
     return (tr if tr is not None else 10 ** 6,
+            band,
+            -concept_breadth(hits),
             -(day or 0),
-            -breadth,
             -domain,
             paper_key(paper))
 
@@ -524,7 +556,9 @@ def score_and_rank(
         scored.append({**p, "_score": result})
 
     # 가중합이 아니라 튜플 계약으로 정렬한다(2026-09-11, 위 주석). 오름차순.
-    scored.sort(key=lambda p: rank_key(p, p["_score"], profile))
+    # 날짜 띠의 기준은 **이 후보 집합에서 가장 최신 공개일** — 절대 달력이 아니다(위 계약 주석).
+    newest = max((publication_day(p.get("published"))[0] or 0 for p in scored), default=0) or None
+    scored.sort(key=lambda p: rank_key(p, p["_score"], profile, newest_day=newest))
     if top_k is not None:
         scored = scored[:top_k]
 

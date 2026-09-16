@@ -195,6 +195,17 @@ _inject_custom_style()
 
 
 
+def _parse_terms(text: str) -> list[str]:
+    """줄바꿈·쉼표 어느 쪽으로 나눠도 같은 목록(빈 항목·중복 제거, 순서 유지)."""
+    seen: list[str] = []
+    for chunk in text.replace("\r", "\n").split("\n"):
+        for k in chunk.split(","):
+            k = k.strip()
+            if k and k not in seen:
+                seen.append(k)
+    return seen
+
+
 def _render_profile_form(db_path, existing: dict | None) -> None:
     """existing이 None이면 새 프로필 생성 폼, 아니면 그 프로필의 현재 값을
     채워 넣은 수정 폼 — research_profile.create_profile이 항상 전체
@@ -212,10 +223,13 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
         key=f"{key_prefix}_id",
     )
     name = st.text_input("표시 이름", value="" if is_new else existing["name"], key=f"{key_prefix}_name")
-    core_topics = st.text_input(
-        "핵심 키워드 (콤마로 구분, OR 조건 — 하나만 걸려도 후보)",
-        value=", ".join(existing["core_topics"]) if existing else "",
-        key=f"{key_prefix}_core",
+    # 한 줄 쉼표 입력이었을 때 사고(2026-09-16 16:17, §8-149): 커서가 "world model" 의 마지막 글자 앞에 놓인 채 ", neuromorphic" 을
+    # 쳐서 "world mode, neuromorphicl" 이 두 번 저장됐다 — 키워드 하나가 조용히 사라지고 오타가 1.0 으로 들어갔다. 한 줄에 하나씩
+    # 쓰는 칸으로 바꾸고, 기존 키워드가 사라지면 아래에서 삭제 확인을 받는다.
+    core_topics = st.text_area(
+        "핵심 키워드 (한 줄에 하나 — 쉼표도 됨. OR 조건, 하나만 걸려도 후보)",
+        value="\n".join(existing["core_topics"]) if existing else "",
+        key=f"{key_prefix}_core", height=240,
     )
     target_domain = st.text_input(
         "관심 도메인 (콤마로 구분, 있으면 가점만 — 필수 아님)",
@@ -246,7 +260,16 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
     )
 
     label = "프로필 만들기" if is_new else "수정 저장"
-    if st.button(label, key=f"{key_prefix}_submit", type="primary"):
+    new_core = _parse_terms(core_topics)
+    removed = [k for k in (existing["core_topics"] if existing else []) if k not in new_core]
+    added = [k for k in new_core if existing and k not in existing["core_topics"]]
+    confirmed = True
+    if existing and (removed or added):
+        st.info("바뀌는 것 — " + (f"삭제 {', '.join(removed)}" if removed else "") + (" · " if removed and added else "")
+                + (f"추가 {', '.join(added)} (가중치 1.0 으로 들어갑니다)" if added else ""))
+    if removed:
+        confirmed = st.checkbox(f"위 {len(removed)}개 키워드 삭제를 확인합니다(오타로 사라지는 것이 아닌지 보세요)", key=f"{key_prefix}_confirm_rm")
+    if st.button(label, key=f"{key_prefix}_submit", type="primary", disabled=not confirmed):
         pid = profile_id.strip()
         if not pid or not name.strip():
             st.warning("프로필 ID와 이름은 비워둘 수 없음")
@@ -256,7 +279,6 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
             # 고치고 저장하는 것만으로 프로필의 등급이 통째로 날아갔다.
             # 화면에 가중치 입력이 없으므로 기존 값을 그대로 실어 보낸다.
             kept_weights = (existing or {}).get("core_weights") or {}
-            new_core = [k.strip() for k in core_topics.split(",") if k.strip()]
             # 주기도 같이 넘긴다(2026-09-16) — 안 넘기면 create_profile 기본값 daily 로 되돌아가 수동 프로필이 새벽 cron 에 들어간다.
             freq, at = research_profile.get_schedule(db_path, pid) if not is_new else ("daily", "05:00")
             research_profile.create_profile(
