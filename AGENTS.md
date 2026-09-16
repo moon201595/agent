@@ -101,7 +101,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - `docker_runner.py` · `email_delivery.py` — 격리 실행과 실제 발송을 맡는다. 바꾸면 기존 재현 성공 사례 회귀와 발송 경로 테스트를 같이 돌린다.
 - `data/` — 자동 생성물이고 ⑦ 이 clone 해 온 외부 저장소가 들어 있다. 커밋 대상이 아니다. 오래된 데이터는 보존표(계획 v2 §9)대로 백업 뒤 정리한다.
 - `.env` — 읽지 않는다.
-- `docs/patent/` · `docs/paper/` — 사내 문서, `.gitignore` 대상. 외부 LLM 입력에 넣지 않는다.
+- `docs/patent/` · `docs/paper/` — 사내 문서, `.gitignore` 대상. **API 로 부르는 외부 LLM(Gemini·Groq 등)에 넣지 않는다.** Claude Code·Codex(구독 CLI)는
+  이 프로젝트의 내부 도구로 본다 — 사내 문서 검토·수정을 맡겨도 된다(2026-09-16 사용자 결정). 시크릿(`.env`)은 여전히 어느 쪽에도 넣지 않는다.
 - `prompts/*.md` — 프롬프트 자산이고 버전 관리 대상이다.
 
 ## 위임받은 도구가 지킬 것 (Codex 등)
