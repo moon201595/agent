@@ -114,7 +114,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 - `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
-- `test_*.py` — 테스트 파일 35개, 전체 pytest **785개 통과**(2026-09-09 제공된 실측). `test_smoke.py` 등 네트워크가 필요한 테스트도 포함한다
+- `test_*.py` — 테스트 파일 56개, 전체 pytest **1,111개 통과**(2026-09-16 실측; 2026-09-09 에는 35개 파일·785개). `test_smoke.py` 는 pytest 가 수집하지 않는 수동 네트워크 스모크다
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL` · `OPENALEX_API_KEY` · `SMTP_USER` · `SMTP_PASSWORD` 등의 설정 (커밋 제외, 시크릿을 읽거나 출력하지 않는다)
 
@@ -178,7 +178,7 @@ arXiv·S2 공통 HTTP 경로는 일반 재시도 가능 오류에 최초 요청 
 ```bash
 python3 -m venv .venv                         # 새 환경에서만 생성
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest                    # 785개 통과 (2026-09-09 실측)
+.venv/bin/python -m pytest                    # 1,111개 통과 (2026-09-16 실측)
 .venv/bin/coverage run -m pytest && .venv/bin/coverage report   # 커버리지
 ```
 
@@ -288,7 +288,7 @@ pypdf 는 2단 조판과 표를 자주 뭉개고, 그게 ⑤ 의 거짓 불일�
 | 메일 | 1명 발송 완료 |
 | 같은 운행의 arXiv core 적중 | 388편 중 313편(80.7%) |
 | 같은 운행의 S2 core 적중 | 59편 중 13편(22.0%) |
-| 전체 테스트 | `.venv/bin/python -m pytest` 785개 통과 · 테스트 파일 35개 |
+| 전체 테스트 | `.venv/bin/python -m pytest` 1,111개 통과 · 테스트 파일 56개 (2026-09-16) |
 | 유지할 회귀 기준선 | `eval.py`, 39편 · pass_ratio 0.982 |
 
 출처별 적중률은 검색 후보의 core 적중이며, 검색 회수율이나 요약 정확도가 아니다. 수치 검증 통과도 요약 전체의 의미적 정확성을 보증하지 않는다. 현재 요약의 의미적 정확도와 전체 관련 논문 대비 검색 회수율은 **미실측**이다. 이 한 번의 운행을 평균 처리 시간이나 매일의 성능 보장으로 쓰지 않는다. 같은 날짜의 프로필·시드 개정 후 성능도 이 운행값만으로 입증되지 않는다.

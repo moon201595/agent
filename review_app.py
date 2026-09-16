@@ -53,7 +53,7 @@ def _inject_custom_style() -> None:
         :root {
             --blue: #3B5BDB; --blue-dark: #2F4AB8; --blue-100: #EEF2FF; --blue-200: #D6DEFA;
             --ink: #111827; --ink-2: #374151; --muted: #5B6577; --line: #E5E7EB;
-            --surface: #FFFFFF; --canvas: #F6F8FB;
+            --surface: #FFFFFF; --canvas: #F6F8FB; --canvas-2: #EDF0F5;
             --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06); --shadow-2: 0 2px 6px rgba(16, 24, 40, 0.08);
             /* 옛 이름 — 화면 코드의 인라인 style 이 아직 쓴다 */
             --sky: var(--blue); --sky-dark: var(--blue-dark); --sky-light: var(--blue-100); --sky-border: var(--blue-200);
@@ -149,7 +149,7 @@ def _inject_custom_style() -> None:
             justify-content: flex-start; text-align: left; font-weight: 500; border: 1px solid transparent; background-color: transparent;
             padding-left: 2.4rem; background-repeat: no-repeat; background-size: 18px 18px; background-position: 12px center; box-shadow: none;
         }
-        [data-testid="stSidebar"] [data-testid="stButton"] button:hover { background-color: #EDF0F5; border-color: transparent; color: var(--ink); }
+        [data-testid="stSidebar"] [data-testid="stButton"] button:hover { background-color: var(--canvas-2); border-color: transparent; color: var(--ink); }
         [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
         [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
             background-color: var(--blue-100) !important; border: 1px solid var(--blue-200) !important;
@@ -261,14 +261,26 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
 
     label = "프로필 만들기" if is_new else "수정 저장"
     new_core = _parse_terms(core_topics)
-    removed = [k for k in (existing["core_topics"] if existing else []) if k not in new_core]
-    added = [k for k in new_core if existing and k not in existing["core_topics"]]
+    # 네 목록 전부 전후를 대조한다(Codex 검토 2026-09-16 P1: 제외어·S2 시드를 비워 저장해도 확인이 없었다 — 제외어가 빠지면 걸러내던 논문이
+    # 다시 들어오고, 시드가 빠지면 S2 검색 범위가 조용히 바뀐다). 삭제가 하나라도 있으면 확인 체크 전까지 저장 버튼을 잠근다.
+    lists = {"핵심 키워드": (existing["core_topics"] if existing else [], new_core),
+             "관심 도메인": (existing["target_domain"] if existing else [], _parse_terms(target_domain)),
+             "제외 키워드": (existing["exclude"] if existing else [], _parse_terms(exclude)),
+             "S2 시드": (existing["s2_seeds"] if existing else [], _parse_terms(s2_seeds))}
+    removed_all = {name: [k for k in before if k not in after] for name, (before, after) in lists.items()}
+    added_all = {name: [k for k in after if k not in before] for name, (before, after) in lists.items()}
+    n_removed = sum(len(v) for v in removed_all.values())
     confirmed = True
-    if existing and (removed or added):
-        st.info("바뀌는 것 — " + (f"삭제 {', '.join(removed)}" if removed else "") + (" · " if removed and added else "")
-                + (f"추가 {', '.join(added)} (가중치 1.0 으로 들어갑니다)" if added else ""))
-    if removed:
-        confirmed = st.checkbox(f"위 {len(removed)}개 키워드 삭제를 확인합니다(오타로 사라지는 것이 아닌지 보세요)", key=f"{key_prefix}_confirm_rm")
+    if existing and (n_removed or any(added_all.values())):
+        parts = []
+        for name in lists:
+            if removed_all[name]:
+                parts.append(f"{name} 삭제: {', '.join(removed_all[name])}")
+            if added_all[name]:
+                parts.append(f"{name} 추가: {', '.join(added_all[name])}" + (" (가중치 1.0 으로 들어갑니다)" if name == "핵심 키워드" else ""))
+        st.info("바뀌는 것 — " + " · ".join(parts))
+    if n_removed:
+        confirmed = st.checkbox(f"위 {n_removed}개 항목 삭제를 확인합니다(오타로 사라지는 것이 아닌지 보세요)", key=f"{key_prefix}_confirm_rm")
     if st.button(label, key=f"{key_prefix}_submit", type="primary", disabled=not confirmed):
         pid = profile_id.strip()
         if not pid or not name.strip():
@@ -284,12 +296,12 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
             research_profile.create_profile(
                 db_path, pid, name.strip(),
                 core_topics=new_core, schedule_frequency=freq, schedule_time=at,
-                target_domain=[k.strip() for k in target_domain.split(",") if k.strip()],
-                exclude=[k.strip() for k in exclude.split(",") if k.strip()],
-                venues=[k.strip() for k in venues.split(",") if k.strip()],
+                target_domain=_parse_terms(target_domain),
+                exclude=_parse_terms(exclude),
+                venues=_parse_terms(venues),
                 max_items=int(max_items),
                 core_weights={k: kept_weights[k] for k in new_core if k in kept_weights},
-                s2_seeds=[k.strip() for k in s2_seeds.split(",") if k.strip()],
+                s2_seeds=_parse_terms(s2_seeds),
             )
             st.session_state["_research_selected_profile"] = pid
             st.success(f"'{pid}' 저장됨")
@@ -636,13 +648,14 @@ def _render_settings(db_path, pid: str, profile: dict) -> None:
         if runs:
             _status_legend()
             table = pd.DataFrame([{
-                "결과": "⬤", "건수": r.get("retrieved_count") or 0,     # 표 격자는 글자 크기 지정을 무시한다 — 큰 원 글리프를 쓴다
+                "결과": "⬤ " + {"done": "완료", "partial": "일부", "failed": "실패"}.get(r["status"], r["status"]),   # 색 원 + 글자(색만으로 뜻을 전하지 않는다)
+                "건수": r.get("retrieved_count") or 0,
                 "검색 창": f"{(r.get('window_from') or '')[5:10]} ~ {(r.get('window_to') or '')[5:10]}",
                 "시각": _relative_time(r["started_at"]) if r.get("started_at") else "?",
                 "사유": ops_dashboard.short_error(r.get("error_detail")) if r["status"] == "failed" else "",
             } for r in runs])
             colors = [_STATUS_COLORS.get(r["status"], "#94A3B8") for r in runs]
-            styled = table.style.apply(lambda col: [f"color: {c}; font-size: 18px;" for c in colors], subset=["결과"])
+            styled = table.style.apply(lambda col: [f"color: {c}; font-weight: 600;" for c in colors], subset=["결과"])
             st.dataframe(styled, hide_index=True, width="stretch")
         else:
             st.caption("아직 실행 이력 없음")
@@ -774,8 +787,13 @@ def render_papers_page() -> None:
         "보낸 프로필": ", ".join(names.get(p, p) for p in r["profiles"]) or "—", "처음 발송": r["first_sent"],
         "주의": ", ".join(r["flags"]), "ID": r["arxiv_id"],
     } for r in rows])
+    # 제목이 잘려 논문을 못 알아본다는 지적(Codex 검토 2026-09-16) — 제목 칸을 넓게, 짧은 칸은 좁게 고정한다.
     event = st.dataframe(df, hide_index=True, width="stretch", height=420, on_select="rerun",
-                         selection_mode="single-row", key="papers_table")
+                         selection_mode="single-row", key="papers_table",
+                         column_config={"제목": st.column_config.TextColumn(width="large"),
+                                        "요약": st.column_config.TextColumn(width="small"), "재현": st.column_config.TextColumn(width="small"),
+                                        "코드": st.column_config.TextColumn(width="small"), "주의": st.column_config.TextColumn(width="small"),
+                                        "ID": st.column_config.TextColumn(width="small")})
     selected = event.selection.rows[0] if getattr(event, "selection", None) and event.selection.rows else None
     if selected is None:
         st.caption("표에서 한 줄을 고르면 아래에 요약·재현·코드·SOTA 주장이 나옵니다.")
@@ -896,17 +914,16 @@ def render_system_page() -> None:
 # ---------------------------------------------------------------- 메인
 _BRAND_ICON = (
     "data:image/svg+xml;base64,"
-    "PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
-    "KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMzIiIHkyPSIzMiIgZ3JhZGllbnRVbml0cz0idXNlclNwYW"
-    "NlT25Vc2UiPgo8c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM1QjhERUYiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMUUzQ"
-    "ThBIi8+CjwvbGluZWFyR3JhZGllbnQ+CjwvZGVmcz4KPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0idXJsKCNnKSIv"
-    "Pgo8cmVjdCB4PSI3IiB5PSI2IiB3aWR0aD0iMTIiIGhlaWdodD0iMTYiIHJ4PSIxLjUiIGZpbGw9IndoaXRlIiBmaWxsLW9wYWNpdHk9IjAuOTQ"
-    "iLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEwIiB4Mj0iMTYuNSIgeTI9IjEwIiBzdHJva2U9IiMxRTNBOEEiIHN0cm9rZS13aWR0aD0iMS4xIiBzdH"
-    "Jva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEzIiB4Mj0iMTYuNSIgeTI9IjEzIiBzdHJva2U9IiMxRTNBOEEiIHN0c"
-    "m9rZS13aWR0aD0iMS4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjE2IiB4Mj0iMTQiIHkyPSIxNiIgc3Ry"
-    "b2tlPSIjMUUzQThBIiBzdHJva2Utd2lkdGg9IjEuMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxjaXJjbGUgY3g9IjIwLjUiIGN5PSIxOS4"
-    "1IiByPSI0LjMiIGZpbGw9Im5vbmUiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIvPgo8bGluZSB4MT0iMjMuNiIgeTE9IjIyLjYiIH"
-    "gyPSIyNyIgeTI9IjI2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
+    "PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIw"
+    "MDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzNCNUJEQiIvPgo8cmVjdCB4PSI3IiB5"
+    "PSI2IiB3aWR0aD0iMTIiIGhlaWdodD0iMTYiIHJ4PSIxLjUiIGZpbGw9IndoaXRlIiBmaWxsLW9wYWNpdHk9IjAuOTQiLz4KPGxp"
+    "bmUgeDE9IjkuNSIgeTE9IjEwIiB4Mj0iMTYuNSIgeTI9IjEwIiBzdHJva2U9IiMyRjRBQjgiIHN0cm9rZS13aWR0aD0iMS4xIiBz"
+    "dHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEzIiB4Mj0iMTYuNSIgeTI9IjEzIiBzdHJva2U9IiMy"
+    "RjRBQjgiIHN0cm9rZS13aWR0aD0iMS4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjE2IiB4"
+    "Mj0iMTQiIHkyPSIxNiIgc3Ryb2tlPSIjMkY0QUI4IiBzdHJva2Utd2lkdGg9IjEuMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+"
+    "CjxjaXJjbGUgY3g9IjIwLjUiIGN5PSIxOS41IiByPSI0LjMiIGZpbGw9Im5vbmUiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0"
+    "aD0iMiIvPgo8bGluZSB4MT0iMjMuNiIgeTE9IjIyLjYiIHgyPSIyNyIgeTI9IjI2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lk"
+    "dGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
 )
 
 _PAGES = (("research", "운영 현황"), ("papers", "논문 DB"), ("system", "시스템"))

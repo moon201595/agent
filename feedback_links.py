@@ -73,7 +73,10 @@ def page_url() -> str:
     리다이렉트 경유 모두 닫힘). 그래서 버튼은 우리 정적 페이지로 가고, 그 페이지가 웹앱에 `mode=json` 으로 기록을 요청한 뒤 탭을 닫는다.
     토큰·서명·수집 경로는 그대로다 — 바뀌는 건 "누가 웹앱을 부르느냐"(브라우저의 페이지 스크립트)뿐이다."""
     url = _env("FEEDBACK_PAGE_URL")
-    return url if url.startswith("https://") else ""
+    # 정적 호스팅(GitHub Pages)만 허용한다 — 임의 https 주소를 받으면 잘못 설정된 .env 하나로 서명 토큰이 제3자 페이지로 흘러간다
+    # (Codex 검토 2026-09-16 P1). .env 를 쥔 사람은 비밀키도 쥐고 있어 실질 위험은 작지만, 검사 비용이 0 이라 막는다.
+    m = re.match(r"^https://([a-z0-9-]+)\.github\.io/", url)
+    return url if m else ""
 
 
 def deploy_id(webapp_url: str) -> str:

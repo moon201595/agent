@@ -2,8 +2,14 @@
 돌린다" 규칙은 운영 DB 를 지키기 위한 것이지 테스트를 막기 위한 것이 아니다. 여기서 허용
 플래그를 켠다. 가드 자체를 검사하는 테스트는 monkeypatch.delenv 로 다시 끈다."""
 import os
+import tempfile
 
 os.environ.setdefault("PAPER_HARNESS_APPLY_DDL", "1")
+# **테스트 세션의 데이터 디렉터리를 운영 `data/` 에서 뗀다**(2026-09-16, Codex 구조 검토 ④-2). 그전엔 DDL 플래그만 켜서,
+# `server.py` 가 import 되며 도는 `_init_storage()` 와 `storage.DB_PATH` 기본값으로 가는 코드가 운영 DB 에 표·행을 만들 수 있었다
+# (9/16 실측: code_ladder 표 + 행 3개). 사용자가 PAPER_HARNESS_DATA 를 직접 준 경우는 존중한다. 픽스처(`data/fixtures/…`)는 저장소
+# 상대 경로 리터럴이라 영향이 없다.
+os.environ.setdefault("PAPER_HARNESS_DATA", tempfile.mkdtemp(prefix="paper-harness-test-"))
 
 import pytest
 

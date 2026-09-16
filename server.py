@@ -95,9 +95,9 @@ S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 # 알려주는 색인 서비스다. 페이월 우회 아님: 오픈액세스가 없으면 그냥 못 찾는다.
 UNPAYWALL_API = "https://api.unpaywall.org/v2/{doi}"
 # Unpaywall 은 example.com 류 더미 이메일을 실제로 거부한다(실측 확인,
-# 422 "Please use your own email address"). .env 에 UNPAYWALL_EMAIL 로
-# 재정의할 수 있게 하되, 기본값은 실제 연락 가능한 주소로 둔다.
-UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "answnsgur030@naver.com")
+# 422 "Please use your own email address"). 주소는 `.env` 의 UNPAYWALL_EMAIL 에서만 온다 — 공개 저장소 소스에 개인 연락처 기본값이
+# 박혀 있던 것을 뺐다(2026-09-16, Codex 구조 검토 ④-5). 비어 있으면 Unpaywall 조회를 건너뛴다(호출부가 빈 값을 확인한다).
+UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "")
 
 # arXiv 공식 안내에 따른 예의상 호출 간격 (초)
 ARXIV_MIN_INTERVAL = 3.0
@@ -1187,7 +1187,7 @@ async def resolve_openalex_abstract(doi: str) -> str:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 OPENALEX_WORK_API.format(doi=doi),
-                headers={"User-Agent": f"paper-harness (mailto:{UNPAYWALL_EMAIL})"},
+                headers={"User-Agent": f"paper-harness (mailto:{UNPAYWALL_EMAIL})" if UNPAYWALL_EMAIL else "paper-harness"},
                 timeout=20,
             )
         api_usage.record("openalex", "ok" if resp.status_code == 200 else str(resp.status_code))
@@ -1216,6 +1216,8 @@ async def resolve_unpaywall_pdf(doi: str) -> dict | None:
         if doi.startswith(prefix):
             doi = doi[len(prefix):]
             break
+    if not UNPAYWALL_EMAIL:
+        return None          # 연락 주소 없이는 Unpaywall 이 422 를 준다 — 조회를 건너뛴다(.env 에 UNPAYWALL_EMAIL 을 두면 켜진다)
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             UNPAYWALL_API.format(doi=doi), params={"email": UNPAYWALL_EMAIL}, timeout=20,

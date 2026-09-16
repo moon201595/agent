@@ -1,19 +1,13 @@
-"""run_profile_scan.py — Phase 1 오케스트레이터: 프로필 하나(또는 전체) →
-오늘 새 논문 찾기 → 스코어링 → 다이제스트 저장.
+"""run_profile_scan.py — 일일 진입점(①~⑨ 조정). 프로필 하나(또는 전체) → 반응 가중치 갱신 → 검색(arXiv·S2) → 선별 →
+본문·요약·검증(batch_summarize, ⑦ 재현은 백그라운드) → 동향·근거·코드 사다리·철회 → 다이제스트 저장 → **메일 발송·발송 대장** → 주간 후속.
 
-의도적으로 아직 안 하는 것: 메일 발송(§6, `.env`에 SMTP 관련 키가 아예
-없음을 확인함 — 2026-08-24, email_delivery.py는 준비돼 있지만 SMTP_HOST
-등이 주석 처리된 채 대기 중), arXiv 외 다른 delta 소스(§3 리뷰에서 나온
-대로 S2는 day-level delta에 못 씀).
+2026-09-16 정정(Codex 구조 검토): 이 docstring 은 "메일은 아직 안 보낸다, 네 모듈만 엮는다"(2026-08-24)고 적혀 있었지만 실제 cron 은
+`run_daily_scan.sh` 가 `--all --send` 로 부르고 여기서 발송까지 한다. 지금 이 파일이 조정하는 모듈은 find_new_papers·s2_delta·profile_scoring·
+research_profile·batch_summarize·trend_report·evidence_state·code_ladder·retraction·digest·email_delivery·mail_ledger·feedback_weights 다 —
+1,300줄이 넘고 책임이 섞여 있어 단계별 서비스 분할이 "나중 과제"로 기록돼 있다(PROGRESS §8-150).
 
-2026-08-24: cron으로 무인 실행하기 시작하면서(scan_all_profiles, crontab
-등록) 다이제스트를 review_app.py의 st.session_state(브라우저 세션 전용)가
-아니라 research_profile.save_digest()로 DB에 남기도록 바꿨다 — cron이
-새벽에 혼자 스캔을 돌려도 화면에서 볼 수 있어야 하기 때문("cron이 돌아도
-결과가 어디에도 안 남는다" 문제).
-
-기존 하네스 코어(server.py/review_app.py)는 안 건드린다 — find_new_papers/
-profile_scoring/research_profile/digest 네 모듈을 여기서 엮기만 한다.
+2026-08-24: cron 으로 무인 실행하기 시작하면서 다이제스트를 st.session_state 가 아니라 research_profile.save_digest() 로 DB 에 남긴다 —
+cron 이 새벽에 혼자 돌려도 화면에서 볼 수 있어야 한다.
 """
 
 from __future__ import annotations
@@ -48,7 +42,9 @@ def _arxiv_query_from_core_topics(core_topics: list[str]) -> str:
     """프로필의 core_topics(OR 조건, 설계 문서 §1)를 arXiv 검색 쿼리로 조립.
     여러 단어 키워드는 따옴표로 묶어 구문 검색되게 한다 — 안 묶으면 arXiv가
     "digital"과 "twin"을 각각 독립된 단어로 봐서 무관한 논문까지 걸린다."""
-    terms = [f'all:"{kw}"' if " " in kw else f"all:{kw}" for kw in core_topics]
+    # 키워드 안의 따옴표는 arXiv 질의 문법을 깬다(Codex 검토 2026-09-16) — 빼고 보낸다(매처는 원문 그대로 채점한다).
+    clean = [kw.replace('"', "").strip() for kw in core_topics]
+    terms = [f'all:"{kw}"' if " " in kw else f"all:{kw}" for kw in clean if kw]
     return " OR ".join(terms)
 
 

@@ -1,8 +1,8 @@
 """arXiv totalResults 만 읽어 후보 수를 센다 — 요청 1회, 페이징 없음."""
-import sys, time, urllib.parse, urllib.request, re
+import os, sys, time, urllib.parse, urllib.request, re
 
 WINDOW = "submittedDate:[202608210617 TO 202608310213]"
-UA = {"User-Agent": "paper-harness/keyword-sizing (mailto:answnsgur030@naver.com)"}
+UA = {"User-Agent": "paper-harness/keyword-sizing" + (f" (mailto:{os.environ['UNPAYWALL_EMAIL']})" if os.environ.get("UNPAYWALL_EMAIL") else "")}
 
 def total(terms):
     q = "(" + " OR ".join(f'all:"{k}"' if " " in k else f"all:{k}" for k in terms) + ")"

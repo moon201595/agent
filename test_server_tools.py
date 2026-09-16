@@ -366,6 +366,9 @@ def test_fetch_paper_is_idempotent(monkeypatch):
 
 
 def _mock_unpaywall(monkeypatch, payload, status=200):
+    # 연락 주소가 비면 조회를 건너뛴다(2026-09-16: 소스에 박혀 있던 개인 주소 기본값을 뺐다) — 테스트는 가짜 주소를 준다
+    monkeypatch.setattr(server, "UNPAYWALL_EMAIL", "test@example.test")
+
     def handler(request):
         return httpx.Response(status, json=payload)
 
@@ -396,6 +399,7 @@ def test_unpaywall_strips_doi_url_prefix(monkeypatch):
     real = httpx.AsyncClient
     monkeypatch.setattr(server.httpx, "AsyncClient",
                         lambda *a, **kw: real(*a, transport=transport, **kw))
+    monkeypatch.setattr(server, "UNPAYWALL_EMAIL", "test@example.test")
     asyncio_run(server.resolve_unpaywall_pdf("https://doi.org/10.1109/x"))
     assert "10.1109/x" in seen["url"]
     assert "doi.org/10.1109" not in seen["url"].split("api.unpaywall.org")[-1].split("?")[0][1:]
@@ -543,3 +547,18 @@ def test_openalex_abstract_skips_empty_doi(monkeypatch):
 
     monkeypatch.setattr(server.httpx, "AsyncClient", boom)
     assert asyncio_run(server.resolve_openalex_abstract("")) == ""
+
+
+def test_unpaywall_is_skipped_without_a_contact_email(monkeypatch):
+    """2026-09-16: 개인 연락처가 공개 소스의 기본값으로 박혀 있었다. 이 테스트가 잡는 것: 기본값을 다시 넣는 것, 빈 주소로 Unpaywall 을 부르는 것(422)."""
+    called = {}
+
+    def handler(request):
+        called["hit"] = True
+        return httpx.Response(200, json={"best_oa_location": {"url_for_pdf": "u"}})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda *a, **kw: real(*a, transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(server, "UNPAYWALL_EMAIL", "")
+    assert asyncio_run(server.resolve_unpaywall_pdf("10.1/x")) is None and not called
+    import inspect
+    assert "answn" not in inspect.getsource(server)      # 개인 주소가 소스에 없어야 한다
