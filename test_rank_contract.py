@@ -179,3 +179,52 @@ def test_병합은_더_이른_공개일을_남긴다():
     b = {"title": "same", "published": "2026-09-02", "doi": "10.1/x"}
     assert selection._merge(a, b)["published"] == "2026-09-02"
     assert selection._merge(b, a)["published"] == "2026-09-02"
+
+
+# ── rank-tuple-v2 (2026-09-16): 3일 날짜 띠 → 개념 폭 → 날짜 ─────────────────────────────────────────────
+def test_띠_안에서는_개념_폭이_날짜를_이긴다():
+    """이 테스트가 잡는 것: 띠 없이 일 단위 날짜로 되돌리는 것(어제의 단일 적중이 그제의 2중 적중을 밀어냄 — 18회 재생에서
+    상위 5 의 2개념 논문 16 → 43 이 되는 개정), 띠 폭이 3일이 아닌 것, 띠 안에서 날짜 동률 가르개가 빠지는 것."""
+    newest_single = _paper("d0-single", "target term only", _day(0))
+    day2_double = _paper("d2-double", "target term and trend term", _day(2))
+    day1_single = _paper("d1-single", "a target term note", _day(1))
+    assert _order([newest_single, day1_single, day2_double]) == ["d2-double", "d0-single", "d1-single"]
+
+
+def test_띠를_넘는_오래된_논문은_결합이_많아도_뒤로_간다():
+    """이 테스트가 잡는 것: 띠를 없애고 폭을 날짜 위에 두는 것(옛 계획서 §5.3 이 막은 그 모양) — 3일 넘은 2중 적중은 최신 단일 적중 뒤."""
+    newest_single = _paper("d0-single", "target term only", _day(0))
+    old_double = _paper("d3-double", "target term and trend term", _day(3))
+    assert _order([old_double, newest_single]) == ["d0-single", "d3-double"]
+
+
+def test_띠의_기준은_절대_달력이_아니라_가장_최신_후보다():
+    """이 테스트가 잡는 것: 띠를 `day // 3` 같은 절대 구간으로 만드는 것 — 그러면 하루 차이도 경계에 걸려 갈린다.
+    같은 후보 집합을 날짜만 통째로 하루씩 밀어도 순서가 같아야 한다."""
+    def build(shift: int):
+        return [_paper("a", "target term only", _day(shift)), _paper("b", "target term and trend term", _day(shift + 2)),
+                _paper("c", "target term note", _day(shift + 1))]
+    orders = {tuple(_order(build(shift))) for shift in range(6)}
+    assert orders == {("b", "a", "c")}
+
+
+def test_표기_변형_둘은_한_개념이다():
+    """이 테스트가 잡는 것: 폭을 문자열 적중 수로 세는 것 — 'robot manipulation'/'robotic manipulation' 처럼 9/16 에 변형으로 넣은
+    키워드 쌍이 결합 논문으로 승격된다(재생에서 7편). 변형 둘만 맞힌 논문은 단일 적중과 같은 폭이라 날짜가 가른다."""
+    profile = {"core_topics": ["robot manipulation", "robotic manipulation", "LLM agent", "LLM-based agent", "world model"],
+               "core_weights": {}, "target_domain": [], "exclude": []}
+    variants_only = _paper("variants", "robot manipulation and robotic manipulation", _day(0))
+    two_concepts = _paper("two", "robotic manipulation with a world model", _day(1))
+    got = [p["arxiv_id"] for p in ps.score_and_rank([variants_only, two_concepts], profile)["papers"]]
+    assert got == ["two", "variants"]
+    assert ps.concept_breadth(["LLM agent", "LLM-based agent"]) == 1
+    assert ps.concept_breadth(["LLM agent", "world model"]) == 2
+    assert ps.concept_key("Large Language Model agent") == ps.concept_key("LLM-based agent") == "llm agent"
+
+
+def test_날짜_없음은_띠_뒤에_남고_계층은_넘지_않는다_v2():
+    """이 테스트가 잡는 것: 날짜 없는 논문에 띠 0 을 주어 맨 앞에 두는 것, 띠를 계층보다 앞에 두는 것."""
+    missing_double = _paper("missing", "target term and trend term", None)
+    dated_single = _paper("dated", "target term", _day(4))
+    lower_new = _paper("lower", "trend term", _day(0))
+    assert _order([missing_double, lower_new, dated_single]) == ["dated", "missing", "lower"]
