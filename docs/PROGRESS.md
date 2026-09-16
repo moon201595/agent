@@ -5955,6 +5955,16 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     **남은 것**: `.env` 에 `FEEDBACK_PAGE_URL` 한 줄 추가(권한이 막아 사용자가 직접) + Apps Script 재배포(새 버전). 둘 다 되면 내일 새벽 메일부터 적용된다.
     확장 프로그램(Force Background Tab, §8-145)은 이제 필요 없다 — 탭이 스스로 닫히므로.
 
+147. **디자인 기준서(`docs/DESIGN.md`)와 화면 디자인 패스** (2026-09-16, 사용자: "구성은 괜찮은데 디자인이 약간 좀 그래서" → 조사 뒤 "1번만 하자").
+    조사: Hallmark(안티-AI-슬롭 65개 검사, HTML/CSS 랜딩 전용)·ui-ux-pro-max(팔레트·폰트·가이드 DB, Streamlit 미지원)·DESIGN.md 관행(getdesign.md·
+    refero·oh-my-design.kr) — 셋 다 무료·MIT 지만 Streamlit 을 자동으로 꾸며 주지는 않는다. 가져온 것은 두 가지: **토큰 기준서 한 장**과 **금지 목록**.
+    실측한 문제: 8월부터 지적마다 CSS 조각을 덧대 파랑이 셋(cyan #0284C7 아이콘·#4C6EF5 변수·#3B5BDB 테마)이었고, 옛 검색 탭 규칙(search_card·
+    start_btn·recent-item)이 죽은 채 남았으며, 지표 숫자가 36px 영웅 숫자였다. `_inject_custom_style` 을 토큰(`--blue --ink --muted --line`…) 하나로
+    다시 썼다(옛 이름 `--sky`·`--text-muted` 는 별칭으로 남겨 인라인 style 호환). 내비 아이콘 SVG 색을 #3B5BDB 로 재생성, 선택 내비는 채운 파랑 대신
+    연한 배경+테두리, 선택 프로필 카드는 "보는 중"(비활성) + 파란 위선(`:has()` 로 실측 DOM 구조에 맞춰 선택), 제목 3단계(h3 1.35rem·h4 1.05rem),
+    지표 1.55rem tabular, `html 15px`, 상태색을 차분한 톤으로. 실측 함정: 사이드바 버튼 글자가 `justify-content` 만으로는 왼쪽에 안 붙는다 — 안쪽 상자가
+    flex center 라 `button > div` 를 같이 잡아야 했다. 화면 실측(playwright, 페이지 5장 전후 비교): Traceback 0. 테스트 1102 통과.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

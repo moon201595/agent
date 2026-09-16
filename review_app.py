@@ -32,359 +32,145 @@ ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon=":material/monitoring:")
 
 
+# 사이드바 내비 아이콘(단선 1.6px, DESIGN.md 파랑) — st.button 은 이미지 아이콘을 못 받아 버튼 배경으로 얹는다.
+_NAV_ICONS = {
+    "nav_research": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjM0I1QkRCIi8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==",
+    "nav_papers": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+",
+    "nav_system": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iNyIgcng9IjIiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjYiLz48cmVjdCB4PSIzIiB5PSIxNCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjciIHJ4PSIyIiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS42Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjYuNSIgcj0iMS4xIiBmaWxsPSIjM0I1QkRCIi8+PGNpcmNsZSBjeD0iNyIgY3k9IjE3LjUiIHI9IjEuMSIgZmlsbD0iIzNCNUJEQiIvPjxwYXRoIGQ9Ik0xMSA2LjVoNk0xMSAxNy41aDYiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
+}
+
+
 def _inject_custom_style() -> None:
-    """하늘색·흰색 중심의 깔끔한 톤(2026-08-06). Streamlit 기본 테마만 쓰면
-    버튼·경고 박스·탭이 전부 진한 채도의 기본색이라 "AI가 급하게 만든
-    데모"처럼 보인다는 피드백을 받고 순수 시각 레이어만 추가했다 — 로직은
-    전혀 안 건드림. 색상 기반은 .streamlit/config.toml, 카드·탭·여백 같은
-    세부 모양은 여기서 담당한다. data-testid 셀렉터는 Streamlit이 공식
-    문서화한 안정적인 훅이라 버전이 올라가도 잘 안 깨진다.
-    """
+    """순수 시각 레이어 — 로직은 건드리지 않는다. 기준은 `docs/DESIGN.md`(2026-09-16): 파랑 한 계열 + 회색, Pretendard, 4px 간격,
+    그림자 한 단계, 채운 덩어리 대신 배경+테두리로 선택 표시. 그전 CSS 는 8월부터 지적을 받을 때마다 조각을 덧대 cyan(#0284C7)·
+    #4C6EF5·#3B5BDB 세 파랑이 섞이고 옛 검색 탭용 규칙이 남아 있었다 — 전부 걷어내고 토큰 하나로 다시 썼다.
+    셀렉터는 Streamlit 이 문서화한 data-testid 와 `key=` 훅(.st-key-*)만 쓴다(버전이 올라가도 잘 안 깨진다)."""
     st.markdown(
         """
         <style>
         @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
 
-        /* 참고 이미지(2026-08-14)에 맞춰 하늘색(cyan) 톤 → 진한 인디고
-           블루 톤으로 색만 바꿨다("구조는 그대로 두고 색상이랑 느낌만"
-           요청) — 변수 이름은 --sky로 남겨뒀다(코드 전체에 var(--sky)가
-           널리 퍼져 있어 이름까지 바꾸면 손댈 곳이 훨씬 늘어나고 실수
-           위험만 커짐, 값만 바꿔도 색은 똑같이 다 바뀐다). 브랜드
-           아이콘(_BRAND_ICON)의 그라디언트(#5B8DEF→#1E3A8A)와 같은
-           계열로 맞춰 아이콘과 UI 전체 톤이 일치하게 했다. */
         :root {
-            --sky: #4C6EF5;
-            --sky-dark: #3651D4;
-            --sky-light: #EEF1FF;
-            --sky-border: #D7DEFF;
-            --text-main: #1B2036;
-            --text-muted: #64748B;
+            --blue: #3B5BDB; --blue-dark: #2F4AB8; --blue-100: #EEF2FF; --blue-200: #D6DEFA;
+            --ink: #111827; --ink-2: #374151; --muted: #5B6577; --line: #E5E7EB;
+            --surface: #FFFFFF; --canvas: #F6F8FB;
+            --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06); --shadow-2: 0 2px 6px rgba(16, 24, 40, 0.08);
+            /* 옛 이름 — 화면 코드의 인라인 style 이 아직 쓴다 */
+            --sky: var(--blue); --sky-dark: var(--blue-dark); --sky-light: var(--blue-100); --sky-border: var(--blue-200);
+            --text-main: var(--ink); --text-muted: var(--muted);
         }
 
-        /* [class*="css"]로 전체 폰트를 지정했었는데, 실측해보니(2026-08-14)
-           Streamlit 1.60의 실제 클래스명은 st-emotion-cache-XXXX라 "css"라는
-           부분 문자열 자체가 없어서 이 규칙이 단 한 곳에도 안 먹고 있었다
-           (computed font-family가 Pretendard가 아니라 Streamlit 기본값
-           "Source Sans"로 나오는 것 확인) — "글씨체가 이상하다"는 지적이
-           실제 버그였다. 더 넓은 실제 루트 컨테이너에 !important로 걸어
-           Streamlit 자체 규칙을 확실히 이긴다.
-           *를 그대로 걸었더니 [data-testid="stIconMaterial"](화살표 등
-           아이콘을 "keyboard_arrow_right" 같은 리터럴 글자를 전용 아이콘
-           폰트로 그려서 만드는 요소)까지 Pretendard로 강제돼 아이콘이
-           그 글자 그대로 깨져 보이는 회귀가 실제로 났다(사이드바 화살표
-           확인) — 아이콘 폰트 요소는 :not()으로 제외한다. */
-        html, body,
-        [data-testid="stAppViewContainer"],
+        /* 글꼴 — 아이콘 폰트 요소(stIconMaterial)는 제외해야 화살표가 글자로 깨지지 않는다(2026-08-14 실측). */
+        html, body, [data-testid="stAppViewContainer"],
         [data-testid="stAppViewContainer"] *:not([data-testid="stIconMaterial"]) {
-            font-family: 'PretendardVariable', -apple-system, BlinkMacSystemFont,
-                "Segoe UI", Roboto, sans-serif !important;
+            font-family: 'PretendardVariable', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         }
+        html { font-size: 15px; }
+        [data-testid="stAppViewContainer"] { color: var(--ink); }
+        [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { line-height: 1.55; }
+        [data-testid="stMarkdownContainer"] li { margin-bottom: 0.45em; }
+        a, a:visited { color: var(--blue-dark); }
 
-        /* 기본 레이아웃 여백 — Streamlit 기본값은 위쪽이 휑하게 남는다.
-           max-width 1100px 때문에 넓은 화면에서 오른쪽 여백이 크게
-           남았다("이미지처럼 꽉 채울 수 있잖아" 지적, 2026-08-14) —
-           참고 이미지처럼 폭을 거의 다 쓰도록 넉넉하게 올렸다. 1600px로
-           고정했더니 1920px보다 넓은 모니터(2K/울트라와이드 등)에서는
-           여전히 오른쪽에 빈 여백이 남는다는 지적(2026-08-14 두 번째) —
-           고정 상한을 없애고 사이드바를 뺀 나머지 폭을 그대로 쓰게
-           바꿨다. 좌우에는 카드가 화면 끝에 바로 붙지 않도록 최소한의
-           여백만 padding으로 남긴다. */
-        .block-container {
-            padding-top: 2.5rem; padding-bottom: 3rem;
-            padding-left: 2rem; padding-right: 2rem;
-            max-width: 100%;
-        }
+        /* 레이아웃 — 사이드바를 뺀 폭을 다 쓴다(넓은 모니터에서 오른쪽이 비지 않게). */
+        .block-container { padding: 2rem 2rem 3rem 2rem; max-width: 100%; }
+        [data-testid="stMain"] { background-color: var(--surface); align-items: flex-start !important; }
+        [data-testid="stHeader"] { background-color: var(--surface); }
+        [data-testid="stAppDeployButton"], [data-testid="stMainMenu"], footer { display: none; }
 
-        /* 제목 영역 */
-        h1 { font-weight: 700; color: var(--text-main); letter-spacing: -0.01em; }
-        h1 + div, h1 { margin-bottom: 0.3rem; }
-        h2, h3 { color: var(--text-main); font-weight: 600; }
+        /* 제목 계층 — 크기 셋으로 고정(DESIGN.md §3). */
+        h1, h2, h3 { color: var(--ink); letter-spacing: -0.015em; }
+        h1 { font-size: 1.5rem; font-weight: 700; }
+        /* h3 = 페이지 제목(st.subheader)·프로필 이름, h4 = 구역 제목(####). 둘의 차이가 보여야 한다. */
+        [data-testid="stAppViewContainer"] h3 { font-size: 1.35rem; font-weight: 700; padding-bottom: 0.2rem; }
+        [data-testid="stAppViewContainer"] h2 { font-size: 1.35rem; font-weight: 700; padding: 0.4rem 0 0.2rem 0; }
+        [data-testid="stAppViewContainer"] h4 { font-size: 1.05rem; font-weight: 600; color: var(--ink); padding: 0.6rem 0 0.2rem 0; letter-spacing: -0.01em; }
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted); font-size: 0.8rem; }
 
-        /* 탭 — 밑줄 인디케이터 스타일로, 선택된 탭만 하늘색 */
-        [data-testid="stTabs"] [data-baseweb="tab-list"] {
-            gap: 4px; border-bottom: 1px solid var(--sky-border);
+        /* 지표 — 영웅 숫자가 아니라 표의 한 칸처럼. 숫자는 tabular. */
+        [data-testid="stMetricLabel"] p { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
+        [data-testid="stMetricValue"] {
+            font-size: 1.55rem; font-weight: 600; color: var(--ink);
+            font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1.2;
         }
-        [data-testid="stTabs"] button[data-baseweb="tab"] {
-            color: var(--text-muted); font-weight: 500; border-radius: 8px 8px 0 0;
-        }
-        [data-testid="stTabs"] button[aria-selected="true"] {
-            color: var(--sky-dark); font-weight: 700;
-        }
+        [data-testid="stMetric"] { padding-bottom: 0.1rem; }
 
-        /* 버튼 — 각지고 진한 기본 톤 대신 둥근 모서리 + 옅은 하늘색 */
+        /* 탭 — 밑줄 표시, 선택만 진하게 */
+        [data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 2px; border-bottom: 1px solid var(--line); }
+        [data-testid="stTabs"] button[data-baseweb="tab"] { color: var(--muted); font-weight: 500; font-size: 0.92rem; padding: 0.5rem 0.75rem; }
+        [data-testid="stTabs"] button[aria-selected="true"] { color: var(--blue-dark); font-weight: 600; }
+
+        /* 버튼 — 화면당 primary 하나. secondary 는 흰 배경 + 회색 테두리. */
         [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button {
-            border-radius: 10px; border: 1px solid var(--sky-border);
-            transition: all 0.15s ease;
+            border-radius: 8px; border: 1px solid var(--line); font-weight: 500; transition: background-color .12s ease, border-color .12s ease;
         }
-        [data-testid="stBaseButton-primary"] {
-            background-color: var(--sky); border: none;
-        }
-        [data-testid="stBaseButton-primary"]:hover {
-            background-color: var(--sky-dark);
-        }
-        [data-testid="stButton"] button:hover {
-            border-color: var(--sky); color: var(--sky-dark);
-        }
+        [data-testid="stButton"] button:hover { border-color: var(--blue-200); color: var(--blue-dark); background-color: var(--blue-100); }
+        [data-testid="stBaseButton-primary"] { background-color: var(--blue); border: none; }
+        [data-testid="stBaseButton-primary"]:hover { background-color: var(--blue-dark); }
 
-        /* 입력창·셀렉트·라디오 — 각진 기본 테두리를 둥글게, 포커스에 하늘색 */
-        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
-        [data-testid="stFileUploaderDropzone"] {
-            border-radius: 10px !important; border-color: var(--sky-border) !important;
+        /* 입력 */
+        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-testid="stTextArea"] textarea {
+            border-radius: 8px !important; border-color: var(--line) !important;
         }
-        [data-testid="stTextInput"] input:focus, [data-testid="stNumberInput"] input:focus {
-            border-color: var(--sky) !important; box-shadow: 0 0 0 1px var(--sky) !important;
+        [data-testid="stTextInput"] input:focus, [data-testid="stNumberInput"] input:focus, [data-testid="stTextArea"] textarea:focus {
+            border-color: var(--blue) !important; box-shadow: 0 0 0 1px var(--blue) !important;
         }
+        [data-testid="stRadio"] label:has(input:checked) { font-weight: 600; color: var(--blue-dark); }
 
-        /* 처음엔 본문도 사이드바와 같은 옅은 톤(#F8FAFC)을 줘서 흰 카드가
-           그 위에 "떠 있는" 느낌을 냈는데(2026-08-12), "왼쪽(사이드바)은
-           색 있게, 오른쪽(본문)은 흰색으로 나누자"는 요청(2026-08-13)을
-           받아 본문은 순백으로 바꿨다 — 카드는 배경 대비가 아니라 자체
-           테두리(border)·그림자(box-shadow)로 구분되므로 흰 배경이어도
-           카드 경계가 여전히 보인다. 실측으로 확인한 메인 컨텐츠 전용
-           testid(stMain, 사이드바와 분리된 것)만 건드려서 사이드바 자체
-           배경색은 그대로 둔다. */
-        [data-testid="stMain"] { background-color: #FFFFFF; }
-        /* stMain은 내부적으로 flex-column + align-items:center라 카드
-           (block-container, max-width 1100px)가 남는 공간 한가운데로
-           밀려서 사이드바 바로 옆에 큰 여백이 생긴다 — 넓은 화면(1920px)
-           에서 실측하니 좌우로 260px씩 붕 떠 있었다. "왼쪽으로, 사이드바
-           옆에 붙게" 지적(2026-08-12)에 맞춰 좌측 정렬로 바꾼다. */
-        [data-testid="stMain"] { align-items: flex-start !important; }
-        /* 페이지 최상단 헤더 바(햄버거·Deploy 자리)를 본문과 같은 톤으로
-           맞춰 이어지게 한다(2026-08-12) — 본문이 F8FAFC였다가 흰색으로
-           바뀌면서(2026-08-13) 헤더도 같이 흰색으로 맞췄다. 안 맞추면
-           헤더만 이전 톤(F8FAFC)으로 남아 본문 위에 옅은 띠가 보인다. */
-        [data-testid="stHeader"] { background-color: #FFFFFF; }
-
-        /* 요약 검토 카드(expander) — 흰 배경 + 그림자로 옅은 배경 위에 뜬
-           "카드"처럼 분리. hover에서 살짝 떠오르게 해 클릭 가능함을 암시. */
+        /* 카드(테두리 컨테이너)·확장 패널 — 회색 테두리 + 한 단계 그림자. 카드 안 카드 금지. */
         [data-testid="stExpander"] {
-            border: 1px solid var(--sky-border) !important; border-radius: 12px !important;
-            box-shadow: 0 1px 4px rgba(14, 165, 233, 0.08);
-            background-color: #FFFFFF; margin-bottom: 0.6rem;
-            transition: box-shadow 0.15s ease, transform 0.15s ease;
+            border: 1px solid var(--line) !important; border-radius: 12px !important;
+            box-shadow: var(--shadow-1); background-color: var(--surface);
         }
-        [data-testid="stExpander"]:hover {
-            box-shadow: 0 4px 14px rgba(14, 165, 233, 0.14);
+        /* st.container(border=True) — 테두리를 가진 stVerticalBlock 만 고른다(실측 DOM, 2026-09-16) */
+        [data-testid="stVerticalBlock"][style*="border"], [data-testid="stColumn"] > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"]) {
+            border-radius: 12px !important;
         }
-        [data-testid="stExpander"] summary {
-            font-weight: 600; color: var(--text-main);
-        }
+        [data-testid="stExpander"] { margin-bottom: 0.5rem; transition: box-shadow .12s ease; }
+        [data-testid="stExpander"]:hover { box-shadow: var(--shadow-2); }
+        [data-testid="stExpander"] summary { font-weight: 600; color: var(--ink); }
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p { color: var(--ink); }
 
-        /* 검색 카드 안의 "입력 방식"·"검색 키워드"·"선별할 편수" 같은
-           위젯 라벨이 기본 14px라 다른 텍스트에 비해 작아 보인다는
-           지적(2026-08-14 네 번째) — 이 카드 안 라벨만 16px로 키운다. */
-        .st-key-search_card [data-testid="stWidgetLabel"] p {
-            font-size: 1rem !important;
-        }
-
-        /* 라디오 그룹(입력 방식 선택 등) — 기본 회색 원형 대신 하늘색 계열로,
-           선택된 항목의 라벨을 굵게 해서 지금 뭘 골랐는지 더 잘 드러나게 */
-        [data-testid="stRadio"] label { font-weight: 400; }
-        [data-testid="stRadio"] label:has(input:checked) {
-            font-weight: 700; color: var(--sky-dark);
-        }
-        [data-testid="stRadio"] [role="radiogroup"] {
-            gap: 0.4rem 1.2rem;
-        }
-
-        /* 검색 폼·최근 활동·입력 방식 안내 카드에 입체감(그림자)을 준다.
-           예전엔 [data-testid="stVerticalBlockBorderWrapper"]를 썼는데
-           실측해보니(2026-08-14) Streamlit 1.60에는 이 testid 자체가
-           없다 — st.container(border=True)가 지금은 그냥 stVerticalBlock
-           에 인라인 테두리만 준다. 이 testid는 카드가 아닌 다른 모든
-           stVerticalBlock에도 두루 걸려 있어 개별 선택이 안 되므로,
-           카드 3개에 key=를 직접 주고 그 훅(.st-key-*)으로 골라 스타일링
-           한다(사이드바 내비 버튼과 같은 패턴, 이미 검증된 방식). */
-        /* 테두리(파란)+그림자(파란)를 같이 쓰니 너무 튄다는 지적(2026-08-14)
-           — 테두리는 중립 회색으로 낮추고, 그림자도 파란 색조 대신 중립
-           슬레이트 톤으로 바꿔 "테두리는 선명하게, 그림자는 은은하게"로
-           역할을 나눴다. 안쪽 여백도 0.2rem은 텍스트가 왼쪽 끝에 거의
-           붙어 보일 만큼 좁았어서 넉넉하게 올렸다. */
-        .st-key-search_card, .st-key-recent_card, .st-key-help_card {
-            background-color: #FFFFFF; border-radius: 14px !important;
-            border: 1px solid #E4E7EC !important;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-            padding: 1.25rem 1.5rem;
-        }
-
-        /* "시작"·"취소" 버튼 — 오른쪽 정렬용 좁은 칸 안에서도 버튼 자체는
-           글자 크기만큼만 좁게 그려져 칸 왼쪽에 붙어 있었다("더 늘리고 더
-           오른쪽으로" 지적, 2026-08-14 네 번째). CSS로 width:100%를 줘
-           봤지만 버튼을 감싼 Streamlit 래퍼(stButton, element-container)
-           자체가 fit-content라 퍼센트가 먹지 않았다 — 대신 st.button의
-           네이티브 width="stretch" 인자를 써서 래퍼째로 칸을 채운다
-           (아래 button() 호출부, key="start_btn"/"hybrid_start_btn"/
-           "cancel_btn" — "취소" 버튼도 같은 크기여야 한다는 요청,
-           2026-08-19). 이 규칙은 세로 패딩만 키워 버튼을 살짝 더 크게
-           보이게 한다. */
-        .st-key-start_btn button, .st-key-hybrid_start_btn button, .st-key-cancel_btn button {
-            padding-top: 0.6rem; padding-bottom: 0.6rem;
-        }
-
-        /* 알림 박스(성공/경고/오류/정보) — 모서리만 둥글게, 성공=초록/경고=노랑/오류=빨강
-           같은 의미별 색상은 Streamlit 기본값을 그대로 둔다(하늘색으로 덮으면 경고·오류
-           박스까지 파랗게 보여서 오히려 의미 구분이 흐려진다). */
-        [data-testid="stAlert"] {
-            border-radius: 10px;
-        }
-
-        /* status 박스(진행 상황 로그) */
-        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p {
-            color: var(--text-main);
-        }
-
-        /* 캡션·보조 텍스트 톤 다운 */
-        [data-testid="stCaptionContainer"] { color: var(--text-muted); }
-
-        /* 요약 본문 리스트 — "값(조건/비교대상/지표) — 출처위치 [S번호] ★등급"
-           형식이 한 줄에 다 붙어 있어 읽기 힘들다는 지적(2026-08-10)을 받아
-           불릿 사이 간격을 넉넉히 벌리고 줄 간격도 늘렸다. */
-        [data-testid="stMarkdownContainer"] li {
-            margin-bottom: 0.6em; line-height: 1.65;
-        }
-        [data-testid="stMarkdownContainer"] li > ul,
-        [data-testid="stMarkdownContainer"] li > ol {
-            margin-top: 0.4em;
-        }
-        /* [S번호]·★등급 꼬리표(백틱 인라인 코드)를 하늘색 톤 칩으로 —
-           본문 문장과 시각적으로 분리되어 한눈에 "출처 표시"로 읽힌다. */
+        /* 칩 — [S번호]·revision·id */
         [data-testid="stMarkdownContainer"] code {
-            background-color: var(--sky-light); color: var(--sky-dark);
-            border-radius: 6px; padding: 0.15em 0.45em; font-size: 0.88em;
+            background-color: var(--blue-100); color: var(--blue-dark); border-radius: 6px; padding: 0.12em 0.4em; font-size: 0.85em;
         }
+        [data-testid="stAlert"] { border-radius: 8px; }
 
-        /* Streamlit 기본 푸터("Made with Streamlit") 숨김 */
-        footer { visibility: hidden; }
-        /* Deploy 버튼·⋮ 메뉴(Rerun/Clear cache/Print/Record screen 등)는
-           streamlit.io 배포·공유용 기능이라 WSL 로컬 전용 내부 도구에는
-           의미가 없다 — 그대로 두면 "범용 Streamlit 데모" 티가 나서
-           숨긴다(2026-08-12, 실측: 실제 DOM에서 stAppDeployButton·
-           stMainMenu testid 확인 후 반영). 실행 중 표시(stStatusWidget)는
-           유용해서 남겨 둔다.
-        */
-        [data-testid="stAppDeployButton"] { display: none; }
-        [data-testid="stMainMenu"] { display: none; }
-
-        /* 사이드바 — "화면이 너무 하얗다"는 지적(2026-08-12)에 좌측에 색이
-           들어간 영역을 둬서 구조를 준다. 참고로 보여준 결제 대시보드를
-           그대로 베끼진 않고, "탐색 영역과 본문 영역이 색으로 구분된다"는
-           느낌만 가져왔다. */
-        [data-testid="stSidebar"] {
-            background-color: #F8FAFC; border-right: 1px solid var(--sky-border);
-        }
-        /* 기본 폭(300px)에선 32자로 자른 논문 제목도 종종 두 줄로 넘쳐
-           보였다("제목이 한 줄만 차지하게" 요청, 2026-08-13) — Streamlit
-           사이드바 폭은 리사이즈 핸들이 넣는 인라인 style="width:300px"라
-           !important로만 이긴다. 여전히 200~600px 사이에서 사용자가 드래그로
-           더 늘리거나 줄일 수 있다(Streamlit 자체 제약, 그대로 둠). */
-        [data-testid="stSidebar"] {
-            width: 360px !important;
-        }
-        /* 브랜드 글자가 너무 작아 잘 안 보인다는 지적(2026-08-12) — 제목·
-           부제·아이콘을 함께 키운다(아이콘만 그대로면 균형이 깨져서 같이). */
+        /* 사이드바 — 탐색 영역만 옅은 배경. 내비는 텍스트+아이콘, 선택은 연한 파랑 배경(채운 덩어리 아님). */
+        [data-testid="stSidebar"] { background-color: var(--canvas); border-right: 1px solid var(--line); width: 340px !important; }
         [data-testid="stSidebar"] .sidebar-brand {
-            padding: 0.4rem 0 1rem 0; font-size: 1.3rem; color: var(--text-main);
-            border-bottom: 1px solid var(--sky-border); margin-bottom: 0.2rem;
+            padding: 0.3rem 0 0.9rem 0; font-size: 1.15rem; font-weight: 700; color: var(--ink);
+            border-bottom: 1px solid var(--line); margin-bottom: 0.4rem; letter-spacing: -0.01em;
         }
-        [data-testid="stSidebar"] .sidebar-brand-sub {
-            font-size: 0.9rem; color: var(--text-muted); font-weight: 400;
-        }
-        [data-testid="stSidebar"] .sidebar-brand-icon {
-            width: 32px; height: 32px; vertical-align: middle; border-radius: 6px;
-            margin-right: 3px; position: relative; top: -2px;
-        }
-        [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.6rem; }
-        /* 내비게이션 버튼 — 처음엔 항상 하늘색 채움(type="primary" 고정)
-           이었는데, "상시로 말고 커서 올렸을 때만 더 연한 하늘색으로"라는
-           지적(2026-08-12)을 받아 기본은 무채색(secondary), hover에서만
-           옅은 하늘색이 뜨도록 바꿨다 — 파이썬 쪽은 type="primary" 제거,
-           default 배경색은 아래 hover 규칙으로만 준다. 아이콘은 참고
-           이미지 스타일을 재현한 인라인 SVG를 data URI로 만들어 버튼
-           자체의 background-image로 얹는다 — st.button은 커스텀 이미지
-           아이콘을 못 받는다(emoji/Material만 지원). primary가 아니게
-           되면서 배경이 흰색 계열이라 아이콘 선 색을 흰색→sky-dark로
-           다시 그렸다(흰 배경에 흰 선은 안 보임). 버튼별 고유 클래스
-           (.st-key-nav_*)는 실측으로 실제 DOM에서 확인한 훅. */
+        [data-testid="stSidebar"] .sidebar-brand-sub { font-size: 0.85rem; color: var(--muted); font-weight: 400; }
+        [data-testid="stSidebar"] .sidebar-brand-icon { width: 28px; height: 28px; vertical-align: middle; border-radius: 6px; margin-right: 4px; position: relative; top: -2px; }
+        [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.5rem; }
         [data-testid="stSidebar"] [data-testid="stButton"] button {
-            justify-content: flex-start; text-align: left; font-weight: 500;
+            justify-content: flex-start; text-align: left; font-weight: 500; border: 1px solid transparent; background-color: transparent;
+            padding-left: 2.4rem; background-repeat: no-repeat; background-size: 18px 18px; background-position: 12px center; box-shadow: none;
         }
-        /* 2026-09-16: 메뉴가 운영 현황·논문 DB·시스템 셋으로 바뀌었다. 아이콘이 없는 키는 선택(primary) 때 글자가 비어 보였다
-           (실측 스크린샷) — 세 키 모두 같은 규칙과 아이콘을 준다. 선택된 버튼은 흰 글자·흰 아이콘 틀 위에 파란 배경. */
-        .st-key-nav_research button, .st-key-nav_papers button, .st-key-nav_system button {
-            padding-left: 2.4rem; background-repeat: no-repeat;
-            background-size: 18px 18px; background-position: 14px center;
-            transition: background-color 0.12s ease;
-        }
-        /* hover 는 선택 안 된(secondary) 버튼에만 — 선택된 버튼 위에 마우스가 있으면 흰 글자가 연한 배경에 묻혔다(실측). */
-        .st-key-nav_research button[data-testid="stBaseButton-secondary"]:hover,
-        .st-key-nav_papers button[data-testid="stBaseButton-secondary"]:hover,
-        .st-key-nav_system button[data-testid="stBaseButton-secondary"]:hover {
-            background-color: var(--sky-light); border-color: var(--sky);
-        }
+        [data-testid="stSidebar"] [data-testid="stButton"] button:hover { background-color: #EDF0F5; border-color: transparent; color: var(--ink); }
         [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
-        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p {
-            color: #FFFFFF !important;
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
+            background-color: var(--blue-100) !important; border: 1px solid var(--blue-200) !important;
         }
-        .st-key-nav_research button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjMDI4NEM3Ii8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="); }
-        .st-key-nav_papers button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+"); }
-        .st-key-nav_system button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iNyIgcng9IjIiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz48cmVjdCB4PSIzIiB5PSIxNCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjciIHJ4PSIyIiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjYuNSIgcj0iMS4xIiBmaWxsPSIjMDI4NEM3Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjE3LjUiIHI9IjEuMSIgZmlsbD0iIzAyODRDNyIvPjxwYXRoIGQ9Ik0xMSA2LjVoNk0xMSAxNy41aDYiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg=="); }
-        /* 현황을 숫자만 보여주다가 "어떤 논문인지 안 보인다"는 지적을 받아
-           (2026-08-12) 카테고리별 토글 + 실제 논문 목록으로 바꿨다. 사이드
-           바 폭이 좁아서 카드 전용 스타일(굵은 테두리·큰 그림자)이 본문
-           카드와 똑같으면 답답해 보여 사이드바 안에서만 더 가볍게 조정. */
-        [data-testid="stSidebar"] [data-testid="stExpander"] {
-            box-shadow: none; margin-bottom: 0.35rem;
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p { color: var(--blue-dark) !important; font-weight: 600; }
+        /* 버튼 안 글자 상자는 기본이 가운데 정렬이라 justify 만으로는 왼쪽에 안 붙는다(실측) — 상자를 꽉 채우고 왼쪽 정렬 */
+        [data-testid="stSidebar"] [data-testid="stButton"] button > div { width: 100%; justify-content: flex-start; text-align: left; }
+        /* 카드 = border 를 가진 stVerticalBlock(실측 DOM: st.container(border=True) 가 그 블록에 1px 테두리를 준다). */
+        /* 선택된 프로필 카드 — "보는 중"(비활성) 버튼을 직접 품은 카드 블록만 테두리를 파랗게, 위쪽에 3px 선 */
+        [data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] > [class*="st-key-pick_"] button:disabled) {
+            border-color: var(--blue-200) !important; border-radius: 12px !important; box-shadow: inset 0 3px 0 var(--blue), var(--shadow-1);
         }
-        [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-            font-size: 0.82rem; padding: 0.4rem 0.6rem;
-        }
-        [data-testid="stSidebar"] .sidebar-item {
-            font-size: 0.8rem; color: var(--text-main); padding: 0.22rem 0.1rem;
-            overflow-wrap: break-word;
-        }
-
-        /* 제목 아래 밑줄 — "이미지처럼 선을 없애고 그 자리에 회색 설명
-           문구를 두자"는 요청(2026-08-14)으로 뺐다. 지금은 제목 바로
-           아래에 st.caption()으로 부제를 두므로 그 여백만으로 충분히
-           구분된다. */
-        [data-testid="stAppViewContainer"] .block-container > div:first-child h3:first-of-type {
-            margin-bottom: 0.3rem;
-        }
-
-        /* "최근 활동" 항목 — 처음엔 제목 아래에 상태·시간을 같이 뒀는데,
-           참고 이미지는 제목과 상대시간이 한 줄(제목 왼쪽, 시간 오른쪽)
-           이고 상태만 그 아래 별도 줄이다("칸을 늘리면 제목 옆에 시간도
-           쓸 수 있다" 요청, 2026-08-14) — 폭을 넓힌 김에 그 배치로 맞췄다.
-           이후 폭을 더 넓혔더니 상태만 있는 둘째 줄에 빈 공간이 남는 게
-           눈에 띄어("상태를 상대 시간 옆으로 옮기자" 요청, 2026-08-14
-           세 번째) 상태·시간을 한 그룹으로 묶어 제목과 같은 줄 오른쪽에
-           둔다 — 항목당 한 줄로 줄어든다. 제목이 길면 이 한 줄 안에서
-           말줄임(ellipsis)으로 잘리고, 상태·시간 그룹은 줄어들지 않는다. */
-        .recent-item { margin-bottom: 0.6rem; line-height: 1.4; }
-        .recent-title-row {
-            display: flex; justify-content: space-between; align-items: center; gap: 0.6rem;
-        }
-        .recent-title-row .recent-title {
-            flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .recent-meta { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
-        .recent-time { font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }
-
-        /* 상태 배지 — 2026-08-24: ⑥ 승인 게이트를 없애면서 이 배지가 가리키는
-           대상이 review_status(사람 판단)에서 ⑦ 재현 상태(_pipeline_status)로
-           바뀌었다. 다섯 상태만 실제로 있다(중간 상태를 지어내지 않음). */
-        .status-pill {
-            display: inline-block; font-size: 0.75rem; font-weight: 600;
-            padding: 0.12rem 0.55rem; border-radius: 999px; white-space: nowrap;
-        }
-        .status-pill.repro_pending { background: #FEF3C7; color: #92400E; }
-        .status-pill.repro_running { background: #DBEAFE; color: #1E40AF; }
-        .status-pill.repro_ok { background: #DCFCE7; color: #166534; }
-        .status-pill.repro_failed { background: #FEE2E2; color: #991B1B; }
-        .status-pill.no_code { background: #FFEDD5; color: #9A3412; }
+        .st-key-nav_research button { background-image: url("data:image/svg+xml;base64,__ICON_RESEARCH__"); }
+        .st-key-nav_papers button { background-image: url("data:image/svg+xml;base64,__ICON_PAPERS__"); }
+        .st-key-nav_system button { background-image: url("data:image/svg+xml;base64,__ICON_SYSTEM__"); }
+        [data-testid="stSidebar"] [data-testid="stExpander"] { box-shadow: none; margin-bottom: 0.35rem; }
+        [data-testid="stSidebar"] [data-testid="stExpander"] summary { font-size: 0.82rem; padding: 0.4rem 0.6rem; }
+        [data-testid="stSidebar"] .sidebar-item { font-size: 0.8rem; color: var(--ink); padding: 0.22rem 0.1rem; overflow-wrap: break-word; }
         </style>
-        """,
+        """.replace("__ICON_RESEARCH__", _NAV_ICONS["nav_research"]).replace("__ICON_PAPERS__", _NAV_ICONS["nav_papers"])
+           .replace("__ICON_SYSTEM__", _NAV_ICONS["nav_system"]),
         unsafe_allow_html=True,
     )
 
@@ -560,8 +346,9 @@ def _render_profile_cards(db_path, profile_ids: list[str], selected: str) -> Non
                 f"<div style='font-size:13px;line-height:1.7'>메일 <b>{m['issues']}</b>통 · 논문 <b>{m['papers']}</b>편<br>"
                 f"반응 <b>{r['valid']}</b> <span style='color:var(--text-muted)'>(긍정 {r['more'] + r['useful']} · 부정 {r['out']})</span><br>"
                 f"키워드 {o['keywords']['core']} · 수신자 {len(o['recipients'])}</div>", unsafe_allow_html=True)
-            if st.button("보기", key=f"pick_{pid}", width="stretch",
-                         type="primary" if pid == selected else "secondary"):
+            # 선택된 카드는 채운 파란 버튼 대신 "보는 중"(비활성) — 선택 표시는 배경·테두리로(DESIGN.md §5).
+            if st.button("보는 중" if pid == selected else "보기", key=f"pick_{pid}", width="stretch",
+                         type="primary" if pid == selected else "secondary", disabled=(pid == selected)):
                 st.session_state["_research_selected_profile"] = pid
                 st.rerun()
 
@@ -796,7 +583,7 @@ _ACTION_OPS = {"add_keyword": "키워드 추가", "set_weight": "가중치", "re
 _VERDICTS = {"accept": "채택", "modify": "수정 채택", "reject": "기각"}
 
 
-_STATUS_COLORS = {"done": "#0ca30c", "partial": "#ec835a", "failed": "#d03b3b"}     # dataviz 상태 팔레트: good·serious·critical
+_STATUS_COLORS = {"done": "#1E9E5A", "partial": "#E08A2E", "failed": "#D0433B"}     # 상태 팔레트(DESIGN.md §2) — 상태에만 쓴다
 
 
 def _status_legend() -> None:
