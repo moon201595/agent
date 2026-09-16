@@ -228,3 +228,18 @@ def test_날짜_없음은_띠_뒤에_남고_계층은_넘지_않는다_v2():
     dated_single = _paper("dated", "target term", _day(4))
     lower_new = _paper("lower", "trend term", _day(0))
     assert _order([missing_double, lower_new, dated_single]) == ["dated", "missing", "lower"]
+
+
+def test_띠의_앵커는_무적중_최신_논문이_아니라_적격_후보의_최신이다():
+    """Codex 검토(2026-09-16). 이 테스트가 잡는 것: 앵커를 입력 전체(무적중·제외 포함)의 최신 날짜로 잡는 것 — 어제 나온 관련 없는 논문 하나가
+    오늘의 관련 논문 둘을 서로 다른 띠로 갈라 놓는다."""
+    unrelated_newest = _paper("noise", "a database indexing survey", _day(0))          # 무적중
+    single_d2 = _paper("single", "target term only", _day(2))
+    double_d3 = _paper("double", "target term and trend term", _day(3))                # 적격 최신(d2)에서 1일 차 → 같은 띠
+    assert _order([unrelated_newest, single_d2, double_d3]) == ["double", "single"]
+
+
+def test_개념_접기는_실제_변형_쌍만_접는다():
+    """Codex 검토(2026-09-16). 이 테스트가 잡는 것: 모든 '-based' 를 접어 'model-based control' 과 'model control' 을 한 개념으로 만드는 것."""
+    assert ps.concept_key("model-based control") != ps.concept_key("model control")
+    assert ps.concept_key("LLM-based agent") == ps.concept_key("LLM agent")

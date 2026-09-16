@@ -181,7 +181,11 @@ DOMAIN_HITS_CAP = 2
 #                    1.0→0, 0.6→1, … 낮을수록 먼저. 적중 core 중 최고 계층.
 #                    부동소수 값 대신 순위를 쓴다 — 0.35 와 0.4 의 차이는
 #                    "계층이 다르다"이지 "0.05 만큼 덜 관련"이 아니다.
-#   date_band        (가장 최신 후보의 날짜 − 이 논문의 날짜) // DATE_BAND_DAYS.
+#   date_band        (가장 최신 **적격** 후보의 날짜 − 이 논문의 날짜) // DATE_BAND_DAYS.
+#                    앵커는 핵심 적중이 있어 순위 대상이 된 후보 중 최신이다 — 무적중·제외
+#                    논문은 메일에 실릴 수 없으니 그 날짜로 띠를 재면 어제 나온 관련 논문과
+#                    그제 나온 결합 논문이 서로 다른 띠로 갈린다(Codex 검토 2026-09-16 지적을
+#                    받아 정의를 여기 박고 회귀 테스트를 붙였다).
 #                    **2026-09-16 개정(rank-tuple-v2)**: 그전엔 일 단위 날짜가 둘째 항이라
 #                    어제 나온 단일 적중 논문이 그제 나온 3중 적중 논문을 늘 밀어냈다.
 #                    실측(18회 스캔 재생): 핵심 계층 후보가 하루 60~160편인데 상위 5 는
@@ -260,15 +264,15 @@ def tier_rank(profile: dict, core_hits: list[str]) -> int | None:
     return table.index(best)
 
 
-DATE_BAND_DAYS = 3        # "2~3일 차이는 같은 점수"(사용자, 2026-09-16)
+DATE_BAND_DAYS = 3        # 띠 폭 3일 = 이틀 차이까지 같은 점수, 사흘 차이부터 다음 띠(사용자 "2~3일 차이는 같은 점수" 를 이렇게 굳혔다 — 18회 재생 값)
 _NO_DATE_BAND = 10 ** 6   # 날짜 없는 논문은 어떤 띠보다 뒤 — 계층은 넘지 않는다
 
 # 표기 변형 접기 — 개념 폭을 셀 때만 쓴다(채점·적중 표시는 그대로). 실제로 프로필에 넣은 변형 쌍만 적는다(짐작으로 늘리지 않는다).
 _CONCEPT_FOLDS = (
     (re.compile(r"\brobotic\b"), "robot"),                 # robot manipulation ↔ robotic manipulation
     (re.compile(r"\blarge language model\b"), "llm"),      # LLM agent ↔ large language model agent
-    (re.compile(r"-based\b"), ""),                          # LLM agent ↔ LLM-based agent
-)
+    (re.compile(r"\bllm-based\b"), "llm"),                 # LLM agent ↔ LLM-based agent — 모든 "-based" 를 접으면 'model-based control' 이
+)                                                          # 'model control' 과 한 개념이 된다(Codex 검토 2026-09-16) — 실제 넣은 쌍만
 
 
 def concept_key(keyword: str) -> str:
@@ -556,7 +560,7 @@ def score_and_rank(
         scored.append({**p, "_score": result})
 
     # 가중합이 아니라 튜플 계약으로 정렬한다(2026-09-11, 위 주석). 오름차순.
-    # 날짜 띠의 기준은 **이 후보 집합에서 가장 최신 공개일** — 절대 달력이 아니다(위 계약 주석).
+    # 날짜 띠의 기준은 **적격(핵심 적중) 후보 중 가장 최신 공개일** — 절대 달력도, 무적중 후보도 아니다(위 계약 주석).
     newest = max((publication_day(p.get("published"))[0] or 0 for p in scored), default=0) or None
     scored.sort(key=lambda p: rank_key(p, p["_score"], profile, newest_day=newest))
     if top_k is not None:

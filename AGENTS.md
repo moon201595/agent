@@ -46,7 +46,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - **DB 스키마 변경**: 각 모듈의 DDL 은 `schema_guard` 를 통해서만 돈다. 운영 DB(테이블이 있는 파일)에는
   코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고
   `migrate.py --apply`(WAL 포함 일관 백업 자동)로 적용한다. 새 설치는 `--apply --scope all`. 평가 DB 는
-  `--scope evaluation`. 테스트는 conftest 가 플래그를 켜 임시 DB 에 바로 적용한다(2026-09-12).
+  `--scope evaluation`. 테스트는 conftest 가 DDL 플래그를 켜고 **세션 데이터 디렉터리를 임시 경로로 돌린다**(`PAPER_HARNESS_DATA`, 2026-09-16 — 그전엔 플래그만 켜서 `server` import 가 운영 DB 에 표를 만들 수 있었다).
 
 ## 테스트 · 검증 (정확한 명령어 그대로)
 

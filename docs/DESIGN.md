@@ -27,7 +27,7 @@ Streamlit 이라 적용 수단은 `.streamlit/config.toml`(테마)과 `review_ap
 | 범주 팔레트 | `#3B5BDB #E8590C #2F9E44 #9C36B5 #0CA678 #E64980 #F08C00 #1098AD #845EF7 #5C940D` | 선 그래프(키워드별) — 순서 고정, 순환 금지 |
 | 순차 팔레트 | `#86B6EF → #104281` | 크기(가중치) 한 색상 단계 |
 
-상태색은 상태에만 쓴다(계열 4번째 색으로 쓰지 않는다). 파랑을 두 톤 이상 섞지 않는다(cyan·sky 금지).
+상태색은 상태에만 쓴다(계열 4번째 색으로 쓰지 않는다). 파랑을 두 톤 이상 섞지 않는다(cyan·sky 금지). **범주 팔레트 10색은 그래프의 정체(키워드별 선) 전용**이다 — 화면 UI 색이 아니다(강조색 제한의 예외는 이것 하나).
 
 ## 3. 타이포
 Pretendard Variable(jsdelivr), 대체 `-apple-system, "Segoe UI", sans-serif`. 아이콘 폰트 요소(`stIconMaterial`)는 제외.

@@ -5985,6 +5985,31 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     neuromorphic 1.0). 폼을 **한 줄에 하나** 입력으로 바꾸고, 저장 전 "바뀌는 것(삭제·추가)" 안내 + 삭제가 있으면 확인 체크 전까지 저장 버튼 비활성
     (브라우저 실측: 키워드 하나 지우면 안내·체크박스·비활성 확인). 전체 1107 통과.
 
+150. **Codex 독립 검토 두 건(오늘 작업·논문·특허 / 에이전트 전체 구조)과 반영** (2026-09-16, 사용자: "오늘 한 것들 코덱스한테 검토 받아봐 … 전체구조도").
+    보고서 `data/codex_research_2026-09-16/{review_today,architecture_review}.md`. Codex 는 내부 도구로 보고 사내 문서까지 넘겼다(사용자 결정, AGENTS.md).
+    **A. 오늘 작업 판정** — UI 부분 동의(그라데이션 브랜드 아이콘·색만 있는 상태 원·하드코드 hover 가 기준서와 충돌, 대비는 muted 5.88:1 로 충분) ·
+    순위 v2 부분 동의(앵커 정의가 주석과 달라 보임 / "2~3일" 문구와 코드 0~2일 불일치 / `-based` 전부 접기가 넓다 / S2 발표일 의미 혼합) · 논문·특허
+    부분 동의(C 를 독립항 1 "주인공"에서 "가장 유망한 후보"로 낮추고 A·B 독립항 확정을 보류, 선행 링크 추가 — US10698967·WO2024229375·US20250148308·
+    US20250068667·RARR·GuardAgent·PROCTOR; 논문 제목을 과장 없는 표현으로, 표 1 분모·정책 버전·실패 상태 추가, `scripts/paper_stats.py` 부재 지적)
+    · 나머지: 중계 페이지 `FEEDBACK_PAGE_URL` 임의 https 허용(P1)·CORS 재전송 중복(P2)·설정 폼이 제외어·시드 삭제는 확인 없이 저장(P1)·arXiv 따옴표.
+    **반영**: 앵커는 "적격 후보 중 최신"이 의도라 주석·계약을 그렇게 명시하고 회귀 테스트 추가(무적중 최신 논문이 띠를 갈라 놓지 않는다) · 띠 문구를
+    "이틀 차이까지 같은 띠(3일 폭)"로 · `-based` 접기를 `llm-based` 만으로 축소(+테스트) · 중계 페이지는 `*.github.io` 만(+거부 테스트) · 설정 폼은
+    네 목록 전부 전후 대조·삭제 확인 · arXiv 키워드 따옴표 제거 · 브랜드 아이콘 단색 · 상태 표 "⬤ 완료/일부/실패" · hover 토큰 · 논문 DB 제목 칸 넓힘 ·
+    DESIGN.md 에 범주 팔레트 예외 명시. Codex 가 특허·논문 문서를 직접 고친 것은 그대로 둔다(더 신중한 문안). **미반영·보류**: CORS 재전송 중복(학습·화면이
+    회차·논문별 마지막 반응만 세어 숫자는 안 틀린다 — Apps Script 쪽 idempotency 는 재배포가 또 필요해 다음 배포 때), S2 발표일 출처 보존(설계 과제),
+    `paper_stats.py`(10/6 전 작성 예정).
+    **B. 전체 구조 판정** — 총평: 경계는 좋다(순위·검증·저장·발송·격리는 Python, 자동 변경은 revision+expected_revision). 문제: `run_profile_scan.py` 1,340줄에
+    책임 집중, 옛 설계(profile_advisor·rule_advisor·shadow_search·profile_impact·profile_health)와 새 설계(agent_maintenance) 공존, 죽은 경로
+    (`_spread_keywords`·`_diversify_content`·`_eligible_for_content` 는 테스트만, `rule_advisor`·`shadow_search.run_shadow` 운영 호출 없음, `review_core.
+    _summarize_target` 화면 미연결, `eval.py`·`gpu_embedding_smoke_test.py` 수동 전용). 중복 9군: 키워드 매칭·정규화 3곳, 흡수 판정 4곳, KST 변환 5곳,
+    DDL 우회(`import_local_embeddings`), 논문 키 5곳, HTML escape 3곳, .env 로딩 3곳, 재시도 3곳, sqlite 연결 패턴. **높음 2**: ① 검색 소스 전부 실패 시
+    메일이 안 나간다(설계상 의도 — "메일 부재 = 고장 신호" + check_daily_mail 알림; 사용자 결정 대기) ② **pytest 기본 실행이 운영 DB 를 건드릴 수 있다**
+    (conftest 가 DDL 플래그만 켜고 데이터 경로를 안 돌림 → 9/16 실측 사고의 근본 원인) → **반영**: conftest 가 `PAPER_HARNESS_DATA` 를 세션 임시 경로로
+    돌린다(운영 DB mtime 불변 확인). 중간: `server.py` 에 **개인 연락처가 UNPAYWALL_EMAIL 기본값으로 박혀 있었다**(공개 저장소) → 제거, 비면 조회 건너뜀
+    (+테스트, `scripts/count_arxiv.py` 도 같이). 문서 불일치 9건 중 셋 반영(run_profile_scan docstring "메일 안 보낸다" → 실제 역할, README 테스트 수
+    785→1,111·파일 35→56, AGENTS conftest 문구). 나머지(모듈 분할·매칭/시간/키 정책 통합·옛 자산 연결 또는 제거·death code 삭제)는 **나중 과제**로 남긴다.
+    테스트 1,111 통과.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

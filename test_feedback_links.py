@@ -330,3 +330,14 @@ def test_relay_page_source_has_no_endpoint_or_secret():
     code = src.split("<script>", 1)[1]                                             # 주석이 아니라 코드에서 세어야 한다
     assert code.count('"https://') == 1                                            # 코드가 부를 수 있는 절대 주소는 하나뿐
     assert "mode=json" in src and 'name="robots" content="noindex' in src
+
+
+def test_relay_page_must_be_github_pages(configured, db, monkeypatch):
+    """Codex 검토(2026-09-16 P1). 이 테스트가 잡는 것: 임의 https 주소를 중계 페이지로 받아 서명 토큰이 제3자 페이지로 가는 것."""
+    import summarize_engine as engine
+    for bad in ("https://evil.example/reaction/", "https://github.io.evil.test/x/", "https://example.github.io.evil/x/", "http://user.github.io/x/"):
+        monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", bad)
+        assert fl.page_url() == "", bad
+        assert fl.issue_links(db, "p", f"i-{hash(bad)}", "a@x.com", _papers())["2609.00001"]["more"].startswith(URL + "?t=")
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", "https://someone.github.io/agent/web/reaction/")
+    assert fl.page_url().startswith("https://someone.github.io/")
