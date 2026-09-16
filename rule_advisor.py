@@ -20,6 +20,7 @@ from collections import Counter
 
 import profile_scoring
 import trend_report
+import term_hygiene
 
 # 기준선 뒤 고정할 파라미터. 지금 값은 **초기값**이며 근거 실측 전이다.
 DEFAULT_RULES = {"min_support": 2, "min_cooccurrence_ratio": 0.5, "max_proposals": 3,
@@ -46,9 +47,9 @@ def propose(sent: dict, profile: dict, rules: dict | None = None) -> dict:
         hits = profile_scoring.score_paper({"title": p["title"], "abstract": p["abstract"]}, profile)["core_hits"]
         grams = set()
         for n in (2, 3):
-            grams.update(trend_report._ngrams(text, n))
+            grams.update(term_hygiene.candidate_ngrams(text))
         for g in grams:
-            if any(k in g or g in k for k in known):
+            if term_hygiene.overlaps_known(g, known):
                 continue
             support[g] += 1
             if hits:                      # guard 를 통과한 core 와 같은 논문에 있다

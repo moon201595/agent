@@ -86,12 +86,26 @@ def test_동률은_입력_순서가_아니라_키로_정한다():
     assert _order([b, a]) == _order([a, b]) == ["2609.00001", "2609.00002"]
 
 
+def test_연속_가중치는_0_1_구간으로_묶여_기존_계층은_그대로다():
+    """2026-09-15: 반응으로 가중치가 연속값이 되면 계층이 값마다 쪼개져 최신성이 무시된다.
+    이 테스트가 잡는 것: 구간화를 빼는 것(1.07 과 1.0 이 다른 계층), 기존 계층 1.0·0.6·0.4·0.35 가 합쳐지는 것,
+    부동소수 오차로 0.6 이 0.5 구간에 떨어지는 것."""
+    base = {"core_topics": ["a", "b", "c", "d"], "core_weights": {"a": 1.0, "b": 0.6, "c": 0.4, "d": 0.35},
+            "target_domain": [], "exclude": []}
+    assert ps.tier_table(base) == [1.0, 0.6, 0.4, 0.3]
+    moved = dict(base, core_weights={"a": 1.07, "b": 0.6, "c": 0.4, "d": 0.35, }, core_topics=["a", "b", "c", "d", "e"])
+    moved["core_weights"]["e"] = 1.0
+    assert ps.tier_rank(moved, ["a"]) == ps.tier_rank(moved, ["e"]) == 0
+    boosted = dict(base, core_weights={"a": 1.0, "b": 0.72, "c": 0.4, "d": 0.35})
+    assert ps.tier_rank(boosted, ["b"]) == 1 and ps.tier_table(boosted)[1] == 0.7
+
+
 def test_계층은_적중_키워드와_원_가중치로_구한다():
     """이 테스트가 잡는 것: 반올림된 top_core_weight 를 역조회하는 것, 가중치
     누락 키워드를 계층표에서 빼는 것."""
     prof = {"core_topics": ["a", "b", "c"], "core_weights": {"a": 0.123456, "b": 0.6},
             "target_domain": [], "exclude": []}
-    assert ps.tier_table(prof) == [1.0, 0.6, 0.123456], "가중치 없는 c 는 1.0 으로 계층에 들어간다"
+    assert ps.tier_table(prof) == [1.0, 0.6, 0.1], "가중치 없는 c 는 1.0 으로 계층에 들어간다(0.123456 은 0.1 구간)"
     assert ps.tier_rank(prof, ["a"]) == 2
     assert ps.tier_rank(prof, ["c"]) == 0
     r = ps.score_paper({"title": "a and c", "abstract": "", "published": None}, prof)

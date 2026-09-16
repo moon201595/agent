@@ -29,9 +29,9 @@ def _rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dic
 
 
 def seed_yield(db: Path, profile_id: str, start: datetime, end: datetime) -> dict | None:
-    """씨앗별 {returned, unique, eligible, content}. 관측이 없으면 None(미측정).
+    """시드별 {returned, unique, eligible, content}. 관측이 없으면 None(미측정).
 
-    unique 는 **그 씨앗만** 데려온 논문(다른 씨앗도, arXiv 도 못 봤다). 같은
+    unique 는 **그 시드만** 데려온 논문(다른 시드도, arXiv 도 못 봤다). 같은
     기간 안에서 논문 단위로 센다 — 실행이 반복돼도 한 편은 한 번.
     """
     rows = _rows(db, profile_id, start, end)
@@ -110,7 +110,7 @@ def filter_distribution(db: Path, profile_id: str, start: datetime, end: datetim
 
 
 def seed_attempts(db: Path, profile_id: str, start: datetime, end: datetime) -> dict | None:
-    """씨앗별 시도 집계 {keyword: {scans, done, partial, failed, not_attempted, returned}}.
+    """시드별 시도 집계 {keyword: {scans, done, partial, failed, not_attempted, returned}}.
     scan_runs 가 없으면 None(미측정) — 관측 행이 없는 것과 스캔 기록이 없는 것은 다르다.
     이게 있어야 "0편"이 정상 0인지, 실패인지, 예산에 밀려 시도조차 못 한 것인지 갈린다."""
     with sqlite3.connect(db) as con:
@@ -118,6 +118,10 @@ def seed_attempts(db: Path, profile_id: str, start: datetime, end: datetime) -> 
             "SELECT seed_attempts FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ?",
             (profile_id, start.isoformat(), end.isoformat())).fetchall()
     if not rows:
+        return None
+    if all(raw is None for (raw,) in rows):
+        # scan_runs 는 있으나 시드 시도를 기록하지 않은 구형·중단 실행이다. 빈 dict 로
+        # 돌리면 "시드가 없었다"로 읽히므로 미측정(None)으로 남긴다(2026-09-14 외부 검토).
         return None
     out: dict[str, dict] = defaultdict(lambda: {"scans": 0, "done": 0, "partial": 0, "failed": 0,
                                                "not_attempted": 0, "returned": 0})
@@ -147,40 +151,43 @@ def scan_health(db: Path, profile_id: str, start: datetime, end: datetime) -> di
 
 def format_signals(seed: dict | None, source: dict | None, filters: dict | None,
                    attempts: dict | None = None, health: dict | None = None) -> list[str]:
-    """주간 리뷰에 붙일 줄들. 미측정은 미측정이라고 쓴다."""
+    """주간 리뷰에 붙일 줄들. 미측정은 미측정이라고 쓴다.
+
+    시드·출처·탈락 사유는 파이프 표로 낸다(2026-09-14 사용자 요청: "시드: 반환 N · 그 시드만 N · …"
+    나열이 읽히지 않았다). 표에서는 측정된 0 을 0 으로 쓴다 — 관측 이력이 **없는** 경우는 여전히
+    표 없이 "관측 이력 없음"이다(0 으로 채우지 않는다).
+    """
+    from trend_report import table_lines
     lines = ["■ 관측 신호 (스캔별 관측 기준 — 위 편수 표와 분모가 다르다)"]
     if health is None:
         lines.append("  관측 이력 없음 — 이 기간에는 스캔 기록을 남기지 않았다(2026-09-11 이전)")
         return lines
-    lines.append(f"  스캔 {health['scans']}회 · 관측 저장 {health['observed']}회"
+    lines.append(f"  실행 : 스캔 {health['scans']}회 · 관측 저장 {health['observed']}회"
                  + (f" · 저장 실패 {health['failed']}회" if health['failed'] else "")
                  + (f" · 미완 {health['incomplete']}회" if health['incomplete'] else ""))
     if attempts:
-        lines.append("  S2 씨앗별 시도:")
-        for k, v in sorted(attempts.items(), key=lambda kv: -kv[1]["returned"]):
-            parts = [f"{v['scans']}회 시도"]
-            if v["done"]: parts.append(f"완료 {v['done']}")
-            if v["partial"]: parts.append(f"부분 {v['partial']}")
-            if v["failed"]: parts.append(f"실패 {v['failed']}")
-            if v["not_attempted"]: parts.append(f"예산에 밀려 미시도 {v['not_attempted']}")
-            lines.append(f"    {k}: " + " · ".join(parts) + f" · 반환 합계 {v['returned']}편")
+        lines += ["", "▶ S2 시드별 시도"]
+        lines += table_lines(["시드", "시도", "완료", "부분", "실패", "예산에 밀려 미시도", "반환 합계"],
+                             [[k, v["scans"], v["done"], v["partial"], v["failed"], v["not_attempted"], v["returned"]]
+                              for k, v in sorted(attempts.items(), key=lambda kv: -kv[1]["returned"])])
     if seed:
-        lines.append("  S2 씨앗별 수율 (논문 단위 — 같은 논문은 한 번):")
-        for s, v in sorted(seed.items(), key=lambda kv: -kv[1]["returned"]):
-            lines.append(f"    {s}: 반환 {v['returned']} · 그 씨앗만 {v['unique']} · "
-                         f"적격 {v['eligible']} · 내용 자리 {v['content']}")
+        lines += ["", "▶ S2 시드별 수율 (논문 단위 — 같은 논문은 한 번)"]
+        lines += table_lines(["시드", "반환", "그 시드만", "적격", "내용 자리"],
+                             [[s, v["returned"], v["unique"], v["eligible"], v["content"]]
+                              for s, v in sorted(seed.items(), key=lambda kv: -kv[1]["returned"])])
     elif seed is not None and attempts:
-        lines.append("  S2 씨앗별 수율: 시도는 있었으나 관측된 후보 없음")
+        lines.append("   S2 시드별 수율 : 시도는 있었으나 관측된 후보 없음")
     if source:
-        lines.append("  출처별 기여:")
-        for s, v in sorted(source.items(), key=lambda kv: -kv[1]["papers"]):
-            lines.append(f"    {s}: {v['papers']}편 · 이 출처만 {v['unique']} · 적격 {v['eligible']}")
+        lines += ["", "▶ 출처별 기여"]
+        lines += table_lines(["출처", "편수", "이 출처만", "적격"],
+                             [[s, v["papers"], v["unique"], v["eligible"]]
+                              for s, v in sorted(source.items(), key=lambda kv: -kv[1]["papers"])])
     if filters:
-        lines.append("  탈락 사유:")
         label = {research_profile.FILTER_EXCLUDE_HIT: "제외어 적중",
                  research_profile.FILTER_NO_CORE_HIT: "핵심 무적중",
                  research_profile.FILTER_ALREADY_SHOWN: "이미 보낸 논문"}
-        for reason, v in filters.items():
-            ex = " · ".join(t[:40] for t in v["examples"])
-            lines.append(f"    {label.get(reason, reason)}: {v['count']}편{'  예: ' + ex if ex else ''}")
+        lines += ["", "▶ 탈락 사유"]
+        lines += table_lines(["사유", "편수", "예"],
+                             [[label.get(reason, reason), v["count"], " · ".join(t[:40] for t in v["examples"]) or "—"]
+                              for reason, v in filters.items()])
     return lines

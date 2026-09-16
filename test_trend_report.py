@@ -56,7 +56,27 @@ def test_counts_this_week_and_compares_with_last_week(db):
     _add(db, "c", "An old defect detection paper", 9)      # 지난주
     text = _build(db)
     assert "처리한 논문 2편 (지난주 1편)" in text
-    assert "defect detection 2  (1→2, +1)" in text
+    assert "| defect detection | 2 | 1 | +1 |" in text   # 표 행: 이름 | 이번 주 | 지난주 | 증감
+
+
+def test_weekly_review_shows_frequent_terms_as_a_table_without_old_labels(db):
+    """2026-09-14 사용자 요청. 이 테스트가 잡는 것: "등록 안 된 말"·"(키워드로 넣을지는 사람이 판단)"
+    문구가 되살아나는 것, 자주 나오는 용어가 표가 아니라 "용어 — N편 (지난주 없었음)" 나열로
+    돌아가는 것, 비교 구간이 라벨 줄(KST)이 아니게 되는 것."""
+    for i in range(3):
+        _add(db, f"s{i}", f"Spiking sensor fusion for defect detection {i}", 1)
+    text = _build(db)
+    assert "▶ 자주 나오는 용어" in text
+    assert "| spiking sensor fusion | 3 | 0 | +3 |" in text   # 긴 조합이 짧은 것을 품는다(_subsumed)
+    assert "등록 안 된 말" not in text and "사람이 판단" not in text
+    assert "   비교 구간 : " in text and "(KST)" in text
+    # 표시값이 실제 KST 인지 — 끝 시각이 지금(KST)과 2분 안이어야 한다(UTC 그대로 찍으면 9시간 어긋난다)
+    import re
+    from zoneinfo import ZoneInfo
+    m = re.search(r"비교 구간 : \d\d-\d\d \d\d:\d\d ~ (\d\d)-(\d\d) (\d\d):(\d\d) \(KST\)", text)
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    shown = now.replace(month=int(m.group(1)), day=int(m.group(2)), hour=int(m.group(3)), minute=int(m.group(4)))
+    assert abs((now - shown).total_seconds()) < 120
 
 
 def test_keyword_that_vanished_is_reported(db):
@@ -252,11 +272,11 @@ def test_model_and_learning_survive_as_compound_heads():
 
 
 def test_longer_term_subsumes_shorter():
-    """'large language' 와 'large language models' 를 둘 다 보고하지 않는다."""
-    rows = [_text_row("x", "large language models are everywhere") for _ in range(5)]
+    """이 테스트가 잡는 것: 실제 복합어에서 짧은 n-gram이 긴 n-gram과 함께 보고되는 것."""
+    rows = [_text_row("x", "spiking sensor fusion is useful") for _ in range(5)]
     got = {t for t, _n, _w in trend_report.emerging_terms(rows, _PROFILE)}
-    assert "large language models" in got
-    assert "large language" not in got
+    assert "spiking sensor fusion" in got
+    assert "spiking sensor" not in got
 
 
 def test_counts_papers_not_occurrences():
@@ -367,6 +387,30 @@ def test_report_warns_about_invented_numbers():
     out = trend_report.format_report([], [], {"core_topics": []},
                                      story=("17편이 늘었다.", ["17"]))
     assert "원문에 없는 숫자" in out and "17" in out
+
+
+def test_weekly_narrative_gets_the_same_citation_warning_as_daily():
+    """외부 검토(2026-09-14): 근거 ID 감사가 일일 서술에만 연결돼 있었다.
+    이 테스트가 잡는 것: 감사 결과가 나빠도 주간 리뷰에 경고가 안 붙는 것, 멀쩡한데 붙는 것."""
+    bad = {"lines": 2, "cited_lines": 1, "unknown": ["[P99:A]"], "title_only": []}
+    good = {"lines": 1, "cited_lines": 1, "unknown": [], "title_only": []}
+    warn = "일부 주장에 내용 근거 ID가 없거나 유효하지 않다"
+    assert warn in trend_report.format_report([], [], {"core_topics": []}, story=("주장 [P99:A]\n무인용 주장", []), audit=bad)
+    assert warn not in trend_report.format_report([], [], {"core_topics": []}, story=("주장 [P1:A]", []), audit=good)
+
+
+def test_weekly_build_normalises_interpretation_marks_and_audits(db, monkeypatch):
+    """주간 서술도 "~므로 해석이다" 를 문장으로 고치고(일일과 같은 함수) 근거 ID 를 감사한다.
+    이 테스트가 잡는 것: build 가 LLM 서술을 후처리 없이 그대로 싣는 것."""
+    _add(db, "a", "A defect detection method", 1)
+
+    async def fake_narrative(client, rows, profile=None, summaries=None):
+        return ("근거가 없으므로 해석이다 [P99:A]", [], 0)
+
+    monkeypatch.setattr(trend_report, "narrative", fake_narrative)
+    text = asyncio.run(trend_report.build(db, PROFILE, client=object(), with_references=False))
+    assert "근거가 없다 (해석)" in text and "없으므로 해석이다" not in text
+    assert "일부 주장에 내용 근거 ID가 없거나 유효하지 않다" in text
 
 
 def test_list_markers_are_not_treated_as_claims():
@@ -530,7 +574,7 @@ def test_frontier_looks_forward_from_the_foundations_not_our_papers():
 
 
 def test_frontier_skips_references_without_an_arxiv_id():
-    """S2 인용망은 arXiv ID 로 찾는다 — ID 없는 토대는 씨앗이 못 된다."""
+    """S2 인용망은 arXiv ID 로 찾는다 — ID 없는 토대는 시드가 못 된다."""
     frontier, examined = asyncio.run(
         trend_report.frontier_papers(None, [("Some Book", 5)], {}))
     assert frontier == [] and examined == 0

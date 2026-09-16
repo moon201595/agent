@@ -241,7 +241,7 @@ async def find_new_papers_since(
     예산에 걸리면 **거기까지 모은 것으로** 끝낸다(status="partial").
     조용히 전체인 척하지 않는다 — 몇 개 키워드까지 봤는지 같이 돌려준다.
     """
-    seen: dict[str, dict] = {}   # key → 처음 발견한 논문 dict (씨앗 귀속 합치기용)
+    seen: dict[str, dict] = {}   # key → 처음 발견한 논문 dict (시드 귀속 합치기용)
     papers: list[dict] = []
     failed = 0
     truncated = 0      # 잘린 키워드 전체 (기록용)
@@ -249,8 +249,8 @@ async def find_new_papers_since(
     blocked = 0        # 그중 예산·실패·offset 상한 — 사고로 못 본 것
     started = time.monotonic()
     searched = 0
-    # 씨앗별 시도 기록(2026-09-11, B단계 §6.2). 후보에 붙은 씨앗 목록은
-    # "0편 돌아온 씨앗"과 "예산이 끝나 시도도 못 한 씨앗"을 구분 못 한다.
+    # 시드별 시도 기록(2026-09-11, B단계 §6.2). 후보에 붙은 시드 목록은
+    # "0편 돌아온 시드"과 "예산이 끝나 시도도 못 한 시드"을 구분 못 한다.
     per_keyword: list[dict] = []
     for keyword in keywords:
         if time.monotonic() - started > budget_s:
@@ -303,9 +303,9 @@ async def find_new_papers_since(
             key = (paper.get("arxiv_id") or paper.get("doi")
                    or paper["title"].lower())
             if key in seen:
-                # **어느 씨앗이 데려왔는지 버리지 않는다**(2026-09-11, B단계 §6.2).
-                # 그전엔 첫 씨앗만 남고 뒤 씨앗의 발견은 지워졌다 — 그러면
-                # 씨앗별 수율(반환·고유·적격)을 셀 수 없다.
+                # **어느 시드가 데려왔는지 버리지 않는다**(2026-09-11, B단계 §6.2).
+                # 그전엔 첫 시드만 남고 뒤 시드의 발견은 지워졌다 — 그러면
+                # 시드별 수율(반환·고유·적격)을 셀 수 없다.
                 first = seen[key]
                 if keyword not in first.setdefault("s2_seeds", []):
                     first["s2_seeds"].append(keyword)
@@ -384,13 +384,13 @@ def keywords_for_s2(profile: dict, min_weight: float = S2_MIN_KEYWORD_WEIGHT) ->
     채점 키워드와 다르다. 채점은 core_topics 전부를 쓰고 로컬이라 공짜지만,
     질의는 한 개마다 S2 호출 하나이고 그게 429 의 원인이다.
 
-    **씨앗을 가중치에서 떼어냈다**(2026-09-09, §8-79). 그전에는 가중치
+    **시드를 가중치에서 떼어냈다**(2026-09-09, §8-79). 그전에는 가중치
     1.0 이상이 곧 질의어였는데, 그러면 "이 논문이 얼마나 우리 얘기인가"를
     올리는 순간 S2 호출이 같이 늘었다. 두 질문은 다르고, 실측이 그걸
-    보여줬다 — 씨앗이던 `surface inspection` 은 열흘치 적중 0편인데 씨앗이
+    보여줬다 — 시드였던 `surface inspection` 은 열흘치 적중 0편인데 시드가
     아니던 `vision-language-action` 은 16편으로 최다였다(§8-73).
 
-    **씨앗이 비면 종전 그대로 가중치로 고른다** — 구형 프로필 하위 호환이고,
+    **시드가 비면 종전 그대로 가중치로 고른다** — 구형 프로필 하위 호환이고,
     "S2 를 끈다"는 뜻이 아니다. 끄려면 상위 계층을 비우면 된다.
     """
     seeds = [s for s in (profile.get("s2_seeds") or []) if s and s.strip()]

@@ -28,6 +28,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -75,67 +76,27 @@ REFERENCE_BUDGET_SECONDS = 120.0
 # 편수로 센다(출현 횟수가 아니라). 한 논문이 같은 말을 20번 해도 1편이다 —
 # 아니면 장황한 논문 하나가 동향을 만들어낸다.
 
-# 두 목록을 나눈다.
-#
-# _BOILERPLATE 는 **조합 어디에도 오면 안 되는 말** — 주제어가 아니라 논문의
-# 형식이다("we propose", "code available at https://github.com").
-#
-# _EDGE_STOP 은 **양 끝에만 못 오는 말** — 불용어와 연구 동사(train·evaluate·
-# leverage 등). 동사는 주제가 아니라 형식이라 머리에 오면 `train vla models`
-# 같은 잘린 조합이 진짜 용어 `vla models` 를 밀어낸다. 처음에 model·learning 을 상투어로
-# 넣었더니 `vla models`(실측 5편)와 `reinforcement learning` 이 통째로
-# 죽었다 — 이것들은 합성어의 머리로 쓰일 때 정확히 우리가 찾는 신호다.
-# "the model" 은 반대편 끝이 불용어라 어차피 걸리므로, model·learning 자체는
-# 어느 목록에도 안 넣는다. 넣었더니 `large language models` 가 통째로 죽고
-# 잘린 `large language` 만 남았다 — 꼬리 자리가 바로 우리가 찾는 자리다.
-_BOILERPLATE = frozenset("""
-https http www github com org net arxiv doi io gitlab huggingface
-available publicly release released open source repository
-paper study experiments experiment evaluation results result
-propose proposed proposes present presents introduce introduces
-show shows shown demonstrate demonstrates achieve achieves achieved
-state art sota baseline baselines outperform outperforms
-compared comparison extensive comprehensive significantly substantially
-first second third recent recently novel
-approach approaches method methods framework frameworks technique techniques
-address addresses addressing findings finding suggest suggests suggesting
-limitation limitations challenge challenges challenging remains remain
-validated validate validates scenario scenarios
-""".split())
-
-_EDGE_STOP = frozenset("""
-a an the of for and or with in on to from by via using use uses used based
-toward towards we our this that these those is are be was were can it its as
-at into over under between within without more most less than however such
-also each other both same many while when where which who what have has had
-do does did been being not only but if then there their them they you your
-his her will would could should may might must per across new various several
-different multiple time times data code analysis here thus hence therefore
-train trains trained training evaluate evaluates evaluated apply applies applied
-leverage leverages leveraged employ employs employed utilize utilizes utilized
-develop develops developed design designs designed build builds built enable
-enables enabled allow allows allowed require requires required obtain obtains
-""".split()) | _BOILERPLATE
+# 낱말·구절 목록과 판정은 term_hygiene 에 있다(2026-09-13, §8-109). 여기 있던 _BOILERPLATE /
+# _EDGE_STOP 은 그쪽의 이름을 그대로 가리킨다 — 세 소비자(여기 · term_discovery · rule_advisor)가
+# 같은 판정을 써야 "동향 절에서는 죽고 탐색 차선에서는 사는" 조합이 안 생긴다.
+# 그전 이 자리의 주석(model·learning 을 어느 목록에도 안 넣는 이유 등)은 term_hygiene 으로 옮겼다.
+import term_hygiene
+_BOILERPLATE = term_hygiene.BOILERPLATE_WORDS
+_EDGE_STOP = term_hygiene.EDGE_STOP
 
 _WORD_RE = re.compile(r"[a-z][a-z0-9\-]+")
 
 
-def _ngrams(text: str, n: int):
-    """상투어·불용어로 시작하거나 끝나는 조합은 버린다 — 'the defect' 같은 것. model·learning 은 머리로는 쓰이므로 양끝만 막는다."""
-    words = [w for w in _WORD_RE.findall(text.lower()) if len(w) > 2]
-    for i in range(len(words) - n + 1):
-        gram = words[i:i + n]
-        if gram[0] in _EDGE_STOP or gram[-1] in _EDGE_STOP:
-            continue
-        if any(w in _BOILERPLATE for w in gram):
-            continue
-        yield " ".join(gram)
+def _ngrams(text: str, n: int, diag: Counter | None = None):
+    """공용 후보 생성기를 호출한다 — 세 소비자가 문장·우산어 정책을 공유한다."""
+    yield from term_hygiene.ngrams(text, n, diag)
 
 
 def _subsumed(term: str, others: set[str]) -> bool:
     """더 긴 조합에 그대로 들어 있으면 짧은 쪽은 버린다 —
-    'language models' 와 'large language models' 를 둘 다 보고하지 않는다."""
-    return any(term != o and term in o for o in others)
+    'language models' 와 'large language models' 를 둘 다 보고하지 않는다. 문자열
+    부분 포함은 `vision model`을 `supervision model`의 일부로 오인하므로 토큰열만 본다."""
+    return any(term != o and term_hygiene.token_sequence_contains(o, term) for o in others)
 
 
 def emerging_terms(rows: list[sqlite3.Row], profile: dict,
@@ -161,7 +122,7 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
 
     now, prev = count(rows), count(prev_rows)
     cand = {g for g, n in now.items()
-            if n >= min_papers and not any(k in g or g in k for k in known)}
+            if n >= min_papers and not term_hygiene.overlaps_known(g, known)}
     cand = {g for g in cand if not _subsumed(g, cand)}
     ranked = sorted(cand, key=lambda g: (-now[g], g))
     return [(g, now[g], prev.get(g, 0)) for g in ranked[:top_n]]
@@ -274,6 +235,8 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 - 이전 기간의 비교 근거는 제공되지 않았다. 증가·전환·부상 등 시간적 변화는
   단정하지 않고 "이번 수집 표본에서 관찰되는 주제"로 서술한다.
 - 저자 명시 한계와 요약자 해석을 구분한다. 근거가 없으면 판단을 유보한다.
+- "(논문 자체의 SOTA 주장 — 미검증)" 이 붙은 S번호 문장은 그 논문이 스스로 최고 성능이라고 말한 것이다. 흐름과 이어질 때만
+  자연스럽게 언급하고, 반드시 "논문 주장" 이라고 쓴다 — 우리가 확인한 사실이 아니다. 억지로 끼워 넣지 않는다.
 - "해석" 표시는 문장 끝 "(해석)" 하나로 통일한다. "해석이다"·"해석으로 본다" 같은
   변형을 쓰지 않는다. 나쁜 예: "…달성될 수 있으므로 해석이다" / "…범위를 넘어서므로
   해석이다". 좋은 예: "…달성될 수 있다 (해석)" / "…는 이 표본으로는 알 수 없다."
@@ -603,8 +566,8 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
     return [dict(row) for row in rows if profile_scoring.score_paper(dict(row), profile)["core_hits"]]
 
 
-def collection_scope(db: Path, profile_id: str, start: datetime, end: datetime) -> list[str]:
-    """검색 지문·완료 상태를 표본과 함께 보여 줘 출처 장애를 추세로 읽지 않게 한다."""
+def collection_rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[tuple[str, str, int, str]]:
+    """(출처, 결과, 횟수, 검색 지문) — 검색 지문·완료 상태를 표본과 함께 보여 줘 출처 장애를 추세로 읽지 않게 한다."""
     with sqlite3.connect(db) as con:
         rows = con.execute(
             "SELECT source, status, topic_signature, COUNT(*) FROM search_runs "
@@ -612,7 +575,12 @@ def collection_scope(db: Path, profile_id: str, start: datetime, end: datetime) 
             "AND started_at<? "
             "GROUP BY source, status, topic_signature ORDER BY source, status, topic_signature",
             (profile_id, start.isoformat(), end.isoformat())).fetchall()
-    return [f"{src} {status} {n}회 · 검색 지문 {sig or '미기록'}" for src, status, sig, n in rows]
+    return [(src, status, n, sig or "미기록") for src, status, sig, n in rows]
+
+
+def collection_scope(db: Path, profile_id: str, start: datetime, end: datetime) -> list[str]:
+    """collection_rows 를 표 행(`| 출처 | 결과 | 횟수 | 지문 |`)으로."""
+    return ["| " + " | ".join(_cell(c) for c in row) + " |" for row in collection_rows(db, profile_id, start, end)]
 
 
 def keyword_counts(rows: list[sqlite3.Row], profile: dict) -> Counter:
@@ -763,7 +731,7 @@ async def shared_references(
             n = r.get("citationCount")
             if isinstance(n, int):
                 cites[t] = max(cites.get(t, 0), n)
-            # externalIds 도 이미 응답에 온다 — 최전선 조회의 씨앗이 된다.
+            # externalIds 도 이미 응답에 온다 — 최전선 조회의 시드가 된다.
             aid = ((r.get("externalIds") or {}).get("ArXiv") or "").strip()
             if aid:
                 ref_ids.setdefault(t, aid)
@@ -876,13 +844,38 @@ async def frontier_papers(
     return counter.most_common(10), examined
 
 
+_READER_TZ = ZoneInfo("Asia/Seoul")   # 주간 리뷰 시각 표시용 — 받는 사람 시간대
+
+
+def _cell(value: object) -> str:
+    """파이프 표 칸 — 칸 안의 `|` 는 표를 깨므로 전각으로 바꾼다."""
+    return str(value).replace("|", "｜").strip()
+
+
+def table_lines(header: list[str], rows: list[list[object]], indent: str = "   ") -> list[str]:
+    """파이프 표 줄들. 첫 줄 머리, 둘째 줄 구분선. 행이 없으면 빈 목록."""
+    if not rows:
+        return []
+    out = [indent + "| " + " | ".join(_cell(h) for h in header) + " |",
+           indent + "|" + "|".join(" --- " for _ in header) + "|"]
+    out += [indent + "| " + " | ".join(_cell(c) for c in r) + " |" for r in rows]
+    return out
+
+
+def _count_table(label: str, rows: list[tuple[str, int, int]]) -> list[str]:
+    """(이름, 이번 주, 지난주) → 증감까지 붙인 표. 증감 0 은 부호 없이 0."""
+    return table_lines([label, "이번 주", "지난주", "증감"],
+                       [[name, n, was, f"{n - was:+d}" if n != was else "0"] for name, n, was in rows])
+
+
 def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
                   profile: dict, shared: list[tuple[str, int]] | None = None,
                   examined: int = 0, targets: int = 0,
                   story: tuple[str, list[str]] | None = None,
                   lineage: list[list[str]] | None = None,
                   cites: dict[str, int] | None = None,
-                  frontier: list[tuple[str, int]] | None = None) -> str:
+                  frontier: list[tuple[str, int]] | None = None,
+                  audit: dict | None = None) -> str:
     """사람이 메일에서 바로 읽는 형태.
 
     **셈과 서술을 섞지 않는다.** 위쪽은 전부 기계가 센 숫자라 위조가 불가능하고,
@@ -894,7 +887,7 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
     prev = keyword_counts(last_week, profile)
 
     lines = ["■ 주간 동향 리뷰", ""]
-    lines.append(f"처리한 논문 {len(this_week)}편 (지난주 {len(last_week)}편)")
+    lines.append(f"▶ 처리한 논문 {len(this_week)}편 (지난주 {len(last_week)}편)")
 
     mix = source_mix(this_week)
     if mix:
@@ -908,27 +901,19 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
         lines.append(f"  ⚠ 원문을 다 못 본 요약 {len(partial)}편 "
                      f"(최저 {partial[0][1] * 100:.0f}%) — 실제 읽기 범위 기준")
 
+    # 편수 절은 파이프 표로 낸다(2026-09-14 사용자 요청: "키워드 N (a→b, +d)" 나열이 읽히지
+    # 않았다). 평문판은 표 그대로 읽히고 HTML 은 digest._weekly_table_html 이 표로 그린다.
     if now:
-        lines += ["", "▶ 주제별 편수 (지난주 대비)"]
-        for kw, n in now.most_common(12):
-            was = prev.get(kw, 0)
-            delta = n - was
-            arrow = f"  ({was}→{n}, {delta:+d})" if was or delta else ""
-            lines.append(f"   {kw} {n}{arrow}")
+        lines += ["", "▶ 주제별 편수 (지난주 대비)", *_count_table("키워드", [
+            (kw, n, prev.get(kw, 0)) for kw, n in now.most_common(12)])]
 
     gone = [kw for kw in prev if kw not in now]
     if gone:
-        lines.append(f"   지난주엔 있었으나 이번주 없음: {', '.join(sorted(gone)[:8])}")
+        lines.append(f"   지난주엔 있었으나 이번주 없음 : {', '.join(sorted(gone)[:8])}")
 
     fresh = emerging_terms(this_week, profile, last_week)
     if fresh:
-        lines += ["", "▶ 등록 안 된 말 중 자주 나온 것 (키워드로 넣을지는 사람이 판단)"]
-        for term, n, was in fresh:
-            if was == 0:
-                lines.append(f"   {term} — {n}편 (지난주 없었음)")
-            else:
-                lines.append(f"   {term} — {n}편 ({was}→{n}, {n - was:+d})")
-        lines.append("   ※ core_topics 에 없어서 검색·점수·추이 어디에도 안 잡히는 말들이다.")
+        lines += ["", "▶ 자주 나오는 용어", *_count_table("용어", fresh)]
 
     if shared:
         scope = f"{examined}/{targets}편 조회" if targets else ""
@@ -973,6 +958,10 @@ def format_report(this_week: list[sqlite3.Row], last_week: list[sqlite3.Row],
         lines += [f"   {ln}" for ln in text.strip().splitlines()]
         if ungrounded:
             lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
+        # 근거 ID 감사는 일일 서술에만 붙어 있었다(2026-09-14, 외부 검토 D) — 같은 기준으로 주간에도 경고한다.
+        if audit and (audit.get("unknown") or audit.get("title_only")
+                      or audit.get("cited_lines", 0) < audit.get("lines", 0)):
+            lines.append("   ⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것")
 
     return "\n".join(lines) + "\n"
 
@@ -1000,27 +989,53 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
         # 최전선만 호출이 더 든다(토대 논문 3편). 실패해도 나머지는 그대로 나간다.
         if with_frontier and shared:
             frontier, _seen = await frontier_papers(client, shared, scan.ref_ids)
-    story = None
+    story, audit = None, None
     if client is not None and with_narrative and this_week:
         story = await narrative(client, this_week, profile)
         if story:
-            story = (story[0], story[1])   # 주간 리뷰는 요약을 안 넣는다(범위가 안 맞는다)
+            # 일일 서술과 같은 후처리·감사를 탄다(2026-09-14, 외부 검토 D): "~므로 해석이다" 를 문장으로
+            # 고치는 normalise_interpretation_marks 와 근거 ID 감사가 주간 경로에서 빠져 있었다.
+            import digest   # 늦은 import — digest 는 이 모듈을 import 하지 않는다
+            text = digest.normalise_interpretation_marks(story[0])
+            audit = citation_audit(text, _narrative_corpus(this_week)[0])
+            story = (text, story[1])   # 주간 리뷰는 요약을 안 넣는다(범위가 안 맞는다)
     report = format_report(this_week, last_week, profile, shared, examined, targets,
-                           story, lineage, cites, frontier)
-    scope = [f"비교 구간(UTC): {start.isoformat()} ~ {end.isoformat()} / "
-             f"이전 {previous.isoformat()} ~ {start.isoformat()}"]
+                           story, lineage, cites, frontier, audit=audit)
+    # 비교 기준·수집 실행을 라벨 줄과 표로(2026-09-14 사용자 요청). 예전엔 "비교 구간(UTC): ISO ~ ISO /
+    # 이전 …"·"이번 기간 수집: a / b / c" 가 한 줄씩 붙어 있어 무엇이 무엇인지 읽히지 않았다.
+    # 시각은 받는 사람 시간대(KST)로, 분까지만 쓴다 — 계산은 위 UTC 값 그대로다.
+    def _kst(t: datetime) -> str:
+        return t.astimezone(_READER_TZ).strftime("%m-%d %H:%M")
+    scope = ["▶ 비교 기준",
+             f"   비교 구간 : {_kst(start)} ~ {_kst(end)} (KST)",
+             f"   이전 구간 : {_kst(previous)} ~ {_kst(start)} (KST)"]
     if profile.get("profile_id"):
         report = report.replace("처리한 논문", "처음 발견한 관련 논문", 1)
-        scope.append("최초 발견일 기준 · 두 기간 모두 현재 프로필로 채점 · 발표량 증감이 아니다.")
-        for label, lo, hi in (("이번 기간", start, end), ("이전 기간", previous, start)):
-            runs = collection_scope(db, profile["profile_id"], lo, hi)
-            scope.append(label + " 수집: " + (" / ".join(runs) if runs else "실행 기록 없음"))
+        scope.append("   기준 : 최초 발견일 · 두 기간 모두 현재 프로필로 채점 · 발표량 증감이 아니다.")
+        scope.append("   ※ 검색 설정·출처 장애·색인 지연이 달라질 수 있어 분야 전체의 성장·쇠퇴로 해석하지 않는다.")
+        runs, missing = [], []
+        for label, lo, hi in (("이번", start, end), ("이전", previous, start)):
+            got = collection_rows(db, profile["profile_id"], lo, hi)
+            # 같은 구간·출처·결과는 한 줄로 합치고 지문은 한 칸에 모은다 — 지문마다 줄을 나누면
+            # 한 주에 19줄이 됐다(2026-09-14 실측). 횟수 합은 그대로다.
+            # 지문별 횟수는 `지문(횟수)` 로 남긴다 — 합치면서 정보를 버리지 않는다(외부 검토 2026-09-14).
+            merged: dict[tuple[str, str], list] = {}
+            for src, status, n, sig in got:
+                slot = merged.setdefault((src, status), [0, []])
+                slot[0] += n
+                slot[1].append(f"{sig[:8]}({n})")
+            runs += [[label, src, status, n, "·".join(sigs)] for (src, status), (n, sigs) in merged.items()]
+            if not got:
+                missing.append(label)
+        scope += ["", "▶ 수집 실행 (검색 지문 = 그때의 검색어 조합)"]
+        scope += table_lines(["구간", "출처", "결과", "횟수", "검색 지문"], runs)
+        scope += [f"   {label} 구간 수집 : 실행 기록 없음" for label in missing]
     else:
-        scope.append("요약 생성일 기준 처리 통계 · 최초 발견일과 발표일은 구분하지 못한 구형 호출이다.")
-    scope.append("검색 설정·출처 장애·색인 지연이 달라질 수 있어 분야 전체의 성장·쇠퇴로 해석하지 않는다.")
-    report = report.replace("■ 주간 동향 리뷰\n", "■ 주간 동향 리뷰\n" + "\n".join(scope) + "\n", 1)
+        scope.append("   기준 : 요약 생성일 기준 처리 통계 · 최초 발견일과 발표일은 구분하지 못한 구형 호출이다.")
+        scope.append("   ※ 검색 설정·출처 장애·색인 지연이 달라질 수 있어 분야 전체의 성장·쇠퇴로 해석하지 않는다.")
+    report = report.replace("■ 주간 동향 리뷰\n", "■ 주간 동향 리뷰\n\n" + "\n".join(scope) + "\n", 1)
     # **관측 신호**(2026-09-11, B단계 §6.4). 스캔별 관측(candidate_observations)에서
-    # 씨앗 수율·출처 기여·탈락 사유를 센다. 위 편수 표(논문 개체 기준)와 분모가
+    # 시드 수율·출처 기여·탈락 사유를 센다. 위 편수 표(논문 개체 기준)와 분모가
     # 다르므로 따로 절을 둔다. 관측 이력이 없는 기간은 0 이 아니라 미측정이다.
     # LLM 은 안 쓴다. 실패해도 리뷰는 나간다.
     try:

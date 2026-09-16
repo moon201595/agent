@@ -8,7 +8,7 @@ docs/ASTRA_PLAN_2026-09-10.md §8·§9, 설계 판정은 PROGRESS §8-89.
 로 가지 않는다. 그 위에 운영 모드 기본값 `proposal_only` 가 한 번 더 막는다 —
 임계값이 설정돼도 이 모드가 열리기 전에는 실제 적용이 0건이다.
 
-**규칙 4 경계(PROGRESS §8-89).** 밖에 보내는 것은 현재 관심사(core·계층·씨앗)와
+**규칙 4 경계(PROGRESS §8-89).** 밖에 보내는 것은 현재 관심사(core·계층·시드)와
 대표 논문의 제목·초록·키다 — 공개 텍스트와 "무엇에 관심 있나". 편수·증감·수율·
 탈락 사유·이전 제안 이력은 **내부 관측 결과**라 안 보낸다. 모델이 논문 텍스트에서
 스스로 용어를 뽑고, 코드가 전체 스냅샷에서 출현·guard·영향을 잰다.
@@ -21,6 +21,7 @@ docs/ASTRA_PLAN_2026-09-10.md §8·§9, 설계 판정은 PROGRESS §8-89.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -133,6 +134,23 @@ def get_mode(db: Path, profile_id: str) -> tuple[str, dict | None]:
     return row[0], (json.loads(row[1]) if row[1] else None)
 
 
+def _split_gate_rules(raw: dict | None) -> tuple[dict, dict]:
+    """advisor_settings의 apply·shadow 규칙을 분리한다(외부 검토 2026-09-14).
+
+    기존 평면 apply 규칙도 보존하면서, 적용 직전에는 두 게이트 규칙을 함께
+    읽을 수 있어야 호출자가 넘긴 shadow 규칙이 운영 설정을 대신하지 않는다."""
+    raw = raw if isinstance(raw, dict) else {}
+    nested_apply = raw.get("apply", raw.get("apply_rules"))
+    nested_shadow = raw.get("shadow", raw.get("shadow_rules"))
+    apply = dict(nested_apply) if isinstance(nested_apply, dict) else {
+        key: raw[key] for key in profile_impact.DEFAULT_APPLY_RULES if key in raw
+    }
+    shadow = dict(nested_shadow) if isinstance(nested_shadow, dict) else {
+        key: raw[key] for key in profile_impact.DEFAULT_SHADOW_RULES if key in raw
+    }
+    return apply, shadow
+
+
 # ── 입력 (규칙 4 whitelist) ──────────────────────────────────────────────
 SENT_FIELDS = {"key", "title", "abstract"}   # 대표 논문에서 밖으로 나가는 필드 전부
 
@@ -233,14 +251,17 @@ def validate_proposals(data: dict, sent: dict, profile: dict) -> list[dict]:
         overflow = True
     else:
         overflow = False
+    import term_discovery
     core = set(profile.get("core_topics") or [])
     tiers = set(sent["allowed_tiers"])
     sent_keys = set(sent["sent_paper_keys"])
-    corpus = {p["key"]: (p["title"] + " " + p["abstract"]).lower() for p in sent["papers"]}
+    corpus = {p["key"]: (p["title"] + " " + p["abstract"]).lower()
+              for p in sent["papers"] if p["key"] in sent_keys}
     # 탐색 차선의 증거 논문도 실제로 전송된 텍스트다 — R7(문자열 실재)을 같은 corpus 로 본다.
     for t in sent.get("exploration") or []:
         for p in t.get("papers") or []:
-            corpus.setdefault(p["key"], (p["title"] + " " + p["abstract"]).lower())
+            if p["key"] in sent_keys:
+                corpus.setdefault(p["key"], (p["title"] + " " + p["abstract"]).lower())
     seen_terms: set[str] = set()
     for i, p in enumerate(proposals):
         errors: list[str] = []
@@ -265,21 +286,29 @@ def validate_proposals(data: dict, sent: dict, profile: dict) -> list[dict]:
                 tier_f = None
             if tier_f is None or tier_f != tier_f or tier_f not in tiers:
                 errors.append("tier_not_allowed")   # 새 계층을 모델이 만들 수 없다
-        if action == "add_core_term" and term in core:
-            errors.append("already_core")
         if action in ("change_core_tier", "add_s2_seed") and term not in core and action != "add_s2_seed":
             errors.append("term_not_in_core")
         ev = p.get("evidence_paper_keys") or []
-        if not isinstance(ev, list) or (action == "add_core_term" and len(ev) < 2):
+        ev_keys = {key for key in ev if isinstance(key, str)} if isinstance(ev, list) else set()
+        if not isinstance(ev, list) or (action == "add_core_term" and len(ev_keys) < 2):
             errors.append("insufficient_evidence_keys")
         missing = [k for k in ev if k not in sent_keys]   # 전체 스냅샷이 아니라 **전송 부분집합**
         if missing:
             errors.append(f"evidence_not_sent:{','.join(missing[:3])}")
+        known = term_discovery.is_variant_of_known(term, profile) if term else None
+        known_canonical = term_discovery.canonical(known) if known else None
+        core_canonical = {term_discovery.canonical(existing) for existing in core}
+        if action == "add_core_term" and (term in core or (known_canonical is not None and known_canonical in core_canonical)):
+            errors.append("already_core")
         if term and action == "add_core_term":
             pat = profile_scoring._keyword_pattern(term)
-            present = [k for k in ev if k in corpus and pat.search(corpus[k])]
-            if len(present) < min(2, len(ev)):
+            present = {k for k in ev_keys if k in corpus and pat.search(corpus[k])}
+            if len(present) < 2:
                 errors.append("term_absent_in_evidence")   # R7 — 문자열 그대로 있어야 한다
+        if term and action == "add_s2_seed" and term not in core:
+            pat = profile_scoring._keyword_pattern(term)
+            if not any(pat.search(text) for text in corpus.values()):
+                errors.append("term_absent_in_sent_text")  # R7 — 시드도 실제 전송 텍스트에 있어야 한다
         if overflow and i == MAX_PROPOSALS - 1:
             errors.append("proposals_truncated")
         out.append({"action": action, "term": term, "proposed_tier": tier,
@@ -377,28 +406,15 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if not profile:
         return {"status": "skipped", "reason": "no_profile"}
     week = week_of(now)
-    if not reserve_run(db, profile_id, week):
-        return {"status": "skipped", "reason": "already_ran_this_week", "week": week}
-    base_rev = research_profile.current_revision(db, profile_id)
-    run_id = uuid.uuid4().hex[:12]
-    snap = profile_impact.snapshot(db, profile_id, start, end)
-    with sqlite3.connect(db) as con:
-        con.execute("INSERT INTO advisor_runs (run_id, profile_id, created_at, base_revision, week, window_start,"
-                    " window_end, snapshot_id, snapshot_sha256, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (run_id, profile_id, _now(), base_rev, week, start.isoformat(), end.isoformat(),
-                     snap["snapshot_id"], snap["content_sha256"], "started"))
-        _event(con, profile_id, "run_started", run_id, {"week": week, "base_revision": base_rev})
-
-    def finish(status: str, reason: str | None = None, **extra) -> dict:
-        with sqlite3.connect(db) as con:
-            con.execute("UPDATE advisor_runs SET status=?, status_reason=? WHERE run_id=?", (status, reason, run_id))
-            _event(con, profile_id, f"run_{status}", run_id, {"reason": reason, **extra})
-        return {"status": status, "reason": reason, "run_id": run_id, **extra}
-
+    try:
+        snap = profile_impact.snapshot(db, profile_id, start, end)
+    except Exception as e:  # noqa: BLE001 — 사전 스킵은 주간 예약을 소비하지 않는다
+        return {"status": "skipped", "reason": f"snapshot_error:{type(e).__name__}", "week": week}
     if snap["paper_count"] == 0:
-        return finish("skipped", "no_observations")
-    if client is None or not engine.gemini_key_names():
-        return finish("skipped", "budget_unknown")   # provider 잔여를 모르면 보내지 않는다(§8.5)
+        return {"status": "skipped", "reason": "no_observations", "week": week}
+    key_names = engine.gemini_key_names()
+    if client is None or not key_names:
+        return {"status": "skipped", "reason": "budget_unknown", "week": week}
 
     papers = select_papers(snap, profile, limit=DELIVERY_PAPERS)
     # 탐색 차선(②): 키워드에 안 걸려 탈락한 논문에서 로컬로 찾은 용어 + 증거 논문.
@@ -414,7 +430,23 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     try:
         prompt = render_prompt(sent)
     except ValueError as e:
-        return finish("skipped", str(e))
+        return {"status": "skipped", "reason": str(e), "week": week}
+    if not reserve_run(db, profile_id, week):
+        return {"status": "skipped", "reason": "already_ran_this_week", "week": week}
+    base_rev = research_profile.current_revision(db, profile_id)
+    run_id = uuid.uuid4().hex[:12]
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_runs (run_id, profile_id, created_at, base_revision, week, window_start,"
+                    " window_end, snapshot_id, snapshot_sha256, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (run_id, profile_id, _now(), base_rev, week, start.isoformat(), end.isoformat(),
+                     snap["snapshot_id"], snap["content_sha256"], "started"))
+        _event(con, profile_id, "run_started", run_id, {"week": week, "base_revision": base_rev})
+
+    def finish(status: str, reason: str | None = None, **extra) -> dict:
+        with sqlite3.connect(db) as con:
+            con.execute("UPDATE advisor_runs SET status=?, status_reason=? WHERE run_id=?", (status, reason, run_id))
+            _event(con, profile_id, f"run_{status}", run_id, {"reason": reason, **extra})
+        return {"status": status, "reason": reason, "run_id": run_id, **extra}
     sent_json = json.dumps(sent, ensure_ascii=False, sort_keys=True)
     with sqlite3.connect(db) as con:
         con.execute("UPDATE advisor_runs SET sent_input_json=?, sent_input_sha256=?, prompt_version=?,"
@@ -423,14 +455,18 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
 
     import time
     deadline = time.monotonic() + BATCH_DEADLINE_S
-    keys = engine.gemini_key_names()
+    keys = key_names
     key_idx = engine._gemini_key_cursor % len(keys)
     parsed, attempts = None, 0
     while attempts < MAX_REQUESTS_PER_BATCH and time.monotonic() < deadline:
         if not reserve_request(db, profile_id, week):
             return finish("skipped", "request_budget_exhausted", attempts=attempts)
         attempts += 1
-        res = await _request_once(client, prompt, keys[key_idx % len(keys)])
+        try:
+            res = await _request_once(client, prompt, keys[key_idx % len(keys)])
+        except asyncio.CancelledError:
+            finish("error", "cancelled", attempts=attempts)
+            raise
         with sqlite3.connect(db) as con:
             con.execute("INSERT INTO advisor_attempts (attempt_id, run_id, attempt, purpose, requested_model,"
                         " response_model, key_name, started_at, finished_at, outcome, http_status, raw_response,"
@@ -449,11 +485,15 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
     if parsed is None:
         return finish("failed", "no_valid_response", attempts=attempts)
 
-    mode, rules = get_mode(db, profile_id)
-    validated = suppress_rejected(db, profile_id, validate_proposals(parsed, sent, profile), sent, profile, rules)
+    mode, configured_rules = get_mode(db, profile_id)
+    rules, _shadow_rules = _split_gate_rules(configured_rules)
+    validated = suppress_rejected(db, profile_id, validate_proposals(parsed, sent, profile), sent, profile,
+                                  configured_rules)
     after = apply_actions(profile, validated)
     consumed = research_profile.already_shown(db, profile_id)
     analysis = None
+    for p in validated:
+        p["proposal_id"] = uuid.uuid4().hex[:12]
     if any(not p.get("errors") and not p.get("deferred") and not p.get("suppressed") for p in validated):
         analysis = profile_impact.analyze_and_store(db, snap, profile, after, k or int(profile.get("max_items") or 6),
                                                     rules=rules, consumed_keys=consumed)
@@ -484,7 +524,7 @@ async def run_weekly(db: Path, profile_id: str, client: httpx.AsyncClient | None
             con.execute("INSERT INTO advisor_proposals (proposal_id, run_id, ordinal, action, term, proposed_tier,"
                         " evidence_json, reason, risks_json, validation_json, status, analysis_id, bundle_analysis_id)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (uuid.uuid4().hex[:12], run_id, i, p.get("action") or "invalid", p.get("term"),
+                         (p["proposal_id"], run_id, i, p.get("action") or "invalid", p.get("term"),
                          float(p["proposed_tier"]) if isinstance(p.get("proposed_tier"), (int, float)) else None,
                          json.dumps(p.get("evidence_paper_keys") or []), p.get("reason"),
                          json.dumps(p.get("ambiguity_risks") or [], ensure_ascii=False),
@@ -557,8 +597,10 @@ def rejected_signatures(db: Path, profile_id: str) -> set[tuple[str, str, str, s
 
 def current_rules_hash(db: Path, profile_id: str, rules: dict | None) -> str:
     """지금 판정에 쓰일 규칙의 해시 — gate_decisions 의 rules_hash 와 같은 방식."""
-    eff = {**profile_impact.DEFAULT_APPLY_RULES, **(rules or {})}
-    canon = json.dumps({"rules": eff, "shadow_rules": None}, sort_keys=True)
+    apply_rules, shadow_rules = _split_gate_rules(rules)
+    eff = {**profile_impact.DEFAULT_APPLY_RULES, **apply_rules}
+    eff_shadow = {**profile_impact.DEFAULT_SHADOW_RULES, **shadow_rules} if shadow_rules else None
+    canon = json.dumps({"rules": eff, "shadow_rules": eff_shadow}, sort_keys=True)
     return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
 
@@ -577,32 +619,72 @@ def suppress_rejected(db: Path, profile_id: str, validated: list[dict], sent: di
     return out
 
 
+def _bound_shadow_for_apply(con: sqlite3.Connection, analysis_id: str, an: sqlite3.Row) -> dict | None:
+    """분석에 묶인 shadow만 적용 직전 재게이트에 사용한다(외부 검토 2026-09-14).
+
+    다른 분석·정책·프로필의 검색 결과를 섞으면 현재 설정으로 재계산해도
+    근거가 바뀐다. 표가 아직 없는 옛 분석은 shadow 없음으로 fail-closed 한다."""
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_runs'"
+    ).fetchone()
+    if not exists:
+        return None
+    row = con.execute(
+        "SELECT * FROM shadow_runs WHERE analysis_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (analysis_id,),
+    ).fetchone()
+    if not row:
+        return None
+    import shadow_search
+    mismatch = [field for field, want, got in (
+        ("profile_id", an["profile_id"], row["profile_id"]),
+        ("analysis_id", analysis_id, row["analysis_id"]),
+        ("before_hash", an["before_hash"], row["before_hash"]),
+        ("after_hash", an["after_hash"], row["after_hash"]),
+        ("policy_version", an["policy_version"], row["policy_version"]),
+        ("shadow_version", shadow_search.SHADOW_VERSION, row["version"]),
+    ) if want != got]
+    if mismatch:
+        return None
+    return {**json.loads(row["metrics_json"]), "status": row["status"], "shadow_id": row["shadow_id"]}
+
+
 def apply_analysis(db: Path, profile_id: str, analysis_id: str, *, origin: str = "advisor") -> dict:
     """저장된 분석 하나를 프로필에 적용한다. **호출자의 말을 믿지 않는다** — 저장된
     게이트 상태·기준 revision·현재 revision·운영 모드를 여기서 다시 확인한다.
     하나의 트랜잭션: revision 재확인 → profile_keywords 갱신 → 새 revision → 이벤트.
     같은 분석의 재실행은 두 번 적용하지 않는다(이벤트로 잡는다)."""
     init_db(db)
-    mode, _ = get_mode(db, profile_id)
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row
+        settings = con.execute("SELECT mode, rules_json FROM advisor_settings WHERE profile_id=?",
+                               (profile_id,)).fetchone()
+        mode = settings[0] if settings else MODE_PROPOSAL_ONLY
+        raw_rules = json.loads(settings[1]) if settings and settings[1] else None
+        current_rules, current_shadow_rules = _split_gate_rules(raw_rules)
         an = con.execute("SELECT * FROM impact_analyses WHERE analysis_id=? AND profile_id=?",
                          (analysis_id, profile_id)).fetchone()
         if not an:
             return {"applied": False, "reason": "analysis_not_found"}
-        if an["gate_status"] != profile_impact.ELIGIBLE:
-            _event(con, profile_id, "apply_refused", analysis_id, {"reason": f"gate:{an['gate_status']}"})
-            return {"applied": False, "reason": f"gate:{an['gate_status']}"}
         if mode != MODE_AUTO_APPLY:
             _event(con, profile_id, "apply_refused", analysis_id, {"reason": f"mode:{mode}"})
             return {"applied": False, "reason": f"mode:{mode}"}
-        # 감사 대조(§8-102): 마지막 판정 기록이 없거나 그 판정이 eligible 이 아니면 적용하지 않는다 —
-        # gate_status 문자열 하나를 믿지 않는다. (규칙에 None 이 남은 eligible 판정은 gate 가 만들
-        # 수 없어 따로 검사하지 않는다 — 검사를 넣었다가 돌연변이가 안 잡혀 뺐다.)
+        # 감사 대조(§8-102): gate_status를 사람이 eligible로 바꿨는데 마지막 판정이 없으면
+        # 적용하지 않는다. 이미 적용 직전 재게이트가 남긴 non-eligible 기록은 현재 설정이
+        # 바뀌었을 때 다시 평가해야 하므로 아래 현재 규칙 판정으로 넘긴다(외부 검토 2026-09-14).
         dec = profile_impact.latest_decision(db, analysis_id)
-        if not dec or dec["gate_status"] != profile_impact.ELIGIBLE:
+        if not dec or (an["gate_status"] == profile_impact.ELIGIBLE
+                       and dec["gate_status"] != profile_impact.ELIGIBLE):
             _event(con, profile_id, "apply_refused", analysis_id, {"reason": "no_eligible_decision_record"})
             return {"applied": False, "reason": "no_eligible_decision_record"}
+        retry_after_apply_regate = (
+            an["gate_status"] == profile_impact.INSUFFICIENT
+            and dec["source"] == "apply_analysis"
+        )
+        if an["gate_status"] != profile_impact.ELIGIBLE and not retry_after_apply_regate:
+            _event(con, profile_id, "apply_refused", analysis_id,
+                   {"reason": f"gate:{an['gate_status']}"})
+            return {"applied": False, "reason": f"gate:{an['gate_status']}"}
         if con.execute("SELECT 1 FROM advisor_events WHERE kind='applied' AND ref_id=?", (analysis_id,)).fetchone():
             return {"applied": False, "reason": "already_applied"}
         # 기준: 분석의 before 가 **지금** 프로필과 같아야 한다(stale 검사). revision 도 같이 본다.
@@ -611,18 +693,51 @@ def apply_analysis(db: Path, profile_id: str, analysis_id: str, *, origin: str =
             _event(con, profile_id, "apply_refused", analysis_id, {"reason": "stale_before"})
             return {"applied": False, "reason": "stale_before"}
         after = json.loads(an["after_json"])
-    rev = research_profile.create_profile(
-        db, profile_id, current["name"], core_topics=after["core_topics"], core_weights=after["core_weights"],
-        target_domain=after["target_domain"], exclude=after["exclude"], venues=current.get("venues") or [],
-        max_items=after["max_items"] or current["max_items"], s2_seeds=after["s2_seeds"],
-        origin=origin, note=f"analysis:{analysis_id}")
+        current_revision = con.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
+            (profile_id,),
+        ).fetchone()[0]
+        diff, imp, scope = json.loads(an["diff_json"]), json.loads(an["impact_json"]), json.loads(an["scope_json"])
+        if "scans" not in scope:
+            _event(con, profile_id, "apply_refused", analysis_id, {"reason": "scope_without_invariants"})
+            return {"applied": False, "reason": "scope_without_invariants"}
+        snap = {"paper_count": scope.get("papers", 0), "scans": scope["scans"],
+                "abstract_corrupt": scope.get("abstract_corrupt") or []}
+        shadow = _bound_shadow_for_apply(con, analysis_id, an)
+        gate_status, gate_reasons = profile_impact.gate(
+            diff, imp, snap, current_rules, shadow, current_shadow_rules)
+        shadow_id = shadow.get("shadow_id") if shadow else None
+        decision_id = profile_impact._record_decision(
+            con, analysis_id, profile_id, "apply_analysis", shadow_id,
+            gate_status, gate_reasons, current_rules, current_shadow_rules or None)
+        con.execute("UPDATE impact_analyses SET gate_status=?, reasons_json=? WHERE analysis_id=?",
+                    (gate_status, json.dumps(gate_reasons, ensure_ascii=False), analysis_id))
+        if gate_status != profile_impact.ELIGIBLE:
+            _event(con, profile_id, "apply_refused", analysis_id,
+                   {"reason": f"gate:{gate_status}", "gate_reasons": gate_reasons,
+                    "decision_id": decision_id})
+            return {"applied": False, "reason": f"gate:{gate_status}", "gate_reasons": gate_reasons}
+    try:
+        rev = research_profile.create_profile(
+            db, profile_id, current["name"], core_topics=after["core_topics"], core_weights=after["core_weights"],
+            target_domain=after["target_domain"], exclude=after["exclude"], venues=current.get("venues") or [],
+            max_items=after["max_items"] or current["max_items"], s2_seeds=after["s2_seeds"],
+            origin=origin, note=f"analysis:{analysis_id}", expected_revision=current_revision)
+    except ValueError as e:
+        if not str(e).startswith("expected_revision_mismatch:"):
+            raise
+        with sqlite3.connect(db) as con:
+            _event(con, profile_id, "apply_refused", analysis_id,
+                   {"reason": "revision_changed", "expected_revision": current_revision})
+        return {"applied": False, "reason": "revision_changed"}
     with sqlite3.connect(db) as con:
         _event(con, profile_id, "applied", analysis_id, {"revision": rev})
     return {"applied": True, "revision": rev}
 
 
 def rollback(db: Path, profile_id: str, to_revision: int, reason: str) -> dict:
-    """직전 유효 revision 의 내용을 **새 revision 으로** 복원한다. 이력을 지우지 않는다."""
+    """직전 유효 revision 의 내용을 **새 revision 으로** 복원한다. 이력을 지우지 않는다.
+    복원 직전 revision 경합도 같은 쓰기 원자성 검사로 막는다(외부 검토 2026-09-14)."""
     init_db(db)
     with sqlite3.connect(db) as con:
         row = con.execute("SELECT snapshot FROM profile_revisions WHERE profile_id=? AND revision=?",
@@ -631,6 +746,10 @@ def rollback(db: Path, profile_id: str, to_revision: int, reason: str) -> dict:
             return {"rolled_back": False, "reason": "revision_not_found"}
         snap = json.loads(row[0])
         current = research_profile.get_profile(db, profile_id)
+        current_revision = con.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
+            (profile_id,),
+        ).fetchone()[0]
     kws = snap["keywords"]
     core = [k for k, kind, w in kws if kind == "core"]
     weights = {k: float(w if w is not None else 1.0) for k, kind, w in kws if kind == "core"}
@@ -643,13 +762,22 @@ def rollback(db: Path, profile_id: str, to_revision: int, reason: str) -> dict:
     missing = target_keys - set(restore)
     if missing:
         restore.update(research_profile.legacy_provenance(db, profile_id, missing))
-    rev = research_profile.create_profile(
-        db, profile_id, current["name"], core_topics=core, core_weights=weights,
-        target_domain=[k for k, kind, w in kws if kind == "target"],
-        exclude=[k for k, kind, w in kws if kind == "exclude"], venues=current.get("venues") or [],
-        max_items=snap.get("max_items") or current["max_items"],
-        s2_seeds=[k for k, kind, w in kws if kind == "s2_seed"], origin="rollback", note=reason,
-        restore_provenance=restore)
+    try:
+        rev = research_profile.create_profile(
+            db, profile_id, current["name"], core_topics=core, core_weights=weights,
+            target_domain=[k for k, kind, w in kws if kind == "target"],
+            exclude=[k for k, kind, w in kws if kind == "exclude"], venues=current.get("venues") or [],
+            max_items=snap.get("max_items") or current["max_items"],
+            # 주기는 스냅숏이 아니라 프로필 설정이다 — 안 넘기면 기본값 daily 로 되돌아가 수동 프로필이 새벽 cron 에 들어간다
+            # (외부 검토 2026-09-16, 화면에 되돌리기 버튼이 생기며 드러났다).
+            schedule_frequency=research_profile.get_schedule(db, profile_id)[0],
+            schedule_time=research_profile.get_schedule(db, profile_id)[1],
+            s2_seeds=[k for k, kind, w in kws if kind == "s2_seed"], origin="rollback", note=reason,
+            restore_provenance=restore, expected_revision=current_revision)
+    except ValueError as e:
+        if not str(e).startswith("expected_revision_mismatch:"):
+            raise
+        return {"rolled_back": False, "reason": "revision_changed"}
     with sqlite3.connect(db) as con:
         _event(con, profile_id, "rolled_back", str(to_revision), {"new_revision": rev, "reason": reason})
     return {"rolled_back": True, "revision": rev}

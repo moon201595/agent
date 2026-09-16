@@ -115,13 +115,13 @@ def test_결과에_현재_시각_의존_값이_없고_재실행이_같다(tmp_pa
     assert "priority" not in json.dumps(one) and "recency" not in json.dumps(one)
 
 
-def test_실효_씨앗과_arXiv_질의_변경은_shadow_로_보낸다(tmp_path):
-    """이 테스트가 잡는 것: `s2_seeds` 필드 비교로 축소하는 것(빈 씨앗은 가중치 폴백),
+def test_실효_시드와_arXiv_질의_변경은_shadow_로_보낸다(tmp_path):
+    """이 테스트가 잡는 것: `s2_seeds` 필드 비교로 축소하는 것(빈 시드는 가중치 폴백),
     core 추가를 검색 판정에서 빼는 것."""
     db = _db(tmp_path)
     _obs(db, "a", "target term new term", published="2026-09-09")
     snap = pi.snapshot(db, "p", START, END)
-    # 명시 씨앗 없이 가중치가 S2 경계를 넘는 경우 — 필드는 같고 실효 질의만 바뀐다
+    # 명시 시드 없이 가중치가 S2 경계를 넘는 경우 — 필드는 같고 실효 질의만 바뀐다
     b0 = dict(BEFORE, s2_seeds=[]); b1 = dict(b0, core_weights={"target term": 1.0, "trend term": 1.0})
     d = pi.diff_profiles(b0, b1)
     assert d["seed_changed"] and d["effective_seeds"]["after"] == ["target term", "trend term"]
@@ -141,7 +141,7 @@ def test_임계값_미설정이면_eligible_로_가지_않고_설정하면_held_
         _obs(db, f"t{i}", "target term", published=f"2026-09-0{i+1}")
     _obs(db, "r", "trend term", published="2026-09-09")
     snap = pi.snapshot(db, "p", START, END)
-    # 계층 변경만(씨앗 명시라 실효 씨앗 불변, arXiv 질의 불변) — 검색 영향 없는 순수 순위 변경
+    # 계층 변경만(시드 명시라 실효 시드 불변, arXiv 질의 불변) — 검색 영향 없는 순수 순위 변경
     after = dict(BEFORE, core_weights={"target term": 0.6, "trend term": 1.0})
     d = pi.diff_profiles(BEFORE, after); imp = pi.impact(snap, BEFORE, after, 2)
     # 전: t3(9/4), t2(9/3). 후: r 가 tier0 로 올라 1위, t3 는 2위에 남는다 → 이탈은 t2 하나
@@ -222,3 +222,46 @@ def test_저장은_입력_해시로_재사용을_막고_같은_입력만_돌려�
     assert bad["gate_status"] == pi.INVALID and "structure:empty_core" in bad["reasons_json"]
     dis = pi.analyze_and_store(db, snap, BEFORE, dict(BEFORE, exclude=[]), 2)
     assert dis["gate_status"] == pi.INVALID and "disallowed:exclude_changed" in dis["reasons_json"]
+
+
+def test_shadow_측정값이_없으면_설정된_규칙을_통과시키지_않는다(tmp_path):
+    """이 테스트가 잡는 것: shadow top-k 겹침·적격 손실·잡음 중 설정된 측정값이 None일 때
+    미측정을 0이나 통과로 해석하는 것(외부 검토 2026-09-14)."""
+    db = _db(tmp_path)
+    _obs(db, "a", "target term", published="2026-09-09")
+    snap = pi.snapshot(db, "p", START, END)
+    after = dict(BEFORE, core_topics=BEFORE["core_topics"] + ["new term"],
+                 core_weights={**BEFORE["core_weights"], "new term": 0.6})
+    diff = pi.diff_profiles(BEFORE, after)
+    imp = pi.impact(snap, BEFORE, after, 2)
+    apply_rules = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    shadow_rules = {"max_eligible_lost": 5, "min_topk_overlap": 0.5, "max_noise_after": 5}
+    shadow = {"shadow_id": "s", "status": "done",
+              "diff": {"eligible_lost": None, "topk_overlap": None, "noise_after": None}}
+    status, reasons = pi.gate(diff, imp, snap, apply_rules, shadow, shadow_rules)
+    assert status == pi.INSUFFICIENT
+    assert {"shadow_eligible_lost_unmeasured", "shadow_topk_overlap_unmeasured",
+            "shadow_noise_after_unmeasured"} <= set(reasons)
+
+
+def test_nan_inf_문자열_게이트_규칙은_미설정과_같이_차단한다(tmp_path):
+    """이 테스트가 잡는 것: NaN·inf·문자열 규칙값을 유효한 숫자로 비교해 eligible을 내는 것
+    (외부 검토 2026-09-14)."""
+    db = _db(tmp_path)
+    _obs(db, "a", "target term", published="2026-09-09")
+    snap = pi.snapshot(db, "p", START, END)
+    after = dict(BEFORE, core_weights={"target term": 1.0, "trend term": 1.0})
+    diff = pi.diff_profiles(BEFORE, after)
+    imp = pi.impact(snap, BEFORE, after, 2)
+    bad_apply = {"max_core_changes": 5, "max_topk_left_ratio": float("nan"), "max_exclude_risk": 1.0}
+    status, reasons = pi.gate(diff, imp, snap, bad_apply)
+    assert status == pi.INSUFFICIENT and any(x.startswith("apply_rules_unconfigured") for x in reasons)
+    good_apply = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    after_shadow = dict(BEFORE, s2_seeds=["trend term"])
+    diff = pi.diff_profiles(BEFORE, after_shadow)
+    imp = pi.impact(snap, BEFORE, after_shadow, 2)
+    shadow = {"shadow_id": "s", "status": "done",
+              "diff": {"eligible_lost": [], "topk_overlap": 1.0, "noise_after": 0}}
+    bad_shadow = {"max_eligible_lost": float("inf"), "min_topk_overlap": 0.0, "max_noise_after": "5"}
+    status, reasons = pi.gate(diff, imp, snap, good_apply, shadow, bad_shadow)
+    assert status == pi.INSUFFICIENT and any(x.startswith("shadow_rules_unconfigured") for x in reasons)

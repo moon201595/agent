@@ -25,6 +25,10 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 mkdir -p logs
 
+# cron 의 PATH 는 `/usr/bin:/bin` 뿐이라 사용자 도구(gh 등)를 못 찾는다 — 2026-09-16 실측에서 ⑦ 저장소 검색이 하루치 내내
+# "No such file or directory: 'gh'" 로 실패했다(메일은 정상 발송). 사용자 bin 을 앞에 붙인다.
+export PATH="$HOME/.local/bin:$PATH"
+
 LOCKFILE="logs/daily_scan.lock"
 
 {

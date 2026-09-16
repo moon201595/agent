@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import find_new_papers
+import profile_advisor as adv
 import profile_impact
 import research_profile as rp
 import s2_delta
@@ -24,7 +25,7 @@ def _paper(key, title, seeds=None):
             "source": "s2", "s2_seeds": seeds or []}
 
 
-# 씨앗별로 돌려줄 가짜 결과: 'world model' 씨앗은 잡음(random forest)과 진짜 하나를 같이 데려온다
+# 시드별로 돌려줄 가짜 결과: 'world model' 시드는 잡음(random forest)과 진짜 하나를 같이 데려온다
 FAKE = {
     "target term": [_paper("t1", "target term study"), _paper("t2", "target term again")],
     "world model": [_paper("w1", "target term robot world model for manipulation"),   # 적격·적중 2개 → 상위
@@ -51,8 +52,8 @@ def _tables(db):
                 for t in ("search_runs", "search_candidates", "profile_shown", "scan_runs", "profile_revisions")}
 
 
-def test_공유_씨앗은_한_번만_검색하고_운영_기록은_건드리지_않는다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: 두 팔이 같은 씨앗을 두 번 부르는 것, 바뀌지 않은 arXiv 질의를 두 번 부르거나
+def test_공유_시드는_한_번만_검색하고_운영_기록은_건드리지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 두 팔이 같은 시드를 두 번 부르는 것, 바뀌지 않은 arXiv 질의를 두 번 부르거나
     아예 안 부르는 것(손실이 합집합 기준이어야 한다), search_runs·search_candidates·profile_shown·
     revision 에 무언가 쓰는 것."""
     db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
@@ -61,7 +62,7 @@ def test_공유_씨앗은_한_번만_검색하고_운영_기록은_건드리지_
     snap = _tables(db)
     out = asyncio.run(sh.run_shadow(db, "p", before, after, None))
     s2_calls = sorted(c for c in calls if c[0] == "s2")
-    assert s2_calls == [("s2", ("target term",)), ("s2", ("world model",))], "씨앗마다 한 번"
+    assert s2_calls == [("s2", ("target term",)), ("s2", ("world model",))], "시드마다 한 번"
     assert sum(1 for c in calls if c[0] == "arxiv") == 1, "안 바뀐 arXiv 질의는 한 번만 — 두 팔이 공유(합집합 기준 손실)"
     assert _tables(db) == snap, "격리 — 운영 표에 아무것도 안 쓴다"
     assert out["status"] == "done" and out["arms"]["seeds_removed"] == ["world model"]
@@ -71,7 +72,7 @@ def test_공유_씨앗은_한_번만_검색하고_운영_기록은_건드리지_
 
 def test_지표는_잃은_적격과_줄어든_잡음을_가른다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: 잃은 적격 논문을 안 세는 것, 잡음을 적격과 섞어 세는 것, 상위 K 겹침을
-    안 재는 것, 씨앗별 수율을 안 남기는 것."""
+    안 재는 것, 시드별 수율을 안 남기는 것."""
     db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
     after = {**before, "s2_seeds": ["target term"]}
     _fake(monkeypatch, [])
@@ -90,7 +91,7 @@ def test_지표는_잃은_적격과_줄어든_잡음을_가른다(tmp_path, monk
         assert con.execute("SELECT count(*) FROM sqlite_master WHERE name='shadow_runs'").fetchone()[0] == 0, "dry-run 은 표도 안 만든다"
 
 
-def test_arXiv_가_어차피_잡는_논문은_씨앗_제거의_손실이_아니다(tmp_path, monkeypatch):
+def test_arXiv_가_어차피_잡는_논문은_시드_제거의_손실이_아니다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: S2 팔끼리만 비교해 arXiv 경로로도 오는 논문을 '잃었다'고 세는 것."""
     db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
     after = {**before, "s2_seeds": ["target term"]}
@@ -181,6 +182,25 @@ def test_shadow_뒤에도_원래_로컬_차단_사유는_살아_있다(tmp_path,
     srules = {"max_eligible_lost": 5, "min_topk_overlap": 0.0, "max_noise_after": 50}
     r = profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)
     assert r["gate_status"] == profile_impact.INSUFFICIENT and any(x.startswith("abstract_corrupt:") for x in r["reasons"]), r
+
+
+def test_호출자_규칙으로_eligible이_된_shadow도_현재_설정이_없으면_적용하지_않는다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: regate_with_shadow에 전달한 임시 규칙의 eligible을 현재 설정의
+    재검사 없이 적용에 사용하는 것(외부 검토 2026-09-14)."""
+    db = tmp_path / "t.db"; before = _profile(db, ["target term", "world model"])
+    after = {**before, "s2_seeds": ["target term"]}
+    _fake(monkeypatch, [])
+    an = _analysis(db, before, after)
+    shadow = asyncio.run(sh.run_shadow(db, "p", before, after, None, analysis_id=an["analysis_id"]))
+    rules = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    srules = {"max_eligible_lost": 10, "min_topk_overlap": 0.0, "max_noise_after": 50}
+    assert profile_impact.regate_with_shadow(db, an["analysis_id"], shadow["shadow_id"], rules, srules)["gate_status"] == profile_impact.ELIGIBLE
+    adv.init_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, '{}')",
+                    (adv.MODE_AUTO_APPLY,))
+    out = adv.apply_analysis(db, "p", an["analysis_id"])
+    assert out["applied"] is False and out["reason"] == "gate:insufficient_evidence"
 
 
 def test_예산은_arXiv_에도_강제되고_유지율_분모는_baseline_상위_집합이다(tmp_path, monkeypatch):

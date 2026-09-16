@@ -1,74 +1,35 @@
-"""review_app.py — 요약·검증·재현 결과를 보는 화면 (Streamlit).
+"""⑨ 운영 화면 — 최신 연구 동향 모니터링 에이전트 (Streamlit). 관리자(운영자) 한 사람이 전체 상황을 보는 곳이다.
 
-키워드로 논문을 검색해 요약을 생성하고, 검증·코드 재현까지 자동으로 끝난
-결과를 보여준다. server.py 는 판단하지 않는다는 원칙을 그대로 지킨다 —
-이 파일도 결과를 표시만 할 뿐 무엇을 승인·반려할지 판단하지 않는다.
+2026-09-16 개편(사용자 요청): 하네스 시절의 "검색·요약 생성"·"요약 검토" 탭을 없애고, 켜자마자 **운영 현황**이 나오게 했다.
+페이지는 셋이다 — 운영 현황(프로필별 키워드·가중치·보낸 메일·반응·변경 이력·에이전트) / 논문 DB(저장된 논문 전체) / 시스템(새벽·주간
+실행 기록, cron, DB·백업, 로그). 숫자는 전부 `ops_dashboard.py` 가 만들고 이 파일은 그리기만 한다 — `st.` 을 쓰는 코드와 안 쓰는
+코드가 섞이면 Streamlit 없이는 테스트할 수 없다(§8-31).
 
-2026-08-24: ⑥ 사람 승인 게이트를 하네스 전체에서 없앴다("코드 재현까지
-다 끝난 상태로 자동 이메일을 보내야 하는데 승인을 언제 하냐" 지적) — ④⑤가
-끝나면(요약 저장) 곧바로 ⑦(코드 재현)이 자동으로 시작된다
-(docker_runner.launch_background). 이 화면은 그 결과(검증·재현)를 사람이
-읽어보는 자리로 남는다 — "판단해서 다음 단계로 넘길지 막을지"가 아니라
-"무슨 일이 있었는지 확인"이 이 화면의 역할이다.
+옛 화면(검색·요약·검토·수동 재현 버튼)은 git 이력과 `review_core.py`(로직)에 남아 있다. 논문 검색·요약은 MCP 서버(`server.py`)와
+새벽 스캔이 맡는다.
 
 실행:
-    streamlit run review_app.py
-
-검증 실패(수치 불일치)는 "오류 확정"이 아니라 "사람이 확인" 신호라는 게 이
-하네스의 원칙이다 (docs/PROGRESS.md §6). 그래서 불일치 항목을 원문 대조하기
-쉽게 문맥과 함께 보여주는 데 집중했다.
+    .venv/bin/streamlit run review_app.py
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import os
-import re
-import signal
-import subprocess
-import sys
-import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import streamlit as st
 
-import docker_runner
+import mail_ledger
+import ops_dashboard
 import research_profile
 import run_profile_scan
-import sentence_grounding
-import storage
 import server
-import summarize_engine as engine
-import verify
+from review_core import _relative_time, run_async
 
-# UI 없는 로직은 review_core.py 로 옮겼다(§8-31, 2026-09-02). 이 파일은
-# 화면 그리기만 남긴다 — `st.` 을 쓰는 코드와 안 쓰는 코드가 섞여 있으면
-# Streamlit 없이는 아무것도 테스트할 수 없다.
-from review_core import (  # noqa: F401 — 화면 코드가 이름으로 쓴다
-    _bold_field_label,
-    _bold_r2_value,
-    _fetch_repro_rows,
-    _fetch_review_rows,
-    _fetch_sidebar_lists,
-    _format_job_result_line,
-    _format_run_row,
-    _pid_alive,
-    _pipeline_status,
-    _prettify_summary_markdown,
-    _relative_time,
-    _reproduce_running,
-    _run_open_access_and_summarize,
-    _run_pdf_upload_and_summarize,
-    _summarize_target,
-    _verify_detail,
-    run_async,
-)
+APP_TITLE = "최신 연구 동향 모니터링 에이전트"
+ROOT = Path(__file__).resolve().parent
 
-st.set_page_config(page_title="논문 검색·분석 에이전트", layout="wide", page_icon="📄")
+st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon=":material/monitoring:")
 
 
 def _inject_custom_style() -> None:
@@ -348,24 +309,26 @@ def _inject_custom_style() -> None:
         [data-testid="stSidebar"] [data-testid="stButton"] button {
             justify-content: flex-start; text-align: left; font-weight: 500;
         }
-        .st-key-nav_search button, .st-key-nav_review button, .st-key-nav_research button {
+        /* 2026-09-16: 메뉴가 운영 현황·논문 DB·시스템 셋으로 바뀌었다. 아이콘이 없는 키는 선택(primary) 때 글자가 비어 보였다
+           (실측 스크린샷) — 세 키 모두 같은 규칙과 아이콘을 준다. 선택된 버튼은 흰 글자·흰 아이콘 틀 위에 파란 배경. */
+        .st-key-nav_research button, .st-key-nav_papers button, .st-key-nav_system button {
             padding-left: 2.4rem; background-repeat: no-repeat;
             background-size: 18px 18px; background-position: 14px center;
             transition: background-color 0.12s ease;
         }
-        .st-key-nav_search button:hover, .st-key-nav_review button:hover,
-        .st-key-nav_research button:hover {
+        /* hover 는 선택 안 된(secondary) 버튼에만 — 선택된 버튼 위에 마우스가 있으면 흰 글자가 연한 배경에 묻혔다(실측). */
+        .st-key-nav_research button[data-testid="stBaseButton-secondary"]:hover,
+        .st-key-nav_papers button[data-testid="stBaseButton-secondary"]:hover,
+        .st-key-nav_system button[data-testid="stBaseButton-secondary"]:hover {
             background-color: var(--sky-light); border-color: var(--sky);
         }
-        .st-key-nav_search button {
-            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMiIgeT0iMyIgd2lkdGg9IjE0IiBoZWlnaHQ9IjExIiByeD0iMiIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNyIvPgo8cGF0aCBkPSJNNiA2LjVMNCA4LjVsMiAyTTExIDYuNWwyIDItMiAyIiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPGNpcmNsZSBjeD0iMTcuNSIgY3k9IjE3LjUiIHI9IjQiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjciLz4KPHBhdGggZD0iTTIwLjUgMjAuNUwyMyAyMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==");
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p {
+            color: #FFFFFF !important;
         }
-        .st-key-nav_review button {
-            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+");
-        }
-        .st-key-nav_research button {
-            background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjMDI4NEM3Ii8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==");
-        }
+        .st-key-nav_research button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjMDI4NEM3Ii8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="); }
+        .st-key-nav_papers button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjMDI4NEM3IiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+"); }
+        .st-key-nav_system button { background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iNyIgcng9IjIiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjYiLz48cmVjdCB4PSIzIiB5PSIxNCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjciIHJ4PSIyIiBzdHJva2U9IiMwMjg0QzciIHN0cm9rZS13aWR0aD0iMS42Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjYuNSIgcj0iMS4xIiBmaWxsPSIjMDI4NEM3Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjE3LjUiIHI9IjEuMSIgZmlsbD0iIzAyODRDNyIvPjxwYXRoIGQ9Ik0xMSA2LjVoNk0xMSAxNy41aDYiIHN0cm9rZT0iIzAyODRDNyIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg=="); }
         /* 현황을 숫자만 보여주다가 "어떤 논문인지 안 보인다"는 지적을 받아
            (2026-08-12) 카테고리별 토글 + 실제 논문 목록으로 바꿨다. 사이드
            바 폭이 좁아서 카드 전용 스타일(굵은 테두리·큰 그림자)이 본문
@@ -429,818 +392,6 @@ def _inject_custom_style() -> None:
 _inject_custom_style()
 
 
-
-
-# ---------------------------------------------------------------- 공용 조회
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# 인용한 원문 문장(영어)을 참고용으로 한국어로 보여준다 — "번역 보기" 토글을
-# 켰을 때만 호출해서, 평소 화면 펼치기 속도(2026-08-18 이전에 이미 한 번
-# 느리다는 지적을 받아 lazy-load로 고친 부분)에 번역 API 왕복을 더하지 않는다.
-# st.cache_data는 같은 문장이면 세션이 바뀌어도 재호출 없이 캐시를 쓴다 —
-# 같은 논문을 여러 번 펼쳐 봐도 번역은 처음 한 번만 실제로 호출된다.
-# 예외를 여기서 삼키지 않는다 — st.cache_data는 예외가 난 호출은 캐싱하지
-# 않으므로, 실패(Gemini 일시적 503 등, 실제로 겪음)를 여기서 catch해 None을
-# 반환해버리면 그 "실패"가 캐시에 영구히 박제돼 나중에 API가 복구돼도 계속
-# 실패로 나온다. 실패 처리는 호출부(catch)에서만 한다.
-@st.cache_data(show_spinner=False)
-def _translate_cached(text: str) -> str:
-    async def _call():
-        async with httpx.AsyncClient() as client:
-            return await engine.translate_ko(client, text)
-    return run_async(_call())
-
-
-_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-
-
-def _render_image_gallery(arxiv_id: str) -> None:
-    """표·그림 원본을 갤러리로 보여준다. HTML 출처는 실제 캡션이 라벨로 붙고,
-    PDF 출처는 순서대로 '그림 N'만 붙는다 — PyMuPDF(AGPL)를 배제한 채로는
-    pypdf 만으로 PDF 안에서 어떤 이미지가 정확히 몇 번 Figure인지 매칭할 수
-    없어서다. 표(Table)는 PDF 안에서 대개 이미지가 아니라 벡터·텍스트로
-    그려져 있어 이 방식으로는 거의 뽑히지 않는다.
-    """
-    img_dir = run_async(server.ensure_images_extracted(arxiv_id))
-    files = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTS)
-    if not files:
-        st.caption("추출된 이미지 없음 (원문에 임베드된 이미지가 없거나 추출 실패)")
-        return
-
-    labels: dict[str, str] = {}
-    labels_path = img_dir / "_labels.json"
-    if labels_path.exists():
-        labels = json.loads(labels_path.read_text(encoding="utf-8"))
-
-    cols = st.columns(3)
-    for i, f in enumerate(files):
-        caption = labels.get(f.name) or f"그림 {i + 1}"
-        with cols[i % 3]:
-            st.image(str(f), caption=caption, use_container_width=True)
-
-
-# ---------------------------------------------------------------- 탭 ①: 검색·요약
-
-# 키워드/ID/제목 검색은 batch_summarize.py를 별도 프로세스로 띄워 무인
-# 실행한다(2026-08-19) — ⑦ 코드 재현과 같은 이유. 예전엔 이 세 모드도
-# run_async()로 이 스크립트 실행 안에서 동기로 돌았는데, 그러면 "취소"
-# 버튼을 화면에 그려도 그 실행이 끝나기 전까진 클릭 자체가 서버에
-# 전달되지 않는다(Streamlit이 세션당 한 번에 한 스크립트만 처리해서) —
-# "취소가 실제로 눌려야 하잖아" 요청을 지키려면 이 작업이 Streamlit
-# 스크립트 실행 밖(별도 프로세스)에 있어야만 한다. PDF 업로드·오픈액세스
-# 모드는 배치 스크립트 CLI가 받는 인자(파일 바이트·DOI)가 없어 이 경로를
-# 못 타므로 기존 인라인 방식(_run_pdf_upload_and_summarize 등) 그대로 둔다.
-#
-# 진행 상황은 파일 두 개로 나눠 관리한다 — 쓰는 주체가 프로세스마다
-# 다르면 공유 파일 하나로는 경쟁 조건(review_app.py가 초기값을 쓰는
-# 도중에 batch_summarize.py가 이미 갱신값을 썼는데 덮어써버리는 등)이
-# 생긴다. 파일마다 쓰는 쪽을 하나로 고정하면 그 문제 자체가 없어진다:
-#   - META: review_app.py 만 쓴다(pid·입력값, 실행 시작할 때 한 번)
-#   - PROGRESS: batch_summarize.py 만 쓴다(--progress-file, 진행될 때마다)
-#
-# 처음엔 이 셋을 고정 경로 상수로 뒀는데, 실측(2026-08-19)으로 실제
-# 사고가 났다 — 사용자가 라이브(8501)에서 실제로 검색을 돌리는 동안
-# 개발 중 테스트(다른 포트 8591)에서 새 검색을 시작했더니, 고정 경로를
-# 공유해서 META 파일이 덮어써졌다. 그러자 사용자의 원래 작업은 UI
-# 추적에서 빠진 채(프로세스 자체는 백그라운드에서 계속 돎) 고아가
-# 됐고, 나중에 논문이 갑자기 "최근 활동"에 나타나거나 다른 하나는 영영
-# 안 뜨는 것처럼 보였다 — "2개 처리 중인데 1개만 올라오고 이유를 모르
-# 겠다"는 지적이 바로 이 충돌의 증상이었다(DB 확인 결과 데이터 자체는
-# 안전하게 저장돼 있었음 — 유실은 없었고 추적만 엉켰다). 브라우저 세션
-# 마다(다른 탭·다른 포트·다른 사용자 전부 포함) 완전히 분리된 파일을
-# 쓰도록 고친다 — session_state에 한 번만 만든 무작위 ID를 파일명에
-# 넣는다.
-def _search_job_paths() -> tuple[Path, Path, Path]:
-    if "_job_session_id" not in st.session_state:
-        st.session_state["_job_session_id"] = uuid.uuid4().hex[:12]
-    sid = st.session_state["_job_session_id"]
-    return (
-        server.DATA_DIR / f"search_job_{sid}.meta.json",
-        server.DATA_DIR / f"search_job_{sid}.progress.json",
-        server.DATA_DIR / f"search_job_{sid}.log",
-    )
-
-
-
-
-def _read_search_job() -> dict | None:
-    """지금 실행 중인 배경 작업 정보. 실행 중이 아니면 None.
-
-    "실행 중"의 기준은 META 파일의 존재가 아니라 그 안에 적힌 PID가
-    실제로 살아있는가다 — 파일 내용만 믿지 않고 OS에 직접 물어본다
-    ("서버는 판단하지 않는다"와 같은 결로, 사실 확인은 항상 실측 기준).
-    프로세스가 이미 죽었는데(정상 종료·크래시 둘 다) 파일이 안 지워진
-    경우를 여기서 잡아 정리한다."""
-    meta_path, progress_path, _log_path = _search_job_paths()
-    if not meta_path.exists():
-        return None
-    try:
-        job = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not _pid_alive(job.get("pid", -1)):
-        # 스스로 끝났다(취소가 아니다 — 취소는 _cancel_search_job이 파일을
-        # 직접 지우니 여기로 안 옴). 지우기 전에 마지막 결과를
-        # session_state에 남겨서 render_search_tab이 완료 요약으로 보여줄
-        # 수 있게 한다 — "2편 처리 중인데 1편만 올라오고 왜 실패했는지
-        # 모르겠다" 지적(2026-08-19): 실패해도 done 카운트는 그냥 올라가
-        # 게이지바는 "완료"로 보이지만, 그게 성공인지 실패인지·왜 실패
-        # 했는지는 이 결과 없이는 알 방법이 없었다.
-        if progress_path.exists():
-            try:
-                final = json.loads(progress_path.read_text(encoding="utf-8"))
-                st.session_state["_search_job_finished_results"] = final.get("results", [])
-            except (json.JSONDecodeError, OSError):
-                pass
-        meta_path.unlink(missing_ok=True)
-        progress_path.unlink(missing_ok=True)
-        return None
-    if progress_path.exists():
-        try:
-            job.update(json.loads(progress_path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            pass  # batch_summarize.py가 쓰는 도중일 수 있음 — 다음 폴링에 다시 읽음
-    return job
-
-
-def _launch_search_job(mode: str, value: str, top_n: int) -> None:
-    if mode == "keyword":
-        args = ["--keyword", value, "--top-n", str(top_n)]
-    elif mode == "id":
-        args = ["--ids", *value.replace(",", " ").split()]
-    else:  # title
-        args = ["--title", value]
-
-    meta_path, progress_path, log_path = _search_job_paths()
-    server.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "w", encoding="utf-8") as f:
-        proc = subprocess.Popen(
-            [sys.executable, "batch_summarize.py", *args,
-             "--progress-file", str(progress_path)],
-            cwd=str(Path(__file__).resolve().parent),
-            stdout=f, stderr=subprocess.STDOUT,
-            start_new_session=True,  # 이 요청 처리가 끝나도 안 죽고, killpg 대상 그룹도 됨
-        )
-    progress_path.unlink(missing_ok=True)  # 이전 작업의 잔여 파일 제거
-    meta_path.write_text(
-        json.dumps({
-            "pid": proc.pid, "mode": mode, "value": value, "top_n": top_n,
-            "started_at": storage.now(),
-        }),
-        encoding="utf-8",
-    )
-
-
-def _cancel_search_job(job: dict) -> None:
-    """프로세스 그룹째로 죽이고 상태 파일을 정리한다. start_new_session=True로
-    띄웠으므로 pid가 곧 프로세스 그룹 ID다 — killpg로 batch_summarize.py
-    본체까지 한 번에 죽는다. SIGTERM으로 죽은 프로세스는 자기 finally
-    블록을 못 돌리므로(잡을 새 없이 즉시 종료) 파일 정리는 여기서 대신
-    한다. 그때까지 저장된 논문(save_summary가 매 편 끝날 때 커밋)은
-    취소해도 그대로 남는다 — 순차 루프 중간에 멈추는 것뿐이라 자연스럽게
-    그렇게 된다.
-
-    SIGTERM을 보낸 뒤 반드시 waitpid로 직접 회수한다 — 실측(2026-08-19)
-    으로 확인한 함정: 여기서 회수하지 않고 마커 파일만 지우면, 이 PID를
-    다시 들여다볼 일이 앞으로 없어서(마커가 없으니 _read_search_job이
-    아예 이 pid를 체크 안 함) 좀비(`Zs <defunct>`)가 영영 안 거둬진다.
-    batch_summarize.py는 SIGTERM 핸들러를 따로 안 두므로 기본 동작(즉시
-    종료)이 걸려 waitpid가 사실상 바로 반환된다 — 블로킹이어도 체감
-    지연은 없다."""
-    pid = job["pid"]
-    try:
-        os.killpg(pid, signal.SIGTERM)
-        os.waitpid(pid, 0)
-    except (ProcessLookupError, ChildProcessError):
-        pass
-    meta_path, progress_path, _log_path = _search_job_paths()
-    meta_path.unlink(missing_ok=True)
-    progress_path.unlink(missing_ok=True)
-
-
-
-
-def _render_search_job_progress(card, job: dict) -> None:
-    """실행 중인 배경 작업의 진행률+취소 버튼을 그린다. 폴링(재실행)은
-    여기서 하지 않는다 — render_search_tab() 맨 끝(입력 폼까지 전부 그린
-    뒤)에서 한 번만 건다.
-
-    실측(2026-08-19)으로 발견한 Streamlit 함정: st.rerun()으로 스크립트
-    실행이 끊기면, "이번 실행에선 여기를 안 그린다"고 조건부로 건너뛴
-    위치는 그 이전(끊기지 않고 자연스럽게 끝까지 돈) 실행 때 그 자리에
-    있던 내용이 안 지워지고 그대로 남는다 — 취소해도 입력 폼이 예전
-    내용 그대로 옆에 계속 떠 있는 버그로 실제로 나타났다(격리된 재현
-    테스트로 원인 확정: 위젯 유무를 조건부로 바꾸는 자리는 st.rerun()이
-    낀 실행에서 정리가 안 됨, 매 실행 같은 자리에 같은 호출을 하고
-    "내용/활성화 여부"만 바꾸면 문제가 없어짐). 그래서 아래 입력 폼은
-    실행 중에도 항상 그리되 disabled=로만 잠근다 — 이 함수는 그 폼과
-    별개로 진행률 UI만 담당한다."""
-    total, done = job.get("total"), job.get("done", 0)
-    if total:
-        card.progress(done / total, text=f"④ 요약 생성 중 · {done}/{total}편")
-    else:
-        card.progress(0.0, text="① 검색·선별 중...")
-    # 논문 단위 게이지만으로는 청크 하나가 60초씩(Groq 폴백) 걸리는 동안
-    # 화면이 몇 분·몇십 분씩 안 바뀐다 — batch_summarize.py가 청크마다
-    # 갱신해주는 stage 텍스트를 그대로 보여준다(2026-08-19, "거의 10분째
-    # 이 상태야" 지적 — summarize_engine._summarize_chunked의 on_progress
-    # 콜백 참고).
-    stage = job.get("stage")
-    if stage:
-        card.caption(f"🔄 {stage}")
-    _cancel_spacer, cancel_col = card.columns([4, 1])
-    if cancel_col.button("취소", key="cancel_btn", width="stretch"):
-        _cancel_search_job(job)
-        st.session_state["_search_job_cancelled_msg"] = True
-        st.rerun()
-
-    # 시도한 논문마다(성공이든 실패든) 바로바로 한 줄씩 보여준다 — 게이지바
-    # 숫자만으로는 "몇 번째 시도까지 끝났나"만 보이고 그게 성공인지 실패
-    # 인지, 실패라면 왜인지 알 수 없었다(2026-08-19 지적: "2개 하고 있다는데
-    # 1개만 올라오고, 오류인지 왜인지 확인할 수 있게 해줘야 하지 않아").
-    for r in job.get("results", []):
-        card.caption(_format_job_result_line(r))
-
-
-
-
-
-
-
-
-def render_search_tab():
-    st.subheader("논문 검색 및 요약본 생성")
-    # 회색 부제("키워드로 논문을 검색하고...")가 원래 카드 안 맨 위에
-    # 있었는데, 참고 이미지는 이 문구가 카드 밖 제목 바로 아래에 있다
-    # ("맨 위에 있던 회색 텍스트를 제목 아래로 옮기는 것" 요청,
-    # 2026-08-14) — 그 위치로 옮겼다.
-    st.caption("키워드로 논문을 검색하고, 요약본을 자동으로 생성합니다.")
-    if st.session_state.pop("_search_job_cancelled_msg", False):
-        st.info("검색·요약 작업을 취소했습니다. 그때까지 완료된 논문은 저장되어 있습니다.")
-    # 배경 작업이 스스로 끝났을 때(취소 아님)의 결과 요약 — _read_search_job이
-    # 끝난 걸 감지하며 session_state에 남겨둔 것을 여기서 한 번만 보여준다.
-    # "2편 처리 중인데 1편만 올라오고 왜인지 모르겠다" 지적(2026-08-19) —
-    # 이제 실패해도 조용히 사라지지 않고 이유까지 여기 남는다.
-    finished_results = st.session_state.pop("_search_job_finished_results", None)
-    if finished_results is not None:
-        ok = sum(1 for r in finished_results if r.get("status") == "done")
-        fail = len(finished_results) - ok
-        if fail:
-            st.warning(f"검색·요약 완료 — 성공 {ok}편, 실패 {fail}편")
-        else:
-            st.success(f"검색·요약 완료 — {ok}편 저장됨")
-        for r in finished_results:
-            st.caption(_format_job_result_line(r))
-    # 검토 리스트 카드와 같은 "흰 카드가 옅은 배경 위에 떠 있다" 표면
-    # 언어를 검색 폼에도 주려고 st.container(border=True)로 감싼다.
-    # with 블록으로 감싸면 안의 코드를 전부 재들여쓰기해야 해서 실수
-    # 위험이 크다 — 대신 container 객체를 만들어 그 메서드로 위젯을
-    # 그리는 방식(card.text_input(...) 등)을 쓰면 기존 로직 구조는
-    # 그대로 두고 st. 호출부만 card. 로 바꾸면 된다(2026-08-12).
-    # key="search_card"는 CSS에서 이 카드에만 그림자를 주기 위한 훅.
-    card = st.container(border=True, key="search_card")
-    # 배경에서 이미 도는 작업이 있으면(취소가 실제로 눌리게 하려고
-    # 별도 프로세스로 띄운 것, 2026-08-19) 진행률+취소를 먼저 보여준다.
-    # 아래 입력 폼은 이때도 계속 그린다(disabled=running으로 잠그기만
-    # 함) — 조건부로 아예 안 그리면 Streamlit이 이전 실행 내용을 못
-    # 지우는 함정이 있다(_render_search_job_progress 문서 참고). 또한
-    # running 중 폼을 완전히 숨기면 같은 작업을 실수로 두 번 시작할
-    # 방법이 없어져야 하는데, 잠그는 쪽이 "왜 안 보이지"보다 안전하다.
-    job = _read_search_job()
-    running = job is not None
-    if job is not None:
-        _render_search_job_progress(card, job)
-    # 참고 이미지(2026-08-14)의 장식 일러스트 — 순수 장식이라 클릭 동작은
-    # 없다. 처음엔 카드 맨 위에 이 그림만 있는 별도 줄로 뒀는데, 그 줄에는
-    # 그림 하나뿐이라 위쪽에 여백만 덩그러니 남았다("일러스트만 맨 위에
-    # 덩그러니 있어서 여백이 심하다" 지적, 2026-08-14 세 번째) — 빈 줄을
-    # 없애고 "입력 방식" 라디오 행 오른쪽에 같이 배치한다.
-    radio_col, illus_col = card.columns([7, 1])
-    mode_label = radio_col.radio(
-        "입력 방식",
-        ["키워드 검색", "저장된 논문 재검색 (한글 가능)", "논문 ID 직접 지정", "제목으로 검색",
-         "PDF 업로드", "DOI/URL (오픈액세스)"],
-        horizontal=True,
-        disabled=running,
-    )
-    illus_col.markdown(
-        f'<img src="{_SEARCH_ILLUSTRATION}" style="width:100%;max-width:52px;'
-        'display:block;margin-left:auto;margin-top:1.6rem;"/>',
-        unsafe_allow_html=True,
-    )
-    mode = {
-        "키워드 검색": "keyword", "저장된 논문 재검색 (한글 가능)": "hybrid",
-        "논문 ID 직접 지정": "id", "제목으로 검색": "title",
-        "PDF 업로드": "pdf", "DOI/URL (오픈액세스)": "oa",
-    }[mode_label]
-
-    # "키워드 검색"은 arxiv_search_papers/s2_search_papers — 외부 API 자체가
-    # 영문 키워드 매칭이라 한글 질의를 이해하지 못한다(2026-08-10, 사용자가
-    # 직접 확인해 지적). hybrid_search_local_papers는 처음부터 한글도
-    # 되도록 만들었지만(gemini-embedding-001가 다국어 임베딩 지원 + BM25
-    # 토크나이저가 한글 음절도 인식, hybrid_search.py 참고) 이 화면에는
-    # 연결이 안 돼 있었다 — 그래서 "그때 한글 되게 한다며" 검증이 어긋난
-    # 것처럼 보였다: 사용자가 실제로 두드린 건 이 UI의 "키워드 검색"(외부
-    # API)이지, 한글을 지원하도록 만든 하이브리드 검색이 아니었다. 이미
-    # `fetch_paper`로 모아둔 로컬 논문 안에서 다시 찾는 용도라 새로 수집·
-    # 요약하지 않는다 — 검색 결과만 보여주고, 실제 검토는 '요약 검토' 탭에서.
-    # hybrid 모드는 원래 여기서 바로 return 했었는데, 그러면 아래 "최근
-    # 활동/입력 방식 안내" 카드까지 같이 건너뛰어 "저장된 논문 재검색"을
-    # 고르면 그 두 카드가 안 보이는 문제가 있었다(2026-08-12, 사용자가
-    # 실제로 이 모드를 골라보고 발견) — return을 없애고 if/else로 바꿔
-    # 두 갈래 다 아래 카드 렌더링까지 도달하게 했다. 버튼 라벨도 다른
-    # 모드와 다르게 "🔎 검색"이라 따로 놀았던 것("시작"으로 안 바뀌어
-    # 있다는 지적)까지 "시작" + type="primary"로 맞췄다.
-    if mode == "hybrid":
-        card.caption(
-            "이미 저장된 논문들 안에서 다시 찾는다(BM25+임베딩) — 새로 수집·요약하지 않음. "
-            "한글 질의도 지원(임베딩이 다국어)."
-        )
-        hybrid_query = card.text_input(
-            "검색어 (한글/영어 모두 가능)", placeholder="예: 온디바이스 AI / on-device AI",
-            disabled=running,
-        )
-        hybrid_top_k = card.number_input("표시할 편수", min_value=1, max_value=20, value=5, disabled=running)
-        # "시작" 버튼이 왼쪽에 붙어 있던 걸 오른쪽 정렬로 바꿔 달라는
-        # 요청(2026-08-14 세 번째) — 넓은 스페이서 칸 + 좁은 버튼 칸으로
-        # 나눠 버튼만 오른쪽 끝에 오게 한다. 그런데 버튼 칸 안에서도 버튼
-        # 자체는 글자 크기만큼만 좁게 그려져 칸 왼쪽에 붙고 칸 오른쪽엔
-        # 빈 공간이 남았다("더 늘리고 더 오른쪽으로" 지적, 2026-08-14
-        # 네 번째) — key=로 훅을 걸어 버튼이 칸 폭을 꽉 채우게(width:100%)
-        # CSS로 늘렸다. 칸을 다 채우면 자동으로 칸의 오른쪽 끝(=카드
-        # 오른쪽 끝)까지 붙는다.
-        _hybrid_btn_spacer, hybrid_btn_col = card.columns([5, 1])
-        if hybrid_btn_col.button(
-            "시작", type="primary", disabled=running or not hybrid_query,
-            key="hybrid_start_btn", width="stretch",
-        ):
-            result = json.loads(
-                run_async(
-                    server.hybrid_search_local_papers(
-                        server.HybridSearchInput(query=hybrid_query, top_k=hybrid_top_k)
-                    )
-                )
-            )
-            if not result["papers"]:
-                card.info("저장된 논문 중 일치하는 게 없음.")
-            else:
-                if not result["embeddings_used"]:
-                    card.warning("GOOGLE_API_KEY 없음/실패 — BM25(어휘 일치)만 사용됨. 한글 질의는 정확도가 떨어질 수 있음.")
-                for p in result["papers"]:
-                    card.markdown(
-                        f"- **{p['title']}** (`{p['arxiv_id']}`) — "
-                        f"BM25 {p['bm25_score']}, 코사인 {p['cosine_score']}, 합산 {p['fused_score']}"
-                    )
-                card.caption("검토·재요약은 '✅ 요약 검토' 탭에서.")
-    else:
-        top_n = 3
-        uploaded_file = None
-        pdf_title = ""
-        if mode == "keyword":
-            value = card.text_input(
-                "검색 키워드", placeholder="예: LoRA fine-tuning summarization", disabled=running,
-            )
-            card.caption("⚠️ 외부 API(arXiv/Semantic Scholar) 자체 검색이라 영문 키워드 권장. "
-                         "이미 저장된 논문에서 한글로 다시 찾으려면 '저장된 논문 재검색' 선택.")
-            top_n = card.number_input("선별할 편수", min_value=1, max_value=10, value=3, disabled=running)
-        elif mode == "id":
-            value = card.text_input(
-                "arXiv ID (공백/쉼표로 여러 개 가능)", placeholder="예: 2505.13033 2405.15793",
-                disabled=running,
-            )
-        elif mode == "title":
-            value = card.text_input("논문 제목", placeholder="예: TSPulse", disabled=running)
-        elif mode == "pdf":
-            card.caption("arXiv 밖 논문(저널·컨퍼런스) — 이미 기관 구독 등으로 합법적으로 접근 가능한 PDF만 올릴 것")
-            uploaded_file = card.file_uploader("PDF 파일", type="pdf", disabled=running)
-            # 제목을 직접 타이핑해야 하는 게 번거롭다는 지적(2026-08-12,
-            # "PDF 제목 따라 입력하면 되잖아") — 필수 입력을 없애고 PDF
-            # 메타데이터·본문에서 자동 추정하도록 바꿨다(server.
-            # ingest_local_pdf 참고). 잘못 추정됐을 때 고칠 수 있게 입력창
-            # 자체는 남겨 둔다.
-            pdf_title = card.text_input(
-                "제목 (선택 — 비우면 PDF에서 자동 추출)", placeholder="논문 제목", disabled=running,
-            )
-            value = "ok" if uploaded_file else ""
-        else:  # oa
-            card.caption("DOI를 넣으면 Unpaywall로 오픈액세스 PDF를 자동으로 찾는다. PDF 직접 링크도 가능.")
-            value = card.text_input(
-                "DOI 또는 PDF 직접 링크", placeholder="예: 10.1038/s41467-023-xxxxx-x", disabled=running,
-            )
-            # DOI 경로면 Unpaywall 응답에 제목이 이미 들어 있어(2026-08-12)
-            # 대부분 자동으로 채워진다 — 그래도 안 채워지면 PDF 폴백 체인이
-            # 이어받는다.
-            pdf_title = card.text_input("제목 (선택 — 비우면 자동으로 찾음)", disabled=running)
-
-        # 오른쪽 정렬 — 위 hybrid 분기와 같은 스페이서+버튼 칸 나누기.
-        # [5,1] → [4,1]로 살짝 넓혀 버튼을 조금 더 왼쪽으로("취소" 버튼도
-        # 같은 자리·같은 크기로 뜰 수 있게 여유를 준다, 2026-08-19 요청).
-        # key="start_btn"로 CSS 훅을 걸어 버튼을 칸 폭만큼 늘린다(위
-        # hybrid_start_btn과 같은 이유).
-        _start_btn_spacer, start_btn_col = card.columns([4, 1])
-        if start_btn_col.button(
-            "시작", type="primary", disabled=running or not value,
-            key="start_btn", width="stretch",
-        ):
-            if mode in ("keyword", "id", "title"):
-                # 별도 프로세스로 띄우고 즉시 재실행 — 다음 실행부터는
-                # _render_search_job_progress가 진행률+취소를 같이 보여준다
-                # (위, running=True). PDF·오픈액세스는 CLI가 못 받는 인자
-                # (파일 바이트·DOI)라 기존 인라인 방식 그대로.
-                _launch_search_job(mode, value, top_n)
-                st.rerun()
-            else:
-                status_box = card.status("진행 중...", expanded=True)
-                if mode == "pdf":
-                    done = run_async(
-                        _run_pdf_upload_and_summarize(uploaded_file.getvalue(), pdf_title, status_box)
-                    )
-                else:  # oa
-                    done = run_async(_run_open_access_and_summarize(value, pdf_title, status_box))
-                if done:
-                    status_box.update(label=f"완료 — {len(done)}편 처리됨", state="complete")
-                    card.success(f"{len(done)}편 저장 완료. '요약 검토' 탭에서 확인하세요: {done}")
-                else:
-                    status_box.update(label="처리된 논문 없음", state="error")
-
-    # 검색 폼 아래가 빈 흰 공간으로 휑하다는 지적(2026-08-12) — 장식용
-    # 채우기가 아니라 실제로 쓸모 있는 두 카드로 채운다: "최근 활동"은
-    # _fetch_review_rows가 이미 created_at 기준 내림차순으로 주는 걸 앞
-    # N개만 잘라 쓰고(사이드바 카테고리 목록과 달리 "방금 뭘 했나"를 시간
-    # 순으로 보여준다는 점에서 안 겹침), "입력 방식 안내"는 위 라디오 6개
-    # 선택지 각각이 언제 쓰는 건지 짧게 설명하는 정적 텍스트다.
-    col_recent, col_help = st.columns(2)
-
-    # 최근 활동(항목 최대 6개, 2줄씩)이 입력 방식 안내(항목 6개, 1줄씩)보다
-    # 원래 자연스럽게 더 길어서 카드 높이가 서로 달랐다("하나는 크고
-    # 하나는 작고 이상하다" 지적, 2026-08-14) — st.container가 지원하는
-    # height=로 두 카드 높이를 고정값으로 맞춘다(내용이 넘치면 카드
-    # 안에서만 스크롤, 카드 자체 높이는 항상 동일).
-    _CARD_HEIGHT = 300
-    recent_card = col_recent.container(border=True, height=_CARD_HEIGHT, key="recent_card")
-    recent_card.markdown("**🕓 최근 활동**")
-    recent_rows = _fetch_review_rows()[:6]
-    if not recent_rows:
-        recent_card.caption("아직 저장된 논문 없음")
-    else:
-        # 절대 시각("2026-08-12 01:17")보다 "3분 전"이 한눈에 더 잘 들어와서
-        # _relative_time으로 바꿨다(고정 문구 아니라 실제 타임스탬프 계산).
-        # 처음엔 제목을 36자로 잘랐는데, 폭을 넓히면서("여백 채우기" 요청,
-        # 2026-08-14) 카드도 넓어져 그만큼 자를 필요가 줄었다 — 70자로
-        # 늘려 대부분의 논문 제목이 안 잘리게 했다(완전히 없애지 않은 건
-        # 극단적으로 긴 제목이 한 줄을 넘겨 레이아웃을 깨는 걸 막기 위한
-        # 안전판). 제목 한 줄, 오른쪽에 상태 배지·상대시간을 묶어 둔다
-        # ("상태를 상대 시간 옆으로" 요청, 2026-08-14 세 번째). 제목을
-        # 굵게 하니 상태 배지와 같이 있을 때 너무 튄다는 지적(2026-08-14
-        # 네 번째) — 일반 글씨로 바꾼다.
-        for r in recent_rows:
-            status_key, dot, label = _pipeline_status(r["arxiv_id"])
-            rel = _relative_time(r["created_at"] or "")
-            recent_card.markdown(
-                f"<div class='recent-item'>"
-                f"<div class='recent-title-row'>"
-                f"<span class='recent-title'>{dot} {r['title'][:70]}</span>"
-                f"<span class='recent-meta'>"
-                f"<span class='status-pill {status_key}'>{label}</span>"
-                f"<span class='recent-time'>{rel}</span>"
-                f"</span></div></div>",
-                unsafe_allow_html=True,
-            )
-
-    help_card = col_help.container(border=True, height=_CARD_HEIGHT, key="help_card")
-    help_card.markdown("**ℹ️ 입력 방식 안내**")
-    help_card.caption("**키워드 검색** — arXiv·Semantic Scholar에서 새로 찾음 (영문 권장)")
-    help_card.caption("**저장된 논문 재검색** — 이미 모아둔 논문에서 한글로 다시 찾음")
-    help_card.caption("**논문 ID 직접 지정** — arXiv ID를 이미 알고 있을 때")
-    help_card.caption("**제목으로 검색** — 제목 일부만 알 때")
-    help_card.caption("**PDF 업로드** — 접근 권한 있는 PDF를 직접 첨부")
-    help_card.caption("**DOI/URL** — DOI로 오픈액세스 PDF를 자동으로 찾음")
-
-    # 폴링(2초 간격 재실행)은 여기, 함수 맨 끝에서만 건다 — 입력 폼과
-    # 아래 카드까지 전부 그린 뒤라 이 실행이 만든 화면 내용은 "끊기지
-    # 않고 자연스럽게 끝까지 돈 실행"과 똑같다(_render_search_job_progress
-    # 문서의 실측 결과 참고). st.rerun()이 여기서 실행을 끊어도 그 앞에서
-    # 이미 전부 그렸으므로 스테일 DOM이 생기지 않는다.
-    if running:
-        time.sleep(2)
-        st.rerun()
-
-
-# ---------------------------------------------------------------- ⑦ 상태 조회 (읽기 전용)
-# 2026-08-24: 실행 트리거(docker_runner.launch_background)는 docker_runner.py로
-# 옮겼다 — review_app.py(수동 검색·PDF 업로드)와 batch_summarize.py(자동
-# delta 스캔) 둘 다 ④⑤ 저장 직후 그걸 호출해서 ⑦이 승인 없이 곧바로
-# 시작된다. 여기 남은 건 화면에 보여주기 위한 읽기 전용 조회뿐 — server.py가
-# 판단하지 않는다는 원칙과 같은 이유로, 이 파일도 실행하지 않고 결과만 본다.
-
-
-
-
-
-
-
-
-# 미리보기에 쓸 언어 힌트 — 있으면 문법 강조가 되고, 없으면 그냥 평문으로
-# 보여준다(st.code의 language=None도 안전하게 동작).
-_CODE_EXT_LANG = {
-    ".py": "python", ".js": "javascript", ".ts": "typescript", ".json": "json",
-    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".md": "markdown",
-    ".sh": "bash", ".dockerfile": "dockerfile", ".txt": None, ".cfg": None,
-    ".ini": None, ".cpp": "cpp", ".c": "c", ".h": "c", ".java": "java",
-    ".go": "go", ".rs": "rust", ".sql": "sql",
-}
-_PREVIEW_SIZE_CAP = 200_000  # 200KB — 이보다 크면 브라우저가 버벅이므로 앞부분만
-
-
-def _render_code_browser(arxiv_id: str, local_path: str) -> None:
-    """성공한 재현의 clone 코드를 화면에서 직접 열어본다. docker_runner.py가
-    성공 시 이 경로에 코드를 남겨 둔다(server.py의 local_path 컬럼) — 이 함수는
-    그걸 읽기만 한다, 실행하지 않는다(이 화면에서 임의 코드를 또 돌리는 건
-    별개의 위험이라 스모크 테스트는 이미 끝난 결과만 보여준다)."""
-    if not local_path:
-        return
-    root = Path(local_path)
-    if not root.exists():
-        st.caption("⚠️ 재현된 코드 경로를 찾을 수 없음 — 이후에 정리됐을 수 있음")
-        return
-
-    if not st.toggle("🗂️ 재현된 코드 보기", key=f"codetoggle_{arxiv_id}"):
-        return
-
-    st.caption(f"로컬 경로: `{local_path}`")
-    files = sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and ".git" not in p.relative_to(root).parts
-    )
-    if not files:
-        st.caption("파일 없음")
-        return
-    if len(files) > 300:
-        st.caption(f"파일 {len(files)}개 중 상위 300개만 표시")
-        files = files[:300]
-
-    rel_paths = [str(p.relative_to(root)) for p in files]
-    # 흔히 먼저 보고 싶은 것부터: README, 진입점 스크립트류를 앞으로
-    def _priority(name: str) -> tuple[int, str]:
-        lower = name.lower()
-        if "readme" in lower:
-            return (0, lower)
-        if lower.endswith((".py", ".sh")) and "/" not in name:
-            return (1, lower)
-        return (2, lower)
-
-    rel_paths.sort(key=_priority)
-
-    selected = st.selectbox("파일 선택", rel_paths, key=f"codefile_{arxiv_id}")
-    target = root / selected
-    try:
-        size = target.stat().st_size
-        raw = target.read_bytes()[:_PREVIEW_SIZE_CAP]
-        text = raw.decode("utf-8", errors="replace")
-    except OSError as e:
-        st.caption(f"읽기 실패: {e}")
-        return
-
-    lang = _CODE_EXT_LANG.get(target.suffix.lower(), None)
-    if size > _PREVIEW_SIZE_CAP:
-        st.caption(f"{size:,} bytes 중 앞 {_PREVIEW_SIZE_CAP:,} bytes만 표시")
-    st.code(text, language=lang)
-
-
-def _render_repro_status(arxiv_id: str) -> None:
-    rows = _fetch_repro_rows(arxiv_id)
-    if _reproduce_running(arxiv_id):
-        st.caption("코드 재현: 🔵 진행 중... (Docker로 후보 저장소 설치·실행 시도 — 새로고침해서 확인)")
-        return
-    if rows:
-        best = next((r for r in rows if r["success"]), rows[0])
-        if best["success"]:
-            st.caption(f"코드 재현: 🟢 성공 ({best['repo_url']}, {best['attempt']}차 시도)")
-            _render_code_browser(arxiv_id, best["local_path"])
-        else:
-            st.caption(f"코드 재현: 🔴 전부 실패 (시도 {len(rows)}건, 마지막 단계: {best['stage']})")
-            # 2026-08-24: 예전엔 "승인 다시 누르면 재시도"였다 — 승인 버튼
-            # 자체가 없어졌으니 재시도 버튼을 직접 둔다. launch_background는
-            # 성공 기록이 없으면 다시 돌리므로 그대로 재사용.
-            if st.button("🔄 재현 다시 시도", key=f"retry_repro_{arxiv_id}"):
-                msg = docker_runner.launch_background(arxiv_id)
-                st.toast(f"⑦ {msg}")
-                st.rerun()
-        return
-    # repro_results에 행이 없는 경우 — docker_runner.reproduce()는 저장소 후보가
-    # 아예 없으면(code_finder가 못 찾음) server.save_repro_result()를 한 번도
-    # 안 부르고 조기 반환한다(그 경로엔 시도랄 게 없어서). 그래서 DB만 보면
-    # "아직 실행 안 함"과 "실행은 했는데 후보가 없었음"을 구분할 수 없다 —
-    # 실측으로 실제 발견(2026-08-12, pdf-* 논문 승인 후 재현이 조용히 끝남).
-    # docker_runner.py __main__이 찍는 JSON 로그에 그 이유가 남으니 거기서 읽는다.
-    log_path = server.REPRO_DIR / f"{arxiv_id.replace('/', '_')}.log"
-    if not log_path.exists() or not log_path.read_text(encoding="utf-8").strip():
-        # 2026-08-24: ⑥ 게이트가 있던 시절엔 이 상태(전혀 시도 안 함)가
-        # "아직 승인 안 함"이라는 정상 상태였고, 여기서 조용히 아무것도 안
-        # 그려도 괜찮았다(승인 버튼이 다른 곳에 있었으니까). 게이트가
-        # 없어진 지금은 신규 저장 시 자동으로 시작되지만, 게이트가 있던
-        # 시절에 저장된 기존 논문들은 한 번도 트리거된 적이 없어 그대로
-        # 영영 "대기" 상태로 남는다 — 버튼이 없으면 시작할 방법 자체가
-        # 없는 진짜 빈틈이라 여기 직접 둔다.
-        st.caption("코드 재현: 🟡 아직 시도 안 함")
-        if st.button("🔍 코드 재현 시작", key=f"start_repro_{arxiv_id}"):
-            msg = docker_runner.launch_background(arxiv_id)
-            st.toast(f"⑦ {msg}")
-            st.rerun()
-        return
-    try:
-        outcome = json.loads(log_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        st.caption("코드 재현: 완료됐지만 결과를 못 읽음 — 로그 파일 확인 필요")
-        return
-    if outcome.get("success"):
-        st.caption("코드 재현: 🟢 성공")
-    else:
-        # "시도 못함"이라고 쓰면 검색 자체가 안 된 것처럼 읽혀서 오해를 살 수
-        # 있다는 지적(2026-08-12) — 실제로는 검색은 끝났고 후보가 0개였던
-        # 것이므로 "검색 완료·후보 없음"으로 명확히 구분해서 쓴다.
-        reason = outcome.get("reason", "저장소 후보를 찾지 못함")
-        st.caption(
-            f"코드 재현: 🟠 검색 완료 · 후보 없음 — {reason} "
-            "(이 논문엔 공개된 관련 코드 저장소가 없을 수 있음, 설치·실행은 시도 안 함)"
-        )
-
-
-
-
-# ---------------------------------------------------------------- 탭 ②: 요약 검토
-
-
-def render_review_tab():
-    st.subheader("요약본")
-    st.caption(
-        "④⑤(요약·검증)와 ⑦(코드 재현)이 저장 직후 자동으로 끝난 결과입니다 — "
-        "승인 없이 전부 자동으로 처리됩니다(2026-08-24)."
-    )
-    rows = _fetch_review_rows()
-
-    if not rows:
-        st.info("저장된 요약이 없습니다.")
-        return
-
-    # 상태 필터는 없앴다(2026-08-24) — ⑥ 게이트가 없어져 "검토 대기/승인됨/
-    # 반려됨" 구분 자체가 더 이상 없다. 검색만 남긴다.
-    query = st.text_input(
-        "검색", placeholder="🔍 제목, arXiv ID로 검색", label_visibility="collapsed",
-    )
-    if query:
-        q = query.strip().lower()
-        rows = [r for r in rows if q in r["title"].lower() or q in r["arxiv_id"].lower()]
-
-    if not rows:
-        st.caption("검색 조건에 맞는 요약이 없습니다.")
-        return
-
-    for row in rows:
-        arxiv_id = row["arxiv_id"]
-        # "최근 활동"과 같은 상태 표시(_pipeline_status) — 이제 사람 판단이
-        # 아니라 ⑦ 재현 상태를 보여준다(2026-08-24). st.expander의 label은
-        # 순수 텍스트만 받아 색 있는 배지는 못 넣고, 이모지 + 일반 텍스트로
-        # 같은 정보를 붙인다.
-        _status_key, emoji, label = _pipeline_status(arxiv_id)
-        rel = _relative_time(row["created_at"] or "")
-        header = (
-            f"{emoji} {row['title']} ({arxiv_id}) — "
-            f"{row['numbers_matched']}/{row['numbers_total']} · {label} · {rel}"
-        )
-        exp_key = f"exp_{arxiv_id}"
-
-        # st.expander는 접혀 있어도 with 블록 안 파이썬 코드가 매 재실행마다
-        # 그대로 실행된다(화면에 안 보일 뿐) — 그래서 47편 전부에 대해
-        # _verify_detail·재현 상태 조회·마크다운 정리가 매번 다 돌아 "요약
-        # 검토" 탭 전환이 눈에 띄게 느렸다(2026-08-14 지적: "저 아래 것들이
-        # 사라지는데 오래걸리네"). key=를 주면 펼침 상태가 session_state에
-        # 그대로 들어오므로, 접힌 항목은 무거운 계산 자체를 건너뛴다.
-        # on_change 기본값('ignore')이면 펼치기·접기가 순수 클라이언트단
-        # 동작이라 재실행이 안 일어나서, session_state[exp_key]가 이번 클릭을
-        # 못 따라잡고 한 박자 늦게 반영됐다(실측: 펼쳤는데 "펼치면 표시됩니다"
-        # 안내문만 보임) — 'rerun'으로 줘서 펼침 상태가 바뀔 때마다 즉시
-        # 재실행되게 한다.
-        with st.expander(header, key=exp_key, on_change="rerun"):
-            if not st.session_state.get(exp_key, False):
-                st.caption("펼치면 세부 내용이 표시됩니다.")
-                continue
-
-            summary_path = Path(row["path"])
-            if not summary_path.exists():
-                st.error(f"요약 파일을 찾을 수 없음: {summary_path}")
-                continue
-            summary_text = summary_path.read_text(encoding="utf-8")
-
-            report = _verify_detail(arxiv_id, summary_text)
-            ratio = report.matched / report.total if report.total else 1.0
-            if ratio == 1.0:
-                st.success(f"수치 검증: {report.matched}/{report.total} 전부 일치 (문장 단위 확인 {report.grounded}건)")
-            else:
-                st.warning(f"수치 검증: {report.matched}/{report.total} 일치 — 아래 불일치 항목 확인")
-                # 원문 인용문이 영어라 매번 언어를 오가며 대조해야 한다는 지적
-                # (2026-08-18) — 번역은 기본 꺼둔다(토글). 검증 근거는 항상
-                # 영어 원문이고 번역은 참고용일 뿐이라, 켰을 때도 원문과
-                # 나란히만 보여준다(번역으로 대체하지 않음).
-                show_translation = st.toggle(
-                    "🌐 인용 문장 번역 보기 (참고용, 원문과 함께 표시)",
-                    key=f"transtoggle_{arxiv_id}",
-                )
-                for c in report.unmatched:
-                    if c.grounded:
-                        # [S번호]로 인용한 문장까지 찾아봤지만 그 안에 없었다 — 지어냈거나
-                        # 엉뚱한 문장을 인용했을 가능성. 실제로 조회한 문장을 보여준다.
-                        st.markdown(f"- **`{c.token}`** — 요약 문맥: _{c.context}_")
-                        if not c.cited_text:
-                            st.caption("(인용한 문장 번호가 원문 범위 밖 — 지어낸 번호일 수 있음)")
-                            continue
-                        st.caption(f"🔎 인용한 [S{c.sentence_id:04d}] 문장(±1):")
-                        # sentence_lookup(sentence_grounding.py)은 ±1 문장을 공백
-                        # 하나로 이어붙여 돌려준다 — verify.py 검증(숫자 대조)에는
-                        # 그걸로 충분하지만, 그 사이에 PDF 표가 뭉개져 끼어 있으면
-                        # (실측: Distilling 논문 Table 1이 "4 System Test Frame
-                        # Accuracy WER Baseline 58.9% ..." 식으로 문장 사이에 그대로
-                        # 끼어듦) 어디까지가 진짜 문장이고 어디가 표 잔해인지 안
-                        # 보여서 3문장이 한 덩어리로 안 읽힌다는 지적(2026-08-19)
-                        # — 같은 문장 분리기로 다시 나눠 문장별 줄로 보여준다.
-                        for sent in sentence_grounding.segment_sentences(c.cited_text):
-                            st.markdown(f"> {sent}")
-                            if show_translation:
-                                try:
-                                    translated = _translate_cached(sent)
-                                    st.markdown(f"> 🌐 _{translated}_")
-                                except httpx.HTTPStatusError as e:
-                                    # 429(분당 20회 무료 한도 초과)와 503(일시 과부하)은
-                                    # 원인이 다르다 — 429는 재시도해도 한동안 확실히
-                                    # 또 막히므로(실측: "Please retry in 29s" 같은 구체적
-                                    # 대기시간이 옴), "일시적 오류"로 뭉뚱그리지 않고
-                                    # 정확히 알려준다(2026-08-18, 리뷰 화면에서 번역이
-                                    # 계속 다 실패한다는 지적 받고 원인 확인).
-                                    if e.response.status_code == 429:
-                                        st.caption("🌐 번역 실패 — 무료 API 분당 요청 한도 초과, 1분 뒤 재시도")
-                                    else:
-                                        st.caption("🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)")
-                                except Exception:  # noqa: BLE001
-                                    st.caption("🌐 번역 실패(일시적 오류일 수 있음 — 다시 펼치면 재시도)")
-                    else:
-                        st.markdown(f"- **`{c.token}`** — 문맥: _{c.context}_")
-
-            # ⑦은 이제 항상 자동으로 붙는다(2026-08-24) — "승인된 것만"
-            # 이라는 조건이 없어졌다, 저장된 모든 논문이 대상.
-            _render_repro_status(arxiv_id)
-
-            if st.toggle("🖼️ 그림·표 이미지 보기", key=f"imgtoggle_{arxiv_id}"):
-                _render_image_gallery(arxiv_id)
-
-            st.markdown("---")
-            # 화면 폭(wide layout)에 텍스트를 그대로 채우면 줄이 끝까지 늘어져서
-            # 읽기 힘들다 — 가운데 컬럼으로 폭을 제한해 적당한 지점에서 줄바꿈되게 한다.
-            _, mid, _ = st.columns([1, 4, 1])
-            with mid:
-                st.markdown(_prettify_summary_markdown(summary_text))
-            st.markdown("---")
-
-            # 승인/반려 버튼은 없앴다(2026-08-24, ⑥ 게이트 제거) — 남은
-            # 유일한 수동 액션은 "재생성"이고, 이건 ⑥과 무관한 별개의
-            # 액션이다("이 요약이 마음에 안 드니 다시 만들어라"). 재생성도
-            # 저장되는 순간 ⑦이 자동으로 다시 붙는다 — 다른 저장 경로와
-            # 동일한 규칙.
-            if st.button("🔄 재생성", key=f"regen_{arxiv_id}"):
-                with st.spinner("재생성 중..."):
-                    template = engine.select_template(row["title"] or "")
-                    paper_text = server.read_full_text(arxiv_id)
-
-                    async def _regen():
-                        async with httpx.AsyncClient() as client:
-                            return await engine.summarize(client, paper_text, template)
-
-                    new_summary, used_engine, coverage = run_async(_regen())
-                    run_async(
-                        server.save_summary(
-                            server.SaveSummaryInput(
-                                arxiv_id=arxiv_id, markdown=new_summary,
-                                engine=used_engine, coverage=coverage)
-                        )
-                    )
-                    repro_msg = docker_runner.launch_background(arxiv_id)
-                    st.toast(f"⑦ {repro_msg}")
-                st.rerun()
-
-
 # ---------------------------------------------------------------- 리서치 프로필 (오케스트레이터 관리자 화면)
 #
 # review_app.py의 다른 탭(검색·검토)은 "논문 하나"를 다루지만, 이 탭은
@@ -1291,12 +442,12 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
         key=f"{key_prefix}_exclude",
     )
     s2_seeds = st.text_input(
-        "S2 검색 씨앗 (콤마로 구분, 비우면 가중치 1.0 이상을 쓴다)",
+        "S2 검색 시드 (콤마로 구분, 비우면 가중치 1.0 이상을 쓴다)",
         value=", ".join(existing.get("s2_seeds") or []) if existing else "",
         key=f"{key_prefix}_seeds",
         help="Semantic Scholar 에 **질의할** 단어다. 하나당 API 호출이라 "
              "예산(300초)을 나눠 쓴다. 중요도(가중치)와 다른 개념이다 — "
-             "중요한 키워드를 씨앗으로 안 둬도 arXiv 로는 검색된다.",
+             "중요한 키워드를 시드로 안 둬도 arXiv 로는 검색된다.",
     )
     venues = st.text_input(
         "관심 venue (콤마로 구분, 선택 — S2가 venue 데이터를 아직 안 줘서 지금은 거의 안 씀)",
@@ -1320,9 +471,11 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
             # 화면에 가중치 입력이 없으므로 기존 값을 그대로 실어 보낸다.
             kept_weights = (existing or {}).get("core_weights") or {}
             new_core = [k.strip() for k in core_topics.split(",") if k.strip()]
+            # 주기도 같이 넘긴다(2026-09-16) — 안 넘기면 create_profile 기본값 daily 로 되돌아가 수동 프로필이 새벽 cron 에 들어간다.
+            freq, at = research_profile.get_schedule(db_path, pid) if not is_new else ("daily", "05:00")
             research_profile.create_profile(
                 db_path, pid, name.strip(),
-                core_topics=new_core,
+                core_topics=new_core, schedule_frequency=freq, schedule_time=at,
                 target_domain=[k.strip() for k in target_domain.split(",") if k.strip()],
                 exclude=[k.strip() for k in exclude.split(",") if k.strip()],
                 venues=[k.strip() for k in venues.split(",") if k.strip()],
@@ -1340,153 +493,598 @@ def _render_recipients(db_path, profile_id: str) -> None:
     if recipients:
         for email in recipients:
             r_col, x_col = st.columns([5, 1])
-            r_col.caption(f"📧 {email}")
+            r_col.caption(email)
             if x_col.button("해제", key=f"unsub_{profile_id}_{email}"):
                 research_profile.add_recipient(db_path, profile_id, email, active=False)
                 st.rerun()
     else:
-        st.caption("등록된 수신자 없음 (메일 발송은 아직 SMTP 미설정이라 어차피 안 나감)")
+        st.caption("등록된 수신자 없음 — 메일이 나가지 않습니다")
     new_email = st.text_input("수신자 추가", key=f"add_recipient_{profile_id}", placeholder="a@example.com")
     if st.button("추가", key=f"add_recipient_btn_{profile_id}") and new_email.strip():
         research_profile.add_recipient(db_path, profile_id, new_email.strip())
         st.rerun()
 
 
+_KIND_LABELS = {"core": "핵심 키워드", "s2_seed": "검색어", "target": "도메인", "exclude": "제외어"}
+
+
+def _h(value) -> str:
+    """unsafe_allow_html 에 넣는 동적 값은 전부 여기를 거친다 — 키워드·note 에 외부 논문 용어가 섞인다."""
+    import html
+    return html.escape(str(value), quote=True)
+_ORIGIN_SHORT = {"user": "사용자", "feedback": "반응", "agent": "에이전트", "advisor": "제안기", "rule": "규칙"}
+
+
+def _render_status_strip(status: dict) -> None:
+    """맨 위 한 줄 — 새벽 실행·다음 실행·주간 에이전트·반응 버튼. 숫자는 ops_dashboard 가 센다."""
+    c1, c2, c3, c4 = st.columns(4)
+    d = status["daily"]
+    if d.get("started_at"):
+        when = ops_dashboard._kst(d["started_at"])
+        if d.get("finished_at") is None:
+            verdict = "진행 중"
+        elif d.get("exit") == 0:
+            verdict = "정상"
+        elif d.get("exit") == 2:
+            verdict = "발송됨 · 소스 장애"
+        elif d.get("exit") == "stopped":
+            verdict = "수동 중지"
+        else:
+            verdict = f"실패 (exit {d.get('exit')})"
+        c1.metric("마지막 새벽 실행", when)
+        c1.caption(verdict if status["daily_ran_today"] else f"{verdict} · 오늘 실행 기록 없음 — PC(WSL)가 켜져 있어야 cron 이 돕니다")
+    else:
+        c1.metric("마지막 새벽 실행", "기록 없음")
+    c2.metric("다음 새벽 실행", status["next_daily_kst"])
+    c2.caption(f"주간 관리 {status['next_weekly_kst']}")
+    w = status["weekly"]
+    c3.metric("주간 에이전트", ops_dashboard.agent_status_label(w) if w else "아직 실행 없음")
+    c3.caption("금요일 17:00 · Claude 제안 → Codex 판정")
+    c4.metric("반응 버튼", "활성" if status["buttons_configured"] else "비활성")
+    c4.caption("메일에 버튼이 붙습니다" if status["buttons_configured"] else "FEEDBACK_* 설정 없음")
+
+
+def _render_profile_cards(db_path, profile_ids: list[str], selected: str) -> None:
+    """프로필 카드 한 줄. 카드의 버튼이 선택을 바꾼다 — 현재 선택은 채운(primary) 버튼."""
+    cols = st.columns(len(profile_ids))
+    for col, pid in zip(cols, profile_ids):
+        o = ops_dashboard.profile_overview(db_path, pid)
+        if not o:
+            continue
+        with col.container(border=True):
+            sched = "매일 발송" if o["schedule"] == "daily" else "수동"
+            st.markdown(f"**{_h(o['field'])}** <span style='color:var(--text-muted);font-size:12px'>· {sched}</span>",
+                        unsafe_allow_html=True)
+            m = o["mails"]; r = o["reactions"]
+            st.markdown(
+                f"<div style='font-size:13px;line-height:1.7'>메일 <b>{m['issues']}</b>통 · 논문 <b>{m['papers']}</b>편<br>"
+                f"반응 <b>{r['valid']}</b> <span style='color:var(--text-muted)'>(긍정 {r['more'] + r['useful']} · 부정 {r['out']})</span><br>"
+                f"키워드 {o['keywords']['core']} · 수신자 {len(o['recipients'])}</div>", unsafe_allow_html=True)
+            if st.button("보기", key=f"pick_{pid}", width="stretch",
+                         type="primary" if pid == selected else "secondary"):
+                st.session_state["_research_selected_profile"] = pid
+                st.rerun()
+
+
+def _render_overview(db_path, pid: str, o: dict) -> None:
+    import pandas as pd
+    a, b, c, d = st.columns(4)
+    a.metric("보낸 메일", f"{o['mails']['issues']}통")
+    a.caption(f"논문 {o['mails']['papers']}편" + (f" · 실패 {o['mails']['failed_issues']}회" if o["mails"]["failed_issues"] else ""))
+    r = o["reactions"]
+    b.metric("받은 반응", f"{r['valid']}건")
+    b.caption(f"긍정 {r['more'] + r['useful']} · 부정 {r['out']}" + (f" · 격리 {r['other']}" if r["other"] else ""))
+    c.metric("마지막 메일", ops_dashboard._kst(o["mails"]["last_sent_at"]))
+    c.caption({"sent": "전원 발송", "partial": "일부 수신자 실패", "failed": "발송 실패", None: "—"}.get(o["mails"]["last_status"], ""))
+    d.metric("프로필 revision", str(o["revision"]))
+    d.caption("주간 에이전트: " + ops_dashboard.agent_status_label(o["last_agent"]))
+    st.caption("수신자: " + (", ".join(o["recipients"]) or "없음 — 메일이 나가지 않습니다"))
+
+    history = ops_dashboard.weight_history(db_path, pid)
+    moving = {k: v for k, v in history.items() if len({round(x[2], 3) for x in v}) > 1}
+    if moving:
+        st.markdown("**가중치가 움직인 키워드**")
+        _weight_chart(moving)
+        st.caption("가중치가 한 번이라도 바뀐 키워드만 그린다. 가로는 프로필 revision(변경 시점), 점에 마우스를 올리면 시각이 보인다.")
+    else:
+        st.caption("아직 가중치가 움직인 키워드가 없습니다 — 반응이 서로 다른 논문 2편 이상 쌓이면 매일 새벽 조금씩 움직입니다.")
+
+
+# 꺾은선 한 줄 = 키워드 하나. 정체(identity)를 색으로 가르므로 **범주형** 팔레트를 정해진 순서로 쓴다(순환하지 않는다, dataviz 규칙).
+# 파랑을 첫 색으로 두고, 색약에서도 인접 색이 갈리도록 색상·명도를 번갈아 놓았다.
+_LINE_PALETTE = ["#3B5BDB", "#E8590C", "#2F9E44", "#9C36B5", "#0CA678", "#E64980", "#F08C00", "#1098AD", "#845EF7", "#5C940D"]
+_DIRECT_LABEL_MAX = 6      # 이 수까지는 선 끝에 키워드 이름을 바로 붙인다 — 그 이상은 범례·툴팁·범례 클릭 강조로 읽는다
+
+
+def _weight_chart(moving: dict[str, list[tuple[str, int, float]]]) -> None:
+    """가중치가 움직인 키워드만 꺾은선으로 — 가로 revision, 세로 가중치, 선 하나가 키워드 하나(2026-09-16 사용자 요청).
+    한 번은 점 그래프(y=키워드)로 갔다가 "너무 보기 힘들다"는 지적을 받았다. 이번엔 (1) 안 움직인 키워드는 아예 안 그리고(호출부가 거른다),
+    (2) **궤적이 똑같은 키워드는 선 하나로 묶는다** — 실측(team_ai_advance): rPPG·photoplethysmography·wearable biosensor 가 셋 다 1.0→0.4 라
+    세 선이 정확히 겹쳐 하나만 보였고 범례는 일곱 줄이었다. 묶으면 선 수 = 서로 다른 궤적 수이고 이름은 " · " 로 잇는다.
+    (3) 선 끝에 이름을 붙이며(선 6개까지 — 같은 값으로 끝나면 한 줄에), (4) 범례를 클릭하면 그 선만 진하게 남긴다."""
+    import altair as alt
+    import pandas as pd
+    # 궤적(revision→가중치 튜플)이 같은 키워드를 하나의 선으로. 이름은 가중치 큰 순이 아니라 키워드 사전순으로 이어 붙인다.
+    groups: dict[tuple, list[str]] = {}
+    for kw in sorted(moving, key=str.lower):
+        groups.setdefault(tuple((int(r), round(float(w), 3)) for _, r, w in moving[kw]), []).append(kw)
+    series: dict[str, list[tuple[str, int, float]]] = {" · ".join(kws): moving[kws[0]] for kws in groups.values()}
+    rows = []
+    for name, pts in series.items():
+        for created, rev, w in pts:
+            rows.append({"키워드": name, "revision": int(rev), "가중치": round(float(w), 3), "시점": ops_dashboard._kst(created)})
+    df = pd.DataFrame(rows)
+    # 변화 폭이 큰 선이 범례 위쪽 — 색은 그 순서로 고정된다(선이 늘거나 줄어도 같은 이름은 같은 색).
+    moving = series
+    order = sorted(moving, key=lambda k: (-abs(moving[k][-1][2] - moving[k][0][2]), k.lower()))
+    revs = sorted(df["revision"].unique())
+    lo, hi = float(df["가중치"].min()), float(df["가중치"].max())
+    domain = [max(0.3, lo - 0.1), min(2.05, hi + 0.1)]
+    # 선 끝 라벨 — 마지막 revision 에서 같은 값으로 끝나는 키워드는 겹치므로 한 라벨로 묶는다.
+    last_rev = revs[-1]
+    ends: dict[float, list[str]] = {}
+    for kw in order:
+        last = moving[kw][-1]
+        if int(last[1]) == last_rev:
+            ends.setdefault(round(float(last[2]), 3), []).append(kw)
+    label_rows = [{"revision": last_rev, "가중치": w, "라벨": " · ".join(ks)} for w, ks in ends.items()]
+
+    pick = alt.selection_point(fields=["키워드"], bind="legend")
+    base = alt.Chart(df).encode(
+        x=alt.X("revision:O", title="revision", sort=revs,
+                axis=alt.Axis(labelAngle=0, labelColor="#64748B", titleColor="#64748B", grid=False, ticks=False, domainColor="#DDE3EE")),
+        y=alt.Y("가중치:Q", title="가중치", scale=alt.Scale(domain=domain),
+                axis=alt.Axis(labelColor="#64748B", titleColor="#64748B", grid=True, gridColor="#EEF1F6", ticks=False, domain=False,
+                              format=".1f", tickMinStep=0.1)),           # 0.05 눈금이면 "0.6 / 0.6" 이 두 번 찍힌다(실측)
+        color=alt.Color("키워드:N", sort=order, scale=alt.Scale(domain=order, range=_LINE_PALETTE[:len(order)]),
+                        legend=None if len(order) == 1 else alt.Legend(         # 선 하나면 끝 라벨이 곧 이름이다 — 범례는 군더더기
+                            title="키워드 (클릭하면 그 선만)", orient="bottom", direction="vertical", labelLimit=900,
+                            symbolType="stroke", symbolStrokeWidth=3)),
+        opacity=alt.condition(pick, alt.value(1.0), alt.value(0.15)),
+    ).add_params(pick)
+    line = base.mark_line(strokeWidth=2.5, interpolate="linear")
+    dots = base.mark_circle(size=70, stroke="#FFFFFF", strokeWidth=1.5).encode(
+        tooltip=[alt.Tooltip("키워드:N"), alt.Tooltip("revision:O"), alt.Tooltip("가중치:Q", format=".2f"), alt.Tooltip("시점:N")])
+    layers = [line, dots]
+    if len(order) <= _DIRECT_LABEL_MAX and label_rows:
+        labels = alt.Chart(pd.DataFrame(label_rows)).mark_text(align="left", dx=10, fontSize=12, color="#1B2036").encode(
+            x=alt.X("revision:O", sort=revs), y="가중치:Q", text="라벨:N")
+        layers.append(labels)
+    height = 340 + 20 * len(order)          # 범례가 아래에 붙어 그림 높이를 먹는다 — 선 수만큼 더 준다
+    # 선 끝 라벨은 그림 영역 밖으로 뻗는다 — 오른쪽 여백을 비워 두고(범례는 아래로) 라벨이 범례와 겹치지 않게 한다.
+    chart = (alt.layer(*layers).properties(height=height, padding={"left": 5, "top": 5, "right": 300, "bottom": 5})
+             .configure_view(strokeWidth=0).configure(font="Pretendard, sans-serif"))
+    st.altair_chart(chart, width="stretch")
+
+
+def _render_keywords(db_path, pid: str) -> None:
+    import pandas as pd
+    rows = ops_dashboard.keyword_table(db_path, pid)
+    core = [r for r in rows if r["kind"] == "core"]
+    if core:
+        df = pd.DataFrame([{
+            "키워드": r["term"], "가중치": r["weight"],
+            "변화": ("—" if r["first_weight"] is None or abs(r["first_weight"] - r["weight"]) < 1e-9
+                    else f"{r['first_weight']:g} → {r['weight']:g}"),
+            "출처": _ORIGIN_SHORT.get(r["origin"], r["origin"]), "최근 28일 적중": r["hits_28d"],
+            "긍정 반응": r["more"] + r["useful"], "부정 반응": r["out"],
+        } for r in core]).sort_values(["가중치", "최근 28일 적중"], ascending=[False, False])
+        # 가중치 칸만 고칠 수 있다(2026-09-16 관리자 기능). 저장하면 사용자 revision 하나 — 변경 이력 탭에서 되돌릴 수 있고,
+        # 피드백 조정은 이 값을 새 기준선으로 삼는다(feedback_weights: 직접 바꾼 revision 이 기준선을 다시 잡는다).
+        original = {r["term"]: r["weight"] for r in core}
+        edited = st.data_editor(
+            df, hide_index=True, width="stretch", key=f"kw_editor_{pid}",
+            disabled=[c for c in df.columns if c != "가중치"],
+            column_config={"가중치": st.column_config.NumberColumn(format="%.2f", min_value=0.35, max_value=2.0, step=0.05,
+                                                                 help="0.35~2.0. 0.1 구간이 순위 계층이다(1.0·0.6·0.4 …)"),
+                           "최근 28일 적중": st.column_config.NumberColumn(help="최근 28일 후보 관측에서 이 키워드에 걸린 논문 수")})
+        changed = {row["키워드"]: float(row["가중치"]) for row in edited.to_dict("records")
+                   if row["가중치"] is not None and abs(float(row["가중치"]) - float(original[row["키워드"]])) > 1e-9}
+        if changed:
+            st.info("바뀐 가중치: " + ", ".join(f"{k} {original[k]:g} → {v:g}" for k, v in changed.items()))
+            if st.button("가중치 저장", key=f"kw_save_{pid}", type="primary"):
+                try:
+                    rev = research_profile.update_core_weights(db_path, pid, changed)
+                except ValueError as e:
+                    st.error(f"저장 실패: {e} — 그 사이 다른 변경이 있었을 수 있습니다. 새로고침 뒤 다시 하세요.")
+                else:
+                    st.success(f"rev {rev} 로 저장했습니다.")
+                    st.rerun()
+    st.caption("가중치 칸을 눌러 고친 뒤 저장할 수 있습니다. 긍정 = 이 키워드에 걸린 논문에 온 '더 보고 싶음'·'유용함', 부정 = '관심 밖'.")
+    others = [r for r in rows if r["kind"] != "core"]
+    if others:
+        cols = st.columns(3)
+        for col, kind in zip(cols, ("s2_seed", "target", "exclude")):
+            terms = [r for r in others if r["kind"] == kind]
+            col.markdown(f"**{_KIND_LABELS[kind]}** ({len(terms)})")
+            col.markdown("<div style='font-size:13px;line-height:1.8'>" + ("<br>".join(
+                f"{_h(r['term'])}" + (f" <span style='color:var(--text-muted)'>· 적중 {r['hits_28d']}</span>" if r["hits_28d"] else "")
+                + (f" <span style='color:var(--sky)'>· {_h(_ORIGIN_SHORT.get(r['origin'], r['origin']))}</span>" if r["origin"] != "user" else "")
+                for r in terms) or "<span style='color:var(--text-muted)'>없음</span>") + "</div>", unsafe_allow_html=True)
+
+
+def _render_issues(db_path, pid: str) -> None:
+    issues = ops_dashboard.issues_with_reactions(db_path, pid, limit=40)
+    if not issues:
+        st.caption("아직 보낸 메일이 없습니다.")
+        return
+    for issue in issues:
+        status = {"sent": "", "partial": " · 일부 수신자 실패", "failed": " · 발송 실패"}.get(issue["status"], "")
+        legacy = " · 기록 복원(그날 처음 나간 논문)" if issue["source"] == "legacy" else ""
+        head = f"{issue['day']} · {issue['paper_count']}편" + (f" · 반응 {issue['reactions']}" if issue["reactions"] else "") + status + legacy
+        with st.expander(head, expanded=issue is issues[0]):
+            if issue.get("subject"):
+                st.caption(issue["subject"])
+            lines = ["| # | 논문 | 키워드 | 반응 |", "|---|---|---|---|"]
+            for it in issue["items"]:
+                title = it["title"].replace("|", "\\|")
+                link = f"[{title}]({it['link']})" if it["link"] else title
+                rx = it.get("reactions") or {}
+                marks = " · ".join(f"{k} {v}" for k, v in (("긍정", rx.get("more", 0) + rx.get("useful", 0)), ("부정", rx.get("out", 0))) if v)
+                lines.append(f"| {it['position']} | {link} | {', '.join(it['core_hits']) or '—'} | {marks} |")
+            st.markdown("\n".join(lines))
+
+
+def _render_reactions(db_path, pid: str) -> None:
+    import pandas as pd
+    log = ops_dashboard.reaction_log(db_path, pid)
+    if not log:
+        st.caption("아직 받은 반응이 없습니다. 메일의 [더 보고 싶음] [유용함] [관심 밖] 버튼을 누르면 다음 새벽 수집 때 여기 나타납니다.")
+        return
+    df = pd.DataFrame([{"시각": r["when"], "논문": r["title"], "반응": r["action"], "상태": r["status"]} for r in log])
+    st.dataframe(df, hide_index=True, width="stretch")
+    st.caption("'격리'는 메일 보안 스캐너가 링크를 먼저 연 것으로 보아 학습에서 뺀 반응입니다. 잘못 격리됐다면 메일에서 다시 누르면 됩니다.")
+
+
+def _render_history(db_path, pid: str) -> None:
+    import profile_advisor
+    hist = ops_dashboard.revision_history(db_path, pid)
+    current = hist[0]["revision"] if hist else 0
+    for h in hist:
+        st.divider()
+        head, body = st.columns([5, 1])
+        head.markdown(f"**rev {h['revision']}** · {_h(h['when'])} · {_h(h['origin_label'])}"
+                      + (f" <span style='color:var(--text-muted)'>— {_h(h['note'])}</span>" if h["note"] else ""), unsafe_allow_html=True)
+        head.markdown("<div style='font-size:13px;line-height:1.7;margin-left:8px'>" + "<br>".join(_h(c) for c in h["changes"]) + "</div>",
+                      unsafe_allow_html=True)
+        if h["revision"] != current:
+            if body.button("이 상태로 되돌리기", key=f"rollback_{pid}_{h['revision']}"):
+                try:
+                    res = profile_advisor.rollback(db_path, pid, h["revision"], reason=f"ui rollback to rev {h['revision']}")
+                except Exception as e:  # noqa: BLE001 — 화면이 통째로 죽지 않게 실패 사유를 보인다(외부 검토 2026-09-16)
+                    res = {"rolled_back": False, "reason": f"{type(e).__name__}: {e}"}
+                if res.get("rolled_back"):
+                    st.success(f"rev {h['revision']} 상태를 rev {res['revision']} 으로 복원했습니다 — 이력은 지우지 않습니다.")
+                    st.rerun()
+                else:
+                    st.error(f"되돌리기 실패: {res.get('reason')}")
+
+
+def _render_agent(db_path, pid: str) -> None:
+    runs = ops_dashboard.agent_history(db_path, pid)
+    if not runs:
+        st.caption("아직 주간 에이전트 실행 기록이 없습니다. 금요일 17:00 에 돌고, 반응이 없는 주는 모델을 부르지 않습니다.")
+        return
+    for run in runs:
+        with st.expander(f"{ops_dashboard.agent_status_label(run)} · {run['when']}", expanded=run is runs[0]):
+            def _fmt(a: dict) -> str:
+                w = f" {a['weight']:g}" if a.get("weight") is not None else ""
+                return f"**{_ACTION_OPS.get(a.get('op'), a.get('op'))}** {a.get('term')}{w} — {ops_dashboard.display_text(a.get('reason', ''))}"
+            if run["proposed"]:
+                st.markdown("Claude 제안")
+                for a in run["proposed"]:
+                    st.markdown(f"- {_fmt(a)}")
+            if run["reviews"]:
+                st.markdown("Codex 판정")
+                for v in run["reviews"]:
+                    st.markdown(f"- #{v.get('index')} {_VERDICTS.get(v.get('verdict'), v.get('verdict'))} — {ops_dashboard.display_text(v.get('reason', ''))}")
+            if run["applied"]:
+                st.markdown("적용됨")
+                for a in run["applied"]:
+                    st.markdown(f"- {_fmt(a)}")
+            if run["rejected"]:
+                st.markdown("검증에서 기각")
+                for x in run["rejected"]:
+                    a = x.get("action") or {}
+                    st.markdown(f"- {a.get('op')} {a.get('term')} — 사유 `{x.get('reason')}`")
+            if not (run["proposed"] or run["applied"] or run["rejected"]):
+                st.caption("제안 없음")
+
+
+_ACTION_OPS = {"add_keyword": "키워드 추가", "set_weight": "가중치", "remove_keyword": "키워드 삭제",
+               "add_seed": "검색어 추가", "remove_seed": "검색어 삭제", "add_exclude": "제외어 추가"}
+_VERDICTS = {"accept": "채택", "modify": "수정 채택", "reject": "기각"}
+
+
+_STATUS_COLORS = {"done": "#0ca30c", "partial": "#ec835a", "failed": "#d03b3b"}     # dataviz 상태 팔레트: good·serious·critical
+
+
+def _status_legend() -> None:
+    """상태 원의 뜻 — 색만으로 뜻을 전하지 않게 표 위에 한 줄로 둔다."""
+    st.markdown(" &nbsp; ".join(f"<span style='color:{c};font-size:15px'>●</span> <span style='font-size:12px;color:var(--text-muted)'>{t}</span>"
+                                for c, t in ((_STATUS_COLORS["done"], "완료"), (_STATUS_COLORS["partial"], "일부"), (_STATUS_COLORS["failed"], "실패"))),
+                unsafe_allow_html=True)
+
+
+def _render_settings(db_path, pid: str, profile: dict) -> None:
+    """설정 탭. 한 칸(좁게)에 위에서 아래로 — 수신자 → 발송 주기 → 최근 검색 실행 → 수동 스캔. 2026-09-16 사용자 지적: 오른쪽 칸의 검색
+    실패 사유(URL 전체)가 길어 아래 펼침 메뉴 셋이 스크롤 밖으로 밀렸다. 사유는 코드·호스트만 남긴 짧은 표로 보인다."""
+    import pandas as pd
+    col, _spare = st.columns([3, 2])
+    with col:
+        st.markdown("**수신자**")
+        _render_recipients(db_path, pid)
+        freq, _at = research_profile.get_schedule(db_path, pid)
+        new_freq = st.selectbox("발송 주기", ["daily", "manual"], index=0 if freq == "daily" else 1,
+                                format_func=lambda v: "매일 새벽 05:00 스캔·발송" if v == "daily" else "수동 실행만",
+                                key=f"sched_{pid}")
+        if new_freq != freq:
+            research_profile.set_schedule(db_path, pid, new_freq)
+            st.rerun()
+
+        st.markdown("**최근 검색 실행**")
+        runs = research_profile.list_runs(db_path, pid, limit=5)
+        if runs:
+            _status_legend()
+            table = pd.DataFrame([{
+                "결과": "⬤", "건수": r.get("retrieved_count") or 0,     # 표 격자는 글자 크기 지정을 무시한다 — 큰 원 글리프를 쓴다
+                "검색 창": f"{(r.get('window_from') or '')[5:10]} ~ {(r.get('window_to') or '')[5:10]}",
+                "시각": _relative_time(r["started_at"]) if r.get("started_at") else "?",
+                "사유": ops_dashboard.short_error(r.get("error_detail")) if r["status"] == "failed" else "",
+            } for r in runs])
+            colors = [_STATUS_COLORS.get(r["status"], "#94A3B8") for r in runs]
+            styled = table.style.apply(lambda col: [f"color: {c}; font-size: 18px;" for c in colors], subset=["결과"])
+            st.dataframe(styled, hide_index=True, width="stretch")
+        else:
+            st.caption("아직 실행 이력 없음")
+        if st.button("지금 스캔 실행 (메일 없음)", key=f"scan_now_{pid}"):
+            if not profile["core_topics"]:
+                st.error("핵심 키워드가 없어서 검색어를 만들 수 없음")
+            else:
+                with st.spinner("검색·요약 중… (몇 분 걸릴 수 있음)"):
+                    async def _scan() -> tuple[dict, str]:
+                        async with httpx.AsyncClient() as client:
+                            return await run_profile_scan.scan_and_digest(db_path, pid, client, max_pages=10)
+                    try:
+                        run_async(_scan())
+                    except Exception as e:  # noqa: BLE001 — 실패도 화면에 명확히 보여준다
+                        st.error(f"스캔 실패: {e}")
+                    else:
+                        st.rerun()
+    with col:
+        with st.expander("키워드·설정 직접 수정"):
+            _render_profile_form(db_path, existing=profile)
+        latest = research_profile.get_latest_digest(db_path, pid)
+        if latest:
+            digest_text, generated_at = latest
+            with st.expander(f"최신 다이제스트 본문 ({_relative_time(generated_at)})"):
+                st.text(ops_dashboard.display_text(digest_text))
+        with st.expander("평가 자료(논문용 라벨링)"):
+            st.caption("평가는 로컬에만 저장한다. 승인 관문이나 자동 순위 변경에 쓰지 않는다.")
+            papers = research_profile.feedback_papers(db_path, pid)
+            if papers:
+                by_key = {p["paper_key"]: p["title"] for p in papers}
+                with st.form(f"briefing_feedback_{pid}"):
+                    key = st.selectbox("평가할 논문", list(by_key), format_func=lambda k: by_key[k])
+                    useful = st.radio("읽는 데 도움이 되었나", list(research_profile.FEEDBACK_LABELS),
+                                      format_func=research_profile.FEEDBACK_LABELS.get)
+                    claim = st.text_area("근거와 대조할 메일의 주장 문장 (선택)")
+                    support = st.selectbox("원문 근거가 이 주장을 지지하는가",
+                                           list(research_profile.SUPPORT_LABELS),
+                                           format_func=research_profile.SUPPORT_LABELS.get)
+                    if st.form_submit_button("평가 저장"):
+                        try:
+                            research_profile.record_feedback(db_path, pid, key, useful, claim, support)
+                        except ValueError as error:
+                            st.error(str(error))
+                        else:
+                            st.success("평가를 저장했다.")
+                rows = research_profile.list_feedback(db_path, pid)
+                if rows:
+                    import csv
+                    import io
+                    buffer = io.StringIO()
+                    writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+                    st.download_button("평가 자료 CSV", buffer.getvalue().encode("utf-8-sig"),
+                                       file_name="briefing_feedback.csv", mime="text/csv")
+            else:
+                st.caption("아직 배달 기록이 없다.")
+
+
 def render_research_tab() -> None:
-    st.subheader("리서치 프로필 (운영자 화면)")
-    st.caption(
-        "관심 분야(프로필)를 만들고, 지금 상황(실행 이력·다이제스트)을 확인합니다. "
-        "이 화면은 운영자용입니다 — 최종 사용자는 다이제스트만 받습니다(메일은 아직 미연결)."
-    )
-
+    """운영 현황(2026-09-16 개편). 프로필별로 키워드·가중치·보낸 메일·반응·변경 이력·에이전트 실행을 본다.
+    숫자는 전부 ops_dashboard 가 만든다 — 이 함수는 그리기만 한다."""
+    st.subheader(APP_TITLE)
     db_path = server.DB_PATH
+    root = Path(__file__).resolve().parent
+    try:
+        _render_status_strip(ops_dashboard.system_status(db_path, root))
+    except Exception as e:  # noqa: BLE001 — 상태 줄이 깨져도 프로필 화면은 떠야 한다
+        st.caption(f"상태 조회 실패: {type(e).__name__}")
+
     profile_ids = research_profile.list_profiles(db_path)
-
-    with st.expander("➕ 새 프로필 만들기"):
+    with st.expander("새 프로필 만들기"):
         _render_profile_form(db_path, existing=None)
-
     if not profile_ids:
         st.info("아직 프로필이 없습니다 — 위에서 하나 만들어보세요.")
         return
+    if st.session_state.get("_research_selected_profile") not in profile_ids:
+        st.session_state["_research_selected_profile"] = max(
+            profile_ids, key=lambda pid: (mail_ledger.counts(db_path, pid)["issues"], pid == "team_ai_advance"))
+    selected = st.session_state["_research_selected_profile"]
+    _render_profile_cards(db_path, profile_ids, selected)
 
-    if "_research_selected_profile" not in st.session_state or \
-            st.session_state["_research_selected_profile"] not in profile_ids:
-        st.session_state["_research_selected_profile"] = profile_ids[0]
-
-    selected = st.selectbox(
-        "프로필 선택", profile_ids, key="_research_selected_profile",
-    )
     profile = research_profile.get_profile(db_path, selected)
+    o = ops_dashboard.profile_overview(db_path, selected)
+    st.markdown(f"### {_h(o['name'])}  <span style='color:var(--text-muted);font-size:13px'>`{_h(selected)}`</span>",
+                unsafe_allow_html=True)
+    tabs = st.tabs(["한눈에", "키워드·가중치", "보낸 메일", "반응", "변경 이력", "에이전트", "설정"])
+    with tabs[0]:
+        _render_overview(db_path, selected, o)
+    with tabs[1]:
+        _render_keywords(db_path, selected)
+    with tabs[2]:
+        _render_issues(db_path, selected)
+    with tabs[3]:
+        _render_reactions(db_path, selected)
+    with tabs[4]:
+        _render_history(db_path, selected)
+    with tabs[5]:
+        _render_agent(db_path, selected)
+    with tabs[6]:
+        _render_settings(db_path, selected, profile)
 
-    card = st.container(border=True, key="research_profile_card")
-    card.markdown(f"**{profile['name']}**  ·  `{profile['profile_id']}`")
-    info_col, run_col = card.columns([3, 2])
-    info_col.caption(f"핵심 키워드: {', '.join(profile['core_topics']) or '(없음)'}")
-    info_col.caption(f"관심 도메인: {', '.join(profile['target_domain']) or '(없음)'}")
-    info_col.caption(f"제외 키워드: {', '.join(profile['exclude']) or '(없음)'}")
-    info_col.caption(f"관심 venue: {', '.join(profile['venues']) or '(없음)'}")
-    info_col.caption(f"다이제스트 상한: {profile['max_items']}편")
 
-    run_col.markdown("**수신자**")
-    with run_col:
-        _render_recipients(db_path, selected)
 
-    with card.expander("✏️ 프로필 수정"):
-        _render_profile_form(db_path, existing=profile)
 
-    st.markdown("#### 지금 상황")
-    runs = research_profile.list_runs(db_path, selected, limit=5)
+# ---------------------------------------------------------------- 논문 DB
+_TIER_SHORT = {"official": "공식", "author": "저자 연관", "third_party": "제3자", "analogous": "유사 구현", "none": "없음", None: "—"}
+
+
+def render_papers_page() -> None:
+    """저장된 논문 전체를 한 표로 — 검색어·프로필로 거르고, 한 편을 골라 요약·재현·코드·SOTA 주장을 본다."""
+    import pandas as pd
+    st.subheader("논문 DB")
+    db_path = server.DB_PATH
+    profiles = research_profile.list_profiles(db_path)
+    c1, c2 = st.columns([3, 2])
+    query = c1.text_input("검색", placeholder="제목·초록·arXiv ID", key="papers_query")
+    names = {pid: (research_profile.get_profile(db_path, pid) or {}).get("name", pid).split(" — ")[0] for pid in profiles}
+    pick = c2.selectbox("보낸 프로필", ["(전체)"] + profiles, format_func=lambda v: v if v == "(전체)" else names.get(v, v),
+                        key="papers_profile")
+    rows = ops_dashboard.paper_catalog(db_path, query=query, profile_id=None if pick == "(전체)" else pick)
+    st.caption(f"{len(rows)}편 · 최신 저장 순")
+    if not rows:
+        st.info("조건에 맞는 논문이 없습니다.")
+        return
+    df = pd.DataFrame([{
+        "제목": r["title"], "발표": r["published"], "저장": r["fetched"], "출처": r["source"],
+        "요약": "있음" if r["summarized"] else "", "재현": r["repro"], "코드": _TIER_SHORT.get(r["code_tier"], r["code_tier"]),
+        "보낸 프로필": ", ".join(names.get(p, p) for p in r["profiles"]) or "—", "처음 발송": r["first_sent"],
+        "주의": ", ".join(r["flags"]), "ID": r["arxiv_id"],
+    } for r in rows])
+    event = st.dataframe(df, hide_index=True, width="stretch", height=420, on_select="rerun",
+                         selection_mode="single-row", key="papers_table")
+    selected = event.selection.rows[0] if getattr(event, "selection", None) and event.selection.rows else None
+    if selected is None:
+        st.caption("표에서 한 줄을 고르면 아래에 요약·재현·코드·SOTA 주장이 나옵니다.")
+        return
+    d = ops_dashboard.paper_detail(db_path, rows[selected]["arxiv_id"])
+    if not d:
+        return
+    st.markdown(f"### {_h(d['title'])}", unsafe_allow_html=True)
+    meta = [f"`{d['arxiv_id']}`", (d["published"] or "")[:10]]
+    if d["link"]:
+        meta.append(f"[원문]({d['link']})")
+    st.markdown(" · ".join(m for m in meta if m))
+    for line in (d["code_line"], d["sota_line"]):
+        if line:
+            st.caption(line)
+    t_sum, t_abs, t_repro = st.tabs(["요약", "초록", "코드 재현 시도"])
+    with t_sum:
+        if d["summary_md"]:
+            st.caption(f"요약 엔진: {d['summary_engine'] or '—'}")
+            st.markdown(d["summary_md"])
+        else:
+            st.caption("요약 없음 — 초록만 정리됐거나 본문을 받지 못한 논문입니다.")
+    with t_abs:
+        st.write(d["abstract"] or "초록 없음")
+    with t_repro:
+        if d["repro"]:
+            st.dataframe(pd.DataFrame([{"저장소": r["repo_url"], "찾은 곳": {"in_text": "논문 본문", "github_search": "GitHub 검색"}.get(r["source"], r["source"]),
+                                        "결과": "성공" if r["success"] else "실패", "단계": r["stage"], "사유": r["fail_detail"] or "",
+                                        "시각": ops_dashboard._kst(r["created_at"])} for r in d["repro"]]),
+                         hide_index=True, width="stretch")
+        else:
+            st.caption("재현 시도 없음")
+
+
+# ---------------------------------------------------------------- 시스템
+_EXIT_LABELS = {0: "정상", 2: "발송됨 · 소스 장애", 1: "실패", "stopped": "수동 중지", "skipped": "스킵(이전 실행 중)", None: "종료 기록 없음(진행 중·중단)"}
+_CRON_HINTS = {"run_daily_scan.sh": "매일 새벽 스캔·메일 발송", "run_weekly_agent.sh": "금요일 DB 정리 → 주간 관리 에이전트",
+               "check_daily_mail.py": "새벽 메일 부재 감시"}
+
+
+def render_system_page() -> None:
+    """실행 기록·예약 작업·DB·백업·로그 — "어젯밤에 무슨 일이 있었나"를 터미널 없이 본다."""
+    import pandas as pd
+    st.subheader("시스템")
+    db_path = server.DB_PATH
+    dbs = ops_dashboard.db_status(Path(db_path))
+    a, b, c, d = st.columns(4)
+    a.metric("DB 크기", ops_dashboard.fmt_bytes(dbs["bytes"]))
+    a.caption(f"WAL {ops_dashboard.fmt_bytes(dbs['wal_bytes'])}")
+    t = dbs["tables"]
+    b.metric("저장 논문", f"{t.get('papers') or 0}편")
+    b.caption(f"요약 {t.get('summaries') or 0}편 · 재현 시도 {t.get('repro_results') or 0}건")
+    c.metric("최신 백업", dbs["backups"][0]["when"] if dbs["backups"] else "없음")
+    c.caption(f"보관 {len(dbs['backups'])}개 · 최신 {ops_dashboard.fmt_bytes(dbs['backups'][0]['bytes'])}" if dbs["backups"] else "")
+    r = dbs["retention"]
+    d.metric("마지막 DB 정리", r["when"] if r else "아직 없음")
+    d.caption((f"행 {r['rows_deleted']} · 파일 {r['files_deleted']} 삭제" + (f" · 오류 {r['error']}" if r["error"] else "")) if r else "금요일 17:00 에 돕니다")
+
+    st.markdown("#### 새벽 실행 기록")
+    runs = ops_dashboard.recent_runs(ROOT, limit=14)
     if runs:
-        next_since = research_profile.next_since(db_path, selected)
-        st.caption(f"다음 실행은 {next_since.strftime('%Y-%m-%d %H:%M UTC')} 이후를 봅니다")
-        for row in runs:
-            st.text(_format_run_row(row))
+        st.dataframe(pd.DataFrame([{
+            "시작(KST)": x["when"], "소요(분)": "—" if x["minutes"] is None else f"{x['minutes']:g}",
+            "결과": _EXIT_LABELS.get(x["exit"], str(x["exit"])),
+            "경고": x["warnings"], "API 호출": "—" if x["api_calls"] is None else str(x["api_calls"]),
+            "발송": " / ".join(f"{pid.replace('team_', '')}: {v.get('delivery', v.get('status', ''))}" for pid, v in x["profiles"].items()) or "—",
+        } for x in runs]), hide_index=True, width="stretch")
     else:
-        st.caption("아직 실행 이력 없음 — 아래에서 지금 바로 스캔해볼 수 있습니다")
+        st.caption("logs/daily_scan.log 기록 없음")
 
-    if st.button("🔍 지금 스캔 실행", key=f"scan_now_{selected}", type="primary"):
-        if not profile["core_topics"]:
-            st.error("핵심 키워드가 없어서 검색어를 만들 수 없음 — 프로필 수정에서 먼저 추가할 것")
+    st.markdown("#### 주간 에이전트")
+    agent_rows = []
+    for pid in research_profile.list_profiles(db_path):
+        for run in ops_dashboard.agent_history(db_path, pid, limit=4):
+            agent_rows.append({"주차": run["week"], "프로필": pid, "결과": ops_dashboard.agent_status_label(run),
+                               "제안": len(run["proposed"]), "적용": len(run["applied"]), "기각": len(run["rejected"]), "시각": run["when"]})
+    if agent_rows:
+        st.dataframe(pd.DataFrame(sorted(agent_rows, key=lambda x: (x["주차"], x["프로필"]), reverse=True)), hide_index=True, width="stretch")
+    else:
+        st.caption("아직 실행 없음 — 금요일 17:00 첫 실행. 반응이 없는 프로필은 모델을 부르지 않습니다.")
+
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown("#### 예약 작업(cron)")
+        entries = ops_dashboard.cron_entries(ROOT)
+        if entries is None:
+            st.caption("crontab 을 읽지 못했습니다.")
+        elif not entries:
+            st.warning("이 저장소를 부르는 cron 이 없습니다 — 자동 실행이 멈춰 있습니다.")
         else:
-            with st.spinner("arXiv에서 delta 검색 중... (흔한 키워드일수록 오래 걸릴 수 있음)"):
-                async def _scan() -> tuple[dict, str]:
-                    async with httpx.AsyncClient() as client:
-                        return await run_profile_scan.scan_and_digest(db_path, selected, client, max_pages=10)
-                try:
-                    run_async(_scan())  # scan_and_digest가 DB에 저장까지 끝냄
-                except Exception as e:  # noqa: BLE001 — 실패도 화면에 명확히 보여준다
-                    st.error(f"스캔 실패: {e}")
-                else:
-                    st.rerun()
+            for e in entries:
+                hint = next((v for k, v in _CRON_HINTS.items() if k in e), "")
+                sched = " ".join(e.split()[:5])
+                st.markdown(f"- `{sched}` — {hint}")
+            st.caption("PC(WSL)가 꺼져 있으면 cron 도 돌지 않습니다.")
+    with right:
+        st.markdown("#### DB 표")
+        st.dataframe(pd.DataFrame([{"표": k, "행": v if v is not None else "없음"} for k, v in t.items()]),
+                     hide_index=True, width="stretch", height=300)
 
-    # 2026-08-24: st.session_state가 아니라 DB(research_profile.save_digest)
-    # 에서 읽는다 — cron이 새벽에 혼자 스캔을 돌려도 이 화면에서 보여야
-    # 한다("cron이 돌아도 결과가 화면 어디에도 안 남는다" 문제 해결).
-    # scan_and_digest가 이미 저장까지 끝내므로 여기는 조회만 한다.
-    latest = research_profile.get_latest_digest(db_path, selected)
-    if latest:
-        digest_text, generated_at = latest
-        st.markdown(f"#### 최신 다이제스트 ({_relative_time(generated_at)})")
-        st.text(digest_text)
+    st.markdown("#### 백업")
+    if dbs["backups"]:
+        st.dataframe(pd.DataFrame([{"파일": x["name"], "크기": ops_dashboard.fmt_bytes(x["bytes"]), "시각": x["when"]} for x in dbs["backups"]]),
+                     hide_index=True, width="stretch")
+    else:
+        st.caption("백업 없음")
 
-    with st.expander("받은 메일 평가"):
-        st.caption("평가는 로컬에만 저장한다. 승인 관문이나 자동 순위 변경에 쓰지 않는다.")
-        papers = research_profile.feedback_papers(db_path, selected)
-        if papers:
-            by_key = {p["paper_key"]: p["title"] for p in papers}
-            with st.form(f"briefing_feedback_{selected}"):
-                key = st.selectbox("평가할 논문", list(by_key), format_func=lambda k: by_key[k])
-                useful = st.radio("읽는 데 도움이 되었나", list(research_profile.FEEDBACK_LABELS),
-                                  format_func=research_profile.FEEDBACK_LABELS.get)
-                claim = st.text_area("근거와 대조할 메일의 주장 문장 (선택)")
-                support = st.selectbox("원문 근거가 이 주장을 지지하는가",
-                                       list(research_profile.SUPPORT_LABELS),
-                                       format_func=research_profile.SUPPORT_LABELS.get)
-                if st.form_submit_button("평가 저장"):
-                    try:
-                        research_profile.record_feedback(db_path, selected, key, useful, claim, support)
-                    except ValueError as error:
-                        st.error(str(error))
-                    else:
-                        st.success("평가를 저장했다.")
-            rows = research_profile.list_feedback(db_path, selected)
-            if rows:
-                import csv
-                import io
-                buffer = io.StringIO()
-                writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-                st.download_button("평가 자료 CSV", buffer.getvalue().encode("utf-8-sig"),
-                                   file_name="briefing_feedback.csv", mime="text/csv")
-        else:
-            st.caption("아직 배달 기록이 없다.")
+    st.markdown("#### 로그 보기")
+    logs = sorted(p.name for p in (ROOT / "logs").glob("*") if p.is_file() and p.suffix in (".log", ".txt", ".json"))
+    if logs:
+        default = logs.index("daily_scan.log") if "daily_scan.log" in logs else 0
+        l1, l2 = st.columns([3, 1])
+        name = l1.selectbox("파일", logs, index=default, key="log_pick")
+        n = l2.number_input("마지막 줄 수", min_value=20, max_value=2000, value=200, step=50, key="log_lines")
+        st.code(ops_dashboard.log_tail(ROOT, name, int(n)) or "(비어 있음)", language="text")
 
 
 # ---------------------------------------------------------------- 메인
-
-
-
-
-def _render_sidebar_category(label: str, items: list[dict], dot: str) -> None:
-    with st.expander(f"{label} ({len(items)})", expanded=False):
-        if not items:
-            st.caption("없음")
-            return
-        for it in items:
-            title = it["title"] or "(제목 없음)"
-            short = title if len(title) <= 32 else title[:32] + "…"
-            st.markdown(
-                f"<div class='sidebar-item'>{dot} {short}</div>",
-                unsafe_allow_html=True,
-            )
-
-
-# 사이드바 브랜드 아이콘 — 사용자가 새로 준 참고 이미지(파란 그라디언트
-# 배지 안에 arXiv 논문·돋보기 모티프)를 재현한 인라인 SVG(2026-08-14,
-# 이전의 남색+금색 네트워크 아이콘을 교체). 3D 렌더링을 그대로 옮길 순
-# 없어서(작은 사이드바 아이콘 크기에선 안 보임) "논문 + 돋보기"라는
-# 핵심 모티프만 단순한 2D 플랫 아이콘으로 재해석했다.
 _BRAND_ICON = (
     "data:image/svg+xml;base64,"
     "PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
@@ -1502,88 +1100,37 @@ _BRAND_ICON = (
     "gyPSIyNyIgeTI9IjI2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
 )
 
-# 검색 카드 우측 장식 일러스트 — 참고 이미지(2026-08-14)의 "문서+돋보기+
-# 추세선" 모티프를 순수 장식용 인라인 SVG로 재해석. 클릭 동작 없음.
-_SEARCH_ILLUSTRATION = (
-    "data:image/svg+xml;base64,"
-    "PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0iODAiIHZpZXdCb3g9IjAgMCA4MCA4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4"
-    "KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0iZzIiIHgxPSIwIiB5MT0iMCIgeDI9IjgwIiB5Mj0iODAiIGdyYWRpZW50VW5pdHM9InVzZXJTcG"
-    "FjZU9uVXNlIj4KPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjRUFGMkZGIi8+CjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI0Q2R"
-    "TRGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM+CjxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI3NiIgaGVpZ2h0PSI3NiIgcng9IjE4IiBm"
-    "aWxsPSJ1cmwoI2cyKSIvPgo8cmVjdCB4PSIxNiIgeT0iMTYiIHdpZHRoPSIzNCIgaGVpZ2h0PSI0NiIgcng9IjMiIGZpbGw9IndoaXRlIiBzdHJ"
-    "va2U9IiNCOUNDRUYiIHN0cm9rZS13aWR0aD0iMS4yIi8+CjxsaW5lIHgxPSIyMiIgeTE9IjI2IiB4Mj0iNDQiIHkyPSIyNiIgc3Ryb2tlPSIjOE"
-    "ZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxsaW5lIHgxPSIyMiIgeTE9IjMyIiB4Mj0iNDQiIHkyP"
-    "SIzMiIgc3Ryb2tlPSIjOEZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxsaW5lIHgxPSIyMiIgeTE9"
-    "IjM4IiB4Mj0iMzgiIHkyPSIzOCIgc3Ryb2tlPSIjOEZBOURFIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjx"
-    "wb2x5bGluZSBwb2ludHM9IjIyLDUyIDI4LDQ2IDMzLDQ5IDQwLDQyIiBmaWxsPSJub25lIiBzdHJva2U9IiM1QjhERUYiIHN0cm9rZS13aWR0a"
-    "D0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPGNpcmNsZSBjeD0iNTQiIGN5PSI1MiIgcj0"
-    "iMTMiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFFM0E4QSIgc3Ryb2tlLXdpZHRoPSIzIi8+CjxsaW5lIHgxPSI2MyIgeTE9IjYxIiB4Mj0iNzAiIH"
-    "kyPSI2OCIgc3Ryb2tlPSIjMUUzQThBIiBzdHJva2Utd2lkdGg9IjMuNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
-)
+_PAGES = (("research", "운영 현황"), ("papers", "논문 DB"), ("system", "시스템"))
 
-if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "search"
+if st.session_state.get("nav_page") not in {k for k, _ in _PAGES}:
+    st.session_state.nav_page = "research"          # 켜자마자 운영 현황(2026-09-16 사용자 요청)
 
 with st.sidebar:
     st.markdown(
         f'<div class="sidebar-brand"><img src="{_BRAND_ICON}" class="sidebar-brand-icon"/> '
-        '<b>논문 검색·분석</b> '
-        '<span class="sidebar-brand-sub">에이전트 하네스</span></div>',
+        '<b>최신 연구 동향</b> '
+        '<span class="sidebar-brand-sub">모니터링 에이전트</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    # hover는 "상시 말고 커서 올렸을 때만"이라는 지적(2026-08-12)대로 유지.
-    # 다만 "지금 보고 있는 페이지가 안 드러난다"는 후속 지적(2026-08-14)을
-    # 받아, 현재 페이지 버튼만 type="primary"(채움)로 켠다 — hover 규칙과
-    # 안 부딪힌다: primary는 자체 배경색이 있어서 secondary용 hover 규칙
-    # (.st-key-nav_*:hover)이 안 먹어도 이미 파란색이라 상관없다.
-    if st.button(
-        "검색·요약 생성", key="nav_search", use_container_width=True,
-        type="primary" if st.session_state.nav_page == "search" else "secondary",
-    ):
-        st.session_state.nav_page = "search"
-        st.rerun()
-    if st.button(
-        "요약 검토", key="nav_review", use_container_width=True,
-        type="primary" if st.session_state.nav_page == "review" else "secondary",
-    ):
-        st.session_state.nav_page = "review"
-        st.rerun()
-    if st.button(
-        "리서치 프로필", key="nav_research", use_container_width=True,
-        type="primary" if st.session_state.nav_page == "research" else "secondary",
-    ):
-        st.session_state.nav_page = "research"
-        st.rerun()
-
+    for key, label in _PAGES:
+        if st.button(label, key=f"nav_{key}", width="stretch",
+                     type="primary" if st.session_state.nav_page == key else "secondary"):
+            st.session_state.nav_page = key
+            st.rerun()
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
-    st.caption("현황")
-    lists = _fetch_sidebar_lists()
-    _render_sidebar_category("저장된 논문", lists["all"], "🟡")
-    _render_sidebar_category("재현 성공", lists["repro_ok"], "🟢")
-    _render_sidebar_category("재현 실패", lists["repro_failed"], "🔴")
-    _render_sidebar_category("코드 없음", lists["no_code"], "🟠")
+    try:
+        _status = ops_dashboard.system_status(server.DB_PATH, ROOT)
+        st.caption(f"다음 새벽 실행 {_status['next_daily_kst']}")
+        st.caption(f"주간 관리 {_status['next_weekly_kst']}")
+        if not _status["daily_ran_today"]:
+            st.caption("오늘 새벽 실행 기록 없음")
+    except Exception:  # noqa: BLE001 — 사이드바 상태가 깨져도 화면은 뜬다
+        pass
 
-    # 검색·요약이 실제로 도는 동안만 나타나는 진행 표시(2026-08-14 요청,
-    # 2026-08-19 배경 프로세스 전환에 맞춰 다시 배선) — 예전엔 render_search_tab()
-    # 안의 루프가 st.empty() 슬롯을 직접 채우는 방식이었는데, ④가 "취소"를
-    # 지원하려고 별도 프로세스로 옮겨가면서 그 루프 자체가 이 스크립트
-    # 실행 안에 없다. 대신 _read_search_job()으로 상태 파일을 직접 읽는다
-    # — 검토 탭에 가 있어도, 새로고침해도 항상 최신 상태(파일 기반이라
-    # 이 스크립트의 한 번의 실행에 갇혀 있지 않음).
-    job = _read_search_job()
-    if job is not None:
-        total, done = job.get("total"), job.get("done", 0)
-        if total:
-            st.caption(f"🔵 진행 중 · 요약 생성 중... {done}/{total}")
-            st.progress(done / total)
-        else:
-            st.caption("🔵 진행 중 · ① 검색·선별 중...")
-            st.progress(0.0)
-
-if st.session_state.nav_page == "search":
-    render_search_tab()
-elif st.session_state.nav_page == "research":
-    render_research_tab()
+if st.session_state.nav_page == "papers":
+    render_papers_page()
+elif st.session_state.nav_page == "system":
+    render_system_page()
 else:
-    render_review_tab()
+    render_research_tab()

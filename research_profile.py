@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS profile_keywords (
     profile_id TEXT,
     keyword TEXT,
     kind TEXT,              -- 'core' | 'target' | 'exclude' | 's2_seed'
-                            -- 's2_seed' 는 **검색 씨앗**이고 채점에 안 쓴다.
-                            -- 그전에는 core 가중치 1.0 이 씨앗 자리를 겸했는데,
+                            -- 's2_seed' 는 **검색 시드**이고 채점에 안 쓴다.
+                            -- 그전에는 core 가중치 1.0 이 시드 자리를 겸했는데,
                             -- "무엇이 중요한가"와 "S2 에 무엇을 물어볼까"는
                             -- 다른 질문이다(2026-09-09, §8-79).
     weight REAL DEFAULT 1.0,
@@ -187,8 +187,8 @@ def _ddl(con: sqlite3.Connection) -> None:
     #
     # search_candidates 는 논문 **개체**의 최신 상태다 — 같은 논문이 다음 날
     # 또 보이면 last_seen·outcome 만 덮어써서 "지난 실행에서는 어떤 자리였나"가
-    # 사라진다. 그러면 정책을 바꾼 뒤 "당시 선택"을 재생할 수 없고, 씨앗별
-    # 수율("이 씨앗이 이번 실행에서 몇 편을 데려왔나")도 셀 수 없다.
+    # 사라진다. 그러면 정책을 바꾼 뒤 "당시 선택"을 재생할 수 없고, 시드별
+    # 수율("이 시드가 이번 실행에서 몇 편을 데려왔나")도 셀 수 없다.
     #
     # 그래서 **관측**을 따로 둔다. 실행 하나 × 논문 하나 = 행 하나. 개체
     # 테이블은 손대지 않는다(추가형, §12.1). 초록은 복사하지 않고 해시만
@@ -252,7 +252,7 @@ def _ddl(con: sqlite3.Connection) -> None:
         " profile_id  TEXT NOT NULL,"
         " revision    INTEGER NOT NULL,"
         " created_at  TEXT NOT NULL,"
-        " origin      TEXT NOT NULL,"    # 'user' | 'advisor' | 'rollback'
+        " origin      TEXT NOT NULL,"    # 'user' | 'advisor' | 'rollback' | 'feedback' | 'agent'
         " content_sha TEXT NOT NULL,"    # 정규화 프로필 내용 해시
         " snapshot    TEXT NOT NULL,"    # 프로필 JSON (복구용)
         " note        TEXT,"
@@ -273,7 +273,7 @@ def _ddl(con: sqlite3.Connection) -> None:
         " policy_version   TEXT NOT NULL,"
         " arxiv_run_id     TEXT,"           # search_runs.run_id
         " s2_run_id        TEXT,"
-        " seed_attempts    TEXT,"           # JSON — 씨앗별 {status, returned, reason}
+        " seed_attempts    TEXT,"           # JSON — 시드별 {status, returned, reason}
         " observations     INTEGER,"        # 저장된 관측 행 수. NULL = 저장 실패/미완
         " observation_error TEXT)"
     )
@@ -288,7 +288,7 @@ def _ddl(con: sqlite3.Connection) -> None:
         " abstract_ref   TEXT,"            # 같은 초록을 실제로 가진 관측의 scan_id
         " source         TEXT,"
         " retrieval_sources TEXT,"         # JSON — 실제 발견 출처 합집합
-        " s2_seeds       TEXT,"            # JSON 목록 — 어느 씨앗이 데려왔나 (arXiv 면 NULL)
+        " s2_seeds       TEXT,"            # JSON 목록 — 어느 시드가 데려왔나 (arXiv 면 NULL)
         " published      TEXT,"
         " date_precision TEXT,"            # profile_scoring.publication_day 의 둘째 값
         " tier_rank      INTEGER,"         # 적중 없으면 NULL
@@ -337,6 +337,7 @@ def create_profile(
     s2_seeds: list[str] | None = None,
     origin: str = "user", note: str | None = None,
     restore_provenance: dict[tuple[str, str], str] | None = None,
+    expected_revision: int | None = None,
 ) -> int:
     """기존 프로필이면 통째로 덮어쓴다(키워드도 전부 지우고 다시 씀) —
     "일부만 바뀐 것"과 "이전 키워드가 실수로 안 지워진 것"을 구분 못 하게
@@ -351,19 +352,33 @@ def create_profile(
     처음부터 있었지만 아무도 읽지 않던 것을 여기서 실제로 쓰기 시작한다.
 
     s2_seeds 는 S2 에 **질의할** 키워드다(2026-09-09, §8-79). core_weights 와
-    갈라 둔 이유: 가중치는 "이 논문이 얼마나 우리 얘기인가"를 재고, 씨앗은
+    갈라 둔 이유: 가중치는 "이 논문이 얼마나 우리 얘기인가"를 재고, 시드는
     "어느 단어로 물어야 논문이 잘 나오나"를 정한다. 한 숫자가 둘 다 하던
-    동안 실측이 어긋났다 — 씨앗이던 `surface inspection` 은 열흘치 적중이
-    0편인데, 씨앗이 아니던 `vision-language-action` 이 16편으로 최다였다.
+    동안 실측이 어긋났다 — 시드였던 `surface inspection` 은 열흘치 적중이
+    0편인데, 시드가 아니던 `vision-language-action` 이 16편으로 최다였다.
 
-    **생략(None)하면 기존 씨앗을 보존하고, 빈 목록([])을 명시하면 지운다.**
-    이 함수는 나머지를 전부 덮어쓰는데 씨앗만 예외로 둔 이유가 있다 —
-    구형 호출부(테스트, review_app 의 옛 경로)가 씨앗을 모른 채 저장하면
+    **생략(None)하면 기존 시드를 보존하고, 빈 목록([])을 명시하면 지운다.**
+    이 함수는 나머지를 전부 덮어쓰는데 시드만 예외로 둔 이유가 있다 —
+    구형 호출부(테스트, review_app 의 옛 경로)가 시드를 모른 채 저장하면
     그 프로필의 검색 설정이 조용히 사라진다. 가중치가 바로 그렇게 날아가고
-    있었다(§8-76)."""
+    있었다(§8-76).
+
+    expected_revision 이 주어지면 쓰기 전에 같은 트랜잭션에서 현재 revision 을
+    대조한다. 적용 직전 검사와 프로필 교체 사이의 경합으로 stale 분석이 덮어쓰는
+    일을 막기 위한 장치다(외부 검토 2026-09-14)."""
     init_db(db_path)
     now = _now()
     with sqlite3.connect(db_path) as con:
+        if expected_revision is not None:
+            # 파이썬 sqlite3 기본 모드에서 SELECT 는 트랜잭션을 열지 않는다 — 대조와 쓰기 사이에 다른
+            # 쓰기가 끼어들 수 있다. 쓰기 잠금을 먼저 잡고 대조한다(2026-09-14, 외부 검토 반영분 재검토).
+            con.execute("BEGIN IMMEDIATE")
+        current_revision = con.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
+            (profile_id,),
+        ).fetchone()[0]
+        if expected_revision is not None and current_revision != expected_revision:
+            raise ValueError(f"expected_revision_mismatch:{expected_revision}!={current_revision}")
         con.execute(
             "INSERT INTO profiles (profile_id, name, max_items, schedule_frequency, "
             "schedule_time, created_at, updated_at) VALUES (?,?,?,?,?,?,?) "
@@ -426,7 +441,9 @@ def _bump_revision(con: sqlite3.Connection, profile_id: str, origin: str,
     return cur + 1
 
 
-PROVENANCE_ORIGINS = ("user", "advisor", "rule")
+# "agent"(2026-09-15): 주간 관리 에이전트가 넣은 키워드. 없으면 아래 폴백이 'user' 로 적어 **자동 키워드가
+# 사용자 키워드로 기록되고**, 삭제 보호를 받고 건강 지표 anchor 에도 섞인다.
+PROVENANCE_ORIGINS = ("user", "advisor", "rule", "agent")
 
 
 def _record_keyword_events(con: sqlite3.Connection, profile_id: str, revision: int, now: str,
@@ -646,7 +663,7 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
         "core_topics": by_kind["core"], "target_domain": by_kind["target"],
         "exclude": by_kind["exclude"], "venues": [v["venue"] for v in venue_rows],
         "core_weights": core_weights,
-        # 씨앗은 core_topics 에 안 섞는다 — 섞으면 채점 대상이 되어 분리한
+        # 시드는 core_topics 에 안 섞는다 — 섞으면 채점 대상이 되어 분리한
         # 의미가 없어진다. 순서는 저장 순서에 기대지 않게 정렬한다.
         "s2_seeds": sorted(by_kind["s2_seed"]),
     }
@@ -730,6 +747,56 @@ def already_shown(db_path: Path, profile_id: str) -> set[str]:
             "SELECT paper_key FROM profile_shown WHERE profile_id=?", (profile_id,))}
 
 
+SCHEDULES = ("daily", "manual")
+
+
+def set_schedule(db_path: Path, profile_id: str, frequency: str) -> None:
+    """스캔 주기만 바꾼다. `create_profile` 을 거치지 않는 이유: 주기는 키워드 스냅숏(revision)의 일부가 아니다 — 그걸로 바꾸면
+    키워드가 그대로인 revision 이 하나 더 생겨 변경 이력만 흐린다. daily 는 새벽 cron 이 스캔하고 메일을 보내고, manual 은 수동 실행만."""
+    if frequency not in SCHEDULES:
+        raise ValueError(f"unknown_schedule:{frequency}")
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        cur = con.execute("UPDATE profiles SET schedule_frequency=?, updated_at=? WHERE profile_id=?",
+                          (frequency, _now(), profile_id))
+        if cur.rowcount != 1:
+            raise ValueError(f"unknown_profile:{profile_id}")
+
+
+def get_schedule(db_path: Path, profile_id: str) -> tuple[str, str]:
+    """(주기, 시각). 없으면 기본 daily·05:00."""
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT COALESCE(schedule_frequency,'daily'), COALESCE(schedule_time,'05:00') "
+                          "FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+    return (row[0], row[1]) if row else ("daily", "05:00")
+
+
+def update_core_weights(db_path: Path, profile_id: str, weights: dict[str, float], note: str | None = None) -> int:
+    """핵심 키워드 가중치만 바꾼 revision(origin='user'). 운영 화면의 가중치 편집(2026-09-16)이 부른다 — 나머지(도메인·제외어·
+    검색어·주기)는 그대로 넘긴다. 모르는 키워드는 무시하고, 값은 0.35~2.0 으로 자른다(피드백 조정과 같은 범위)."""
+    profile = get_profile(db_path, profile_id)
+    if not profile:
+        raise ValueError(f"unknown_profile:{profile_id}")
+    merged = dict(profile["core_weights"])
+    changed = []
+    for kw, w in weights.items():
+        if kw in merged:
+            new_w = round(min(2.0, max(0.35, float(w))), 3)
+            if abs(new_w - merged[kw]) > 1e-9:
+                changed.append(f"{kw} {merged[kw]:g}->{new_w:g}")
+                merged[kw] = new_w
+    if not changed:
+        return current_revision(db_path, profile_id)
+    freq, at = get_schedule(db_path, profile_id)
+    return create_profile(
+        db_path, profile_id, profile["name"], profile["core_topics"], target_domain=profile["target_domain"],
+        exclude=profile["exclude"], venues=profile["venues"], max_items=profile["max_items"],
+        schedule_frequency=freq, schedule_time=at, core_weights=merged, s2_seeds=profile["s2_seeds"],
+        origin="user", note=note or ("화면 가중치 수정: " + ", ".join(changed)),
+        expected_revision=current_revision(db_path, profile_id))
+
+
 def add_recipient(db_path: Path, profile_id: str, email: str, active: bool = True) -> None:
     init_db(db_path)
     with sqlite3.connect(db_path) as con:
@@ -763,10 +830,17 @@ def list_runs(db_path: Path, profile_id: str, limit: int = 10) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def list_profiles(db_path: Path) -> list[str]:
+def list_profiles(db_path: Path, schedule: str | None = None) -> list[str]:
+    """프로필 id 목록. `schedule` 을 주면 그 주기(`profiles.schedule_frequency`)인 것만.
+
+    2026-09-15: 분야별 프로필(로봇·에이전트·비전)을 만들되 새벽 cron 에는 넣지 않으려고 이 칸을 쓰기 시작했다 —
+    그전엔 칸만 있고 아무도 안 읽어 모든 프로필이 매일 스캔됐다. `manual` 프로필은 `run_profile_scan.py <id>` 로만 돈다."""
     init_db(db_path)
     with sqlite3.connect(db_path) as con:
-        return [r[0] for r in con.execute("SELECT profile_id FROM profiles ORDER BY profile_id")]
+        if schedule is None:
+            return [r[0] for r in con.execute("SELECT profile_id FROM profiles ORDER BY profile_id")]
+        return [r[0] for r in con.execute(
+            "SELECT profile_id FROM profiles WHERE COALESCE(schedule_frequency, 'daily')=? ORDER BY profile_id", (schedule,))]
 
 
 def next_since(db_path: Path, profile_id: str, source: str = "arxiv",
@@ -867,7 +941,7 @@ def record_candidates(
 # 선별 순서 계약의 버전. 계약이 바뀌면 올린다 — 관측의 rank_pos 는 이 버전의 값이다.
 # 순위 튜플은 v1 그대로이고(§8-86) 키워드 매처가 match-v2 로 바뀌었다(§8-99) — 적격·적중의
 # 뜻이 바뀌므로 정책 버전을 올린다. 관측 행의 policy_version 으로 전후를 가른다.
-RANK_POLICY_VERSION = "rank-tuple-v1+match-v2"   # 2026-09-12
+RANK_POLICY_VERSION = "rank-tuple-v1+match-v2+band0.1"   # 2026-09-15 — 계층을 가중치 0.1 구간으로 묶음(profile_scoring.weight_band)
 
 # 관측의 탈락 사유. outcome 만으로는 "왜"가 안 보인다.
 FILTER_EXCLUDE_HIT = "exclude_hit"       # 제외어 적중

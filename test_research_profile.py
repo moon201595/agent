@@ -298,11 +298,11 @@ def test_partial_run_still_wins_over_signature_match(tmp_path):
 
 # ── s2_seeds 저장·보존 (2026-09-09, §8-79)
 
-def test_씨앗을_생략하면_보존하고_빈_목록이면_지운다(tmp_path):
-    """이 테스트가 잡는 것: 씨앗을 다른 키워드처럼 매번 통째로 덮어쓰는 것.
+def test_시드를_생략하면_보존하고_빈_목록이면_지운다(tmp_path):
+    """이 테스트가 잡는 것: 시드를 다른 키워드처럼 매번 통째로 덮어쓰는 것.
 
-    create_profile 은 원래 전부 덮어쓴다. 씨앗만 예외로 둔 이유는 구형
-    호출부(씨앗을 모르는 코드)가 저장할 때 검색 설정이 조용히 사라지기
+    create_profile 은 원래 전부 덮어쓴다. 시드만 예외로 둔 이유는 구형
+    호출부(시드를 모르는 코드)가 저장할 때 검색 설정이 조용히 사라지기
     때문이다 — 가중치가 실제로 그렇게 날아가고 있었다(§8-76).
     """
     db = tmp_path / "t.db"
@@ -310,10 +310,10 @@ def test_씨앗을_생략하면_보존하고_빈_목록이면_지운다(tmp_path
                       core_weights={"a": 1.0, "b": 0.6}, s2_seeds=["b"])
     assert rp.get_profile(db, "p")["s2_seeds"] == ["b"]
 
-    # 씨앗을 모르는 호출 — 보존돼야 한다
+    # 시드를 모르는 호출 — 보존돼야 한다
     rp.create_profile(db, "p", "이름", core_topics=["a", "b"],
                       core_weights={"a": 1.0, "b": 0.6})
-    assert rp.get_profile(db, "p")["s2_seeds"] == ["b"], "씨앗이 조용히 사라졌다"
+    assert rp.get_profile(db, "p")["s2_seeds"] == ["b"], "시드가 조용히 사라졌다"
 
     # 빈 목록을 **명시**하면 지운다 — "모른다"와 "없다"는 다르다
     rp.create_profile(db, "p", "이름", core_topics=["a", "b"],
@@ -321,27 +321,27 @@ def test_씨앗을_생략하면_보존하고_빈_목록이면_지운다(tmp_path
     assert rp.get_profile(db, "p")["s2_seeds"] == []
 
 
-def test_씨앗은_채점_대상에_섞이지_않는다(tmp_path):
-    """이 테스트가 잡는 것: 씨앗을 core_topics 나 core_weights 에 합쳐 넣는 것.
+def test_시드는_채점_대상에_섞이지_않는다(tmp_path):
+    """이 테스트가 잡는 것: 시드를 core_topics 나 core_weights 에 합쳐 넣는 것.
 
-    섞이면 씨앗이 점수를 만들게 되어 분리한 의미가 없어진다. 씨앗에만 있는
+    섞이면 시드가 점수를 만들게 되어 분리한 의미가 없어진다. 시드에만 있는
     단어는 core 어디에도 나타나면 안 된다.
     """
     db = tmp_path / "t.db"
     rp.create_profile(db, "p", "이름", core_topics=["a"], core_weights={"a": 0.6},
-                      target_domain=["d"], exclude=["x"], s2_seeds=["씨앗전용"])
+                      target_domain=["d"], exclude=["x"], s2_seeds=["시드전용"])
     prof = rp.get_profile(db, "p")
     assert prof["core_topics"] == ["a"]
-    assert "씨앗전용" not in prof["core_weights"]
-    assert "씨앗전용" not in prof["target_domain"] and "씨앗전용" not in prof["exclude"]
-    assert prof["s2_seeds"] == ["씨앗전용"]
+    assert "시드전용" not in prof["core_weights"]
+    assert "시드전용" not in prof["target_domain"] and "시드전용" not in prof["exclude"]
+    assert prof["s2_seeds"] == ["시드전용"]
 
 
-def test_씨앗_지문이_바뀌면_커서를_안_이어받는다(tmp_path):
+def test_시드_지문이_바뀌면_커서를_안_이어받는다(tmp_path):
     """이 테스트가 잡는 것: S2 에 core 지문을 계속 넘기는 것.
 
-    씨앗만 바꿨는데 커서를 이어받으면 **새 씨앗이 과거를 영영 못 본다** —
-    §8-21 이 core 에서 막았던 사고가 씨앗에서 그대로 재발한다.
+    시드만 바꿨는데 커서를 이어받으면 **새 시드가 과거를 영영 못 본다** —
+    §8-21 이 core 에서 막았던 사고가 시드에서 그대로 재발한다.
     """
     from datetime import datetime, timedelta, timezone
     db = tmp_path / "t.db"
@@ -351,13 +351,13 @@ def test_씨앗_지문이_바뀌면_커서를_안_이어받는다(tmp_path):
     rp.record_run(db, "p", "s2", "q", win_to - timedelta(hours=2), win_to,
                   "done", 3, signature=old_sig)
 
-    # 같은 씨앗이면 커서를 이어받는다
+    # 같은 시드면 커서를 이어받는다
     same = rp.next_since(db, "p", "s2", signature=old_sig)
     assert same > datetime.now(timezone.utc) - timedelta(days=6)
 
-    # 씨앗을 바꾸면 기본 창(7일)으로 돌아간다
+    # 시드를 바꾸면 기본 창(7일)으로 돌아간다
     changed = rp.next_since(db, "p", "s2", signature=rp.topic_signature(["rPPG"]))
-    assert changed < same, "씨앗을 바꿨는데 커서를 그대로 이어받았다"
+    assert changed < same, "시드를 바꿨는데 커서를 그대로 이어받았다"
 
 
 # ── 프로필 revision (2026-09-11, D단계 §9.2)

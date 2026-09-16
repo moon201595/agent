@@ -4,9 +4,8 @@
 읽는다. Claude Code 는 AGENTS.md 를 직접 읽지 않으므로 `./CLAUDE.md` 맨 위에서
 `@AGENTS.md` 로 import 한다. 두 도구가 같은 사실을 본다.
 
-여기에는 **이 프로젝트가 무엇이고 어떻게 다뤄야 하는지**만 쓴다. 이 저장소의 판단
-규칙(비용 원칙, 설계 원칙, 정직성 규칙, 작업 규율, 마일스톤)은 `./CLAUDE.md` 에 있고
-**그쪽이 우선한다** — 충돌하면 CLAUDE.md 를 따르고 이 파일을 고친다.
+여기에는 **이 프로젝트가 무엇이고 어떻게 다뤄야 하는지**만 쓴다. 규칙은 `./CLAUDE.md` 의
+최소 규칙 7개(2026-09-14 전면 교체)이고 **그쪽이 우선한다** — 충돌하면 CLAUDE.md 를 따르고 이 파일을 고친다.
 
 **Claude ↔ Codex 역할 분담**(누가 언제 무엇을 맡기는가)은 `~/.claude/CLAUDE.md`
 몫이고 여기 쓰지 않는다. 다만 **일을 맡은 도구가 이 저장소 안에서 지킬 것**은
@@ -15,13 +14,13 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 
 ## 프로젝트 개요
 
-관심 분야의 최신 논문을 매일 스스로 찾고 읽고 검증해서, 사람이 아침에 메일 하나로
-"이 분야가 어디로 가고 있나"를 알게 하는 하네스다.
+관심 분야의 최신 논문을 매일 스스로 찾고 읽고 정리해 메일로 보내고, **메일 논문에 남긴 사용자 반응을 따라
+관심 분야를 스스로 조정**하는 연구 지원 에이전트다(2026-09-14 방향 전환 — 계획 `docs/AGENT_PLAN_2026-09-14.md`).
 
 - 주요 스택: Python 3.14 · MCP 서버(stdio) · Streamlit(사람 판단 UI) · SQLite(`data/papers.db`) · Docker(⑦ 코드 재현 격리 실행)
-- 요약 LLM 은 무료 API 를 쓴다 — Gemini 우선, Groq 대체. Claude/Codex 자신이 요약을 쓰지 않는다.
+- 요약·서술 LLM 은 현재 Gemini 우선, Groq 대체다. 에이전트 두뇌로 Claude Code·Codex(구독, 헤드리스 포함)를 붙이는 중이다(계획 v2 §1).
 - 모노레포가 아니다. 루트 평면 배치이고 `src/` 레이아웃이 아니다. 하위 AGENTS.md 도 없다.
-- 오케스트레이션 계층이 없는 것이 설계다. 판단은 MCP 클라이언트가, 이 저장소는 결정적 도구만 맡는다.
+- 일일 진입점은 `run_daily_scan.sh → run_profile_scan.py` 이고, Python 모듈이 검색·저장·실행을 맡는다. LLM 은 JSON 제안을 돌려주고 Python 이 검증·적용한다.
 
 파이프라인 단계는 문서·주석·모듈 docstring 전반에서 ①~⑨ 원문자로 부른다.
 ① 검색 ② 중복 제거·선별 ③ 본문 확보 ④ 요약 ⑤ 수치 검증 ⑥ 사람 판단 ⑦ 코드 재현
@@ -31,15 +30,22 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 
 - 가상환경: 저장소 루트의 `.venv` (이미 생성돼 있다). `uv` · Poetry 를 쓰지 않는다.
 - 의존성 설치: `.venv/bin/pip install -r requirements.txt`
-- 환경 변수: `.env` 에 있다. **읽거나 출력하지 않는다**(CLAUDE.md 규칙 10). 필요한 로직은
+- 환경 변수: `.env` 에 있다. **읽거나 출력하지 않는다**(CLAUDE.md 규칙 5). 필요한 로직은
   이름만 참조한다 — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL`.
   발급처와 용도는 `docs/API_KEYS.md`.
 - MCP 서버: `.venv/bin/python server.py` (stdio). 클라이언트가 띄운다.
-- 사람 판단 UI: `.venv/bin/streamlit run review_app.py`
+- 운영 화면: `.venv/bin/streamlit run review_app.py` → http://localhost:8501 — 운영 현황(기본)·논문 DB·시스템 세 페이지(2026-09-16 개편,
+  옛 검색·요약·검토 탭 삭제). `.streamlit/config.toml` 이 127.0.0.1 로만 묶는다 — 되돌리기·가중치 저장 버튼이 있고 로그인이 없다.
 - 일일 스캔(cron 진입점): `./run_daily_scan.sh` — 매일 05:00 KST, 로그는 `logs/daily_scan.log`.
+- **Windows 작업 스케줄러에도 같은 두 작업이 있다**(`paper-harness\daily-scan` 매일 05:00, `paper-harness\weekly-agent` 금 17:00, XML 은
+  `%USERPROFILE%\paper-harness-tasks\`). PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시
+  실행(StartWhenAvailable)하고 꺼진 WSL 도 켠다. PC 를 깨우지는 않는다. 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
+  지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
+- 주간 작업(cron 진입점): `./run_weekly_agent.sh` — 금요일 17:00 KST, `db_retention`(백업 뒤 정리) → `agent_maintenance`(헤드리스 Claude 제안 →
+  Codex 판정 → Python 검증·적용). 로그는 `logs/weekly_agent.log`. 모델 없이 브리프만 보려면 `.venv/bin/python agent_maintenance.py --brief-only`.
 - **DB 스키마 변경**: 각 모듈의 DDL 은 `schema_guard` 를 통해서만 돈다. 운영 DB(테이블이 있는 파일)에는
-  코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고, 사람 승인 뒤
-  `migrate.py --apply`(WAL 포함 일관 백업 자동). 새 설치는 `--apply --scope all`. 평가 DB 는
+  코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고
+  `migrate.py --apply`(WAL 포함 일관 백업 자동)로 적용한다. 새 설치는 `--apply --scope all`. 평가 DB 는
   `--scope evaluation`. 테스트는 conftest 가 플래그를 켜 임시 DB 에 바로 적용한다(2026-09-12).
 
 ## 테스트 · 검증 (정확한 명령어 그대로)
@@ -51,10 +57,10 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 커버리지: `.venv/bin/coverage run -m pytest && .venv/bin/coverage report`
   (`pytest-cov` 는 설치돼 있지 않다 — `--cov` 옵션은 없다. `coverage` 7.x 를 직접 쓴다)
 - 회귀 기준선: `.venv/bin/python eval.py` — 저장된 전체 요약의 통과율을 잰다.
-  기준선은 39편 · pass_ratio 0.982 다. **임의로 옮기지 않는다**(CLAUDE.md 규칙 9).
-  값이 흔들리면 조작하지 말고 원인을 분석해 `docs/PROGRESS.md` 에 있는 그대로 적는다.
+  기록된 기준선은 39편 · pass_ratio 0.982 다(내부 품질 확인용 — 메일에는 검증 수치를 싣지 않는다, 2026-09-14).
+  값이 흔들리면 원인을 분석해 `docs/PROGRESS.md` 에 있는 그대로 적는다.
 - 린터·포매터·타입체커를 두지 않는다. Ruff · Black · isort · mypy 설정이 없고, 추가하지 않는다.
-  `pyproject.toml` 도 없다. **완료 조건은 pytest 전체 green 하나다**(규칙 11).
+  `pyproject.toml` 도 없다. **완료 조건은 pytest 전체 green 이다**.
 - 네트워크가 필요한 테스트가 섞여 있다(`test_smoke.py` 등). 오프라인에서 그 파일이 실패하는
   것은 코드 결함이 아니다 — 판단 전에 실패 사유를 확인한다.
 
@@ -64,7 +70,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 주석과 docstring 은 **한국어 평서체**로 쓰고, 무엇을 하는지가 아니라 **왜 그렇게 했는지**를
   적는다. 실측 결과와 날짜를 함께 남기는 것이 이 저장소의 관행이다. 이 톤을 유지한다.
 - 모듈 docstring 첫 줄은 담당 단계로 시작한다 — 예: `"""② 중복 제거·선별 — 결정적 규칙, 네트워크·LLM 미사용."""`
-- 파일 수정은 `sed` 대신 str_replace 또는 `python3 << 'PYEOF'` heredoc 으로 한다(규칙 15).
+- 파일 수정은 `sed` 대신 str_replace 또는 `python3 << 'PYEOF'` heredoc 을 쓴다(한글·특수문자 치환 사고 방지).
 - `selection.py` 를 `select.py` 로 바꾸지 않는다 — 표준 라이브러리 `select` 를 가려 asyncio 가 깨진다.
 
 ## 아키텍처 메모
@@ -77,20 +83,26 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - `verify.py` — ⑤ 수치 검증기. 문자열 대조만 하고 LLM 을 쓰지 않는다. `[S번호]` 가 있으면 그 문장(±1) 안에서만 찾는다.
 - `docker_runner.py` — ⑦ 격리 실행. `reproduce(arxiv_id)` 가 이 저장소의 유일한 자율 재시도 루프다(최대 3회).
 - `digest.py` · `trend_report.py` · `email_delivery.py` — ⑨ 배달.
-- **전이 지점 단일 소유**: ④⑤ 저장 → ⑦ 재현 자동 전이는 `docker_runner.launch_background()` 하나로만 트리거한다.
-  호출 지점은 다섯 곳이 전부다(자동 2 + 수동 버튼 3). 새 자동 호출 지점을 추가하지 않는다(규칙 5).
-- **새 지휘자 계층 금지**: 단계를 다시 꿰는 오케스트레이션 스크립트·클래스·프레임워크를 만들지 않는다.
-  `pipeline.py` 부활, LangGraph, Airflow 전부 해당한다. 기존 진입점(`_process_paper`,
-  `scan_and_digest`, `scan_all_profiles`)을 재사용한다(규칙 6). 폐기 사유는 PROGRESS.md §9.
-- **판정 경로에 LLM 판사를 넣지 않는다**: 검증·재현 결과는 이진 판정 가능한 신호(문자열 대조,
-  Docker exit code, DB 기록)로만 보고한다(규칙 7).
+- `feedback_links.py`(반응 버튼 서명·수집) → `feedback_weights.py`(매일 스캔 직전 가중치 조정, Python 만) → `agent_maintenance.py`(주 1회 키워드·검색어·
+  제외어 조정). 셋 다 `create_profile` revision 으로 쓰고 origin 이 `feedback`·`agent` 로 갈린다. 에이전트 변경의 검증 규칙(좋아요 근거·제외어 2편·
+  사용자 키워드 삭제 금지)은 프롬프트가 아니라 `agent_maintenance.validate` 가 강제한다 — 두 모델이 동의해도 통과 못 한다.
+- `mail_ledger.py`(발송 회차·논문 기록) · `ops_dashboard.py`(운영 화면 자료 — 화면 `review_app.render_research_tab` 은 그리기만) ·
+  `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시).
+- `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
+- **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 현재 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
+  `batch_summarize._process_paper`(새벽 스캔)와 `review_core._summarize_target`(옛 검색 화면의 로직 — 화면에서는 2026-09-16 에 빠져
+  지금 부르는 곳이 없다) 둘이다. 화면의 수동 재현 버튼 3개는 개편 때 없앴다.
+  시작점이 흩어지면 같은 논문 재현이 겹친다 — 새 호출 지점을 만들 때는 이 목록을 갱신한다.
+- 검증(`verify.py`)·재현 결과는 문자열 대조·Docker exit code·DB 기록으로 남는다. LLM 은 그 결과를 해석할 수 있지만
+  결과 값 자체를 만들지 않는다(CLAUDE.md 규칙 7).
 
-### 승인 없이 건드리지 않는 곳
+### 다룰 때 주의할 곳
 
-- `verify.py` · `docker_runner.py` · `email_delivery.py` — 수정 전에 계획을 먼저 제시하고 승인을 받는다(규칙 13).
-- `data/` — 자동 생성물이고 ⑦ 이 clone 해 온 외부 저장소가 들어 있다. 커밋 대상이 아니다.
+- `docker_runner.py` · `email_delivery.py` — 격리 실행과 실제 발송을 맡는다. 바꾸면 기존 재현 성공 사례 회귀와 발송 경로 테스트를 같이 돌린다.
+- `data/` — 자동 생성물이고 ⑦ 이 clone 해 온 외부 저장소가 들어 있다. 커밋 대상이 아니다. 오래된 데이터는 보존표(계획 v2 §9)대로 백업 뒤 정리한다.
 - `.env` — 읽지 않는다.
-- `prompts/*.md` — 프롬프트 자산이고 버전 관리 대상이다. 절대 규칙 R1~R6 을 임의로 완화하지 않는다.
+- `docs/patent/` · `docs/paper/` — 사내 문서, `.gitignore` 대상. 외부 LLM 입력에 넣지 않는다.
+- `prompts/*.md` — 프롬프트 자산이고 버전 관리 대상이다.
 
 ## 위임받은 도구가 지킬 것 (Codex 등)
 
@@ -110,10 +122,10 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   주장을 하는 사례가 반복됐다(알려진 함정 참고). 2026-09-08 에는 그 함정을
   적어 둔 쪽이 같은 함정에 빠져 "done 은 래칫을 전진시킨다"는 틀린 설명을
   주석·커밋·PROGRESS 에 세 곳이나 남겼다. **인용하기 전에 실행 경로를 확인한다.**
-- **수치는 저장소에서 뽑고, 재보지 않은 값은 "미실측"이라고 쓴다**(규칙 8).
+- **수치는 저장소에서 뽑고, 재보지 않은 값은 "미실측"이라고 쓴다**.
   근거 위치(파일:줄, PROGRESS 절 번호, 커밋 해시)를 함께 남긴다. 추측이면
   추측이라고 명시한다. 없는 것을 "없다"고 말하는 것도 결과다 — 억지로 찾지 않는다.
-- **테스트를 고쳐서 통과시키지 않는다**(규칙 9). 통과하는 것과 지키는 것은 다르다 —
+- **테스트를 고쳐서 통과시키지 않는다.** 통과하는 것과 지키는 것은 다르다 —
   2026-09-08 에 새로 붙인 테스트 3개가 운영 코드의 `min` 을 부르지 않고 테스트
   안에서 다시 계산해, `min` 을 `max` 로 바꿔도 67개가 전부 통과했다.
   **테스트를 낼 때는 "이 테스트가 무엇을 망가뜨리면 실패하는가"를 같이 답한다.**
@@ -122,15 +134,11 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   남기지 못하고** 죽었다. 조사와 집필을 번갈아 하면 중간에 끊겨도 앞부분이 남는다.
 - **이미 재둔 값을 다시 재지 않는다.** 위임하는 쪽이 실측 자료를 함께 주면
   그것을 먼저 읽고 예산을 본래 일에 쓴다.
-- **유료 해법을 제안하지 않는다**(규칙 1~3). 한도에 걸리면 그 사실을 그대로
-  보고한다 — "업그레이드하면 된다"는 답이 아니다.
-- **민감 모듈**(`verify.py` · `docker_runner.py` · `email_delivery.py`)은 계획을
-  먼저 내고 승인을 받는다(규칙 13). 위임받았다는 사실이 이 절차를 건너뛰는
-  근거가 되지 않는다.
+- **추가 결제를 해법으로 내지 않는다.** 한도에 걸리면 그 사실을 그대로 보고하고 폴백·백오프·처리량 축소를 먼저 본다.
 - **실패를 실패로 보고한다.** 한도 초과·로그인 오류·도구 실패로 일을 못 했으면
   그렇게 말한다. 검토하지 않았는데 검토했다고 쓰지 않는다.
-- 설계 판단과 실측 결과는 `docs/PROGRESS.md` 에 날짜와 함께 남긴다(규칙 14).
-  지시 범위 밖에서 발견한 문제는 **고치지 말고 §8 미해결에 적는다**(규칙 12).
+- 설계 판단과 실측 결과는 `docs/PROGRESS.md` 에 날짜와 함께 남긴다.
+  지시 범위 밖에서 발견한 문제는 위임한 쪽에 보고한다.
 
 ## Git · 커밋
 
@@ -139,24 +147,22 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 브랜치는 `main` 하나다. 기능 브랜치·PR 절차를 쓰지 않는다.
 - 커밋 제목은 한국어 서술형 한 줄이다. Conventional Commits(`feat:` `fix:`)를 쓰지 않는다.
   발견한 사실을 문장으로 적는다 — 예: `arXiv 429 하나가 그날을 통째로 죽였다 — 주석이 말하던 걸 코드가 안 하고 있었다`
-- 모든 코드 변경은 대응 테스트와 함께 커밋한다. pytest 전체 green 이 완료 조건이다(규칙 11).
-- 설계 결정과 실측 결과는 `docs/PROGRESS.md` 에 날짜와 함께 남긴다(규칙 14).
+- 모든 코드 변경은 대응 테스트와 함께 커밋한다. pytest 전체 green 이 완료 조건이다.
+- 설계 결정과 실측 결과는 `docs/PROGRESS.md` 에 날짜와 함께 남긴다.
 - **에이전트는 사용자가 요청하지 않는 한 커밋·push 하지 않는다.**
 
 ## 보안 · 안전
 
-- **모든 것이 무료여야 한다.** 유료 API·유료 티어·결제수단 등록을 도입하지 않고, 해법으로 제안하지도 않는다(규칙 1).
-- 429·한도 초과의 해법은 순서대로 (a) 다음 무료 provider 폴백 (b) retry-after 준수 지수 백오프 (c) 처리량 축소다.
-  "업그레이드"는 해법이 아니다. 무료 한도 수치를 코드에 하드코딩하지 않는다 — 429 응답 처리로만 대응한다(규칙 2·3).
-- 외부 LLM(Gemini 무료 티어)에 **보내도 되는 것**: 논문 텍스트, 제목·초록·저자·venue,
-  연구 관심 분야 키워드(core_topics, domain_hints).
-  **절대 안 보내는 것**: 사내 문서·계획서·회의록·로드맵, 미공개 실측 데이터, 고객·개인 정보, 시크릿.
-  가르는 기준은 "우리가 무엇에 관심 있나"는 나가도 되지만 "우리가 무엇을 하고 있나"는 안 된다는 것이다.
-  판단이 서지 않으면 보내지 않는다(규칙 4).
+CLAUDE.md 규칙 4·5 의 실행 사실이다.
+
+- 외부 논문·PDF·URL·저장소는 비신뢰 입력이다. 재현 실행 컨테이너는 `--network none` · cap-drop ALL · no-new-privileges ·
+  read-only · nobody · pids/메모리/CPU 상한으로 돈다(`docker_runner._SECURITY_FLAGS`). URL 수집·PDF 크기·빌드 단계 네트워크·
+  clone 크기 제한은 보강 중이다(계획 v2 §4).
+- 논문 본문은 `injection_scan` 이 인젝션 의심 패턴을 표시한다(차단은 안 한다). LLM 입력에서 논문은 데이터로만 다룬다.
+- LLM 입력에 넣어도 되는 것: 공개 논문 텍스트·제목·초록·저자·venue, 관심 키워드, 피드백 집계. 넣지 않는 것: 시크릿, 사내 문서.
 - 시크릿을 코드·로그·커밋 메시지에 남기지 않는다. `.env` 와 `data/` 는 `.gitignore` 에 있다.
-- 메일 발송, 외부 네트워크 대량 호출, 되돌리기 어려운 삭제·마이그레이션은 사람 승인 없이 실행하지 않는다.
-- 수치를 만들어내지 않는다. 실측하지 않은 값은 "미실측"이라고 적고, 실패는 실패로 적는다(규칙 8).
-- 테스트를 통과시키려고 테스트를 삭제·완화하거나 `verify.py` 의 grounding 임계값을 낮추지 않는다(규칙 9).
+- 실제 메일 테스트 발송·DB 대량 삭제는 사용자에게 알린 뒤 백업하고 한다.
+- 수치를 만들어내지 않는다. 실측하지 않은 값은 "미실측"이라고 적고, 실패는 실패로 적는다.
 
 ## 알려진 함정
 
@@ -178,10 +184,17 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   그전엔 통째 escape 라 "large language model (LLM) agents"·"vision--language models"·"MVTec-AD" 를
   놓쳤다 — 1.0 계층 키워드가 가장 흔한 표기를 못 잡고 있었다. 넓히고 싶어도 `\W+`·`.*` 로 가지
   않는다(사이에 다른 낱말이 끼면 다른 뜻이다). 정책 버전 `rank-tuple-v1+match-v2`.
+- **용어 후보 필터는 정확 토큰 일치가 아니다**(2026-09-13, §8-108·109). 후보 생성은 `term_hygiene.ngrams`(문장 경계·
+  `reject_reason`·우산어) 하나이고 세 소비자(`trend_report.emerging_terms` · `term_discovery.discover` · `rule_advisor`)가 같이 쓴다(2026-09-14 통일). 판정용 정규화
+  (하이픈 분리·단수화)와 표시 문자열을 가르고, **낱말 목록(any-token)과 담화 구절, 우산어(all-token)를 합치지
+  않는다** — `state` 를 낱말 목록에 넣으면 `state estimation` 이 죽고(실제로 죽어 있었다), 우산어를 any 로 바꾸면
+  `world model` 이 죽는다. 새 금지어는 재생 픽스처에서 실제로 올라온 것만 넣는다(whack-a-mole 금지).
 - **순위는 가중합이 아니라 튜플이다**(2026-09-11). `profile_scoring.rank_key` 가
   `(계층, -날짜, -적중폭, -도메인, 키)` 로 정하고 `priority` 는 설명 필드다. 선정 경로에 합산
   재정렬(MMR·자리 상한·문지기)을 다시 붙이면 계약이 깨진다 — `test_rank_contract.py` 가 감시한다.
-- **규칙을 지키느라 목적을 놓친 적이 두 번 있다**(2026-09-03). 규칙 7 을 판정이 아닌 서술에까지 적용해
-  동향 글을 통째로 뺐고, 규칙 4 가 관심 분야 키워드를 프롬프트에서 지워 "이 흐름이 우리 분야와 어디서
-  만나는가"를 못 쓰게 만들었다. 규칙이 목적을 방해하면 규칙을 고치고 사유와 날짜를 PROGRESS.md 에 남긴다.
 - **거짓 성공을 기록하지 않는다.** TSPulse 재현이 실패했는데 성공으로 기록된 사례가 있다(PROGRESS.md).
+- **arXiv 는 OR 항이 많은 질의를 못 받는다**(2026-09-16 실측). 키워드 47개 질의 하나는 36초 뒤 503, 24개씩 둘은 10·15초에 200. `run_profile_scan` 이
+  `ARXIV_TERMS_PER_QUERY`(20)개씩 갈라 던지고 합친다 — 프로필 키워드를 늘릴 때 이 상한을 없애거나 `_arxiv_query_from_core_topics` 하나로 되돌리지 않는다.
+- **테스트가 운영 DB 를 건드릴 수 있다**(2026-09-16 실측). conftest 가 켠 DDL 플래그 아래서 `storage.DB_PATH` 기본값으로 가는 코드는 운영 DB 에
+  표를 만들고, 스캔 테스트가 실제 `gh` 검색을 불렀다. 새 모듈은 DB 경로를 인자로 받고, digest 를 부르는 테스트는 격리 픽스처(`isolated_store`)를 쓴다.
+  conftest 가 `code_finder.github_search` 를 기본 거부한다 — 검색이 필요한 테스트는 가짜로 덮는다.

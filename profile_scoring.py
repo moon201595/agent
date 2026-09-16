@@ -34,6 +34,7 @@ exclude 매칭은 다른 항목보다 먼저 본다 — 하나라도 걸리면 �
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -222,12 +223,25 @@ def publication_day(published: str | None) -> tuple[int | None, str]:
     return None, "invalid"
 
 
+TIER_BAND = 0.1   # 계층 폭(2026-09-15)
+
+
+def weight_band(weight: float) -> float:
+    """가중치를 0.1 폭 구간의 아래 경계로 묶는다(2026-09-15).
+
+    반응으로 가중치가 자동 조정되면 1.07·0.93 같은 연속값이 생긴다. 계층이 "서로 다른 가중치 값마다 하나"이면
+    계층이 수십 개로 쪼개져 같은 관심 수준의 논문끼리도 최신성이 무시된다. 0.1 폭을 고른 이유: 지금까지 쓰던
+    1.0 · 0.6 · 0.4 · 0.35 가 전부 다른 구간(1.0 · 0.6 · 0.4 · 0.3)에 들어가 기존 순위가 바뀌지 않고, 0.1 미만의
+    작은 조정은 같은 계층 안에서만 움직인다. 부동소수 오차(0.6/0.1 = 5.999…)를 피하려 작은 여유를 더한다."""
+    return math.floor(float(weight) / TIER_BAND + 1e-6) * TIER_BAND
+
+
 def tier_table(profile: dict) -> list[float]:
-    """활성 core_topics 의 유효 가중치(누락은 1.0)를 서로 다른 값만 내림차순으로.
+    """활성 core_topics 의 유효 가중치(누락은 1.0)를 0.1 구간으로 묶은 서로 다른 값만 내림차순으로.
     `core_weights.values()` 가 아니라 core_topics 기준이다 — 가중치 표에만
     남은 죽은 키워드가 계층을 만들면 안 된다."""
     weights = profile.get("core_weights") or {}
-    return sorted({float(weights.get(kw, 1.0)) for kw in profile.get("core_topics", [])},
+    return sorted({round(weight_band(weights.get(kw, 1.0)), 6) for kw in profile.get("core_topics", [])},
                   reverse=True)
 
 
@@ -240,7 +254,7 @@ def tier_rank(profile: dict, core_hits: list[str]) -> int | None:
         return None
     table = tier_table(profile)
     weights = profile.get("core_weights") or {}
-    best = max(float(weights.get(kw, 1.0)) for kw in core_hits)
+    best = max(round(weight_band(weights.get(kw, 1.0)), 6) for kw in core_hits)
     return table.index(best)
 
 
@@ -290,7 +304,7 @@ _POLYSEMY_GUARDS: dict[str, tuple[str, ...]] = {
     # 디지털 트윈 계열. 실측: 적중 67편 중 61편 통과, 6편 거름(광양자 GBS, 성도
     # MRI, 언어모델 Dutch Book, 비디오 LLM 탐침 + 경계선 둘). "physics"·"video"·
     # "action" 은 넣지 않았다 — 거의 모든 초록에 있어 가드가 안 된다.
-    # 검색(S2 씨앗)은 그대로다 — 이건 채점만 거른다.
+    # 검색(S2 시드)은 그대로다 — 이건 채점만 거른다.
     "world model": (
         r"robots?", r"robotics?", r"polic(?:y|ies)", r"embodied", r"agents?", r"agentic",
         r"manipulat\w*", r"vision-language-action", r"vla", r"navigation", r"driving",

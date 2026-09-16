@@ -165,23 +165,28 @@ def main() -> int:
             if run["error_detail"]:
                 out.append(f"  오류 : {str(run['error_detail'])[:140]}")
 
-        prof = con.execute(
-            "SELECT name, last_digest, last_digest_at FROM profiles LIMIT 1").fetchone()
+        # 메일을 받는 프로필(daily)마다 — 분야별 프로필이 생긴 뒤(2026-09-16) `LIMIT 1` 은 첫 프로필만 보여 줬다.
+        profs = con.execute(
+            "SELECT name, last_digest, last_digest_at FROM profiles "
+            "WHERE COALESCE(schedule_frequency, 'daily')='daily' ORDER BY profile_id").fetchall()
         out.append(_section("⑤ 다이제스트"))
-        if prof and prof["last_digest"]:
-            out.append(f"  저장 시각: {_kst(prof['last_digest_at'])} KST")
+        if not any(prof["last_digest"] for prof in profs):
+            out.append("  (저장된 다이제스트 없음)")
+        for prof in profs:
+            if not prof["last_digest"]:
+                out.append(f"  [{prof['name']}] (저장된 다이제스트 없음)")
+                continue
+            out.append(f"  [{prof['name']}] 저장 시각: {_kst(prof['last_digest_at'])} KST")
             digest_lines = (prof["last_digest"] or "").splitlines()
             for i, line in enumerate(digest_lines):
-                if re.match(r"^\d+\. \[", line) or line.startswith("■"):
+                if re.match(r"^\d+\. \S", line) or line.startswith("■"):   # 별점 괄호가 빠진 뒤의 제목 줄(2026-09-15)
                     out.append("  " + line)
                     # "동향 신호" 절은 제목 다음 줄에 들여쓰기로 온다 —
                     # 제목만 찍고 내용을 빠뜨리면 절이 있으나 마나다.
                     if "동향 신호" in line and i + 1 < len(digest_lines):
                         out.append("     " + digest_lines[i + 1].strip())
-                elif line.strip().startswith(("왜 걸렸나", "[검증", "[재현")):
+                elif line.strip().startswith(("핵심 키워드", "도메인 일치", "왜 걸렸나", "[재현")):
                     out.append("     " + line.strip())
-        else:
-            out.append("  (저장된 다이제스트 없음)")
 
         # ── 재현 라벨 분포
         try:

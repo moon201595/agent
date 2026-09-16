@@ -27,6 +27,7 @@ import http_client
 import json
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -220,6 +221,16 @@ def find_links_in_text(text: str) -> list[RepoCandidate]:
     return _drop_prefix_duplicates(candidates)
 
 
+def gh_executable() -> str | None:
+    """`gh` 실행 파일 경로. cron 의 PATH(`/usr/bin:/bin`)에는 `~/.local/bin` 이 없어서 새벽 실행에서만 GitHub 검색이 조용히 실패했다
+    (2026-09-16 실측: "[경고] GitHub 검색 실패: No such file or directory: 'gh'" 가 하루치 로그에 10번). 설치 위치를 직접 찾는다."""
+    found = shutil.which("gh")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "gh"
+    return str(local) if local.exists() else None
+
+
 def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
     """gh CLI(이미 인증됨)로 GitHub 검색. 별점 내림차순 — 부가어 없이 핵심
     키워드만 넣는 게 정확도가 훨씬 높다 (실측: "SWE-agent princeton" 검색은
@@ -235,9 +246,14 @@ def github_search(query: str, limit: int = 5) -> list[RepoCandidate]:
         # 공백 포함 검색어를 인코딩 없이 URL에 그대로 붙이면 gh api 가 걸린 채
         # 30초 타임아웃까지 간다 (실측: "SWE-agent"처럼 한 단어일 때만 성공하고
         # 나머지 다중 단어 검색어는 전부 실패했다). quote() 로 반드시 인코딩한다.
+        gh = gh_executable()
+        if not gh:
+            api_usage.record("github", "error")
+            print("  [경고] GitHub 검색 실패: gh 실행 파일을 찾지 못했다(설치 경로·PATH 확인)")
+            return []
         with _gh_pacer.gate():
             result = subprocess.run(
-                ["gh", "api", f"search/repositories?q={quote(query)}&sort=stars&order=desc"],
+                [gh, "api", f"search/repositories?q={quote(query)}&sort=stars&order=desc"],
                 capture_output=True, text=True, timeout=30, check=True,
             )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:

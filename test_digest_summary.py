@@ -120,7 +120,7 @@ def test_text_digest_carries_verified_summary_not_just_title(db_with_summary_pat
     _seed(db_with_summary_path, "p1")
     text = generate_digest(_result([_paper("p1")]), "우리팀")
     assert "U-Net 분할과 기하 특징으로 PCB 핀 정렬 불량을 판정한다." in text
-    assert "[검증 10/10 통과]" in text          # 라벨은 그대로 남는다
+    assert "[검증" not in text and "10/10" not in text   # 요약이 실린 논문도 수치 검증 표시는 안 싣는다(2026-09-14 사용자 결정)
     assert "arxiv.org/abs/p1" in text          # 링크도
 
 

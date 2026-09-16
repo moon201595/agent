@@ -30,10 +30,13 @@ DEFAULT_EVAL_DB = ROOT / "data" / "evaluation.db"
 
 def owners(scope: str = "operational") -> list[tuple[str, object]]:
     """scope: operational(운영 DB) | evaluation(평가 DB — 다른 파일) | all."""
-    import evaluation, evidence_state, profile_advisor, profile_impact, research_profile, shadow_search, storage
+    import agent_maintenance, code_ladder, db_retention, evaluation, evidence_state, feedback_links, feedback_weights, mail_ledger, profile_advisor, profile_impact, research_profile, shadow_search, storage
     op = [("storage", storage._ddl), ("research_profile", research_profile._ddl),
           ("profile_impact", profile_impact._ddl), ("profile_advisor", profile_advisor._ddl),
-          ("evidence_state", evidence_state._ddl), ("shadow_search", shadow_search._ddl)]
+          ("evidence_state", evidence_state._ddl), ("shadow_search", shadow_search._ddl),
+          ("feedback_links", feedback_links._ddl), ("feedback_weights", feedback_weights._ddl),
+          ("agent_maintenance", agent_maintenance._ddl), ("db_retention", db_retention._ddl),
+          ("mail_ledger", mail_ledger._ddl), ("code_ladder", code_ladder._ddl)]
     ev = [("evaluation", evaluation._ddl)]
     return {"operational": op, "evaluation": ev, "all": op + ev}[scope]
 
@@ -45,7 +48,8 @@ def pending(db: Path, scope: str = "operational") -> dict[str, list[str]]:
 def data_pending(db: Path, scope: str = "operational") -> dict[str, list[str]]:
     """DDL 과 **별개의** 데이터 이관 대기 — DDL 이 됐는데 그 뒤 단계 전에 죽어도 다음 실행이 다시
     발견해야 한다(외부 검토 2026-09-12). 지금은 하나: 키워드 이벤트 bootstrap. 완료 판정은 "이벤트가
-    있다"가 아니라 **현재 (keyword, kind) 집합 == 활성 세대 집합**이다."""
+    있다"가 아니라 **현재 (keyword, kind) 집합 == 활성 세대 집합**이다. 부분 스키마에서는
+    호출부가 DDL 적용 뒤 재점검하도록 이 함수에 들어오지 않게 한다(외부 검토 2026-09-14)."""
     out: dict[str, list[str]] = {}
     if scope != "operational":
         return out
@@ -119,7 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         sqlite3.connect(db).close()
     before = pending(db, args.scope)
     todo = {k: v for k, v in before.items() if v}
-    data_todo = data_pending(db, args.scope) if not fresh else {}
+    if todo and args.scope == "operational":
+        # data_pending 내부의 active_generations는 전체 DDL을 대조한다 — 부분 스키마를
+        # 먼저 점검하면 SchemaOutOfDate가 적용 단계에 도달하지 못하게 한다(외부 검토 2026-09-14).
+        data_todo = {"deferred_until_ddl": ["DDL 적용 뒤 데이터 재점검"]}
+    else:
+        data_todo = data_pending(db, args.scope) if not fresh else {}
     if not todo and not data_todo:
         print("스키마 최신 — 할 일 없음"); return 0
     for name, miss in todo.items():

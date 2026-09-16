@@ -145,7 +145,7 @@ def test_주간_리뷰에_탐색_절이_붙고_관측_없는_기간은_미측정
     assert "반복어: 관측 이력 없음 — 미측정" in report
     _run(db, monkeypatch, DROPPED + HIT)
     report = asyncio.run(trend_report.build(db, profile, None))
-    assert "탐색 풀 4편" in report and "spiking sensor: 4편" in report
+    assert "탐색 풀 4편" in report and "| spiking sensor | 4 |" in report
 
 
 def test_탐색이_실패해도_주간_제안은_대표_논문만으로_간다(tmp_path, monkeypatch):
@@ -175,7 +175,7 @@ def test_최신_관측이_적중이면_탐색_풀에서_빠지고_반대는_들�
 
 
 def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서_뺀다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: 도메인·씨앗이 동률 깨기에 그쳐 범용 용어가 상위를 독식하는 것,
+    """이 테스트가 잡는 것: 도메인·시드가 동률 깨기에 그쳐 범용 용어가 상위를 독식하는 것,
     기존 키워드의 하이픈·복수형 변형이 후보로 나가는 것, 스니펫이 앞 N 자라 용어가 잘리는 것."""
     db = tmp_path / "t.db"
     rp.create_profile(db, "p", "이름", core_topics=["vision-language model", "safety policy"],
@@ -233,32 +233,48 @@ def test_규칙_제안기는_두_차선을_같이_경쟁시키고_문턱을_가�
     assert "spiking sensor" not in [p["term"] for p in out["proposals"]]
 
 
-def test_씨앗_축은_독립_씨앗_둘_이상이어야_하고_단일_씨앗_반복은_잡음_진단으로_간다():
-    """이 테스트가 잡는 것: '씨앗으로 들어왔는가' 비율로 한 씨앗의 관련도 잡음이 후보가 되는 것
-    (실측 foreign language), 단일 씨앗 반복을 어디에도 보고하지 않는 것."""
+def test_시드_축은_독립_시드_둘_이상이어야_하고_단일_시드_반복은_잡음_진단으로_간다():
+    """이 테스트가 잡는 것: '시드로 들어왔는가' 비율로 한 시드의 관련도 잡음이 후보가 되는 것
+    (실측 foreign language), 단일 시드 반복을 어디에도 보고하지 않는 것."""
     profile = {"core_topics": ["core term"], "core_weights": {"core term": 1.0}, "target_domain": [], "exclude": []}
     def paper(key, text, seeds):
         return {"_paper_key": key, "title": text, "abstract": "", "published": "2026-09-10", "day": 1,
                 "domain_hits": [], "s2_seeds": seeds, "retrieval_sources": ["s2"]}
-    pool = ([paper(f"n{i}", "foreign language teachers", ["seedA"]) for i in range(4)]        # 한 씨앗, 4편
-            + [paper(f"b{i}", "spiking sensor arrays", ["seedA" if i % 2 else "seedB"]) for i in range(3)]  # 두 씨앗, 3편
+    pool = ([paper(f"n{i}", "foreign language teachers", ["seedA"]) for i in range(4)]        # 한 시드, 4편
+            + [paper(f"b{i}", "spiking sensor arrays", ["seedA" if i % 2 else "seedB"]) for i in range(3)]  # 두 시드, 3편
             + [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)])
     terms = td.discover(pool, profile)
     by = {t["term"]: t for t in terms}
     assert by["spiking sensor arrays"]["lane"] == "seed" and by["spiking sensor arrays"]["seed_breadth"] == 2
-    assert "foreign language teachers" not in by or by["foreign language teachers"]["lane"] != "seed", "단일 씨앗은 씨앗 축 후보가 아니다"
+    assert "foreign language teachers" not in by or by["foreign language teachers"]["lane"] != "seed", "단일 시드는 시드 축 후보가 아니다"
     noise = td.single_seed_noise(pool, profile, top=20)
     assert noise and all(x["seed"] == "seedA" for x in noise) and "foreign language teachers" in [x["term"] for x in noise]
-    assert not any(x["term"].startswith("spiking") for x in noise), "두 씨앗에서 반복된 말은 잡음 진단이 아니다"
-    # 씨앗 연관 용어가 단일 씨앗뿐이면 씨앗 축은 비고 support 로 채운다 — 단일 씨앗을 '씨앗 축'으로 올리지 않는다
+    assert not any(x["term"].startswith("spiking") for x in noise), "두 시드에서 반복된 말은 잡음 진단이 아니다"
+    # 시드 연관 용어가 단일 시드뿐이면 시드 축은 비고 support 로 채운다 — 단일 시드를 '시드 축'으로 올리지 않는다
     only_single = ([paper(f"n{i}", "foreign language teachers", ["seedA"]) for i in range(4)]
                    + [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)]
                    + [paper(f"h{i}", "other stuff abounds", []) for i in range(4)])
     picked = td.discover(only_single, profile)
-    assert {t["lane"] for t in picked} == {"support"}, "단일 씨앗 용어는 씨앗 축 라벨을 달지 못한다"
+    assert {t["lane"] for t in picked} == {"support"}, "단일 시드 용어는 시드 축 라벨을 달지 못한다"
     text = "\n".join(td.format_discovery(terms, len(pool), None, noise))
-    assert "검색 잡음 진단" in text and "foreign language teachers · 4편 · 씨앗 'seedA'" in text
+    assert "검색 잡음 진단" in text and "| foreign language teachers | 4 | seedA |" in text
     # 축에 후보가 없으면 자리를 버리지 않고 support 로 채우고, 라벨은 실제 축이다
     no_seed = [paper(f"g{i}", "generic thing everywhere", []) for i in range(5)] + [paper(f"h{i}", "other stuff abounds", []) for i in range(4)]
     picked = td.discover(no_seed, profile)
     assert len(picked) == 2 and {t["lane"] for t in picked} == {"support"}
+
+
+def test_단일_시드_대표값은_정렬된_순서를_쓴다(monkeypatch):
+    """2026-09-14 외부 검토. 이 테스트가 잡는 것: 대표 시드를 set 순회에 맡겨 실행마다
+    다른 값을 보고하는 것. 운영 함수가 대표값 선택 헬퍼를 실제로 호출하는지도 확인한다."""
+    class HashOrder(set):
+        def __iter__(self):
+            return iter(("zeta", "alpha"))
+    assert td._representative_seed(HashOrder(("zeta", "alpha"))) == "alpha"
+    profile = {"core_topics": ["core term"], "core_weights": {"core term": 1.0},
+               "target_domain": [], "exclude": []}
+    pool = [{"_paper_key": f"p{i}", "title": "foreign language teachers", "abstract": "",
+             "published": "2026-09-10", "day": 1, "domain_hits": [], "s2_seeds": {"seed"}}
+            for i in range(4)]
+    monkeypatch.setattr(td, "_representative_seed", lambda _seeds: "sorted-representative")
+    assert td.single_seed_noise(pool, profile)[0]["seed"] == "sorted-representative"

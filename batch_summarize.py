@@ -81,6 +81,17 @@ async def _abstract_only_outcome(client, paper: dict | None, title: str,
     return {"arxiv_id": "", "status": "fetch_failed", "detail": why}
 
 
+def arxiv_outage(detail: object) -> bool:
+    """arXiv 쪽 장애(한도 초과·서버 오류·시간 초과)로 실패했나. 논문 문제(404·추출 실패)와 가른다.
+
+    2026-09-14 실측: export API 가 11시간 넘게 429 를 돌려 검색도 본문 수집도 전부 막혔다.
+    이 경우 같은 실행의 다음 논문도 똑같이 막히므로(한 편당 재시도 대기 최대 7.5분) 더 시도할
+    이유가 없다 — 호출부가 이 신호로 남은 논문을 초록 경로로 돌린다. 판정은 오류 문구 대조다
+    (http_client.http_error_to_message 와 httpx 예외 문구)."""
+    text = str(detail or "")
+    return any(k in text for k in ("(429)", "429 ", "HTTP 5", "503", "502", "504", "응답 시간 초과", "Timeout"))
+
+
 def _summary_already_saved(arxiv_id: str) -> bool:
     """이 id 로 저장된 요약이 있는가. 오픈액세스 경로의 재요약을 막는다.
 
@@ -136,7 +147,8 @@ async def _wait_reproduction(arxiv_id: str) -> dict:
 
 
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
-                          paper: dict | None = None, wait_for_repro: bool = False) -> dict:
+                          paper: dict | None = None, wait_for_repro: bool = False,
+                          skip_arxiv_fetch: bool = False) -> dict:
     """paper 를 주면 arXiv 밖 논문(저널 오픈액세스)도 처리한다(2026-09-02).
 
     왜 여기서 분기하나: ⑦ 재현 트리거를 소유한 지점이 이 함수라(CLAUDE.md 5)
@@ -220,11 +232,29 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
                         "detail": "이미 요약 저장됨", "skipped": True}
             cached = True
     else:
+        # **arXiv 논문도 본문을 못 받으면 초록으로 간다**(2026-09-14, 외부 검토 A·D). 초록 갈래가
+        # `arxiv_id` 없는 논문에만 있어서, S2 가 초록까지 준 arXiv 논문이 arXiv 장애 날 각주로
+        # 밀렸다 — 9/14 05:00 메일은 내용 자리 0/6 에 "본문을 받을 수 있는 신규 논문은 없었습니다".
+        # 초록 정리는 summaries 에 안 들어가고 ⑦ 도 안 띄운다(아래 launch_background 앞에서 반환).
+        title = (paper or {}).get("title") or ""
+        doi = (paper or {}).get("doi") or ""
+        if skip_arxiv_fetch:
+            print(f"[{arxiv_id}] arXiv 장애 중 — 본문 수집을 건너뛰고 초록으로")
+            out = await _abstract_only_outcome(
+                client, paper, title, doi, "arXiv 장애로 이번 실행은 본문 수집을 건너뜀")
+            return {**out, "arxiv_outage": True}
         print(f"[{arxiv_id}] fetch_paper...")
         fetch_result = json.loads(await server.fetch_paper(server.FetchPaperInput(arxiv_id=arxiv_id)))
         if "error" in fetch_result:
             print(f"[{arxiv_id}] fetch 실패: {fetch_result}")
-            return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result}
+            outage = arxiv_outage(fetch_result.get("error"))
+            if paper is not None:
+                out = await _abstract_only_outcome(
+                    client, paper, title, doi, f"arXiv 본문 수집 실패: {fetch_result.get('error')}")
+                if out["status"] == "abstract_only":
+                    return {**out, "arxiv_outage": outage}
+            return {"arxiv_id": arxiv_id, "status": "fetch_failed", "detail": fetch_result,
+                    "arxiv_outage": outage}
 
     used_engine, verification, retracted = "stored", {}, None
     if not cached:

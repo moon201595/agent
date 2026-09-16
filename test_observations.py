@@ -96,8 +96,8 @@ def test_탈락_사유_셋을_가르고_적격에는_순위를_남긴다(tmp_pat
     assert by["old"]["rank_pos"] is None
 
 
-def test_씨앗_귀속은_중복_발견에서_합쳐지고_관측에_남는다(monkeypatch, tmp_path):
-    """이 테스트가 잡는 것: S2 가 첫 씨앗만 남기고 뒤 씨앗의 발견을 지우는 것,
+def test_시드_귀속은_중복_발견에서_합쳐지고_관측에_남는다(monkeypatch, tmp_path):
+    """이 테스트가 잡는 것: S2 가 첫 시드만 남기고 뒤 시드의 발견을 지우는 것,
     관측이 s2_seeds 를 안 싣는 것."""
     calls = []
 
@@ -112,7 +112,7 @@ def test_씨앗_귀속은_중복_발견에서_합쳐지고_관측에_남는다(m
         datetime(2026, 9, 10, tzinfo=timezone.utc)))
     assert calls == ["seed one", "seed two"]
     assert len(out["papers"]) == 1
-    assert out["papers"][0]["s2_seeds"] == ["seed one", "seed two"], "두 씨앗이 다 데려왔다는 기록이 남아야 한다"
+    assert out["papers"][0]["s2_seeds"] == ["seed one", "seed two"], "두 시드가 다 데려왔다는 기록이 남아야 한다"
 
     db = tmp_path / "t.db"; _profile(db)
     _run(db, monkeypatch, {0: []}, s2_papers=[out["papers"][0]])
@@ -162,9 +162,9 @@ def _row(key, source, seeds=None, reason=None, rank=None, outcome="reserve", tit
     return p
 
 
-def test_씨앗_수율은_논문_단위이고_고유_기여는_arXiv와_다른_씨앗을_뺀다(tmp_path):
+def test_시드_수율은_논문_단위이고_고유_기여는_arXiv와_다른_시드를_뺀다(tmp_path):
     """이 테스트가 잡는 것: 관측 행 수로 편수를 세는 것(재발견을 두 번 셈),
-    arXiv 에도 있는 논문을 씨앗 고유로 치는 것, 두 씨앗이 함께 데려온 것을 고유로 치는 것."""
+    arXiv 에도 있는 논문을 시드 고유로 치는 것, 두 시드가 함께 데려온 것을 고유로 치는 것."""
     db = _seed_db(tmp_path)
     prof = rp.get_profile(db, "p")
     s1 = rp.begin_scan(db, "p", prof); s2 = rp.begin_scan(db, "p", prof)
@@ -189,7 +189,8 @@ def test_씨앗_수율은_논문_단위이고_고유_기여는_arXiv와_다른_�
 
 def test_스캔_기록이_없으면_미측정이고_있으면_0편과_미시도를_가른다(tmp_path):
     """이 테스트가 잡는 것: 관측 행 없음을 전부 0 으로 채우는 것, 정상 0편·실패·
-    예산 미시도를 한 숫자로 평탄화하는 것."""
+    예산 미시도를 한 숫자로 평탄화하는 것, seed_attempts가 전부 NULL인 실행을 빈 dict로
+    보고하는 것."""
     db = _seed_db(tmp_path)
     prof = rp.get_profile(db, "p")
     start, end = datetime(2026, 1, 1), datetime(2027, 1, 1)
@@ -199,6 +200,12 @@ def test_스캔_기록이_없으면_미측정이고_있으면_0편과_미시도�
     lines = sig.format_signals(None, None, None, None, None)
     assert any("관측 이력 없음" in ln for ln in lines)
     assert not any(("0편" in ln or "0회" in ln) for ln in lines), "미측정을 0 으로 채우면 안 된다"
+
+    incomplete_db = tmp_path / "incomplete.db"
+    _profile(incomplete_db)
+    incomplete_profile = rp.get_profile(incomplete_db, "p")
+    rp.begin_scan(incomplete_db, "p", incomplete_profile)
+    assert sig.seed_attempts(incomplete_db, "p", start, end) is None
 
     s = rp.begin_scan(db, "p", prof)
     rp.finish_scan(db, s, seed_attempts=[
@@ -211,7 +218,10 @@ def test_스캔_기록이_없으면_미측정이고_있으면_0편과_미시도�
     h = sig.scan_health(db, "p", start, end)
     assert h == {"scans": 1, "observed": 1, "failed": 0, "incomplete": 0}
     text = "\n".join(sig.format_signals(sig.seed_yield(db, "p", start, end), None, None, a, h))
-    assert "예산에 밀려 미시도 1" in text and "실패 1" in text and "완료 1" in text
+    # 표 행: 시드 | 시도 | 완료 | 부분 | 실패 | 예산에 밀려 미시도 | 반환 합계 — 셋이 각자 다른 칸에 1
+    assert "| zero | 1 | 1 | 0 | 0 | 0 | 0 |" in text
+    assert "| broken | 1 | 0 | 0 | 1 | 0 | 0 |" in text
+    assert "| starved | 1 | 0 | 0 | 0 | 1 | 0 |" in text
 
 
 def test_필터_분포는_논문_단위이고_사유별_예시를_준다(tmp_path):
@@ -230,8 +240,8 @@ def test_필터_분포는_논문_단위이고_사유별_예시를_준다(tmp_pat
     assert f[rp.FILTER_NO_CORE_HIT]["examples"] == ["Nothing", "Nothing two"]
 
 
-def test_병합은_씨앗과_검색_출처를_합집합으로_남긴다():
-    """이 테스트가 잡는 것: `_merge` 가 첫 값을 지켜 둘째 행의 씨앗·출처를 지우는 것."""
+def test_병합은_시드와_검색_출처를_합집합으로_남긴다():
+    """이 테스트가 잡는 것: `_merge` 가 첫 값을 지켜 둘째 행의 시드·출처를 지우는 것."""
     import selection
     a = {"title": "Same Paper", "arxiv_id": "2609.1", "source": "arxiv"}
     b = {"title": "same paper", "doi": "10.1/x", "source": "s2", "s2_seeds": ["B"]}

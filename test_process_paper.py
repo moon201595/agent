@@ -359,3 +359,52 @@ def test_missing_worker_result_is_not_success(tmp_path, monkeypatch):
     out = asyncio.run(bs._wait_reproduction("2609.00001"))
     assert out["status"] == "unconfirmed"
     assert out["success"] is False
+
+
+# ---------------------------------------------------------------- arXiv 장애 날 (2026-09-14)
+
+
+def _abstract_stub(monkeypatch):
+    monkeypatch.setattr(bs.server, "resolve_openalex_abstract", lambda doi: _text(""))
+    monkeypatch.setattr(bs.engine, "summarize_abstract",
+                        lambda c, t, a: _text("- 무엇을 하려 했는가 : 결함을 검출한다."))
+
+
+def test_arxiv_paper_with_s2_abstract_falls_back_when_arxiv_is_down(stub_pipeline, monkeypatch):
+    """9/14 05:00 실측 회귀 — S2 가 초록까지 준 arXiv 논문이 arXiv 429 로 본문 수집에 실패하자 각주로
+    밀려 내용 자리 0/6 메일이 나갔다. 이 테스트가 잡는 것: arXiv ID 가 있다는 이유로 초록 갈래를
+    못 타는 것, 장애 신호(arxiv_outage)를 안 넘기는 것, 초록 정리에 본문 요약·⑦ 을 태우는 것."""
+    async def rate_limited(params):
+        stub_pipeline["fetch_arxiv"].append(params.arxiv_id)
+        return json.dumps({"error": "arXiv 요청 한도 초과 (429)"})
+
+    monkeypatch.setattr(bs.server, "fetch_paper", rate_limited)
+    _abstract_stub(monkeypatch)
+    out = _run("2609.09643", paper={"arxiv_id": "2609.09643", "title": "T",
+                                    "abstract": "We detect defects on metal surfaces."})
+    assert out["status"] == "abstract_only" and out["arxiv_outage"] is True
+    assert "결함을 검출한다" in out["brief"]
+    assert stub_pipeline["summarize"] == [] and stub_pipeline["repro"] == []
+
+
+def test_skip_arxiv_fetch_goes_straight_to_the_abstract(stub_pipeline, monkeypatch):
+    """차단기가 켜진 뒤에는 arXiv 를 다시 두드리지 않는다 — 한 편당 재시도 대기가 최대 7.5분이다."""
+    _abstract_stub(monkeypatch)
+    out = asyncio.run(bs._process_paper(None, "2609.09591", paper={
+        "arxiv_id": "2609.09591", "title": "T", "abstract": "We detect defects."}, skip_arxiv_fetch=True))
+    assert stub_pipeline["fetch_arxiv"] == []
+    assert out["status"] == "abstract_only" and out["arxiv_outage"] is True
+
+
+def test_missing_paper_is_not_an_arxiv_outage(stub_pipeline, monkeypatch):
+    """404(없는 논문)는 그 논문의 문제다 — 차단기를 켜면 멀쩡한 다음 논문까지 초록으로 떨어진다."""
+    async def not_found(params):
+        return json.dumps({"error": "arXiv에서 대상을 찾을 수 없음 (404)"})
+
+    monkeypatch.setattr(bs.server, "fetch_paper", not_found)
+    _abstract_stub(monkeypatch)
+    out = _run("2609.00001", paper={"arxiv_id": "2609.00001", "title": "T", "abstract": "Abstract."})
+    assert out["status"] == "abstract_only" and out["arxiv_outage"] is False
+    assert bs.arxiv_outage("HTTPStatusError: Client error '429 Unknown Error' for url")
+    assert bs.arxiv_outage("HTTPStatusError: Server error '503 Service Unavailable'")
+    assert not bs.arxiv_outage("arXiv에서 대상을 찾을 수 없음 (404)")
