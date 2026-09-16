@@ -1,7 +1,7 @@
 """⑦단계 — shadow 검색: 검색 집합을 바꾸는 프로필 변경안을 **격리해서** 실측한다.
 
 2026-09-12(PROGRESS §8-100). 가중치·적격 조건 변경은 저장된 관측을 다시 채점하면 평가할
-수 있다(profile_impact). 검색어·씨앗 변경은 **후보 집합 자체가 바뀌므로** 저장된 데이터로는
+수 있다(profile_impact). 검색어·시드 변경은 **후보 집합 자체가 바뀌므로** 저장된 데이터로는
 원리적으로 평가할 수 없다 — 그래서 게이트가 `needs_shadow_search` 로 보류한다(§8-88).
 여기가 그 보류를 푸는 실행부다.
 
@@ -11,12 +11,12 @@ DB 를 안 건드리는 순수 함수라 그대로 부르고, 결과는 `shadow_
 API 호출은 `purpose="shadow"` 로 계측해 일일 예산과 갈라 센다.
 
 두 팔(arm): baseline = 변경 전 프로필, candidate = 변경 후. 같은 창(window)을 같은 시각에
-검색한다. 두 팔이 공유하는 씨앗·질의는 **한 번만** 부른다 — 차이 나는 부분만 비용이다.
-재는 것: 팔별 고유 후보(다른 팔에는 없는 논문)·핵심 적격 수·상위 K 겹침·씨앗별 수율과
+검색한다. 두 팔이 공유하는 시드·질의는 **한 번만** 부른다 — 차이 나는 부분만 비용이다.
+재는 것: 팔별 고유 후보(다른 팔에는 없는 논문)·핵심 적격 수·상위 K 겹침·시드별 수율과
 잡음(제외어 적중)·API 호출·소요. 판정은 안 한다 — 숫자를 남기고 게이트 규칙(미설정으로
 시작)이 뒤에 읽는다.
 
-첫 실험(설계 검토 2026-09-12): S2 씨앗에서 `world model` 제거. 관측된 잡음(random forest ·
+첫 실험(설계 검토 2026-09-12): S2 시드에서 `world model` 제거. 관측된 잡음(random forest ·
 retrospective cohort · world bank)이 사라지고 고유 관련 논문이 거의 안 줄면 제거 확정.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _ddl(con: sqlite3.Connection) -> None:
         " window_end   TEXT NOT NULL,"
         " before_hash  TEXT NOT NULL,"
         " after_hash   TEXT NOT NULL,"
-        " arms_json    TEXT NOT NULL,"   # 팔별 씨앗·질의
+        " arms_json    TEXT NOT NULL,"   # 팔별 시드·질의
         " metrics_json TEXT NOT NULL,"
         " api_calls    INTEGER NOT NULL,"
         " seconds      REAL NOT NULL,"
@@ -95,7 +95,7 @@ def arms_for(before: dict, after: dict) -> dict:
 
 async def _search(client: httpx.AsyncClient, arms: dict, since: datetime, until: datetime,
                   budget_s: float) -> tuple[dict, dict, str, str | None]:
-    """씨앗별·질의별 결과를 한 번씩만 모은다. returns (seed→papers, query→papers, status, partial_reason).
+    """시드별·질의별 결과를 한 번씩만 모은다. returns (seed→papers, query→papers, status, partial_reason).
     SHADOW_BUDGET_S 는 **실험 전체**의 계약이다 — S2 는 남은 시간을 넘기고, arXiv 는 예산을 안 받으므로
     바깥에서 `asyncio.wait_for(left)` 로 자른다(외부 검토 2026-09-12: 선언만 있고 강제가 없었다)."""
     deadline = time.monotonic() + budget_s
@@ -238,7 +238,7 @@ def format_shadow(out: dict) -> list[str]:
     lines = [f"shadow {out['shadow_id']} · {out['status']}" + (f"({out['partial_reason']})" if out.get('partial_reason') else "")
              + (f" · 오류 {out['error']}" if out.get('error') else "")
              + f" · 창 {m['window_days']}일 · API {out['api_calls']}회 · {out['seconds']}초 · 정책 {out['policy_version']}",
-             f"  baseline 씨앗 {a['baseline']['seeds']} → candidate 씨앗 {a['candidate']['seeds']}"
+             f"  baseline 시드 {a['baseline']['seeds']} → candidate 시드 {a['candidate']['seeds']}"
              + (f" (제거 {a['seeds_removed']})" if a['seeds_removed'] else "") + (f" (추가 {a['seeds_added']})" if a['seeds_added'] else ""),
              f"  반환 {m['baseline']['returned']} → {m['candidate']['returned']} · 적격 {d['eligible_before']} → {d['eligible_after']}"
              f" (잃음 {len(d['eligible_lost'])} · 얻음 {len(d['eligible_gained'])}) · 잡음 {d['noise_before']} → {d['noise_after']}",
@@ -247,7 +247,7 @@ def format_shadow(out: dict) -> list[str]:
     for arm in ("baseline", "candidate"):
         for s, v in m[arm]["per_seed"].items():
             if arm == "candidate" and s in m["baseline"]["per_seed"]:
-                continue   # 공유 씨앗은 baseline 줄로 충분
+                continue   # 공유 시드는 baseline 줄로 충분
             lines.append(f"  [{arm}] {s}: 반환 {v['returned']} · 적격 {v['eligible']} · 잡음 {v['noise']}")
     if d["eligible_lost"]:
         lines.append(f"  잃은 적격 논문: {', '.join(d['eligible_lost'][:8])}" + (" …" if len(d["eligible_lost"]) > 8 else ""))

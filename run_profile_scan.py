@@ -52,6 +52,56 @@ def _arxiv_query_from_core_topics(core_topics: list[str]) -> str:
     return " OR ".join(terms)
 
 
+# arXiv 질의 하나에 넣는 키워드 상한. 2026-09-16 실측: 키워드 47개를 OR 로 묶은 질의 하나는 응답에 36초가 걸리고 503·500·
+# 타임아웃으로 죽는데, 같은 키워드를 24·23개로 갈라 두 번 던지면 각각 10초·15초에 200 이었다. arXiv 는 OR 항 수에 비례해 느려지고
+# 30여 초에서 서버가 포기한다. 그날 우리팀 프로필의 arXiv 검색이 통째로 실패해 S2 만으로 갔다. 환경변수로 덮을 수 있다.
+ARXIV_TERMS_PER_QUERY = int(os.environ.get("ARXIV_TERMS_PER_QUERY", 20))
+
+
+def _arxiv_queries_from_core_topics(core_topics: list[str], per_query: int = ARXIV_TERMS_PER_QUERY) -> list[str]:
+    """core_topics 를 per_query 개 이하씩 **고르게** 갈라 질의 목록으로. 20개 이하면 종전처럼 하나다.
+    고르게 가르는 이유: 47개를 20·20·7 로 자르면 앞 둘은 여전히 무겁다 — 16·16·15 가 낫다."""
+    topics = [t for t in core_topics if t and t.strip()]
+    if not topics:
+        return []
+    n_chunks = max(1, -(-len(topics) // max(1, per_query)))
+    size = -(-len(topics) // n_chunks)
+    return [_arxiv_query_from_core_topics(topics[i:i + size]) for i in range(0, len(topics), size)]
+
+
+async def _search_arxiv_chunked(client: httpx.AsyncClient, queries: list[str], since: datetime,
+                                page_size: int, max_pages: int) -> dict:
+    """질의 여러 개를 차례로 던져 하나의 결과로 합친다. 같은 논문이 두 질의에 걸리면 한 번만 남긴다.
+    status: 전부 done 이면 done, 하나라도 partial 이거나 실패했으면 partial(받은 것은 살리고 커서는 window_from 에 남아 내일 다시 본다),
+    전부 실패하면 예외 — 호출부의 기존 'arXiv 실패 → S2 만으로' 경로를 그대로 탄다."""
+    papers: list[dict] = []
+    statuses: list[str] = []
+    untils: list[str] = []
+    errors: list[str] = []
+    for q in queries:
+        try:
+            r = await find_new_papers.find_new_papers_since(client, q, since, page_size=page_size, max_pages=max_pages)
+        except Exception as e:  # noqa: BLE001 — 질의 하나가 죽어도 나머지는 던진다
+            errors.append(f"{type(e).__name__}: {str(e).splitlines()[0][:120]}")
+            continue
+        papers += r["papers"]
+        statuses.append(r["status"])
+        untils.append(r["until"])
+    if not statuses:
+        raise RuntimeError(f"arXiv 질의 {len(queries)}개 전부 실패 — " + " / ".join(errors))
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for p in papers:
+        key = p.get("arxiv_id") or (p.get("title") or "").strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    status = "done" if not errors and all(s == "done" for s in statuses) else "partial"
+    return {"papers": uniq, "status": status, "until": min(untils), "query": " ‖ ".join(queries),
+            "chunks": len(queries), "chunk_errors": errors}
+
+
 # Deep Layer(④⑤⑦)에 쓸 수 있는 벽시계 예산(초). 넘으면 남은 논문을 내일로
 # 미룬다 — §8-14 의 처리다.
 #
@@ -320,9 +370,9 @@ async def scan_profile(
     # **지문은 소스마다 다르다**(2026-09-09, §8-79). 각 소스는 자기가 실제로
     # 던진 질의로만 과거를 봤으므로, "질의가 바뀌었나"도 그 질의 기준으로
     # 물어야 한다. arXiv 는 core_topics 전부를 OR 로 묶으니 core 지문이고,
-    # S2 는 씨앗만 던지니 씨앗 지문이다. 하나로 합쳐 두면 **씨앗을 바꿔도
-    # S2 커서가 리셋되지 않아 새 씨앗이 과거를 영영 못 본다** — §8-21 이
-    # core 에서 막았던 사고가 씨앗에서 그대로 재발한다.
+    # S2 는 시드만 던지니 시드 지문이다. 하나로 합쳐 두면 **시드를 바꿔도
+    # S2 커서가 리셋되지 않아 새 시드가 과거를 영영 못 본다** — §8-21 이
+    # core 에서 막았던 사고가 시드에서 그대로 재발한다.
     signature = research_profile.topic_signature(profile["core_topics"])
 
     # **두 소스 중 더 뒤처진 쪽에 창을 맞춘다**(2026-09-08, §8-76).
@@ -359,7 +409,8 @@ async def scan_profile(
         research_profile.next_since(db_path, profile_id, src, signature=signatures[src])
         for src in sources
     )
-    query = _arxiv_query_from_core_topics(profile["core_topics"])
+    queries = _arxiv_queries_from_core_topics(profile["core_topics"])
+    query = " ‖ ".join(queries)          # search_runs.query 에 남기는 표기 — 질의가 여러 개면 ‖ 로 잇는다
 
     # **한 소스가 죽어도 그날을 통째로 버리지 않는다**(2026-09-06 에 실제로
     # 그렇게 만들었다). 바로 아래 S2 절의 주석이 원래부터 그렇게 적혀 있었는데
@@ -375,9 +426,7 @@ async def scan_profile(
     until = datetime.now(timezone.utc)
     arxiv_error: str | None = None
     try:
-        result = await find_new_papers.find_new_papers_since(
-            client, query, since, page_size=page_size, max_pages=max_pages,
-        )
+        result = await _search_arxiv_chunked(client, queries, since, page_size, max_pages)
     except Exception as e:  # noqa: BLE001 — 실패도 search_runs 에 남기고 계속 간다
         arxiv_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         arxiv_run_id = research_profile.record_run(
@@ -392,7 +441,11 @@ async def scan_profile(
         arxiv_run_id = research_profile.record_run(
             db_path, profile_id, "arxiv", result["query"], since, until,
             arxiv_status, len(arxiv_papers), signature=signature,
+            error_detail=(" / ".join(result["chunk_errors"]) or None),
         )
+        if result["chunks"] > 1:
+            print(f"  [arXiv] 질의 {result['chunks']}개(키워드 {len(profile['core_topics'])}개) → {len(arxiv_papers)}편 ({arxiv_status})"
+                  + (f" — 실패한 질의 {len(result['chunk_errors'])}개: " + " / ".join(result["chunk_errors"]) if result["chunk_errors"] else ""))
 
     # ── 두 번째 소스: Semantic Scholar (2026-09-02)
     #
@@ -562,7 +615,7 @@ async def scan_profile(
         print(f"  [후보] 기록 실패(무시): {type(e).__name__}: {e}")
 
     # **실행별 관측**(2026-09-11, B단계 §6.1). 위 개체 기록은 다음 실행이
-    # 덮어쓰지만 이건 쌓인다. 순위·탈락 사유·씨앗 귀속을 그 스캔의 정책
+    # 덮어쓰지만 이건 쌓인다. 순위·탈락 사유·시드 귀속을 그 스캔의 정책
     # 버전과 함께 남겨, 정책을 바꾼 뒤에도 "당시 선택"을 재생할 수 있다.
     # 개체 기록과 **다른 try** 다 — 하나가 실패해도 다른 하나는 남아야 하고,
     # 실패했으면 scan_runs 에 그렇게 남는다(집계가 "0편"과 "저장 실패"를 가른다).
@@ -620,6 +673,9 @@ async def scan_profile(
     return {
         "profile_id": profile_id, "since": since.isoformat(), "until": until.isoformat(),
         "run_status": arxiv_status, "candidates_found": len(fresh),
+        # 실패 사유를 배달까지 넘긴다(2026-09-14, 외부 검토 A·D) — 본문 수집의 장애 차단과
+        # 메일의 "검색 장애" 표시가 이 값을 읽는다. 성공이면 None.
+        "arxiv_error": arxiv_error,
         "title_only_papers": listed["papers"],
         "title_only_count": listed["scored_count"],
         # **"이미 보낸 논문" 수는 배달 기록으로 센다**(2026-09-08, §8-77 후속).
@@ -706,6 +762,24 @@ async def scan_and_digest(
     run_scope = api_usage.Scope()
     run_scope.__enter__()
 
+    # 0. 어제까지 눌린 반응을 먼저 가져오고, 오늘 스캔 전에 가중치에 반영한다(2026-09-15, 계획 v2 §3).
+    # 반영이 스캔보다 먼저여야 오늘 순위가 어제 반응을 따른다. KST 하루 한 번(feedback_weight_runs)이라 하루 두 번 스캔해도
+    # 두 번 오르지 않는다. 둘 다 실패해도 오늘 스캔·메일은 그대로 간다(CLAUDE.md 규칙 6).
+    try:
+        import feedback_links
+        counts = await feedback_links.sync(db_path, client)
+        if counts:
+            print("  [반응] 수집: " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    except Exception as e:  # noqa: BLE001
+        print(f"  [반응] 수집 실패(무시): {type(e).__name__}")
+    try:
+        import feedback_weights
+        moved = feedback_weights.update_profile(db_path, profile_id)
+        if moved.get("changes"):
+            print("  [반응] 가중치: " + ", ".join(f"{c['keyword']} {c['before']:g}→{c['after']:g}" for c in moved["changes"]))
+    except Exception as e:  # noqa: BLE001
+        print(f"  [반응] 가중치 반영 실패(무시): {type(e).__name__}")
+
     result = await scan_profile(db_path, profile_id, client, page_size, max_pages)
     search_calls = run_scope.total()
     print(f"  [계측] ③ 검색 단계: {run_scope.format_summary()}")
@@ -733,6 +807,13 @@ async def scan_and_digest(
     queue = list(result["papers"]) + list(result.get("reserve") or [])
     content: list[dict] = []
     demoted: list[dict] = []
+    # **arXiv 장애 차단기**(2026-09-14, 외부 검토 A). 본문 수집의 arXiv 재시도(429 대기 최대 7.5분)가
+    # 이 예산과 따로 돌아, 막힌 날에는 상위 몇 편이 40분을 다 먹고 나머지 127편을 내일로 밀었다(이틀
+    # 연속). 검색 단계에서 이미 arXiv 가 장애로 실패했거나, 본문 수집이 장애로 한 번 실패하면
+    # 이번 실행의 남은 arXiv 논문은 본문 수집을 건너뛰고 초록 정리로 간다. 순위 순서는 그대로다.
+    arxiv_blocked = bool(result.get("arxiv_error")) and batch_summarize.arxiv_outage(result.get("arxiv_error"))
+    if arxiv_blocked:
+        print("  [arXiv] 검색 단계에서 장애 확인 — 이번 실행은 arXiv 본문 수집을 건너뛰고 초록으로 정리한다")
     for paper in queue:
         if len(content) >= max_items:
             demoted.append(paper)
@@ -763,18 +844,33 @@ async def scan_and_digest(
         paper_scope = api_usage.Scope()
         try:
             with paper_scope:
+                # 차단기가 켜졌을 때만 인자를 넘긴다 — 평소 호출 모양은 그대로 둔다.
                 outcome = await batch_summarize._process_paper(
-                    client, arxiv_id or "", paper=paper, wait_for_repro=True)
+                    client, arxiv_id or "", paper=paper, wait_for_repro=True,
+                    **({"skip_arxiv_fetch": True} if arxiv_blocked else {}))
         except Exception as e:  # noqa: BLE001 — 한 편의 실패가 나머지를 막으면 안 됨
             paper["deep_status"] = f"failed: {str(e).splitlines()[0][:200]}"
             paper["api_calls"] = paper_scope.snapshot()
             print(f"  [계측] {arxiv_id} (실패): {paper_scope.format_summary()}")
             demoted.append(paper)
             continue
+        if outcome.get("arxiv_outage") and not arxiv_blocked:
+            arxiv_blocked = True
+            result["arxiv_fetch_blocked"] = True
+            print("  [arXiv] 본문 수집이 장애로 실패 — 남은 arXiv 논문은 초록으로 정리한다")
         # ⑦ 대기를 요약 API 예산으로 세면 뒤 논문이 불필요하게 내일로 밀린다.
         deep_started += outcome.get("repro_wait_seconds", 0.0)
         if outcome.get("reproduction") is not None:
             paper["repro_outcome"] = outcome["reproduction"]
+            # ⑦ 사다리(2026-09-16): 재현이 끝난 뒤 코드 단계를 정한다 — 공식이 없으면 같은 과제의 참고 구현이라도 찾는다.
+            # GitHub 검색 상한(분당 30)이 있어 논문당 최대 2회, 한 달 캐시. 실패해도 메일은 나간다.
+            try:
+                import code_ladder
+                hits = [_primary_keyword(paper)] + [h for h in (paper.get("_score") or {}).get("core_hits") or []
+                                                   if h != _primary_keyword(paper)]
+                code_ladder.resolve(outcome.get("arxiv_id") or arxiv_id or "", [h for h in hits if h], db=db_path)
+            except Exception as error:  # noqa: BLE001
+                print(f"  [코드 사다리] {arxiv_id} 실패(무시): {type(error).__name__}")
         # fetch 실패는 예외가 아니라 status="fetch_failed" dict로 온다(재확인함)
         if outcome.get("status") == "done":
             paper["deep_status"] = "skipped: 이미 요약 저장됨" if cached_summary or outcome.get("skipped") else "ok"
@@ -869,8 +965,19 @@ async def scan_and_digest(
             content_ids = [p.get("arxiv_id") for p in result["papers"] if p.get("arxiv_id")]
             excerpts = trend_report.result_excerpts(db_path, content_ids)
             evidence = trend_report.source_evidence(db_path, excerpts)
+            import sota_claims
             for paper in shown:
                 paper["_evidence"] = evidence.get(paper.get("arxiv_id"), [])
+                # SOTA 주장(2026-09-16): 논문이 스스로 말한 문장만, "논문 자체 주장·미검증" 으로. 서술 근거(S번호)로도 넘겨
+                # 서술이 자연스럽게 언급할 수 있게 한다 — 억지로 넣게 하지는 않는다(프롬프트 규칙).
+                try:
+                    claims, _src = sota_claims.claims_for(db_path, paper.get("arxiv_id"), paper.get("abstract"))
+                except Exception:  # noqa: BLE001
+                    claims = []
+                if claims:
+                    paper["_sota_claims"] = claims
+                    known = {e["id"] for e in paper["_evidence"]}
+                    paper["_evidence"] = paper["_evidence"] + [e for e in sota_claims.evidence_packets(claims) if e["id"] not in known]
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts)
             if story:
                 text, ungrounded, enriched = story
@@ -967,6 +1074,19 @@ def delivery_reached_someone(message: str | None) -> bool:
     return bool(message) and str(message).startswith(DELIVERY_SENT_PREFIX)
 
 
+def field_label(profile_name: str) -> str:
+    """메일 제목 괄호에 넣을 분야 이름 — 프로필 이름에서 ' — ' 앞부분. 설명을 길게 붙인 이름("우리팀 — 자율제조·…")은
+    제목이 휴대폰에서 잘리므로 앞 이름만 쓴다."""
+    return (profile_name or "").split(" — ")[0].strip() or (profile_name or "")
+
+
+def mail_subject(profile_name: str, when: datetime | None = None) -> str:
+    """제목은 읽는 사람 기준이다(2026-09-11). 2026-09-16 사용자 요청으로 분야를 **항상** 붙인다 — 분야별 프로필(로봇·에이전트·비전)을
+    한 사람이 함께 받게 되면서 제목만 보고 어느 분야 메일인지 알아야 한다. 날짜는 받는 사람(KST) 기준(2026-09-14)."""
+    day = (when or datetime.now(READER_TZ)).astimezone(READER_TZ).strftime("%Y-%m-%d")
+    return f"[연구 동향 브리핑({field_label(profile_name)})] {day}"
+
+
 def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> str:
     """다이제스트를 그 프로필의 수신자에게 보낸다. returns 사람이 읽을 상태 한 줄.
 
@@ -990,29 +1110,63 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
     failures = []
     sent = 0
     content_keys = {research_profile.paper_key(p) for p in result.get("papers") or []}
+    # 반응 버튼(2026-09-15): 이번 메일 회차 하나에 수신자마다 다른 서명 링크를 만든다. 설정(.env 의
+    # FEEDBACK_WEBAPP_URL·FEEDBACK_HMAC_SECRET)이 없으면 빈 dict 라 메일은 예전 그대로다.
+    import feedback_links
+    issue_id = feedback_links.new_issue_id(profile_id)
+    # 주간 관리 에이전트 보고(2026-09-15): 금요일 실행 뒤 첫 메일에 한 번 싣는다. 못 읽어도 메일은 나간다(규칙 6).
+    agent_lines: list[str] = []
+    agent_keys: list[tuple[str, str]] = []
+    try:
+        import agent_maintenance
+        agent_lines, agent_keys = agent_maintenance.pending_report(db_path, profile_id)
+    except Exception as error:  # noqa: BLE001
+        print(f"  [에이전트] 보고 조회 실패(보고 없이 발송): {type(error).__name__}")
     # 수신자 하나가 거절돼도 다른 수신자의 기준 상태를 함께 전진시키면 안 된다.
     # 기존 SMTP 함수에 한 명씩 넘기므로 부분 거절도 그 수신자의 실패로 드러난다.
+    subject = mail_subject(name)
     for recipient in recipients:
         try:
             view = dict(result)
             states = result.get("_evidence_states")
             # 이전 수신 이력을 다음 메일 내용으로 다시 조립하지 않는다.
             view.pop("state_updates", None)
+            if agent_lines:
+                view["agent_report"] = agent_lines
+            try:
+                links = feedback_links.issue_links(db_path, profile_id, issue_id, recipient, result.get("papers") or [])
+            except Exception as error:  # noqa: BLE001 — 버튼을 못 만들어도 메일은 나가야 한다(CLAUDE.md 규칙 6)
+                print(f"  [반응] 링크 생성 실패(버튼 없이 발송): {type(error).__name__}")
+                links = {}
+            if links:
+                view["papers"] = [dict(p, _feedback_links=links.get(research_profile.paper_key(p)))
+                                  for p in result.get("papers") or []]
             text = digest.generate_digest(view, name)
             digest_html = digest.generate_digest_html(view, name)
-            # 제목도 읽는 사람 기준(2026-09-11). 프로필 이름은 프로필이 둘 이상일 때만
-            # 붙인다 — 하나뿐이면 "우리팀 — …" 은 정보가 아니라 소음이다.
-            subject = f"[연구 동향 브리핑] {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-            if len(research_profile.list_profiles(db_path)) > 1:
-                subject += f" · {name}"
             email_delivery.send_digest_email(text, subject, [recipient], digest_html)
             sent += 1
+            if links:
+                feedback_links.mark_delivered(db_path, issue_id, recipient)
             if states is not None:
                 visible = content_keys
                 evidence_state.acknowledge(db_path, profile_id, recipient,
                     [i for i in states if i["paper_key"] in visible])
         except Exception as error:
             failures.append(str(error).splitlines()[0][:200])
+    # 회차 기록(2026-09-16, 운영 화면용) — 실패한 회차도 남긴다. 기록 실패는 발송 결과를 바꾸지 않는다.
+    try:
+        import mail_ledger
+        mail_ledger.record_issue(db_path, issue_id, profile_id, subject, result.get("papers") or [],
+                                 len(recipients), sent)
+    except Exception as error:  # noqa: BLE001
+        print(f"  [발송 기록] 실패(무시): {type(error).__name__}")
+    # 모든 수신자에게 나갔을 때만 '실림'으로 표시한다 — 한 명이라도 실패하면 다음 메일에 다시 싣는다(받은 사람은 한 번 더 보지만
+    # 못 받은 사람이 영영 못 보는 것보다 낫다. 외부 검토 2026-09-15). 계속 거절되는 주소는 REPORT_TTL(14일)이 반복을 끊는다.
+    if agent_keys and sent == len(recipients):
+        try:
+            agent_maintenance.mark_reported(db_path, agent_keys)
+        except Exception as error:  # noqa: BLE001 — 표시 실패는 다음 메일에 한 번 더 실릴 뿐이다
+            print(f"  [에이전트] 보고 표시 실패: {type(error).__name__}")
     if failures:
         return f"{DELIVERY_FAILED_PREFIX}: {sent}/{len(recipients)}명 전송 수락 · " + " / ".join(failures)
     return f"{DELIVERY_SENT_PREFIX} → {sent}명"
@@ -1035,11 +1189,13 @@ async def scan_all_profiles(
     returns {profile_id: {"status": "ok"|"error", ...}} — cron 로그에서
     무슨 일이 있었는지 한눈에 보이는 형태."""
     summary: dict[str, dict] = {}
-    for profile_id in research_profile.list_profiles(db_path):
+    # 매일 도는 프로필만(2026-09-15) — schedule_frequency='manual' 프로필은 cron 이 건드리지 않는다.
+    for profile_id in research_profile.list_profiles(db_path, schedule="daily"):
         try:
             result, digest_text = await scan_and_digest(db_path, profile_id, client, max_pages=max_pages)
             entry = {
                 "status": "ok", "run_status": result["run_status"],
+                "s2_status": result.get("s2_status"),
                 "candidates_found": result["candidates_found"],
                 "scored_count": result["scored_count"],
             }
@@ -1082,6 +1238,17 @@ async def scan_all_profiles(
     return summary
 
 
+def _exit_message(summary: dict, code: int) -> str:
+    """종료코드와 함께 stderr 에 남기는 한 줄. 2(저하)는 어느 프로필의 어느 소스가 죽었는지를 적는다 — 그전엔 1 의 문구를 그대로 타서
+    "등록된 프로필 없음 — 종료코드 2" 로 찍혔다(2026-09-16 실측, 실제로는 arXiv 하나만 죽은 날). 로그만 보는 사람이 엉뚱한 원인을 쫓는다."""
+    if code == 2:
+        degraded = [f"{pid}(arXiv {e.get('run_status')} · S2 {e.get('s2_status')})" for pid, e in summary.items()
+                    if e.get("run_status") == "failed" or e.get("s2_status") == "failed"]
+        return f"[저하] 발송은 됐지만 검색 소스가 실패한 프로필: {', '.join(degraded) or '(불명)'} — 종료코드 2"
+    failed = [pid for pid, e in summary.items() if e.get("status") != "ok" or delivery_failed(e.get("delivery"))]
+    return f"[실패] {', '.join(failed) or '등록된 프로필 없음'} — 종료코드 {code}"
+
+
 def _exit_code(summary: dict) -> int:
     """cron 이 읽을 종료코드. 0 = 그날 할 일을 다 했다.
 
@@ -1095,15 +1262,22 @@ def _exit_code(summary: dict) -> int:
     그리고 **--all 인데 프로필이 하나도 없는 것** — cron 이 매일 도는데
     아무 일도 안 했다면 그건 조용한 날이 아니라 설정이 비어 있는 것이다.
     수신자가 없는 프로필은 실패가 아니다(의도된 설정 상태).
+
+    **2 = 발송은 했지만 검색 소스 하나가 실패했다**(2026-09-14, 외부 검토 A). arXiv 가 11시간 넘게
+    429 였던 날도 S2 만으로 메일이 나가 종료코드 0 이었다 — 바깥에서는 장애가 성공으로 보였다.
+    한 소스 장애로 메일을 멈추지 않는 설계는 그대로 두고, 신호만 0 과 가른다(1 보다 약한 실패).
     """
     if not summary:
         return 1
+    degraded = False
     for entry in summary.values():
         if entry.get("status") != "ok":
             return 1
         if delivery_failed(entry.get("delivery")):
             return 1
-    return 0
+        if entry.get("run_status") == "failed" or entry.get("s2_status") == "failed":
+            degraded = True
+    return 2 if degraded else 0
 
 
 def main() -> int:
@@ -1134,10 +1308,7 @@ def main() -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         code = _exit_code(summary)
         if code:
-            failed = [pid for pid, e in summary.items()
-                      if e.get("status") != "ok" or delivery_failed(e.get("delivery"))]
-            print(f"[실패] {', '.join(failed) or '등록된 프로필 없음'} — "
-                  f"종료코드 {code}", file=sys.stderr)
+            print(_exit_message(summary, code), file=sys.stderr)
         return code
 
     async def _run() -> tuple[dict, str]:

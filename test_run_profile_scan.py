@@ -202,6 +202,20 @@ def test_scan_all_profiles_isolates_failure_of_one_profile(tmp_path, monkeypatch
     assert rp.get_latest_digest(db_path, "broken") is None
 
 
+def test_cron_scans_only_daily_profiles(tmp_path, monkeypatch):
+    """2026-09-15: 분야별 프로필(로봇·에이전트·비전)은 만들되 새벽 cron 에 넣지 않는다.
+    이 테스트가 잡는 것: manual 프로필까지 매일 스캔해 검색·요약 호출이 프로필 수만큼 늘어나는 것."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)                                         # daily(기본값)
+    rp.create_profile(db_path, "team_robot", "로봇", core_topics=["robot learning"], schedule_frequency="manual")
+    _mock_empty_arxiv(monkeypatch)
+    summary = asyncio.run(rps.scan_all_profiles(db_path, None, max_pages=2))
+    assert set(summary) == {"team_ai"}
+    assert rp.list_profiles(db_path) == ["team_ai", "team_robot"]
+    assert rp.list_profiles(db_path, schedule="daily") == ["team_ai"]
+    assert rp.list_profiles(db_path, schedule="manual") == ["team_robot"]
+
+
 # ---------------------------------------------------------------- M1: Deep Layer 연결
 
 
@@ -650,6 +664,70 @@ def test_arxiv_failure_does_not_kill_the_day(tmp_path, monkeypatch):
     assert [p["title"] for p in result["papers"]] == ["An agent journal"]
     assert result["run_status"] == "failed"       # arXiv 가 죽은 건 숨기지 않는다
     assert result["s2_count"] == 1
+
+
+def test_arxiv_outage_breaker_sends_the_rest_to_the_abstract_path(tmp_path, monkeypatch):
+    """2026-09-14 실측: 본문 수집의 arXiv 429 재시도가 논문마다 최대 7.5분씩 40분 예산을 먹어 127편이
+    밀렸다. 이 테스트가 잡는 것: 첫 장애 뒤에도 다음 논문이 arXiv 를 다시 두드리는 것(차단기 없음),
+    순위 순서가 바뀌는 것."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+    calls = []
+
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False,
+                           skip_arxiv_fetch=False):
+        calls.append((arxiv_id, skip_arxiv_fetch))
+        if not skip_arxiv_fetch:
+            return {"arxiv_id": arxiv_id, "status": "fetch_failed", "arxiv_outage": True,
+                    "detail": {"error": "arXiv 요청 한도 초과 (429)"}}
+        return {"arxiv_id": "", "status": "abstract_only", "brief": "- 정리", "arxiv_outage": True}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    result, _ = _run_scan_and_digest(db_path)
+    assert calls[:3] == [("p1", False), ("p2", True), ("p3", True)]
+    assert [p["deep_status"] for p in result["papers"]] == ["abstract_only", "abstract_only"]
+
+
+def test_arxiv_search_outage_skips_fetch_from_the_first_paper(tmp_path, monkeypatch):
+    """검색 단계에서 이미 arXiv 가 429 로 실패했으면 본문 수집을 한 번도 시도하지 않는다.
+    이 테스트가 잡는 것: 검색 실패 사유를 배달 경로로 넘기지 않는 것(arxiv_error)."""
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("Client error '429 Unknown Error' for url 'https://export.arxiv.org/api/query'")
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+
+    async def s2_ok(client, keywords, since, until, *a, **kw):
+        return {"papers": [_journal_paper("10.1/j1", "An agent journal")], "status": "done",
+                "query": "S2 keywords×1"}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+    seen = []
+
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False,
+                           skip_arxiv_fetch=False):
+        seen.append(skip_arxiv_fetch)
+        return {"arxiv_id": "", "status": "abstract_only", "brief": "- 정리"}
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    result, _ = _run_scan_and_digest(db_path)
+    assert result["arxiv_error"] and "429" in result["arxiv_error"]
+    assert seen and all(seen)
+
+
+def test_exit_code_marks_a_delivered_day_with_a_failed_source_as_degraded():
+    """2026-09-14: arXiv 429 로 검색이 실패한 날도 S2 로 메일이 나가 종료코드 0 이었다.
+    이 테스트가 잡는 것: 소스 장애를 0 으로 숨기는 것, 발송 실패(1)보다 약한 신호가 1 로 뭉개지는 것."""
+    ok = {"status": "ok", "delivery": "발송 완료 → 2명", "run_status": "done", "s2_status": "done"}
+    assert rps._exit_code({"p": ok}) == 0
+    assert rps._exit_code({"p": dict(ok, run_status="failed")}) == 2
+    assert rps._exit_code({"p": dict(ok, s2_status="failed")}) == 2
+    assert rps._exit_code({"p": dict(ok, run_status="failed", delivery="발송 실패: SMTP")}) == 1
 
 
 def test_s2_failure_does_not_kill_the_day(tmp_path, monkeypatch):
@@ -1774,11 +1852,11 @@ def test_no_recipient_does_not_consume(tmp_path, monkeypatch):
     assert calls == [], "메일이 안 갔는데 소비 처리했다"
 
 
-def test_s2_실행기록이_씨앗_지문을_남긴다(tmp_path, monkeypatch):
+def test_s2_실행기록이_시드_지문을_남긴다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: S2 에 core 지문을 넘기는 것(운영 경로를 실제로 부른다).
 
-    씨앗만 바꿨는데 S2 커서가 리셋되지 않으면 **새 씨앗이 과거를 영영 못
-    본다** — §8-21 이 core 에서 막았던 사고가 씨앗에서 재발한다.
+    시드만 바꿨는데 S2 커서가 리셋되지 않으면 **새 시드가 과거를 영영 못
+    본다** — §8-21 이 core 에서 막았던 사고가 시드에서 재발한다.
 
     앞선 판의 이 테스트는 `next_since` 를 테스트 안에서 직접 불러서, 스캔이
     어떤 지문을 넘기는지는 보지 않았다. 돌연변이(`"s2": s2_signature` →
@@ -1814,18 +1892,18 @@ def test_s2_실행기록이_씨앗_지문을_남긴다(tmp_path, monkeypatch):
     core_sig = rp.topic_signature(["agent", "digital twin"])
     seed_sig = rp.topic_signature(["world model"])
     assert sigs["arxiv"] == core_sig, "arXiv 는 core 전부를 OR 로 던지니 core 지문이어야 한다"
-    assert sigs["s2"] == seed_sig, "S2 가 씨앗이 아니라 core 지문을 남겼다"
+    assert sigs["s2"] == seed_sig, "S2 가 시드가 아니라 core 지문을 남겼다"
     assert sigs["s2"] != sigs["arxiv"], "두 소스가 같은 지문을 쓰면 분리가 무의미하다"
 
 
-def test_씨앗을_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypatch):
+def test_시드를_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: next_since 에 소스별 지문 대신 core 지문을 넘기는 것.
 
     앞 테스트는 **기록된** 지문만 본다. 지문은 두 곳에 쓰인다 — 기록과
     `next_since` 판정이고, 실제로 창을 움직이는 것은 후자다. 그래서 창이
     어디서 시작했는지를 본다.
 
-    두 소스 모두 최근 커서를 갖고 있는데 **S2 씨앗만 바뀐** 상황을 만든다.
+    두 소스 모두 최근 커서를 갖고 있는데 **S2 시드만 바뀐** 상황을 만든다.
     지문이 소스별이면 S2 는 불일치로 과거 7일까지 돌아가고, 창은 둘 중 더
     뒤처진 쪽을 따라가므로(§8-76) `since` 가 7일 전이 된다. core 지문을
     S2 에도 쓰면 일치로 판정해 최근 커서를 이어받는다.
@@ -1839,7 +1917,7 @@ def test_씨앗을_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
     now = datetime.now(timezone.utc)
     core_sig = rp.topic_signature(["agent", "digital twin"])
     # 두 소스 다 "한 시간 전까지 봤다"는 이력을 남긴다. S2 이력의 지문은
-    # **옛 씨앗**(=core 지문)이다 — 씨앗을 막 바꾼 직후의 모습이다.
+    # **옛 시드**(=core 지문)이다 — 시드를 막 바꾼 직후의 모습이다.
     for src in ("arxiv", "s2"):
         rp.record_run(db_path, "team_ai", src, "q", now - timedelta(hours=3),
                       now - timedelta(hours=1), "done", 5, signature=core_sig)
@@ -1865,7 +1943,7 @@ def test_씨앗을_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
             "ORDER BY rowid DESC LIMIT 2").fetchall()
     starts = [datetime.fromisoformat(r[0]) for r in rows]
     assert all(s < now - timedelta(days=6) for s in starts), (
-        f"씨앗이 바뀌었는데 창이 최근 커서를 이어받았다: {starts}")
+        f"시드가 바뀌었는데 창이 최근 커서를 이어받았다: {starts}")
 
 
 
@@ -1897,3 +1975,106 @@ def test_pending_reproduction_sends_reason_in_same_email(tmp_path, monkeypatch):
     with sqlite3.connect(db) as con:
         assert con.execute("SELECT last_digest FROM profiles WHERE profile_id='team_ai'").fetchone()[0]
         assert con.execute("SELECT COUNT(*) FROM profile_shown").fetchone()[0] == 3
+
+
+def test_mail_subject_always_names_the_field_in_reader_date():
+    """2026-09-16 사용자 요청. 이 테스트가 잡는 것: 분야별 메일을 한 사람이 받는데 제목에 분야가 없거나, 설명이 붙은 긴 프로필 이름을
+    통째로 넣어 제목이 잘리는 것, 날짜를 UTC 로 찍어 새벽 메일이 전날 날짜로 보이는 것."""
+    from datetime import datetime, timezone
+    when = datetime(2026, 9, 15, 20, 30, tzinfo=timezone.utc)          # KST 9/16 05:30
+    assert rps.mail_subject("로봇·피지컬 AI", when) == "[연구 동향 브리핑(로봇·피지컬 AI)] 2026-09-16"
+    assert rps.mail_subject("우리팀 — 자율제조·physical AI·온센서", when) == "[연구 동향 브리핑(우리팀)] 2026-09-16"
+
+
+def test_set_schedule_changes_only_the_frequency(tmp_path):
+    """이 테스트가 잡는 것: 주기 변경이 키워드 revision 을 새로 만들거나 키워드를 건드리는 것, 없는 주기·프로필을 조용히 받는 것."""
+    import pytest
+    db = tmp_path / "s.db"
+    rp.create_profile(db, "p", "P", ["alpha"], schedule_frequency="manual")
+    before = (rp.current_revision(db, "p"), rp.get_profile(db, "p"))
+    rp.set_schedule(db, "p", "daily")
+    assert rp.list_profiles(db, schedule="daily") == ["p"]
+    assert (rp.current_revision(db, "p"), rp.get_profile(db, "p")) == before
+    with pytest.raises(ValueError):
+        rp.set_schedule(db, "p", "hourly")
+    with pytest.raises(ValueError):
+        rp.set_schedule(db, "nope", "daily")
+
+
+# ── arXiv 질의 분할(2026-09-16 실측: 키워드 47개 OR 질의 하나는 36초·503, 24개씩 둘은 10·15초·200) ─────────────────────
+def test_arxiv_queries_split_evenly_at_twenty_terms():
+    """이 테스트가 잡는 것: 20개 이하를 쪼개는 것(질의 수 = 호출 수 = 페이서 대기), 47개를 20·20·7 처럼 앞만 무겁게 자르는 것,
+    키워드를 잃거나 겹치는 것, 빈 항목을 질의에 넣는 것."""
+    small = [f"k{i}" for i in range(20)]
+    assert rps._arxiv_queries_from_core_topics(small) == [rps._arxiv_query_from_core_topics(small)]
+    big = [f"term {i}" for i in range(47)]
+    qs = rps._arxiv_queries_from_core_topics(big)
+    sizes = [q.count(" OR ") + 1 for q in qs]
+    assert sizes == [16, 16, 15]
+    assert " OR ".join(qs).count('all:"term ') == 47
+    assert rps._arxiv_queries_from_core_topics(["a", "", " "]) == ["all:a"]
+    assert rps._arxiv_queries_from_core_topics([]) == []
+
+
+def test_scan_profile_merges_chunked_arxiv_queries_and_dedupes(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 키워드 45개 프로필을 질의 하나로 던지는 것(실측에서 503 으로 죽는 모양), 두 질의에 같이 걸린 논문을 두 번 세는 것,
+    질의 하나가 죽었는데 done 으로 기록해 커서를 전진시키는 것(내일 그 구간을 영영 못 본다), 반대로 하나 살았는데 failed 로 버리는 것."""
+    db_path = tmp_path / "t.db"
+    rp.create_profile(db_path, "team_big", "큰 프로필", core_topics=[f"agent {i}" for i in range(45)], max_items=5)
+    _seed_summary(monkeypatch, tmp_path, [])
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    calls: list[str] = []
+
+    async def fake_search(client, query, since, page_size=50, max_pages=10, **kw):
+        calls.append(query)
+        n = len(calls)
+        if n == 2:
+            raise RuntimeError("arXiv API 503")
+        return {"papers": [{"arxiv_id": "shared", "title": "agent 0 agent 44", "abstract": "", "published": now},
+                           {"arxiv_id": f"only{n}", "title": f"agent {n} paper", "abstract": "", "published": now}],
+                "status": "done", "until": now, "since": since.isoformat(), "query": query}
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", fake_search)
+    result = asyncio.run(rps.scan_profile(db_path, "team_big", None, max_pages=2))
+    assert len(calls) == 3 and all(q.count(" OR ") + 1 == 15 for q in calls)
+    ids = sorted(p["arxiv_id"] for p in result["papers"])
+    assert ids == ["only1", "only3", "shared"]                     # 중복 한 번, 죽은 질의의 몫은 없음
+    assert result["run_status"] == "partial"                       # 하나 죽었으니 done 이 아니다 — 커서는 window_from 에 남는다
+    import sqlite3
+    with sqlite3.connect(db_path) as con:
+        status, query, err = con.execute("SELECT status, query, error_detail FROM search_runs WHERE source='arxiv'").fetchone()
+    assert status == "partial" and query.count(" ‖ ") == 2 and "503" in err
+
+
+def test_scan_profile_all_chunks_failing_takes_the_arxiv_failed_path(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 질의 전부가 죽었는데 partial(=논문 0편의 정상 실행)로 기록하는 것 — 'arXiv 실패 → S2 만으로' 경로와 failed 기록을 유지해야 한다."""
+    db_path = tmp_path / "t.db"
+    rp.create_profile(db_path, "team_big", "큰 프로필", core_topics=[f"agent {i}" for i in range(30)], max_items=5)
+    _seed_summary(monkeypatch, tmp_path, [])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("arXiv API 500")
+
+    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+
+    async def s2_ok(client, keywords, since, until, *a, **kw):
+        return {"papers": [_journal_paper("10.1/j1", "An agent 1 journal")], "status": "done", "query": "S2 keywords×1"}
+
+    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+    result = asyncio.run(rps.scan_profile(db_path, "team_big", None, max_pages=2))
+    assert result["run_status"] == "failed" and result["s2_count"] == 1 and result["arxiv_count"] == 0
+    import sqlite3
+    with sqlite3.connect(db_path) as con:
+        status, err = con.execute("SELECT status, error_detail FROM search_runs WHERE source='arxiv'").fetchone()
+    assert status == "failed" and "전부 실패" in err and "500" in err
+
+
+def test_exit_message_names_the_dead_source_on_a_degraded_day():
+    """이 테스트가 잡는 것: 종료코드 2(발송됨·소스 하나 실패)에 1 의 문구("등록된 프로필 없음")를 그대로 쓰는 것 — 2026-09-16 실측에서
+    arXiv 만 죽은 날의 로그가 그렇게 찍혀 원인을 헷갈리게 했다."""
+    summary = {"team_a": {"status": "ok", "run_status": "failed", "s2_status": "partial", "delivery": "발송 완료 → 1명"},
+               "team_b": {"status": "ok", "run_status": "done", "s2_status": "done", "delivery": "발송 완료 → 1명"}}
+    assert rps._exit_code(summary) == 2
+    msg = rps._exit_message(summary, 2)
+    assert "team_a" in msg and "arXiv failed" in msg and "team_b" not in msg and "등록된 프로필 없음" not in msg
+    assert rps._exit_message({}, 1) == "[실패] 등록된 프로필 없음 — 종료코드 1"

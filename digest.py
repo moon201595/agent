@@ -18,12 +18,11 @@ M2(2026-08-28): M1이 Deep Layer(④⑤⑦)를 붙이면서 이제 논문마다 
 다이제스트"가 된다. 여기서도 LLM은 안 쓴다: DB SELECT 와 마커 파일
 존재 확인뿐이고, 이 모듈은 아무것도 쓰지 않는다(읽기 전용).
 
-**T+1 지연 보고(설계 결정)**: 다이제스트는 생성 시점의 DB 상태를 그대로
-보여준다. ⑦ 재현은 별도 프로세스로 방금 트리거된 참이라 오늘 다이제스트
-에서는 대부분 "실행중"으로 나가고, 내일 다이제스트에서 성공/실패로
-바뀐다. 재현이 끝나기를 기다리는 폴링을 넣지 않는다 — 새벽 배치가 Docker
-빌드를 기다리느라 몇 시간씩 늘어지는 것보다, 하루 늦게 정확한 상태를
-보고하는 쪽이 낫다.
+**재현 상태(2026-09-10 개정)**: 다이제스트는 생성 시점의 DB 상태를 그대로 보여준다. 처음엔
+T+1 지연 보고(기다리지 않고 "실행중"으로 내보냄)였으나 2026-09-10 부터 run_profile_scan 이
+오늘 보낼 논문의 ⑦ 종료를 논문당 최대 60분(batch_summarize.REPRO_WAIT_SECONDS) 기다린 뒤
+이 모듈을 부른다 — 이 모듈 자체는 여전히 기다리지도 쓰지도 않는다. 2026-09-14 외부 검토가
+옛 설명이 남아 있음을 잡았다.
 """
 
 from __future__ import annotations
@@ -32,48 +31,15 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import storage
 
 _ABSTRACT_EXCERPT_CHARS = 220
 
-# 별점은 **총점이 아니라 핵심 키워드 가중치 합**으로 매긴다(2026-09-02).
-#
-# 총점 기준이 두 가지로 깨져 있었다. 첫째, ★★★ 문턱 1.0 이 도달 불가능했다 —
-# 저장된 35편을 재채점하니 최댓값이 0.745 였다. 3단 눈금인데 맨 위가 영원히
-# 안 뜨면 2단이나 마찬가지다. 둘째, 최신성(±0.15)이 계층 정보를 덮었다:
-# "표적어 단독"이 0.500~0.645 로 흩어져 "동향어+도메인"(0.523~0.545)과
-# 겹쳤다 — 같은 별점인데 하나는 우리 표적 도메인이고 하나는 아니다.
-#
-# 가중치 합을 쓰면 둘 다 사라진다. 읽는 사람이 별점에서 알고 싶은 건
-# "이게 우리 주제인가"이지 "며칠 전 논문인가"가 아니고, 어차피 한 다이제스트
-# 안의 논문은 전부 비슷하게 최신이다. 순위는 종전대로 총점이 정한다 —
-# 별점은 순위가 아니라 **분류**다.
-#
-# **가중치 합이 아니라 최댓값**을 본다. 합으로는 "표적어를 맞혔나"를 알 수
-# 없다 — 실측 분포에서 동향어 두 개(0.6+0.6=1.2)가 표적어 하나(1.0)보다
-# 컸다. 별점이 "우리 표적 도메인인가"를 말해야 하는데 합을 쓰면 그게 뒤집힌다.
-#
-#   ★★★ 표적어를 맞혔고 핵심 적중이 2개 이상
-#   ★★  표적어를 맞혔다               (가장 무거운 적중 ≥ 1.0)
-#   ★   동향어·범용어만 맞혔다
-#
-# 실측 분포(35편): ★★ 6편(17%) · ★ 29편. ★★★ 은 아직 0편이지만 도달
-# 가능하다 — 옛 총점 기준의 ★★★(문턱 1.0)은 최댓값이 0.745 라 원리적으로
-# 불가능했다. 그 차이가 중요하다.
-_TARGET_TIER_WEIGHT = 1.0
-
-
-def _stars(score: dict) -> str:
-    """score 는 profile_scoring.score_paper() 의 반환값 전체를 받는다.
-    구형 호출부가 숫자를 넘기면 그대로 총점 기준으로 떨어진다(하위 호환)."""
-    if not isinstance(score, dict):
-        return "★★★" if score >= 1.0 else ("★★" if score >= 0.7 else "★")
-    top = score.get("top_core_weight", 0.0) or 0.0
-    if top < _TARGET_TIER_WEIGHT:
-        return "★"
-    return "★★★" if len(score.get("core_hits") or []) >= 2 else "★★"
+# 별점(★★★/★★/★)은 2026-09-15 사용자 요청으로 뺐다("보기 안 좋다"). 분류 정보는 바로 아래 적중 키워드 줄이 그대로 말한다.
+# 옛 기준(핵심 키워드 최대 가중치·적중 수)은 git 이력과 PROGRESS §8 에 있다.
 
 
 def _why_matched(score: dict) -> str:
@@ -440,6 +406,7 @@ _REPRO_LABELS = {
     ("clone", "clone_timeout"): "[재현 – 클론 시간 초과]",
     ("clone", "clone_failed"): "[재현 – 클론 실패]",
     ("clone", "unsupported_host"): "[재현 – 클론 불가 호스트]",
+    ("clone", "repo_too_large"): "[재현 – 저장소가 상한(500MB)보다 큼]",     # 2026-09-16 보안 상한(docker_runner.MAX_REPO_KB)
 }
 
 # fail_detail 이 없는 구형 행(2026-09-01 이전 29건)은 stage 만으로 판정한다.
@@ -563,6 +530,24 @@ def _repro_label_legacy(arxiv_id: str) -> str:
     return "[재현 ✗]"
 
 
+def sota_claim_line(paper: dict) -> str:
+    """SOTA 주장 한 줄(2026-09-16) — run_profile_scan 이 붙인 `_sota_claims` 만 쓴다(여기서 원문을 다시 읽지 않는다). 없으면 빈 문자열."""
+    try:
+        import sota_claims
+        return sota_claims.mail_line(paper.get("_sota_claims") or [])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def code_ladder_line(arxiv_id: str) -> str:
+    """⑦ 사다리 한 줄(2026-09-16). 공식 코드가 있으면 재현 라벨이 이미 말하므로 빈 문자열. 조회 실패도 빈 문자열 — 메일은 나간다."""
+    try:
+        import code_ladder
+        return code_ladder.mail_line(arxiv_id)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def retraction_label(arxiv_id: str) -> str:
     """⑧ 철회 상태 라벨(M5). 0(정상)·NULL(미조회)은 **아무것도 표시하지
     않는다** — "철회 아님"이라고 쓰면 조회조차 못 한 논문을 검증된 정상으로
@@ -614,7 +599,9 @@ def paper_link(paper: dict) -> str:
     doi = paper.get("doi")
     if doi:
         return f"https://doi.org/{doi}"
-    return paper.get("open_access_pdf") or ""
+    # 출처가 준 임의 URL 은 허용 목록(link_policy)을 통과할 때만 싣는다(2026-09-16 보안) — 못 통과하면 링크 없이 나간다.
+    import link_policy
+    return link_policy.safe_link(paper.get("open_access_pdf") or "") or ""
 
 
 # 초록 정리의 앞 라벨. 프롬프트가 시키는 문구라 목록으로 셀 수 있다.
@@ -774,13 +761,13 @@ def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
     lines = [
-        f"{idx}. [{_stars(score)}] {paper.get('title') or '(제목 없음)'}",
+        f"{idx}. {paper.get('title') or '(제목 없음)'}",
     ]
     # 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5 철회 / M7 인젝션).
     for warning in (_paper_retraction_label(paper), injection_label(arxiv_id)):
         if warning:
             lines.append(f"   {warning}")
-    lines.append(f"   왜 걸렸나 : {_why_matched(score)}")
+    lines.append(f"   {_why_matched(score)}")   # "왜 걸렸나 :" 머리말은 뺐다(2026-09-15 사용자 요청) — 핵심 키워드부터 보인다
 
     # Deep Layer(M1)가 실패한 논문만 예전의 "미검증 · 초록 기반"으로 남는다
     # — 나머지는 DB 에 실제 검증·재현 결과가 있으므로 그걸 그대로 보여준다.
@@ -832,15 +819,24 @@ def _paper_entry(idx: int, paper: dict) -> str:
                 lines.append(f"   요약자의 해석 : {_plain(sections['limits'])}")
         else:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
-        labels = f"   {verification_label(arxiv_id)}   {_paper_repro_label(paper)}"
+        # 수치 검증 표시("[검증 22/22 통과]")는 메일에서 뺐다(2026-09-14 사용자 결정: 받는 사람에게 의미가 없다).
+        # 검증 자체는 저장 때 계속 돌고(server.save_summary) verification_label 은 내부 확인용으로 남는다.
+        labels = f"   {_paper_repro_label(paper)}"
         cov = coverage_label(arxiv_id)
         if cov:
             labels += f"   {cov}"
         lines.append(labels)
+        code = code_ladder_line(arxiv_id)
+        if code:
+            lines.append(f"   {code}")
+    sota = sota_claim_line(paper)
+    if sota:
+        lines.append(f"   {sota}")
 
     link = paper_link(paper)
     if link:
         lines.append(f"   {link}")
+    lines += _feedback_buttons_text(paper)
     return "\n".join(lines)
 
 
@@ -1084,11 +1080,39 @@ def _narrative_section(scan_result: dict) -> list[str]:
     return lines
 
 
+# 날짜는 받는 사람 시간대로 쓴다(2026-09-14, 외부 검토 A·D). 05:00 KST 실행은 UTC 로 전날 20:00 이라
+# 9/14 아침 메일이 "2026-09-13" 으로 나갔다 — 주간 리뷰 요일은 이미 KST(run_profile_scan.READER_TZ)였다.
+_READER_TZ = ZoneInfo("Asia/Seoul")
+
+
+def reader_date() -> str:
+    return datetime.now(_READER_TZ).strftime("%Y-%m-%d")
+
+
+def source_outage_line(scan_result: dict) -> str:
+    """검색 소스 장애를 받는 사람에게 한 줄로(2026-09-14, 외부 검토 D). 로그에는 "arXiv 검색 실패"가
+    남는데 메일에는 없어서, 요약 0편인 날이 "조용한 날"과 구분되지 않았다. 판정은 기록된 상태값
+    대조뿐이다(규칙 7). 장애가 없으면 빈 문자열."""
+    parts = []
+    if scan_result.get("run_status") == "failed":
+        err = str(scan_result.get("arxiv_error") or "")
+        code = next((c for c in ("429", "503", "502", "504") if c in err), "")
+        parts.append(f"arXiv 검색 실패{f'({code})' if code else ''} — 이번 메일은 Semantic Scholar 결과만 반영했고, "
+                     "arXiv 는 다음 실행이 같은 기간을 다시 조회한다")
+    if scan_result.get("s2_status") == "failed":
+        parts.append("Semantic Scholar 검색 실패 — 이번 메일은 arXiv 결과만 반영했다")
+    if scan_result.get("run_status") == "failed" or scan_result.get("arxiv_fetch_blocked"):
+        if any(p.get("deep_status") == "abstract_only" and p.get("arxiv_id") and not str(p.get("arxiv_id")).startswith("pdf-")
+               for p in scan_result.get("papers") or []):
+            parts.append("arXiv 논문은 본문 대신 초록으로 정리했다")
+    return ("⚠ " + " · ".join(parts)) if parts else ""
+
+
 def generate_digest(scan_result: dict, profile_name: str) -> str:
     """scan_result: run_profile_scan.scan_profile()의 반환값 그대로 받는다.
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
     실패 걱정 없이 항상 읽힌다는 걸 우선했다)."""
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = reader_date()
     # 제목은 읽는 사람 기준이다(2026-09-11, 사용자 요청). 시스템 이름(HARNESS)이나
     # 프로필 내부 이름("우리팀 — …")은 받는 사람에게 정보가 아니다. 무엇인지
     # (연구 동향 브리핑)와 언제인지(날짜)만 둔다. 프로필 이름은 여러 프로필을
@@ -1105,6 +1129,9 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     # 조기 반환이 같은 병을 낸 게 §8-50 둘, §8-57 하나, §8-67 하나였다.
     # 갈래는 내용만 정하고 출구는 하나로 모은다(2026-09-07, §8-70 고치며).
     lines = [header, ""]
+    outage = source_outage_line(scan_result)
+    if outage:
+        lines += [outage, ""]
     if not empty:
         lines += _narrative_section(scan_result)
     if empty:
@@ -1142,6 +1169,8 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         if filtered:
             lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
 
+    # 주간 관리 에이전트가 바꾼 것(2026-09-15) — 금요일 실행 뒤 첫 메일에 한 번. 빈 갈래도 받는다.
+    lines += _agent_report_lines(scan_result)
     # ⑥ 주간 리뷰는 맨 아래에 붙는다(주 1회). **모든 갈래가 여기로 모인다** —
     # HTML 판도 같은 `weekly_review` 하나를 읽는다.
     lines += _weekly_review_lines(scan_result)
@@ -1292,6 +1321,31 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     return out
 
 
+def _feedback_buttons_html(paper: dict) -> str:
+    """반응 버튼 셋(2026-09-15, 사용자 결정 문구). `_feedback_links` 가 있을 때만 — 설정 전에는 아무것도 안 싣는다.
+    링크는 feedback_links.issue_links 가 만든 서명 토큰 URL 이고 여기서는 이스케이프만 한다. 접힌 상태에서도 보이게
+    요약 줄(summary) 안에 둔다 — Gmail 은 details 를 무시하고 다 펼치지만 Apple Mail 은 접힌 채 보여준다."""
+    links = paper.get("_feedback_links") or {}
+    if not links:
+        return ""
+    import feedback_links
+    buttons = "".join(
+        f'<a href="{_esc(links[action])}" style="display:inline-block;margin:6px 6px 0 0;padding:3px 10px;'
+        f'border:1px solid {_NAVY};border-radius:12px;color:{_NAVY};font-size:12px;font-weight:400;'
+        f'text-decoration:none;">{_esc(label)}</a>'
+        for action, label in feedback_links.ACTIONS if links.get(action))
+    return f'<div style="margin-top:4px;">{buttons}</div>'
+
+
+def _feedback_buttons_text(paper: dict) -> list[str]:
+    links = paper.get("_feedback_links") or {}
+    if not links:
+        return []
+    import feedback_links
+    return ["   반응 : " + " · ".join(f"{label} {links[action]}" for action, label in feedback_links.ACTIONS
+                                    if links.get(action))]
+
+
 def _paper_entry_html(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = str(paper.get("arxiv_id", "?"))
@@ -1309,22 +1363,23 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         detail = f'<div style="color:{_FLAG_INK};font-size:13px;">처리 실패: {_esc(reason)}</div>'
         needs_attention = True
     else:
-        v_label = verification_label(arxiv_id)
         r_label = _paper_repro_label(paper)
-        # flag 가 있거나 재현이 실패한 항목은 펼쳐서 보낸다. Gmail·Outlook 은
-        # 어차피 항상 펼쳐 보여주므로 이 속성이 실제로 의미를 갖는 건
-        # Apple Mail 뿐이다(위 주석 1번).
         c_label = coverage_label(arxiv_id)
-        needs_attention = ("flag" in v_label) or ("✗" in r_label) or bool(c_label)
-        # strip("[]") 은 양끝만 벗긴다 — "[검증 27/29 통과]  ⚠ flag 2건" 은 앞 괄호만
-        # 벗겨져 "통과]" 가 남았다(2026-09-11 메일에서 실제로 보였다). 안쪽 괄호까지 뺀다.
-        chips = _status_chip(v_label.replace("[", "").replace("]", "").strip(), flagged="flag" in v_label)
-        chips += _status_chip(r_label.replace("[", "").replace("]", "").strip(), flagged="✗" in r_label)
+        # 수치 검증 칩은 싣지 않는다(2026-09-14 사용자 결정 — 평문판과 같다). 주의 강조는 재현 실패·커버리지만.
+        needs_attention = ("✗" in r_label) or bool(c_label)
+        # strip("[]") 은 양끝만 벗긴다 — 안쪽 괄호까지 뺀다(2026-09-11 메일에서 "통과]" 가 남았던 사례).
+        chips = _status_chip(r_label.replace("[", "").replace("]", "").strip(), flagged="✗" in r_label)
         if c_label:
             # 커버리지 경고는 flag 취급한다 — "검증 통과"만 보고 요약을
             # 그대로 믿으면 안 되는 상황이라 눈에 띄어야 한다.
             chips += _status_chip(c_label, flagged=True)
         detail = ""
+        code = code_ladder_line(arxiv_id)
+        if code:
+            detail += f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin-top:4px;">{_esc(code)}</div>'
+    sota = sota_claim_line(paper)
+    if sota:
+        detail += f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin-top:4px;">{_esc(sota)}</div>'
 
     # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —
     # 이 항목에서 가장 중요한 정보다.
@@ -1349,16 +1404,16 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         f'<details{open_attr} style="background-color:{_PAPER_BG};color:{_INK};'
         f'border:1px solid {_LINE};border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
         f'<summary style="color:{_INK};font-size:15px;font-weight:600;cursor:pointer;">'
-        f'{idx}. [{_stars(score)}] {_esc(title)}'
+        f'{idx}. {_esc(title)}'
         # **접힌 상태에서 보이는 한 줄**(2026-09-05). 제목만으로는 무슨 논문인지
         # 모르고, 절을 다 펼쳐 두면 목록을 훑을 수가 없다. 제목 + 한 줄이
         # 목록이고, 펼치면 요약본 전체가 나온다.
         # 칩(검증 n/m · 재현 · 철회 · 원문 N%)도 **접힌 상태에서 보여야 한다**(2026-09-12). 토글을
         # 전부 닫아 보내기로 하면서, 예전처럼 주의 논문만 자동으로 펼쳐 칩을 드러내는 길이 없어졌다.
-        f'{gist_html}<div style="margin-top:6px;font-weight:400;">{chips}</div></summary>'
+        f'{gist_html}<div style="margin-top:6px;font-weight:400;">{chips}</div>{_feedback_buttons_html(paper)}</summary>'
         f'{detail}'
         f'<div style="color:{_MUTED};font-size:13px;margin-top:8px;">'
-        f'왜 걸렸나 : {_esc(_why_matched(score))}</div>'
+        f'{_esc(_why_matched(score))}</div>'
         f'{_summary_block_html(arxiv_id, paper, deep_status)}'
         f'<div style="margin-top:8px;font-size:13px;">'
         f'<a href="{_esc(paper_link(paper))}" '
@@ -1436,8 +1491,11 @@ def _emphasise_label(escaped: str) -> str:
     # 보면 `<strong>첫째, 압축</strong>` 이 돼 설명까지 굵어진다(외부 검토).
     if _ENUM_RE.match(escaped):
         return escaped
+    # 머리 길이 상한 12 → 20(2026-09-14 사용자 요청): "비교 구간(KST)"·"지난주엔 있었으나 이번주
+    # 없음" 같은 주간 리뷰 라벨이 12자를 넘어 굵어지지 않았다. 구분자는 여전히 ` : `(앞뒤 공백)
+    # 하나다 — 서술 속 논문 제목 "HINT: …" 은 콜론 앞 공백이 없어 라벨로 오인되지 않는다.
     head, sep, rest = escaped.partition(" : ")
-    if sep and len(head) <= 12 and head.strip():
+    if sep and len(head) <= 20 and head.strip():
         return f"<strong>{head}</strong>{sep}{rest}"
     return escaped
 
@@ -1602,16 +1660,20 @@ _WEEKLY_NOTE_PREFIX = "※"
 _WEEKLY_WARN_PREFIX = "⚠"
 
 
-def _weekly_line_html(line: str) -> str:
+def _weekly_line_html(line: str, narrative: bool = False) -> str:
     """주간 리뷰 한 줄을 HTML 로. 줄 모양은 trend_report.format_report 가 정한다.
 
     ■ 큰 제목 · ▶ 절 제목 · ※ 각주 · ⚠ 경고 · ─── 구분선 · 그 밖은 본문.
     들여쓰기는 HTML 에서 공백이 접히므로 padding-left 로 옮긴다.
+    `narrative` 면 LLM 이 쓴 서술 줄이다 — 라벨 굵게를 하지 않는다(` : ` 가 든 문장이 라벨로 굵어졌다,
+    외부 검토 2026-09-14).
     """
     raw = line.rstrip()
     text = _plain(raw)
     if not text:
-        return ""
+        # 빈 줄은 절 사이 여백이다(2026-09-14 사용자 요청: "목차별로 한 칸씩"). 예전엔 빈
+        # 문자열로 버려져 평문에서 띄운 절이 HTML 에서는 붙어 보였다.
+        return f'<div style="height:8px;font-size:1px;line-height:1px;">&nbsp;</div>'
     stripped = text.strip()
     if set(stripped) == {"─"}:
         return (f'<div style="border-top:1px solid {_LINE};margin:12px 0 0;'
@@ -1629,8 +1691,8 @@ def _weekly_line_html(line: str) -> str:
                 f'font-weight:700;margin:20px 0 6px;border-top:1px solid {_LINE};'
                 f'padding-top:12px;">{_esc(stripped.lstrip("■ "))}</div>')
     if stripped.startswith("▶"):
-        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-                f'font-weight:700;margin:12px 0 3px;">{_esc(stripped.lstrip("▶ "))}</div>')
+        return (f'<div style="background-color:{_PAPER_BG};color:{_NAVY};font-size:13px;'
+                f'font-weight:700;margin:16px 0 4px;">{_esc(stripped.lstrip("▶ "))}</div>')
     if stripped.startswith(_WEEKLY_WARN_PREFIX):
         return (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
                 f'margin:3px 0;">{_esc(stripped)}</div>')
@@ -1639,9 +1701,58 @@ def _weekly_line_html(line: str) -> str:
                 f'margin:4px 0 2px;padding-left:8px;">{_esc(stripped)}</div>')
     indent = len(raw) - len(raw.lstrip(" "))
     pad = min(indent, 12) * 2
-    body = _colour_delta(_emphasise_enum(_emphasise_label(_esc(stripped))))
+    escaped = _esc(stripped)
+    body = _colour_delta(_emphasise_enum(escaped if narrative else _emphasise_label(escaped)))
     return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:12px;'
             f'margin:2px 0;padding-left:{pad}px;">{body}</div>')
+
+
+_TABLE_SEP_RE = re.compile(r"^:?-{3,}:?$")
+_NUMERIC_CELL_RE = re.compile(r"^[+\-−]?[\d,.]+%?$|^미측정$|^—$")
+_DELTA_CELL_RE = re.compile(r"^[+\-−]\d+$")
+
+
+def _table_cells(line: str) -> list[str] | None:
+    """`| a | b |` 모양이면 칸 목록, 아니면 None. 칸이 둘 이상이어야 표다."""
+    s = line.strip()
+    if len(s) < 3 or not (s.startswith("|") and s.endswith("|")):
+        return None
+    cells = [c.strip() for c in s[1:-1].split("|")]
+    return cells if len(cells) >= 2 else None
+
+
+def _weekly_table_html(rows: list[list[str]], indent: int) -> str:
+    """연속된 `| … |` 줄 묶음을 표 하나로. 첫 줄은 머리, `| --- |` 줄은 건너뛴다.
+
+    2026-09-14 사용자 요청: 주제별 편수·자주 나오는 용어·시드 수율이 "라벨 값 · 값 · 값"
+    나열이라 읽히지 않았다. 평문판은 파이프 표 그대로 두고(읽을 수 있다) HTML 만 표로 그린다.
+    판정도 재계산도 하지 않는다 — 칸의 글자를 그대로 옮기고 숫자 칸만 오른쪽 정렬,
+    증감 칸(`+3`·`-2`)만 색을 입힌다(규칙 7).
+    """
+    rows = [r for r in rows if not all(_TABLE_SEP_RE.match(c or "-") for c in r)]
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)          # 칸 수가 모자란 행은 빈 칸으로 채운다 — 칸이 밀리지 않게
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    head, body = rows[0], rows[1:]
+    th = "".join(f'<th style="text-align:left;padding:4px 10px 4px 0;color:{_MUTED};font-weight:600;'
+                 f'border-bottom:1px solid {_LINE};white-space:nowrap;">{_esc(_plain(c))}</th>' for c in head)
+    trs = ""
+    for r in body:
+        tds = ""
+        for c in r:
+            cell = _plain(c)
+            align = "right" if _NUMERIC_CELL_RE.match(cell) else "left"
+            inner = _esc(cell)
+            if _DELTA_CELL_RE.match(cell) and cell.lstrip("+-−") != "0":
+                colour = _DOWN_COLOR if cell[0] in "-−" else _UP_COLOR
+                inner = f'<span style="color:{colour};font-weight:600;">{inner}</span>'
+            tds += (f'<td style="text-align:{align};padding:3px 10px 3px 0;color:{_INK};'
+                    f'border-bottom:1px solid #F0F0F0;">{inner}</td>')
+        trs += f"<tr>{tds}</tr>"
+    pad = min(indent, 12) * 2
+    return (f'<table style="border-collapse:collapse;font-size:12px;margin:4px 0 6px {pad}px;'
+            f'background-color:{_PAPER_BG};"><tr>{th}</tr>{trs}</table>')
 
 
 def _weekly_review_html(scan_result: dict) -> str:
@@ -1649,7 +1760,58 @@ def _weekly_review_html(scan_result: dict) -> str:
     review = scan_result.get("weekly_review")
     if not review or not str(review).strip():
         return ""
-    return "".join(_weekly_line_html(ln) for ln in str(review).splitlines())
+    out: list[str] = []
+    table: list[list[str]] = []
+    indent = 0
+    # **서술 구간에서는 표도 라벨도 만들지 않는다**(외부 검토 2026-09-14). "▶ 서술" 부터 들여쓰지 않은
+    # 다음 ■ 절(관측 신호 등)까지가 LLM 이 쓴 글이다 — 그 안의 `| a | b |` 모양 줄은 표가 아니라 글이다.
+    narrative = False
+    for ln in str(review).splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("▶ 서술"):
+            narrative = True
+        elif ln.startswith("■"):
+            narrative = False
+        cells = None if narrative else _table_cells(ln)
+        if cells is not None:
+            ind = len(ln) - len(ln.lstrip(" "))
+            if table and ind != indent:        # 들여쓰기가 다르면 다른 표다
+                out.append(_weekly_table_html(table, indent))
+                table = []
+            if not table:
+                indent = ind
+            table.append(cells)
+            continue
+        if table:
+            out.append(_weekly_table_html(table, indent))
+            table = []
+        out.append(_weekly_line_html(ln, narrative=narrative))
+    if table:
+        out.append(_weekly_table_html(table, indent))
+    return "".join(out)
+
+
+AGENT_REPORT_TITLE = "이번 주 에이전트가 바꾼 것"
+
+
+def _agent_report_lines(scan_result: dict) -> list[str]:
+    """주간 관리 에이전트 보고(agent_maintenance.pending_report 의 줄). 없으면 빈 목록."""
+    report = [str(x) for x in scan_result.get("agent_report") or [] if str(x).strip()]
+    if not report:
+        return []
+    return ["", f"■ {AGENT_REPORT_TITLE}", *report]
+
+
+def _agent_report_html(scan_result: dict) -> str:
+    report = [str(x) for x in scan_result.get("agent_report") or [] if str(x).strip()]
+    if not report:
+        return ""
+    rows = "".join(
+        f'<div style="background-color:{_PAPER_BG};color:{_INK if not ln.startswith(" ") else _MUTED};'
+        f'font-size:13px;margin:{"2px 0 0 14px" if ln.startswith(" ") else "6px 0 0"};">{_esc(ln.strip())}</div>'
+        for ln in report)
+    return (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;font-weight:600;'
+            f'margin:18px 0 4px;border-top:1px solid {_LINE};padding-top:10px;">{AGENT_REPORT_TITLE}</p>{rows}')
 
 
 def _weekly_review_lines(scan_result: dict) -> list[str]:
@@ -1666,7 +1828,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
 
     맨 위에 철회 경고용 슬롯을 비워둔다 — M5(retraction 체크)가 채울 자리다.
     """
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = reader_date()
     papers = scan_result.get("papers", [])
     candidates = scan_result.get("candidates_found", 0)
 
@@ -1679,6 +1841,10 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
     retraction_slot = "<!-- retraction-warnings -->"
+    outage = source_outage_line(scan_result)
+    if outage:
+        retraction_slot += (f'<p style="background-color:{_PAPER_BG};color:#B00020;font-size:13px;'
+                            f'font-weight:600;margin:10px 0 0;">{_esc(outage)}</p>')
     title_only = scan_result.get("title_only_papers") or []
 
     if not papers and not title_only:
@@ -1709,7 +1875,10 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'(전체 후보 {candidates}건 중).</p>'
         )
 
-    trend = _trend_line(scan_result)
+    # 빈 갈래는 평문판처럼 키워드 편수·꼬리 "걸러진 것"을 싣지 않는다 — 걸러진 내역은 본문에 이미
+    # 있다(2026-09-14, 외부 검토 D: HTML 만 편수를 싣고 걸러진 것을 두 번 실었다).
+    empty = not papers and not title_only
+    trend = "" if empty else _trend_line(scan_result)
     if trend:
         body += (
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
@@ -1761,9 +1930,10 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         )
 
     body += details_body
+    body += _agent_report_html(scan_result)
     body += _weekly_review_html(scan_result)
 
-    filtered = _filtered_line(scan_result)
+    filtered = "" if empty else _filtered_line(scan_result)
     footer = ""
     if filtered:
         footer = (

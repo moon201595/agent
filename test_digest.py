@@ -106,43 +106,19 @@ def test_generate_digest_includes_title_arxiv_link_and_match_reason():
     assert "robot hand" in text
 
 
-def test_generate_digest_stars_separate_target_from_trend():
-    """2026-09-02: 별점 기준을 총점에서 **핵심 키워드 최대 가중치**로 옮겼다.
-    주장("별점이 단계별로 갈린다")은 그대로고 눈금만 바뀌었다.
-
-    총점 기준이 두 가지로 깨져 있었다. ★★★ 문턱 1.0 이 도달 불가능했고
-    (저장된 35편 최댓값 0.745), 최신성(±0.15)이 계층 정보를 덮어
-    "표적어 단독"(0.500~0.645)이 "동향어+도메인"(0.523~0.545)과 겹쳤다 —
-    같은 별점인데 하나는 우리 표적 도메인이고 하나는 아니었다.
-
-    가중치 **합**이 아니라 **최댓값**을 쓰는 이유: 합으로는 동향어 두 개
-    (0.6+0.6=1.2)가 표적어 하나(1.0)보다 커서 순서가 뒤집힌다."""
-    target_multi = _scored_paper("a", "표적 복수", 0.9,
-                                 core_hits=["defect detection", "NPU"], top_core_weight=1.0)
-    target_one = _scored_paper("b", "표적 단독", 0.6,
-                               core_hits=["defect detection"], top_core_weight=1.0)
-    trend_multi = _scored_paper("c", "동향 복수", 0.8,
-                                core_hits=["sim-to-real", "neuromorphic"], top_core_weight=0.6)
-
-    result = {"papers": [target_multi, target_one, trend_multi], "candidates_found": 3}
-    text = generate_digest(result, "p")
-
-    assert "[★★★] 표적 복수" in text
-    assert "[★★] 표적 단독" in text
-    # 총점이 더 높아도(0.8 > 0.6) 표적어가 없으면 ★ 다 — 이게 핵심이다
-    assert "[★] 동향 복수" in text
-
-
-def test_stars_ignore_recency_driven_score_changes():
-    """같은 논문이 며칠 지났다고 별점이 떨어지면 안 된다 — 별점은 순위가
-    아니라 분류이고, 한 다이제스트 안의 논문은 어차피 다 최신이다."""
-    fresh = _scored_paper("a", "오늘", 0.645, core_hits=["defect detection"],
-                          top_core_weight=1.0)
-    older = _scored_paper("b", "닷새 전", 0.500, core_hits=["defect detection"],
-                          top_core_weight=1.0)
-    text = generate_digest({"papers": [fresh, older], "candidates_found": 2}, "p")
-    assert "[★★] 오늘" in text
-    assert "[★★] 닷새 전" in text
+def test_titles_have_no_star_rating_and_keywords_come_first():
+    """2026-09-15 사용자 요청: 논문 앞 별점(★★★)은 보기 안 좋아서 빼고, 제목 아래 "왜 걸렸나 :" 머리말도 빼
+    "핵심 키워드: …" 부터 보이게 한다. 이 테스트가 잡는 것: 별점이나 머리말이 평문·HTML 어느 한쪽에서 되살아나는 것,
+    적중 키워드 줄이 사라지는 것."""
+    paper = _scored_paper("a", "표적 논문", 0.9, core_hits=["defect detection", "NPU"], domain_hits=["wafer"])
+    result = {"papers": [paper], "candidates_found": 1}
+    text, html = generate_digest(result, "p"), digest.generate_digest_html(result, "p")
+    for out in (text, html):
+        assert "★" not in out and "왜 걸렸나" not in out
+        assert "핵심 키워드: defect detection, NPU / 도메인 일치: wafer" in out
+    assert "1. 표적 논문" in text and "1. 표적 논문" in html
+    lines = text.splitlines()
+    assert lines[lines.index("1. 표적 논문") + 1].strip().startswith("핵심 키워드")
 
 
 def test_generate_digest_truncates_long_abstract_and_labels_it_excerpt_not_summary():
@@ -206,24 +182,25 @@ def test_repro_label_none_when_no_record(isolated_db):
 def test_verification_label_shows_flag_count(isolated_db):
     """(b) 불일치가 있으면 ⚠ flag k건을 병기한다."""
     _seed_verification(isolated_db["db"], "p1", total=31, matched=28)
+    # 라벨은 내부 확인용으로 그대로 계산한다 — 메일에는 싣지 않는다(2026-09-14 사용자 결정).
+    label = digest.verification_label("p1")
+    assert "[검증 28/31 통과]" in label and "⚠ flag 3건" in label
     text = _digest_for(_scored_paper("p1", "flag 있는 논문", 1.0))
-    assert "[검증 28/31 통과]" in text
-    assert "⚠ flag 3건" in text
+    assert "검증 28/31" not in text and "flag 3건" not in text
 
 
 def test_verification_label_no_flag_when_all_matched(isolated_db):
     """실측 재현: M1 종단 테스트의 2608.27184가 43/43이었다."""
     _seed_verification(isolated_db["db"], "p1", total=43, matched=43)
-    text = _digest_for(_scored_paper("p1", "완전 통과 논문", 1.0))
-    assert "[검증 43/43 통과]" in text
-    assert "flag" not in text
+    label = digest.verification_label("p1")
+    assert label == "[검증 43/43 통과]" and "flag" not in label
 
 
 def test_verification_missing_data_never_renders_as_pass(isolated_db):
     """(c) 검증 데이터가 없는 논문을 통과처럼 보이게 하면 안 된다
     (CLAUDE.md 8)."""
+    assert digest.verification_label("p1") == "[검증 데이터 없음]"
     text = _digest_for(_scored_paper("p1", "검증 안 된 논문", 1.0))
-    assert "[검증 데이터 없음]" in text
     assert "통과" not in text
 
 
@@ -232,8 +209,8 @@ def test_zero_numbers_never_renders_as_pass(isolated_db):
     자리라 그대로 쓰면 "완벽 통과"로 둔갑한다 — 실제 저장된 요약 52편 중
     1편이 이 경우라 가상의 위험이 아니다."""
     _seed_verification(isolated_db["db"], "p1", total=0, matched=0)
+    assert digest.verification_label("p1") == "[검증할 수치 없음]"
     text = _digest_for(_scored_paper("p1", "수치 없는 논문", 1.0))
-    assert "[검증할 수치 없음]" in text
     assert "0/0" not in text
     assert "통과" not in text
 
@@ -255,8 +232,9 @@ def test_skipped_paper_still_shows_real_db_status(isolated_db):
     _seed_verification(isolated_db["db"], "p1", total=10, matched=10)
     paper = _scored_paper("p1", "스킵된 논문", 1.0, deep_status="skipped: 이미 요약 저장됨")
     text = _digest_for(paper)
-    assert "[검증 10/10 통과]" in text
+    assert "[재현 " in text                      # DB 결과 경로(재현 라벨)로 간다
     assert "[미검증 · 초록 기반]" not in text
+    assert "[검증" not in text                   # 수치 검증 표시는 메일에서 뺐다(2026-09-14)
 
 
 def test_digest_generation_survives_missing_db(monkeypatch, tmp_path):
@@ -266,7 +244,7 @@ def test_digest_generation_survives_missing_db(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "does_not_exist.db")
     monkeypatch.setattr(server, "REPRO_DIR", tmp_path / "no_repro")
     text = _digest_for(_scored_paper("p1", "DB 없는 논문", 1.0))
-    assert "[검증 데이터 없음]" in text
+    assert digest.verification_label("p1") == "[검증 데이터 없음]"
     assert "[재현 –]" in text
 
 
@@ -354,8 +332,9 @@ def test_html_and_text_versions_coexist(isolated_db):
     paper = _scored_paper("p1", "논문", 1.0)
     text = _digest_for(paper)
     html = _html_for([paper])
-    assert "[검증 43/43 통과]" in text      # 텍스트판은 대괄호 라벨 유지
-    assert "검증 43/43 통과" in html        # HTML판은 chip 안에 들어감
+    assert "[재현 –]" in text               # 텍스트판은 대괄호 라벨 유지
+    assert "재현 –" in html                 # HTML판은 chip 안에 들어감
+    assert "검증 43/43" not in text and "검증 43/43" not in html   # 수치 검증은 두 판 모두 안 싣는다(2026-09-14)
     assert "<details" not in text           # 텍스트판에 태그가 새면 안 됨
 
 
@@ -409,7 +388,7 @@ def test_retraction_warning_appears_before_other_info(isolated_db):
     """경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 나와야 한다."""
     _seed_retraction(isolated_db["db"], "p1", 1)
     text = _digest_for(_scored_paper("p1", "철회 논문", 1.0))
-    assert text.index("[⚠ 철회된 논문]") < text.index("왜 걸렸나")
+    assert text.index("[⚠ 철회된 논문]") < text.index("(매칭 근거 없음)")   # 적중 줄보다 먼저(머리말은 2026-09-15 제거)
 
 
 def test_html_retraction_chip_forces_open(isolated_db):
@@ -472,7 +451,7 @@ def test_tldr_not_used_for_successfully_processed_paper(isolated_db):
     text = _digest_for(paper)
 
     assert "S2가 만든 요약" not in text
-    assert "[검증 10/10 통과]" in text
+    assert "[미검증 · S2 TLDR]" not in text
 
 
 # ---------------------------------------------------------------- 재현 실패 사유 (2026-09-01)
@@ -620,7 +599,10 @@ def test_paper_link_uses_doi_when_not_arxiv():
     assert digest.paper_link({"doi": "10.1/x"}) == "https://doi.org/10.1/x"
     # 업로드 PDF 의 합성 ID(pdf-*)는 arXiv 링크가 아니다
     assert digest.paper_link({"arxiv_id": "pdf-a", "doi": "10.1/y"}) == "https://doi.org/10.1/y"
-    assert digest.paper_link({"open_access_pdf": "http://x/y.pdf"}) == "http://x/y.pdf"
+    # 출처가 준 임의 URL 은 허용 목록을 통과할 때만(2026-09-16 보안): http·모르는 호스트는 링크 없이, 허용 호스트는 그대로
+    assert digest.paper_link({"open_access_pdf": "http://x/y.pdf"}) == ""
+    assert digest.paper_link({"open_access_pdf": "https://evil.example/y.pdf"}) == ""
+    assert digest.paper_link({"open_access_pdf": "https://www.mdpi.com/1/2/pdf"}) == "https://www.mdpi.com/1/2/pdf"
     assert digest.paper_link({}) == ""
 
 
@@ -641,7 +623,7 @@ def test_abstract_only_paper_stays_inside_its_own_toggle():
 
     assert html.startswith("<details")           # 상자 안에 있다
     assert html.rstrip().endswith("</details>")  # 밖으로 안 샌다
-    assert "2. [" in html                        # 번호가 있다
+    assert "2. 초록만 있는 논문" in html          # 번호가 있다(별점 괄호는 2026-09-15 제거)
     assert "초록만 있는 논문" in html              # 제목이 있다
     assert "doi.org/10.1/x" in html              # 링크가 있다
     assert "결함을 검출한다" in html               # 내용도 그대로
@@ -790,6 +772,9 @@ def test_narrative_is_labelled_as_llm_written_and_separated_from_counts():
 def test_narrative_warns_about_invented_numbers():
     text = digest.generate_digest(_scan_with_story(["17"]), "t")
     assert "원문에 없는 숫자" in text and "17" in text
+    # HTML 판도 같은 경고를 싣는다 — Gmail 은 HTML 을 보여준다(2026-09-14 외부 검토: 평문만 검사했다)
+    html = digest.generate_digest_html(_scan_with_story(["17"]), "t")
+    assert "원문에 없는 숫자" in html and "17" in html
 
 
 def test_digest_renders_without_a_narrative():
@@ -1492,3 +1477,122 @@ def test_interpretation_marks_written_as_predicates_become_sentences():
     assert f("근거가 없으므로 해석이다.") == "근거가 없다 (해석)."
     assert f("적용 가능성은 이 표본으로는 알 수 없다 (해석).") == "적용 가능성은 이 표본으로는 알 수 없다 (해석)."
     assert f("다른 활용형으로 끝나므로 해석이다") == "다른 활용형으로 끝나므로, 이는 해석이다"
+
+
+# ------------------------------------------- 주간 리뷰 가독성: 표·라벨·여백 (2026-09-14 사용자 요청)
+
+_WEEKLY_TABLE = "\n".join([
+    "▶ 주제별 편수 (지난주 대비)",
+    "   | 키워드 | 이번 주 | 지난주 | 증감 |",
+    "   | --- | --- | --- | --- |",
+    "   | vision-language-action | 6 | 0 | +6 |",
+    "   | defect detection | 2 | 5 | -3 |",
+    "   | robot <b>arm</b> | 1 | 1 | 0 |",
+    "   | sim-to-real | 2 | 2 | +0 |",
+    "",
+    "   지난주엔 있었으나 이번주 없음 : quantization",
+])
+
+
+def test_pipe_table_lines_become_one_html_table():
+    """이 테스트가 잡는 것: 표 줄 묶음을 한 줄씩 div 로 흘리는 것(예전 모양), 구분선 `---` 이
+    칸으로 새는 것, 칸 이스케이프 누락, 증감 칸 색(0 은 칠하지 않음)."""
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_TABLE})
+    assert html.count("<table") == 1 and html.count("<tr>") == 5        # 머리 1 + 행 4
+    assert "<th" in html and ">키워드</th>" in html
+    assert "---" not in html
+    assert "&lt;b&gt;arm&lt;/b&gt;" in html and "<b>arm" not in html
+    assert f'color:{digest._UP_COLOR};font-weight:600;">+6</span>' in html
+    assert f'color:{digest._DOWN_COLOR};font-weight:600;">-3</span>' in html
+    assert ">0</span>" not in html and ">+0</span>" not in html   # 변화 없음은 칠하지 않는다
+
+
+def test_long_weekly_label_is_bold_but_title_colon_is_not():
+    """라벨 머리 상한을 20자로 늘렸다 — 16자 라벨이 굵어져야 한다. 논문 제목의 `X: Y` 는
+    콜론 앞 공백이 없으므로 라벨이 아니다."""
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_TABLE})
+    assert "<strong>지난주엔 있었으나 이번주 없음</strong>" in html
+    line = digest._weekly_line_html("   HINT: Human-Intent Inception 은 의도를 쓴다")
+    assert "<strong>" not in line
+
+
+def test_blank_weekly_line_is_a_spacer_between_sections():
+    """빈 줄을 버리면 평문에서 띄운 절이 HTML 에서 붙는다."""
+    assert "height:8px" in digest._weekly_line_html("")
+    html = digest._weekly_review_html({"weekly_review": _WEEKLY_TABLE})
+    assert "height:8px" in html
+
+
+def test_narrative_lines_are_never_tables_or_labels():
+    """외부 검토(2026-09-14) 지적. 이 테스트가 잡는 것: LLM 서술 속 `| a | b |` 모양 줄을 표로 바꾸는 것
+    (구분선 한 줄이면 조용히 사라진다), ` : ` 가 든 서술 문장을 라벨로 굵히는 것, 서술이 끝난 뒤
+    코드가 만든 ■ 절의 표까지 끄는 것."""
+    review = "\n".join([
+        "▶ 서술 (LLM 이 쓴 것)",
+        "   | 모델 | 정확도 |",
+        "   | --- | --- |",
+        "   이 실험에서 관찰된 중요한 결과 : 모델은 개선되었다",
+        "■ 관측 신호",
+        "   | 시드 | 반환 |",
+        "   | --- | --- |",
+        "   | vla | 3 |",
+    ])
+    html = digest._weekly_review_html({"weekly_review": review})
+    assert html.count("<table") == 1                       # 관측 신호의 표 하나뿐
+    assert "| 모델 | 정확도 |" in html and "| --- | --- |" in html   # 서술 줄은 글 그대로 남는다
+    assert "<strong>이 실험에서" not in html
+
+
+def test_tables_with_different_indent_are_split_and_short_rows_padded():
+    """들여쓰기가 다른 연속 표는 다른 표다 — 합치면 둘째 표의 머리가 데이터 행이 된다."""
+    review = "\n".join(["   | A | B |", "   | 1 | 2 |", "  | C | D | E |", "  | 3 | 4 |"])
+    html = digest._weekly_review_html({"weekly_review": review})
+    assert html.count("<table") == 2
+    second = html.split("<table")[2]
+    assert second.count("<td") == 3                        # 모자란 칸은 빈 칸으로 채운다
+
+
+# ------------------------------------------- 받는 사람 날짜 · 소스 장애 표시 · 빈 갈래 일치 (2026-09-14 외부 검토)
+
+
+def test_digest_date_is_the_readers_date_not_utc(monkeypatch):
+    """05:00 KST 실행은 UTC 로 전날이다 — 9/14 아침 메일이 "2026-09-13" 으로 나갔다.
+    이 테스트가 잡는 것: 날짜를 UTC 로 되돌리는 것(평문·HTML 둘 다). 시각을 09-13 20:30 UTC
+    (= 09-14 05:30 KST)로 고정해 실행 시각과 무관하게 잡는다."""
+    from datetime import datetime as real_dt, timezone as tz
+
+    class Fixed(real_dt):
+        @classmethod
+        def now(cls, tzinfo=None):
+            instant = real_dt(2026, 9, 13, 20, 30, tzinfo=tz.utc)
+            return instant.astimezone(tzinfo) if tzinfo else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(digest, "datetime", Fixed)
+    scan = {"papers": [], "candidates_found": 0}
+    assert "연구 동향 브리핑 · 2026-09-14" in digest.generate_digest(scan, "t")
+    html = digest.generate_digest_html(scan, "t")
+    assert "2026-09-14" in html and "2026-09-13" not in html
+
+
+def test_arxiv_search_failure_is_visible_in_both_mails():
+    """로그에만 있던 "arXiv 검색 실패" 를 받는 사람도 봐야 요약 0편인 날을 조용한 날과 가른다.
+    이 테스트가 잡는 것: 장애 줄이 한쪽 판에서만 나오는 것, 정상인 날에도 나오는 것, 초록 대체 사실을 숨기는 것."""
+    paper = {"arxiv_id": "2609.09643", "title": "UNISON", "deep_status": "abstract_only",
+             "abstract_brief": "- 무엇을 하려 했는가 : 스케줄링", "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}
+    scan = {"papers": [paper], "candidates_found": 712, "run_status": "failed", "s2_status": "done",
+            "arxiv_error": "HTTPStatusError: Client error '429 Unknown Error'"}
+    text, html = digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")
+    for out in (text, html):
+        assert "arXiv 검색 실패(429)" in out and "Semantic Scholar 결과만 반영" in out
+        assert "arXiv 논문은 본문 대신 초록으로 정리했다" in out
+    ok = dict(scan, run_status="done", arxiv_error=None)
+    assert "검색 실패" not in digest.generate_digest(ok, "t") and "검색 실패" not in digest.generate_digest_html(ok, "t")
+
+
+def test_empty_digest_html_matches_plain_sections():
+    """빈 갈래에서 평문은 키워드 편수를 안 싣고 걸러진 것을 한 번 싣는데 HTML 만 편수를 싣고 두 번 실었다."""
+    scan = {"papers": [], "title_only_papers": [], "candidates_found": 3,
+            "core_hit_counts": {"vision": 1}, "excluded_count": 1}
+    text, html = digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")
+    assert ("키워드별 적중 편수" in text) == ("키워드별 적중 편수" in html)
+    assert text.count("걸러진 것") == html.count("걸러진 것")

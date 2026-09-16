@@ -27,6 +27,8 @@ Docker로 격리 실행해서 "설치+실행이 에러 없이 도는가"를 판�
 from __future__ import annotations
 
 import re
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -35,6 +37,7 @@ import tomllib
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import code_finder
 import storage
@@ -48,6 +51,7 @@ RUN_TIMEOUT = 120       # 스모크 테스트 자체는 짧아야 정상
 MEM_LIMIT = "2g"
 CPUS = "2"
 MAX_ATTEMPTS = 3
+MAX_REPO_KB = 500 * 1024
 
 # 시스템 패키지가 아닌 것 같은 최상위 디렉터리 이름 — 임포트 대상 추정 시 제외.
 # "services"·"common"·"utils" 류는 __init__.py 를 갖고 있어도 알파벳 순으로
@@ -449,6 +453,69 @@ _REPO_MISSING_RE = re.compile(
 )
 
 
+def _github_repo_slug(url: str) -> str | None:
+    """GitHub API가 받는 owner/repo만 추출하고 나머지 호스트는 건너뛴다."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or parsed.netloc.lower() != "github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1].removesuffix('.git')}"
+
+
+def _github_repo_size_kb(slug: str) -> int | None:
+    """gh 조회 실패는 clone을 막지 않고, 성공한 size만 사전 거부에 쓴다."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{slug}"],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        size = json.loads(result.stdout).get("size")
+        return int(size) if size is not None else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError,
+            subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
+def _git_supports_blob_filter() -> bool:
+    """로컬 git이 partial clone 문법을 아는 경우에만 필터를 붙인다."""
+    try:
+        result = subprocess.run(
+            ["git", "--version"], capture_output=True, text=True, timeout=10, check=True,
+        )
+        match = re.search(r"git version (\d+)\.(\d+)", result.stdout or "")
+        return bool(match and (int(match.group(1)), int(match.group(2))) >= (2, 19))
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
+def _du_size_kb(path: Path) -> int | None:
+    """clone 결과의 실제 디스크 사용량을 du의 KB 값으로 읽는다."""
+    if not path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["du", "-sk", str(path)], capture_output=True, text=True,
+            timeout=30, check=True,
+        )
+        return int(result.stdout.split()[0])
+    except (OSError, ValueError, IndexError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired):
+        return None
+
+
+def _remove_clone(path: Path) -> None:
+    """상한 초과로 거부한 이번 clone 디렉터리만 제거한다."""
+    if path.is_symlink():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _run_fail_detail(success: bool, timed_out: bool, network_suspected: bool) -> str:
     """실행 단계 실패를 한 단계 더 나눈 코드.
 
@@ -487,10 +554,20 @@ def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
         return None, "unsupported_host"
     name = re.sub(r"[^\w.-]", "_", url.rstrip("/").rsplit("/", 1)[-1]) or uuid.uuid4().hex[:8]
     dest = dest_parent / f"{name}-{uuid.uuid4().hex[:6]}"
+    slug = _github_repo_slug(url)
+    if slug:
+        github_size = _github_repo_size_kb(slug)
+        if github_size is not None and github_size > MAX_REPO_KB:
+            return None, "repo_too_large"
+    clone_cmd = ["git", "clone", "--depth", "1", "--no-recurse-submodules"]
+    if _git_supports_blob_filter():
+        clone_cmd.append("--filter=blob:limit=20m")
+    clone_cmd.extend([url, str(dest)])
+    env = os.environ.copy()
+    env["GIT_LFS_SKIP_SMUDGE"] = "1"
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
-            capture_output=True, text=True, timeout=120, check=True,
+            clone_cmd, capture_output=True, text=True, timeout=120, check=True, env=env,
         )
     except subprocess.TimeoutExpired:
         return None, "clone_timeout"
@@ -499,6 +576,10 @@ def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
         if _REPO_MISSING_RE.search(stderr):
             return None, "repo_not_found"
         return None, "clone_failed"
+    size_kb = _du_size_kb(dest)
+    if size_kb is not None and size_kb > MAX_REPO_KB:
+        _remove_clone(dest)
+        return None, "repo_too_large"
     return dest, ""
 
 

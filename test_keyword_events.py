@@ -74,6 +74,48 @@ def test_rollback_은_actor_가_rollback_이지만_되살린_세대의_provenanc
     assert anchors == {"a", "u"} and basis == "provenance"
 
 
+def test_기대_revision이_다르면_프로필_쓰기와_이벤트를_함께_롤백한다(tmp_path):
+    """이 테스트가 잡는 것: 검사한 revision이 바뀐 뒤 profile_keywords·revision·이벤트를 부분적으로
+    쓰는 것(외부 검토 2026-09-14)."""
+    import pytest
+    db = tmp_path / "t.db"
+    first = _create(db, ["A"])
+    _create(db, ["A", "B"])
+    before = rp.get_profile(db, "p")
+    event_count = len(_events(db))
+    with pytest.raises(ValueError, match="expected_revision"):
+        rp.create_profile(db, "p", "이름", core_topics=["C"], expected_revision=first)
+    assert rp.get_profile(db, "p")["core_topics"] == before["core_topics"]
+    assert rp.current_revision(db, "p") == 2
+    assert len(_events(db)) == event_count
+
+
+def test_기각_이벤트의_ref_id와_제안_id가_같다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: proposal_id를 기각 이벤트 뒤에 생성해 advisor_events.ref_id가 NULL이 되는 것
+    (외부 검토 2026-09-14)."""
+    import asyncio
+    import test_profile_advisor as T
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p", "이름", core_topics=["target term", "trend term"],
+                      core_weights={"target term": 1.0, "trend term": 0.6}, exclude=["banned"],
+                      max_items=2, s2_seeds=["target term"])
+    T._seed_corpus(db)
+    rules = {"max_core_changes": 0, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    adv.init_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, ?)",
+                    (adv.MODE_PROPOSAL_ONLY, json.dumps(rules)))
+    proposal = json.dumps({"decision": "propose", "proposals": [{
+        "action": "change_core_tier", "term": "trend term", "proposed_tier": 1.0,
+        "evidence_paper_keys": ["a1", "a3"]}]})
+    out = asyncio.run(adv.run_weekly(db, "p", T.FakeClient([T.gemini_ok(proposal)]), T.START, T.END, now=T.NOW))
+    assert out["gate"] == pi.HELD
+    with sqlite3.connect(db) as con:
+        proposal_id = con.execute("SELECT proposal_id FROM advisor_proposals").fetchone()[0]
+        ref_id = con.execute("SELECT ref_id FROM advisor_events WHERE kind='rejected'").fetchone()[0]
+    assert proposal_id and ref_id == proposal_id
+
+
 def test_이벤트_표_도입_전_프로필은_현재_활성_키워드를_첫_세대로_bootstrap_한다(tmp_path):
     """이 테스트가 잡는 것: 이벤트가 없는 옛 프로필의 키워드를 전부 user 로 가정하는 것(처음 출현
     이력이 advisor 인 것은 advisor 여야 한다), bootstrap 을 두 번 하는 것."""
@@ -199,6 +241,9 @@ def test_게이트_판정은_실제로_쓴_규칙과_함께_추가만_되는_표
     an2 = pi.analyze_and_store(db, snap, prof, after, 2, rules=rules)
     dec2 = pi.latest_decision(db, an2["analysis_id"])
     assert dec2["gate_status"] == pi.ELIGIBLE and json.loads(dec2["effective_rules_json"]) == rules and dec2["rules_hash"]
+    assert adv.apply_analysis(db, "p", an2["analysis_id"])["reason"] == "gate:insufficient_evidence"
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE advisor_settings SET rules_json=? WHERE profile_id='p'", (json.dumps(rules),))
     assert adv.apply_analysis(db, "p", an2["analysis_id"])["applied"] is True
 
 
@@ -270,3 +315,39 @@ def test_묶음이_held_여도_혼자서_통과하는_제안은_기각되지_않
     with sqlite3.connect(db) as con:
         rej = [json.loads(r[0])["term"] for r in con.execute("SELECT detail_json FROM advisor_events WHERE kind='rejected'")]
     assert out3["gate"] == pi.HELD and sorted(rej) == ["target term", "trend term"]
+
+
+def test_expected_revision_check_holds_the_write_lock(tmp_path):
+    """대조와 쓰기가 한 잠금 안이어야 한다. 이 테스트가 잡는 것: expected_revision 대조를 잠금 없이 해서
+    다른 연결이 그 사이에 쓸 수 있는 것 — 잠금을 잡았으면 다른 연결의 즉시 쓰기가 막힌다."""
+    import sqlite3, threading
+    import research_profile as rp
+    db = tmp_path / "t.db"
+    rp.create_profile(db, "p", "P", ["alpha"])
+    rev = rp.current_revision(db, "p")
+    blocked = {}
+    real_connect = sqlite3.connect
+
+    def spying_connect(*a, **k):
+        con = real_connect(*a, **k)
+        class Wrap:
+            def __getattr__(self, n): return getattr(con, n)
+            def __enter__(self): con.__enter__(); return self
+            def __exit__(self, *e): return con.__exit__(*e)
+            def execute(self, sql, *args):
+                out = con.execute(sql, *args)
+                if sql.startswith("SELECT COALESCE(MAX(revision)") and "probe" not in blocked:
+                    other = real_connect(str(db), timeout=0)
+                    try:
+                        other.execute("BEGIN IMMEDIATE"); blocked["probe"] = False; other.rollback()
+                    except sqlite3.OperationalError:
+                        blocked["probe"] = True
+                    finally:
+                        other.close()
+                return out
+        return Wrap()
+
+    import unittest.mock as um
+    with um.patch.object(rp.sqlite3, "connect", spying_connect):
+        rp.create_profile(db, "p", "P", ["alpha", "beta"], expected_revision=rev)
+    assert blocked.get("probe") is True

@@ -169,3 +169,21 @@ def test_other_non_code_repo_shapes(url):
 ])
 def test_real_code_repos_are_not_flagged(url):
     assert is_non_code_repo(url) is False
+
+
+def test_github_search_finds_gh_outside_cron_path_and_says_so_when_missing(monkeypatch, capsys, tmp_path):
+    """2026-09-16 실측(새벽 cron 에서 하루치 GitHub 검색이 전부 실패했다). 이 테스트가 잡는 것: PATH 에 gh 가 없을 때 `~/.local/bin/gh`
+    를 찾지 않는 것, 아예 없을 때 예외를 올리거나 조용히 빈 결과를 돌려 원인을 감추는 것."""
+    import code_finder
+    from pathlib import Path
+    monkeypatch.setattr(code_finder.shutil, "which", lambda name: None)
+    fake_home = tmp_path
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+    gh = fake_home / ".local" / "bin" / "gh"
+    gh.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    assert code_finder.gh_executable() == str(gh)
+    gh.unlink()
+    assert code_finder.gh_executable() is None
+    assert code_finder._real_github_search("robot manipulation") == []    # conftest 가 보관한 원본(가짜 거부 함수가 아니다)
+    assert "gh 실행 파일을 찾지 못했다" in capsys.readouterr().out

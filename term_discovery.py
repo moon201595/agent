@@ -15,22 +15,22 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import profile_impact
 import profile_scoring
 import trend_report
+import term_hygiene
 
 DISCOVERY_VERSION = "discovery-v1"
 DEFAULT_RULES: dict = {
     "min_papers": 3,          # 이 편수 미만은 우연이다(emerging_terms 와 같은 기준)
     "top_terms": 3,           # 제안기에 보낼 용어 수
     "evidence_per_term": 2,   # 용어당 증거 논문 수
-    "min_seed_breadth": 2,    # 씨앗 축 후보의 최소 독립 씨앗 수 — 단일 씨앗 반복은 검색 잡음 진단으로만
+    "min_seed_breadth": 2,    # 시드 축 후보의 최소 독립 시드 수 — 단일 시드 반복은 검색 잡음 진단으로만
 }
 
 
@@ -82,27 +82,23 @@ def exploration_pool(db: Path, profile_id: str, start: datetime, end: datetime) 
 # ("large language models", "deep learning", "multimodal large language"). 낱말 하나라도
 # 밖에 있으면 살린다 — "vision language models"·"reinforcement learning" 은 후보다.
 # 실측(2026-09-12, 9/11 탈락 429편): 상위 12개 중 8개가 이런 우산 용어였다.
-_GENERIC_WORDS = frozenset("""
-large language model models llm llms machine learning deep artificial intelligence
-neural network networks multimodal generative pretrained pre trained transformer transformers mllm mllms
-""".split())
+# 우산어 목록은 term_hygiene.GENERIC_WORDS 로 옮겼다(2026-09-13, §8-109). 이름은 남긴다.
+_GENERIC_WORDS = term_hygiene.GENERIC_WORDS
 
 
-_SEGMENT_RE = re.compile(r"[.;:!?\n]+")
+_SEGMENT_RE = term_hygiene.SEGMENT_RE
 
 
-def _grams(text: str) -> set[str]:
+def _grams(text: str, diag: Counter | None = None) -> set[str]:
     """문장 경계를 넘는 조합을 만들지 않는다 — 제목과 초록을 이어 붙이면 'factory item.
-    spiking sensor' 에서 'item spiking sensor' 가 생겨 진짜 용어를 흡수한다(실측 2026-09-12)."""
-    grams: set[str] = set()
-    for seg in _SEGMENT_RE.split(text):
-        for n in (2, 3):
-            grams.update(trend_report._ngrams(seg, n))
-    return grams
+    spiking sensor' 에서 'item spiking sensor' 가 생겨 진짜 용어를 흡수한다(실측 2026-09-12).
+    판정은 term_hygiene.candidate_ngrams 하나다. `diag` 는 버린 사유 집계(로컬 진단용)."""
+    return term_hygiene.candidate_ngrams(text, diag)
 
 
 def _generic(term: str) -> bool:
-    return all(w in _GENERIC_WORDS for w in term.split())
+    """all-token 우산어 판정 — 하이픈 결합형(`pre-trained transformer`)도 낱말로 풀어 본다."""
+    return term_hygiene.is_umbrella(term)
 
 
 def canonical(term: str) -> str:
@@ -112,13 +108,10 @@ def canonical(term: str) -> str:
     외부 검토: 매칭 결함이 만든 표기 변형에 shadow 검색 비용을 쓰면 안 된다)."""
     words = " ".join(term.lower().replace("-", " ").split()).split()
     if words:
-        last = words[-1]
-        if last.endswith("ies") and len(last) > 4:
-            words[-1] = last[:-3] + "y"
-        elif last.endswith("es") and len(last) > 4 and last[-3] in "sxz":
-            words[-1] = last[:-2]
-        elif last.endswith("s") and not last.endswith("ss") and len(last) > 3:
-            words[-1] = last[:-1]
+        # canonical 은 표시 용어의 표기 변형 비교만 하므로 마지막 토큰만 단수화한다.
+        # 반면 term_hygiene.norm_tokens 는 구절·포함 판정을 위해 전체 토큰을 정규화한다
+        # (2026-09-14 외부 검토). 내부 토큰까지 바꾸면 복합 용어의 원문 의미를 흔든다.
+        words[-1] = term_hygiene.singular(words[-1])
     return " ".join(words)
 
 
@@ -136,23 +129,35 @@ def is_variant_of_known(term: str, profile: dict) -> str | None:
     return None
 
 
-def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list[dict]:
-    """후보 용어와 증거 논문. 전부 결정적 — 편수 → 도메인 적중 편수 → 씨앗 편수 → 최신 →
+def discover(pool: list[dict], profile: dict, rules: dict | None = None,
+             diag: Counter | None = None) -> list[dict]:
+    """후보 용어와 증거 논문. 전부 결정적 — 편수 → 도메인 적중 편수 → 시드 편수 → 최신 →
     용어 순. 현재 키워드·도메인·제외어와 포함 관계인 조합은 뺀다(그건 이미 아는 말이다).
-    더 긴 조합에 그대로 들어 있는 짧은 조합은 뺀다(trend_report._subsumed)."""
+    더 긴 조합에 그대로 들어 있는 짧은 조합은 뺀다(trend_report._subsumed).
+    `diag` 를 주면 버린 사유를 단계별로 센다 — 로컬 로그·재생 평가용이고 제안기 입력에는
+    안 들어간다(build_input 이 term·evidence 만 싣는다)."""
     r = {**DEFAULT_RULES, **(rules or {})}
     known = _known_terms(profile)
     papers_of: dict[str, list[dict]] = defaultdict(list)
     for p in pool:
-        for g in _grams(f"{p['title']}. {p['abstract']}"):
-            if _generic(g) or any(k in g or g in k for k in known):
+        for g in _grams(f"{p['title']}. {p['abstract']}", diag):
+            if term_hygiene.overlaps_known(g, known):
+                if diag is not None:
+                    diag["known_overlap"] += 1
                 continue
             papers_of[g].append(p)
     cand = [g for g, ps in papers_of.items() if len(ps) >= r["min_papers"]]
-    cand = [g for g in cand if not trend_report._subsumed(g, set(cand))]
+    if diag is not None:
+        diag["min_papers"] += len(papers_of) - len(cand)
+    kept = [g for g in cand if not trend_report._subsumed(g, set(cand))]
+    if diag is not None:
+        diag["subsumed"] += len(cand) - len(kept)
+    cand = kept
     # 기존 키워드의 표기 변형은 후보가 아니다 — 매칭 구멍은 여기서 제안으로 새지 않고
     # 주간 리뷰의 "표기 변형" 줄로만 보고한다(호출부가 variants 를 따로 받는다).
     variants = {g: is_variant_of_known(g, profile) for g in cand}
+    if diag is not None:
+        diag["known_variant"] += sum(1 for g in cand if variants[g] is not None)
     cand = [g for g in cand if variants[g] is None]
 
     def dom_ratio(g: str) -> float:
@@ -160,9 +165,9 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
         return sum(1 for p in ps if p["domain_hits"]) / len(ps)
 
     def seed_breadth(g: str) -> int:
-        """서로 다른 씨앗 경로 수. "씨앗으로 들어왔는가"(비율)는 관련도가 아니라 S2 관련도 잡음의
-        표시였다 — 실측 'foreign language' 4편 전부 한 씨앗(외부 검토 2026-09-12). 독립된 씨앗
-        둘 이상에서 반복돼야 씨앗 축의 후보다."""
+        """서로 다른 시드 경로 수. "시드로 들어왔는가"(비율)는 관련도가 아니라 S2 관련도 잡음의
+        표시였다 — 실측 'foreign language' 4편 전부 한 시드(외부 검토 2026-09-12). 독립된 시드
+        둘 이상에서 반복돼야 시드 축의 후보다."""
         return len({sd for p in papers_of[g] for sd in p["s2_seeds"]})
 
     def newest(g: str) -> int:
@@ -171,7 +176,7 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
     # **차선(lane) 선발** — support 를 절대 1순위로 두면 잡음이 커질수록 범용 용어가
     # 위를 독식한다(실측 9/12: reinforcement learning · random forest). 가중합도 안 만든다.
     # 자리를 셋으로 나눠 각 자리를 다른 축의 1등에게 준다: ① support ② 도메인 연관 비율
-    # ③ 씨앗 연관 비율·최신. 자리가 남으면(후보 부족·중복) support 순으로 채운다.
+    # ③ 시드 연관 비율·최신. 자리가 남으면(후보 부족·중복) support 순으로 채운다.
     lanes = [
         sorted(cand, key=lambda g: (-len(papers_of[g]), -dom_ratio(g), g)),
         sorted([g for g in cand if dom_ratio(g) > 0], key=lambda g: (-dom_ratio(g), -len(papers_of[g]), g)),
@@ -208,8 +213,8 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None) -> list
 
 
 def single_seed_noise(pool: list[dict], profile: dict, rules: dict | None = None, top: int = 5) -> list[dict]:
-    """한 씨앗에서만 반복된 미등록 용어 — 후보가 아니라 **검색 잡음 진단**이다. 그 씨앗이
-    관련도 순위로 무엇을 끌어오는지 보여 주며, 씨앗 교체 판단의 재료가 된다(주간 리뷰 전용)."""
+    """한 시드에서만 반복된 미등록 용어 — 후보가 아니라 **검색 잡음 진단**이다. 그 시드가
+    관련도 순위로 무엇을 끌어오는지 보여 주며, 시드 교체 판단의 재료가 된다(주간 리뷰 전용)."""
     r = {**DEFAULT_RULES, **(rules or {})}
     known = _known_terms(profile)
     seeds_of: dict[str, set[str]] = defaultdict(set)
@@ -218,14 +223,19 @@ def single_seed_noise(pool: list[dict], profile: dict, rules: dict | None = None
         if not p["s2_seeds"]:
             continue
         for g in _grams(f"{p['title']}. {p['abstract']}"):
-            if _generic(g) or any(k in g or g in k for k in known) or is_variant_of_known(g, profile):
+            if term_hygiene.overlaps_known(g, known) or is_variant_of_known(g, profile):
                 continue
             counts[g] += 1
             seeds_of[g].update(p["s2_seeds"])
-    out = [{"term": g, "support": n, "seed": next(iter(seeds_of[g]))}
+    out = [{"term": g, "support": n, "seed": _representative_seed(seeds_of[g])}
            for g, n in counts.items() if n >= r["min_papers"] and len(seeds_of[g]) == 1]
     out.sort(key=lambda x: (-x["support"], x["term"]))
     return out[:top]
+
+
+def _representative_seed(seeds: set[str]) -> str:
+    """대표 시드를 정렬해 고른다 — set 순회 해시 순서는 실행마다 달라질 수 있다."""
+    return sorted(seeds)[0]
 
 
 def known_variants(pool: list[dict], profile: dict, rules: dict | None = None) -> list[dict]:
@@ -267,21 +277,23 @@ def snippet(text: str, term: str, chars: int) -> str:
 
 def format_discovery(terms: list[dict], pool_size: int | None,
                      variants: list[dict] | None = None, noise: list[dict] | None = None) -> list[str]:
-    """주간 리뷰용 — 코드가 만든 절, 편수를 쓴다(메일에는 써도 된다, 프롬프트에는 안 간다)."""
+    """주간 리뷰용 — 코드가 만든 절, 편수를 쓴다(메일에는 써도 된다, 프롬프트에는 안 간다).
+    후보·표기 변형·잡음은 파이프 표로 낸다(2026-09-14 사용자 요청 — 가독성)."""
+    from trend_report import table_lines
     if pool_size is None:
         return ["▶ 키워드에 안 걸린 논문의 반복어: 관측 이력 없음 — 미측정"]
-    lines = [f"▶ 키워드에 안 걸린 논문에서 반복된 말 (탐색 풀 {pool_size}편 · 제안기가 검토한다)"]
+    lines = [f"▶ 키워드에 안 걸린 논문에서 자주 나오는 용어 (탐색 풀 {pool_size}편 · 제안기가 검토한다)"]
     if not terms:
         lines.append("   없음 — 3편 이상 반복된 미등록 조합이 없다")
-    for t in terms:
-        lines.append(f"   [{t.get('lane', '-')}] {t['term']}: {t['support']}편 · 도메인 적중 {t['domain_papers']}"
-                     f" · 씨앗 {t.get('seed_breadth', 0)}종/{t['seed_papers']}편 · 예: {t['evidence'][0]['title'][:60] if t['evidence'] else '-'}")
+    lines += table_lines(["축", "용어", "편수", "도메인 적중", "시드", "예"],
+                         [[t.get("lane", "-"), t["term"], t["support"], t["domain_papers"],
+                           f"{t.get('seed_breadth', 0)}종/{t['seed_papers']}편",
+                           t["evidence"][0]["title"][:60] if t["evidence"] else "-"] for t in terms])
     if variants:
-        lines.append("   기존 키워드의 표기 변형이라 제안하지 않은 것 (키워드 매칭이 놓치는 표기):")
-        for v in variants[:5]:
-            lines.append(f"     {v['term']} ≈ {v['known']} · {v['support']}편")
+        lines += ["", "   기존 키워드의 표기 변형 : 제안하지 않는다 — 키워드 매칭이 놓치는 표기"]
+        lines += table_lines(["표기", "기존 키워드", "편수"],
+                             [[v["term"], v["known"], v["support"]] for v in variants[:5]])
     if noise:
-        lines.append("   한 씨앗에서만 반복된 말 — 후보가 아니라 그 씨앗의 검색 잡음 진단:")
-        for x in noise:
-            lines.append(f"     {x['term']} · {x['support']}편 · 씨앗 '{x['seed']}'")
+        lines += ["", "   한 시드에서만 반복된 말 : 후보가 아니라 그 시드의 검색 잡음 진단"]
+        lines += table_lines(["용어", "편수", "시드"], [[x["term"], x["support"], x["seed"]] for x in noise])
     return lines

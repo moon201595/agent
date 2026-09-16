@@ -172,6 +172,17 @@ def test_first_discovery_is_independent_of_publication_and_summary_time(db):
     assert "발표량 증감이 아니다" in report
 
 
+def test_collection_table_merges_by_source_and_status_but_keeps_counts_per_signature(db):
+    """이 테스트가 잡는 것: 지문마다 줄이 갈라져 표가 길어지는 것, 합치면서 지문별 횟수를 버리는 것,
+    합계가 틀리는 것."""
+    now = datetime.now(timezone.utc)
+    rp.record_run(db, "team", "s2", "robot", now, now, "partial", 2, signature="old")
+    rp.record_run(db, "team", "s2", "robot", now, now, "partial", 1, signature="old")
+    rp.record_run(db, "team", "s2", "robotics", now, now, "partial", 0, signature="new")
+    report = asyncio.run(tr.build(db, rp.get_profile(db, "team"), client=None))
+    assert "| 이번 | s2 | partial | 3 | new(1)·old(2) |" in report
+
+
 def test_scope_discloses_source_failures_and_query_changes(db):
     now = datetime.now(timezone.utc)
     rp.record_run(db, "team", "s2", "robot", now, now, "partial", 2, signature="old")

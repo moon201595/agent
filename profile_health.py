@@ -26,6 +26,8 @@ profile_keywords 에 provenance 컬럼이 아직 없으므로(⑨ 때 붙인다)
 from __future__ import annotations
 
 import json
+import math
+from numbers import Real
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,7 @@ INSUFFICIENT_BASELINE = "insufficient_baseline"
 INSUFFICIENT_RECENT = "insufficient_recent"
 UNMEASURED_REQUIRED = "unmeasured_required"   # 규칙이 요구하는 지표가 미측정 — fail-closed
 MIXED_MODES = "mixed_modes"                   # as_observed 와 recomputed 가 한 창에 섞임
+MIXED_REVISIONS = "mixed_revisions"           # 프로필 revision 이 다른 창을 함께 비교함
 OK = "ok"
 DETERIORATED = "deteriorated"
 
@@ -121,6 +124,33 @@ def _scan_rows(con: sqlite3.Connection, scan_id: str) -> tuple[dict | None, list
     return dict(run), rows
 
 
+def _timestamp(value: str) -> datetime:
+    """SQLite 시각을 비교 가능한 UTC 시각으로 바꾼다(2026-09-14 외부 검토)."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _revision_at(con: sqlite3.Connection, profile_id: str, started_at: str) -> int:
+    """스캔 시각 직전의 마지막 profile_revisions.revision 을 유도한다.
+
+    scan_runs 에 revision 컬럼을 추가하지 않는 조건이므로 revision 행의 시각을 기준으로
+    복원한다. revision 기록 전의 동결 전 스캔은 0 으로 남긴다 — 기준선은 2026-09-14부터
+    센다는 한계를 둔다(외부 검토 2026-09-14).
+    """
+    scan_time = _timestamp(started_at)
+    candidates = []
+    for revision, created_at in con.execute(
+            "SELECT revision, created_at FROM profile_revisions WHERE profile_id=?",
+            (profile_id,)):
+        try:
+            created = _timestamp(created_at)
+        except (TypeError, ValueError):
+            continue
+        if created <= scan_time:
+            candidates.append((created, int(revision)))
+    return max(candidates)[1] if candidates else 0
+
+
 def _hits(paper: dict, profile: dict) -> tuple[set[str], bool]:
     """(core 적중 집합, 제외어 적중 여부). score_paper 는 제외되면 core_hits 를 비우므로
     제외어 없는 프로필로 한 번 더 채점해 적중을 따로 얻는다 — 가드(다의어)는 그대로 탄다."""
@@ -141,10 +171,13 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
     """
     with sqlite3.connect(db) as con:
         run, rows = _scan_rows(con, scan_id)
-        if not run or not rows:
+        # observations 가 NULL이면 finish_scan 이 성공 표식을 쓰기 전 중단된 실행이다.
+        # 후보 행이나 health 행이 일부 남아도 건강 기준선에 넣지 않는다(2026-09-14 외부 검토).
+        if not run or run.get("observations") is None or not rows:
             return None
         profile = json.loads(run["profile_snapshot"])
         profile["profile_id"] = run["profile_id"]
+        profile_revision = _revision_at(con, run["profile_id"], run["started_at"])
         k = int(profile.get("max_items") or 6)
         core = {c.lower() for c in profile.get("core_topics") or []}
         frozen = con.execute("SELECT * FROM scan_health WHERE scan_id=?", (scan_id,)).fetchone()
@@ -191,6 +224,7 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
             else "recomputed" if hits_mode == "recomputed" and not frozen else "partial")
     out = {
         "scan_id": scan_id, "profile_id": run["profile_id"], "started_at": run["started_at"],
+        "profile_revision": profile_revision,
         "mode": mode, "hits_mode": hits_mode, "frozen": bool(frozen),
         # 정책·지표 버전 — 매처(match-v2)나 H7 정의가 바뀐 전후를 한 기준선에 섞지 않는다
         "policy_version": run["policy_version"],
@@ -256,15 +290,32 @@ def series(db: Path, profile_id: str, start: datetime, end: datetime) -> list[di
     H7 은 `previous_profile` 이 있을 때 센다 — 처음 구현은 여기서 prev_profile 을 안 넘겨
     운영 경로에서 늘 미측정이었다(외부 검토 2026-09-12)."""
     with sqlite3.connect(db) as con:
-        ids = [r[0] for r in con.execute(
-            "SELECT scan_id FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? "
-            "ORDER BY started_at", (profile_id, start.isoformat(), end.isoformat()))]
-    out = []
-    for sid in ids:
+        con.row_factory = sqlite3.Row
+        runs = [dict(r) for r in con.execute(
+            "SELECT scan_id, observations, observation_error FROM scan_runs "
+            "WHERE profile_id=? AND started_at >= ? AND started_at < ? ORDER BY started_at",
+            (profile_id, start.isoformat(), end.isoformat()))]
+    # observations 가 성공 완료 표식이다. 미완 실행은 metric 행으로 만들지 않되, 주간 표본에서
+    # 몇 회 빠졌는지는 표시한다 — 0115d92241f2 같은 중단 실행을 조용히 정상 스캔으로 세지 않는다
+    # (2026-09-14 외부 검토). 동결 전 스캔의 anchor 재구성은 여기서 하지 않는다.
+    out = HealthSeries(incomplete_scans=sum(r["observations"] is None and not r["observation_error"]
+                                             for r in runs))
+    for run in runs:
+        if run["observations"] is None:
+            continue
+        sid = run["scan_id"]
         m = scan_metrics(db, sid, prev_profile=previous_profile(db, profile_id, sid))
         if m:
             out.append(m)
     return out
+
+
+class HealthSeries(list[dict]):
+    """완료 지표 목록에 미완 스캔 수를 붙이는 읽기 전용 전달 객체다."""
+
+    def __init__(self, rows: list[dict] | None = None, *, incomplete_scans: int = 0) -> None:
+        super().__init__(rows or [])
+        self.incomplete_scans = incomplete_scans
 
 
 _COMPARED = ("anchor_share_topk", "exclude_collision_auto", "top_tier_share_topk",
@@ -282,14 +333,33 @@ def _span_days(rows: list[dict]) -> float | None:
 
 
 def _median(values: list) -> float | None:
-    xs = [v for v in values if v is not None]
+    xs = [_number(v) for v in values]
+    xs = [v for v in xs if v is not None]
     return median(xs) if xs else None
+
+
+def _number(value: object) -> float | None:
+    """유한한 실수만 측정값·규칙값으로 인정한다 — NaN·inf·문자열은 미설정/미측정이다."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _complete_metric_rows(rows: list[dict]) -> list[dict]:
+    """호출부가 전달한 미완 표시도 판정 전에 제거한다(2026-09-14 외부 검토)."""
+    return [r for r in rows
+            if not r.get("incomplete", False) and not r.get("_incomplete", False)
+            and r.get("completed", True) is not False and r.get("scan_complete", True) is not False]
 
 
 def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) -> dict:
     """악화 판정. 규칙이 하나도 안 정해졌으면 unconfigured — 판정하지 않는다.
     기준선·최근 창이 짧으면 판정하지 않는다. 걸린 사유는 전부 남긴다."""
-    rules = {**DEFAULT_HEALTH_RULES, **(rules or {})}
+    baseline = _complete_metric_rows(baseline)
+    recent = _complete_metric_rows(recent)
+    raw_rules = {**DEFAULT_HEALTH_RULES, **(rules or {})}
+    rules = {key: _number(value) for key, value in raw_rules.items()}
     base_med = {m: _median([s.get(m) for s in baseline]) for m in _COMPARED}
     rec_med = {m: _median([s.get(m) for s in recent]) for m in _COMPARED}
     out = {"version": HEALTH_VERSION, "baseline_scans": len(baseline), "recent_scans": len(recent),
@@ -310,12 +380,43 @@ def assess(baseline: list[dict], recent: list[dict], rules: dict | None = None) 
         if len(versions) > 1:
             return {**out, "status": MIXED_MODES, "reasons": [f"{field}={sorted(map(str, versions))}"]}
 
+    revision_values = []
+    for row in baseline + recent:
+        if "profile_revision" in row:
+            revision_values.append(row.get("profile_revision"))
+        elif "revision" in row:
+            revision_values.append(row.get("revision"))
+    if revision_values and len(set(revision_values)) > 1:
+        return {**out, "status": MIXED_REVISIONS,
+                "reasons": [f"profile_revision={sorted(map(str, set(revision_values)))}"]}
+
     checks = [("min_anchor_share_topk", "anchor_share_topk", "min"),
               ("max_exclude_collision_auto", "exclude_collision_auto", "max"),
               ("min_top_tier_share_topk", "top_tier_share_topk", "min"),
               ("min_topk_retention", "topk_retention_vs_prev", "min"),
               ("min_freshness_topk", "freshness_topk", "min"),
               ("min_new_eligible_from_auto", "new_eligible_from_auto", "min")]
+    required = {metric for rule, metric, _kind in checks if rules.get(rule) is not None}
+    if rules.get("max_drop_from_baseline") is not None:
+        required.update(("anchor_share_topk", "top_tier_share_topk", "freshness_topk"))
+    baseline_counts = {metric: sum(_number(row.get(metric)) is not None for row in baseline)
+                       for metric in required}
+    recent_counts = {metric: sum(_number(row.get(metric)) is not None for row in recent)
+                     for metric in required}
+    out["baseline_metric_counts"] = baseline_counts
+    out["recent_metric_counts"] = recent_counts
+    missing_baseline = [metric for metric in sorted(required)
+                        if baseline_counts[metric] < MIN_BASELINE_SCANS]
+    if missing_baseline:
+        return {**out, "status": INSUFFICIENT_BASELINE,
+                "reasons": [f"{metric} measured {baseline_counts[metric]}/{MIN_BASELINE_SCANS}"
+                            for metric in missing_baseline]}
+    missing_recent = [metric for metric in sorted(required)
+                      if recent_counts[metric] < MIN_RECENT_SCANS]
+    if missing_recent:
+        return {**out, "status": INSUFFICIENT_RECENT,
+                "reasons": [f"{metric} measured {recent_counts[metric]}/{MIN_RECENT_SCANS}"
+                            for metric in missing_recent]}
     reasons, unmeasured = [], []
     for rule, metric, kind in checks:
         limit = rules.get(rule)
@@ -348,8 +449,10 @@ def _fmt(v: float | None) -> str:
 def format_health(rows: list[dict]) -> list[str]:
     """코드가 만든 절 — LLM 프롬프트에는 들어가지 않는다(규칙 4: 내부 집계)."""
     lines = ["■ 프로필 건강 지표 (스캔별 · 당시 프로필로 재채점 · 라벨 없는 대리 지표)"]
+    incomplete = getattr(rows, "incomplete_scans", 0)
     if not rows:
-        lines.append("  관측 이력 없음 — 미측정")
+        lines.append((f"  완료 스캔 0회 · 미완 {incomplete}회 — 미측정"
+                      if incomplete else "  관측 이력 없음 — 미측정"))
         return lines
     n = len(rows)
     med = {m: _median([r.get(m) for r in rows]) for m in
@@ -357,21 +460,32 @@ def format_health(rows: list[dict]) -> list[str]:
             "freshness_topk", "mean_delay_days_topk", "exclude_collision_auto",
             "topk_retention_vs_prev", "new_eligible_from_auto")}
     modes = sorted({r.get("mode") for r in rows} - {None})
-    lines.append(f"  스캔 {n}회 · anchor {rows[-1]['anchors']}개({rows[-1]['anchor_basis']})"
+    lines.append(f"  표본 : 스캔 {n}회"
+                 + (f" · 미완 {incomplete}회" if incomplete else "")
+                 + f" · anchor {rows[-1]['anchors']}개({rows[-1]['anchor_basis']})"
                  + (f" · auto {len(rows[-1]['auto'])}개" if rows[-1]["auto"] else " · auto 없음")
-                 + f" · 적중 근거 {'/'.join(modes)}"
-                 + (" (recomputed·partial 은 관측 시점에 얼리지 못한 옛 스캔 — 현재 코드·이력으로 다시 셈)"
-                    if modes != ["as_observed"] else ""))
-    lines.append(f"  상위 K: anchor 적중 {_fmt(med['anchor_share_topk'])} · 최상위 계층 "
-                 f"{_fmt(med['top_tier_share_topk'])} · 최신일 {_fmt(med['freshness_topk'])} · "
-                 f"평균 지연 {_fmt(med['mean_delay_days_topk'])}일 (중앙값)")
-    lines.append(f"  적격 풀: anchor 적중 {_fmt(med['anchor_share_eligible'])}")
-    lines.append(f"  auto 계열: 제외어 충돌 {_fmt(med['exclude_collision_auto'])} · "
-                 f"auto 덕에 새로 적격 {_fmt(med['new_eligible_from_auto'])}편 · "
-                 f"직전 프로필 대비 상위 K 유지 {_fmt(med['topk_retention_vs_prev'])}")
+                 + f" · 적중 근거 {'/'.join(modes)}")
+    revisions = sorted({r.get("profile_revision", r.get("revision")) for r in rows
+                        if "profile_revision" in r or "revision" in r}, key=str)
+    if len(revisions) > 1:
+        lines.append(f"  ※ profile revision 혼합 : {', '.join(map(str, revisions))} — 한 창으로 비교하지 않는다")
+    if modes != ["as_observed"]:
+        lines.append("  ※ recomputed·partial 은 관측 시점에 얼리지 못한 옛 스캔 — 현재 코드·이력으로 다시 셈")
+    # 지표는 표로(2026-09-14 사용자 요청 — "상위 K: a · b · c" 나열이 읽히지 않았다). 값은 중앙값.
+    from trend_report import table_lines
+    lines += [""] + table_lines(["구분", "지표", "중앙값"], [
+        ["상위 K", "anchor 적중", _fmt(med["anchor_share_topk"])],
+        ["상위 K", "최상위 계층", _fmt(med["top_tier_share_topk"])],
+        ["상위 K", "최신일", _fmt(med["freshness_topk"])],
+        ["상위 K", "평균 지연(일)", _fmt(med["mean_delay_days_topk"])],
+        ["적격 풀", "anchor 적중", _fmt(med["anchor_share_eligible"])],
+        ["auto 계열", "제외어 충돌", _fmt(med["exclude_collision_auto"])],
+        ["auto 계열", "auto 덕에 새로 적격(편)", _fmt(med["new_eligible_from_auto"])],
+        ["auto 계열", "직전 프로필 대비 상위 K 유지", _fmt(med["topk_retention_vs_prev"])],
+    ], indent="  ") + [""]
     dead = [kw for kw, c in rows[-1]["keyword_hits"].items() if c == 0]
     if dead:
-        lines.append(f"  마지막 스캔에서 적중 0인 키워드 {len(dead)}개: {', '.join(dead[:8])}"
+        lines.append(f"  적중 0 키워드 : 마지막 스캔 {len(dead)}개 — {', '.join(dead[:8])}"
                      + (" …" if len(dead) > 8 else ""))
-    lines.append(f"  악화 규칙: {'미설정 — 기준선 ' + str(MIN_BASELINE_SCANS) + '스캔 뒤 정한다' if all(v is None for v in DEFAULT_HEALTH_RULES.values()) else '설정됨'}")
+    lines.append(f"  악화 규칙 : {'미설정 — 기준선 ' + str(MIN_BASELINE_SCANS) + '스캔 뒤 정한다' if all(v is None for v in DEFAULT_HEALTH_RULES.values()) else '설정됨'}")
     return lines

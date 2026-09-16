@@ -153,7 +153,7 @@ def test_규칙이_요구하는_지표가_미측정이면_통과가_아니다():
     good = [_row(i) for i in range(15)]
     recent_none = [_row(20 + i, topk_retention_vs_prev=None) for i in range(3)]
     r = ph.assess(good, recent_none, {"min_topk_retention": 0.7})
-    assert r["status"] == ph.UNMEASURED_REQUIRED and "topk_retention_vs_prev unmeasured" in r["reasons"][0]
+    assert r["status"] == ph.INSUFFICIENT_RECENT
     assert ph.assess(good, recent_none, {"min_anchor_share_topk": 0.5})["status"] == ph.OK, "요구하지 않는 지표의 미측정은 막지 않는다"
     # 이득: auto 가 아무것도 안 가져오면 악화
     zero = [_row(20 + i, new_eligible_from_auto=0) for i in range(3)]
@@ -166,7 +166,70 @@ def test_규칙이_요구하는_지표가_미측정이면_통과가_아니다():
     assert ph.assess(good, [_row(20, anchor_share_topk=0.0)], {"min_anchor_share_topk": 0.5})["status"] == ph.INSUFFICIENT_RECENT
     # 보조 규칙(max_drop)도 못 쟀으면 통과가 아니다
     r = ph.assess(good, [_row(20 + i, freshness_topk=None) for i in range(3)], {"max_drop_from_baseline": 0.3})
-    assert r["status"] == ph.UNMEASURED_REQUIRED and "freshness_topk unmeasured" in " ".join(r["reasons"])
+    assert r["status"] == ph.INSUFFICIENT_RECENT
+
+
+def test_부분_None은_지표별_최소_표본을_채우기_전까지_비교하지_않는다():
+    """2026-09-14 외부 검토. 이 테스트가 잡는 것: 중앙값이 None을 분모에서 빼고
+    측정값 한 개만으로 OK를 내는 것, 규칙이 요구하지 않은 지표의 None을 잘못 막는 것."""
+    baseline = [_row(i) for i in range(15)]
+    recent = [_row(20, anchor_share_topk=1.0),
+              _row(21, anchor_share_topk=None), _row(22, anchor_share_topk=None)]
+    result = ph.assess(baseline, recent, {"min_anchor_share_topk": 0.5})
+    assert result["status"] == ph.INSUFFICIENT_RECENT
+    assert result["recent_metric_counts"]["anchor_share_topk"] == 1
+
+    thin_baseline = [_row(i, top_tier_share_topk=None) if i < 2 else _row(i) for i in range(15)]
+    result = ph.assess(thin_baseline, [_row(20 + i) for i in range(3)],
+                       {"min_top_tier_share_topk": 0.5})
+    assert result["status"] == ph.INSUFFICIENT_BASELINE
+    assert result["baseline_metric_counts"]["top_tier_share_topk"] == 13
+
+    result = ph.assess(baseline, recent, {"min_anchor_share_topk": 0.5,
+                                          "min_top_tier_share_topk": None})
+    assert result["status"] == ph.INSUFFICIENT_RECENT
+
+
+def test_건강_규칙의_비유한값과_비숫자는_미설정으로_취급한다():
+    """2026-09-14 외부 검토. 이 테스트가 잡는 것: NaN·inf·문자열 규칙을 설정값으로
+    세어 비교를 시도하거나 예외를 내는 것."""
+    from math import inf, nan
+    baseline = [_row(i) for i in range(15)]
+    recent = [_row(20 + i) for i in range(3)]
+    for value in (nan, inf, -inf, "0.5"):
+        result = ph.assess(baseline, recent, {"min_anchor_share_topk": value})
+        assert result["status"] == ph.UNCONFIGURED
+        assert result["rules"]["min_anchor_share_topk"] is None
+
+
+def test_미완_스캔은_건강_표본에서_빠지고_revision_혼합은_명시한다(tmp_path, monkeypatch):
+    """2026-09-14 외부 검토. 이 테스트가 잡는 것: observations가 NULL인 실행을
+    정상 스캔으로 세는 것, profile_revisions 시각으로 유도한 서로 다른 revision을 한 창에서
+    비교하는 것, 주간 표본에서 미완 실행 수를 숨기는 것이다."""
+    db = tmp_path / "t.db"
+    _profile(db)
+    _run(db, monkeypatch, PAPERS)
+    profile = rp.get_profile(db, "p")
+    incomplete_id = rp.begin_scan(db, "p", profile)  # finish_scan 을 부르지 않은 미완 실행
+    paper = {**PAPERS[0], "source": "arxiv", "rank_pos": 1, "outcome": rp.OUTCOME_RESERVE,
+             "filter_reason": None,
+             "_score": {"core_hits": ["target term"], "domain_hits": [], "excluded": False,
+                        "tier_rank": 0, "date_precision": "day"},
+             "_hits": {"core_hits": ["target term"], "exclude_hits": [], "domain_hits": []}}
+    rp.record_observations(db, incomplete_id, "p", [paper], core_signature="c", seed_signature="s")
+    assert ph.scan_metrics(db, incomplete_id) is None
+    now = datetime.now(timezone.utc)
+    rows = ph.series(db, "p", now - timedelta(days=1), now + timedelta(days=1))
+    assert len(rows) == 1 and rows.incomplete_scans == 1
+    assert rows[0]["profile_revision"] == 1
+    assert "스캔 1회" in "\n".join(ph.format_health(rows))
+    assert "미완 1회" in "\n".join(ph.format_health(rows))
+
+    baseline = [_row(i, profile_revision=1) for i in range(15)]
+    recent = [_row(20 + i, profile_revision=2) for i in range(3)]
+    result = ph.assess(baseline, recent, {"min_anchor_share_topk": 0.5})
+    assert result["status"] == ph.MIXED_REVISIONS
+    assert "profile_revision" in result["reasons"][0]
 
 
 def test_적중은_관측_시점_값을_쓰고_없을_때만_다시_센다(tmp_path, monkeypatch):

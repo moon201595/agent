@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import random
@@ -40,6 +41,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import api_usage
@@ -116,6 +118,13 @@ S2_MAX_INTERVAL = 16.0
 # 이것은 에이전틱 루프가 아니라 예외 처리다 — 무엇을 다시 부를지 LLM 이 정하지 않고
 # 코드가 정해진 횟수만 다시 부른다. 상한을 올리기 전에 왜 올리는지부터 정할 것.
 MAX_RETRIES = 2
+
+# 외부 PDF는 헤더를 믿을 수 없고, 응답을 통째로 메모리에 올리면 큰 파일 하나가
+# 서버의 메모리와 디스크 예산을 동시에 먹는다. 두 수집 경로가 같은 상한을 봐야
+# arXiv와 OA 논문 사이에 우회로가 생기지 않는다.
+MAX_PDF_BYTES = 30 * 1024 * 1024
+MAX_PDF_DOWNLOAD_SECONDS = 120
+MAX_PDF_REDIRECTS = 5
 
 # 다시 불러서 결과가 달라질 수 있는 것만. 4xx 는 다시 불러도 같은 답이 온다.
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -376,6 +385,92 @@ def _error(msg: str, hint: str = "") -> str:
     if hint:
         payload["hint"] = hint
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _pdf_size_limit_error() -> ValueError:
+    """응답 크기 상한을 넘긴 사실을 호출부가 같은 문구로 보고하게 한다."""
+    limit_mb = max(1, (MAX_PDF_BYTES + 1024 * 1024 - 1) // (1024 * 1024))
+    return ValueError(f"PDF 크기 상한 초과 {limit_mb} MB")
+
+
+async def _read_pdf_stream(response: httpx.Response) -> bytes:
+    """Content-Length 유무와 무관하게 PDF 응답을 제한된 누적으로 읽는다.
+
+    Content-Length는 외부 서버가 보내는 힌트일 뿐이라 없는 응답도 같은
+    누적 검사를 거쳐야 한다. 상한을 넘는 청크는 저장하지 않고 즉시 끊는다.
+    """
+    raw_length = response.headers.get("content-length")
+    try:
+        content_length = int(raw_length) if raw_length is not None else None
+    except (TypeError, ValueError):
+        content_length = None
+    if content_length is not None and content_length > MAX_PDF_BYTES:
+        raise _pdf_size_limit_error()
+
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in response.aiter_bytes():
+        received += len(chunk)
+        if received > MAX_PDF_BYTES:
+            raise _pdf_size_limit_error()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _download_pdf_bytes(
+    client: httpx.AsyncClient, url: str, timeout_seconds: float,
+) -> bytes:
+    """한 PDF 응답을 연결부터 스트림 종료까지 하나의 시간 예산으로 받는다."""
+    async with asyncio.timeout(timeout_seconds):
+        async with client.stream("GET", url, timeout=timeout_seconds) as response:
+            response.raise_for_status()
+            return await _read_pdf_stream(response)
+
+
+def _validate_pdf_redirect_url(url: str, *, final: bool) -> None:
+    """PDF 리다이렉트가 로컬·IP 대상이나 최종 비HTTPS로 끝나지 않게 한다."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        # malformed IPv6/port 등 urlparse가 늦게 드러내는 URL도 거부한다.
+        _ = parsed.port
+    except ValueError as error:
+        raise ValueError("PDF 리다이렉트 URL이 올바르지 않음") from error
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
+        raise ValueError("PDF 리다이렉트 URL이 http(s) 호스트가 아님")
+    if final and parsed.scheme.lower() != "https":
+        raise ValueError("PDF 최종 URL이 https가 아님")
+    try:
+        is_ip_literal = ipaddress.ip_address(host) is not None
+    except ValueError:
+        is_ip_literal = False
+    if is_ip_literal or host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        raise ValueError("PDF 리다이렉트가 사설 IP 또는 localhost를 가리킴")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("PDF 리다이렉트 URL에 userinfo가 있음")
+
+
+async def _download_oa_pdf_bytes(client: httpx.AsyncClient, pdf_url: str) -> bytes:
+    """OA PDF를 수동 리다이렉트하며 매 단계의 SSRF 대상을 먼저 검사한다."""
+    current_url = pdf_url
+    async with asyncio.timeout(MAX_PDF_DOWNLOAD_SECONDS):
+        for _ in range(MAX_PDF_REDIRECTS + 1):
+            _validate_pdf_redirect_url(current_url, final=False)
+            async with client.stream("GET", current_url, timeout=MAX_PDF_DOWNLOAD_SECONDS) as response:
+                if 300 <= response.status_code < 400:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("PDF 리다이렉트 응답에 Location이 없음")
+                    current_url = urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                try:
+                    final_url = str(response.url)
+                except RuntimeError:
+                    final_url = current_url
+                _validate_pdf_redirect_url(final_url, final=True)
+                return await _read_pdf_stream(response)
+    raise ValueError(f"PDF 리다이렉트 횟수 상한 초과 {MAX_PDF_REDIRECTS}회")
 
 
 
@@ -790,14 +885,15 @@ async def fetch_paper(params: FetchPaperInput) -> str:
 
             # ── PDF 폴백 ─────────────────────────────────────────────
             if not text.strip():
-                async def pdf_once() -> httpx.Response:
-                    r = await client.get(ARXIV_PDF.format(arxiv_id=arxiv_id), timeout=120)
-                    r.raise_for_status()
-                    return r
+                async def pdf_once() -> bytes:
+                    return await _download_pdf_bytes(
+                        client, ARXIV_PDF.format(arxiv_id=arxiv_id),
+                        MAX_PDF_DOWNLOAD_SECONDS,
+                    )
 
-                pdf_resp = await _with_retry(pdf_once, "arXiv PDF")
+                pdf_bytes = await _with_retry(pdf_once, "arXiv PDF")
                 pdf_path = PDF_DIR / f"{arxiv_id.replace('/', '_')}.pdf"
-                pdf_path.write_bytes(pdf_resp.content)
+                pdf_path.write_bytes(pdf_bytes)
                 try:
                     text = _text_from_pdf(pdf_path)
                     method = "pdf"
@@ -807,6 +903,10 @@ async def fetch_paper(params: FetchPaperInput) -> str:
                         "스캔본이거나 손상된 PDF일 수 있음. 원문 링크로 직접 확인할 것.",
                     )
     except Exception as e:  # noqa: BLE001
+        if isinstance(e, ValueError) and str(e).startswith("PDF "):
+            return _error(str(e))
+        if isinstance(e, TimeoutError):
+            return _error(f"PDF 다운로드 시간 상한 초과 {MAX_PDF_DOWNLOAD_SECONDS}초")
         return _http_error_to_message(e, "arXiv")
 
     if not text.strip():
@@ -1147,14 +1247,11 @@ async def fetch_pdf_from_url(pdf_url: str, title: str = "", source_note: str = "
         ValueError: PDF가 아닌 응답(초록·로그인 페이지로 리다이렉트된 경우 등)
     """
     headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) paper-harness/1.0"}
-    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
-        resp = await client.get(pdf_url, timeout=60)
-        resp.raise_for_status()
-        pdf_bytes = resp.content
+    async with httpx.AsyncClient(follow_redirects=False, headers=headers) as client:
+        pdf_bytes = await _download_oa_pdf_bytes(client, pdf_url)
         if not pdf_bytes.startswith(b"%PDF-"):
-            content_type = resp.headers.get("content-type", "")
             raise ValueError(
-                f"PDF가 아닌 응답(파일 시그니처 불일치, content-type={content_type!r}) — "
+                "PDF가 아닌 응답(파일 시그니처 불일치) — "
                 "링크가 초록·로그인 페이지일 수 있음"
             )
     # title이 비어 있으면 ingest_local_pdf 자체의 폴백 체인(PDF 메타데이터

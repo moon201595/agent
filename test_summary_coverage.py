@@ -184,8 +184,11 @@ def test_verification_pass_and_partial_coverage_appear_together(isolated_db):
              "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}
     text = digest.generate_digest(
         {"papers": [paper], "candidates_found": 1}, "우리팀")
-    assert "[검증 40/40 통과]" in text
+    # 2026-09-14: 수치 검증 표시는 메일에서 뺐다(사용자 결정). 그래서 "검증만 보고 완벽하다고 믿는" 위험은 메일에서
+    # 사라졌고, 남은 계약은 둘이다 — 내부 라벨은 그대로 계산되고, 메일에는 부분 반영 경고가 보인다.
+    assert digest.verification_label("p1") == "[검증 40/40 통과]"
     assert "⚠ 원문 40%만 반영" in text
+    assert "검증 40/40" not in text
 
 
 def test_html_flags_partial_coverage_open(isolated_db):

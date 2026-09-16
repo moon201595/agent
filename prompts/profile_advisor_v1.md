@@ -47,7 +47,7 @@
 {{CORE_BY_TIER}}
 
 허용 계층: {{ALLOWED_TIERS}}
-현재 S2 검색 씨앗: {{SEEDS}}
+현재 S2 검색 시드: {{SEEDS}}
 
 ## 대표 논문 (키 · 제목 · 초록)
 

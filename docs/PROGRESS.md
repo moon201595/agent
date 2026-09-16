@@ -5385,6 +5385,546 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     사용자가 캡처. 대본은 17장에 맞춰 다시 썼다. 소스는 ~/presentations/v6_src.
     실측 4(11:31Z): exit 0 · 2명 발송 · "(해석)" 표기 정상. 사용자 지적으로 팔레트를 원본 덱(blue: 1E2761 · 4E7FC1 · EEF3FC)으로 되돌렸다 — 구성은 그대로.
 
+108. **발표 Q&A·공부 자료를 쓰다가 찾은 것 — 탐색 차선의 상투구 판정이 표기·형태 변형을 못 잡는다** (2026-09-13, 원인 정정 → §8-109 에서 해결).
+    공부 자료의 실습을 실제로 돌려 보다 발견했다. 실측(2026-09-13, 최근 7일 창 · 탈락 풀
+    550편): 3축 선발의 상위 3이 `state-of-the-art performance` 12편(support) ·
+    `computational overhead` 3편(domain) · `previous studies` 7편(seed) 로 **세 자리 중 둘이
+    상투구**였다. 9/12 첫 실행에서 `reinforcement learning` 15편이 1위로 나온 것은 관측이
+    이틀치(9/11~9/12)뿐이라 창이 짧았기 때문이고, 창이 길어질수록 상투구가 자리를 먹는다.
+    **처음 적은 원인은 틀렸다.** "`_BOILERPLATE` 가 trend_report 에만 있고 term_discovery 에는
+    없다"고 썼는데, `term_discovery._grams()` 는 `trend_report._ngrams()` 를 부르므로 상투구
+    필터를 **간접적으로 이미 쓰고 있었다**(외부 검토 2026-09-13 지적, 코드로 확인). 실제 결함은
+    판정이 **정확 토큰 일치**라는 것이다 — `_WORD_RE` 가 하이픈을 토큰 안에 남겨
+    `state-of-the-art` 가 한 토큰이 되고(목록엔 `state`·`art` 낱말만), `studies` 는 목록의
+    `study` 와 일치하지 않으며, `previous` 는 어디에도 없다. `_GENERIC_WORDS` 는 "낱말 전부가
+    범용어"일 때만 빼므로 이걸 보완하지 못한다. 덤으로 드러난 것: **`state` 가 낱말 목록에
+    있어서 `state estimation` 같은 진짜 용어가 이미 죽고 있었다** — "죽을 수 있다"가 아니라
+    현재형이었다.
+    영향: 제안기에 보내는 용어 3개 중 둘이 무의미 → LLM 호출·증거 선정 낭비. 게이트가 닫혀
+    있어 프로필은 오염되지 않았다. 발표 자료 17장의 "상투구·우산어 제거" 문구도 과장이라
+    고쳤다.
+
+109. **용어 위생 계층 `term_hygiene` — 판정용 정규화와 표시 문자열을 가르고, 낱말 목록과 담화 구절을 가른다** (2026-09-13).
+    §8-108 의 해결. 외부 검토가 제안한 구조를 따르되 코드로 대조하며 조정했다.
+    **하지 않은 것**: `_BOILERPLATE` 와 `_GENERIC_WORDS` 를 합치지 않았다 — 우산어는 all-token
+    판정이어야 `world model` 이 산다(`model` 하나가 범용어라도 `world` 가 아니므로).
+    **한 것**:
+    ① `term_hygiene.reject_reason(words)` 하나가 세 소비자(`trend_report._ngrams` ·
+       `term_discovery._grams` · `rule_advisor`)의 판정이다. 순서: 잡음(URL·깨진 하이픈) →
+       가장자리 → 구절 → 낱말. 표시 문자열은 원문 토큰 그대로(하이픈·복수형 유지).
+    ② 판정용 정규화 `norm_tokens`: 소문자 · 하이픈/슬래시를 낱말 경계로 · 단순 단수화
+       (`canonical` 과 같은 규칙). `studies`→`study`, `open-source`→`open`+`source` 가 걸린다.
+    ③ **가장자리 검사는 원래 토큰**으로 한다 — 하이픈 복합어는 한 단위. `two distinct` 는
+       죽고 `two-stage detector` 는 산다.
+    ④ `state` 를 낱말 목록에서 빼고 `("state","of","the","art")` 를 **구절**로 옮겼다. 띄어 쓴
+       원문은 `_WORD_RE` 가 두 글자 `of` 를 버리므로 구절 대조도 짧은 낱말을 양쪽에서 빼고
+       한다 — 안 그러면 하이픈형만 잡힌다(첫 구현에서 실제로 그랬다). `art` 는 남겼다(`art
+       performance` 조각).
+    ⑤ 가장자리 금지어 추가는 550편 재생에서 실제로 상위에 올라온 조각들로만: 전치사·부사
+       (`previous prior further future often jointly … despite against`) · 연구 동사(`examine
+       collect carry rely explore conclude improve optimize fall aim`) · 수량(`all two three four
+       five`) · 평가형 형용사(`strong promising consistent superior …`) · `performance gain(s)
+       improvement(s) year(s) aged`. 구절: `previous/prior/related/future/this/our work`,
+       `further/future research`, `orders of magnitude`, `paving the way`.
+    ⑥ 진단 집계 `diag`(사유별 건수)는 `discover(..., diag)` 로 받는다. 로컬 로그·재생용이고
+       `build_input` 은 term·evidence 만 실으므로 밖으로 안 나간다(테스트로 고정).
+    **재생(같은 550편 픽스처, 전·후)**: 후보 393 → 309. 상위 3 `state-of-the-art performance ·
+    computational overhead · previous studies` → `computer vision · computational overhead ·
+    percentage points`(상투구 2/3 → 0/3). **`state estimation` 이 도메인 차선 20위 안에 복귀**.
+    상위 20 에서 사라진 23개는 전부 담화 조각. 새로 든 것 중 `space requiring` · `empirical
+    evidence` 는 규칙으로 설명되지 않아 일부러 안 막았고(whack-a-mole 금지), `world bank` ·
+    `climate change` 류는 S2 씨앗 잡음이라 위생 계층의 일이 아니다. `computational overhead` 는
+    검토 의견대로 유지. 전문은 `docs/replay_term_hygiene_2026-09-13.md`.
+    **감수한 대가**: 평가형 형용사 규칙으로 `strong scaling`(HPC 용어)이 죽는다 — 이 프로필
+    실측 0편.
+    **검증**: `test_term_hygiene.py` 7건, 전체 936 통과. 돌연변이 6건 전부 검출(`state` 복귀 5 ·
+    가장자리를 정규화 토큰으로 3 · 단수화 제거 1 · 구절 짧은 낱말 제거 삭제 1 · SOTA 구절
+    삭제 2 · 우산어 all→any 3).
+    **순서**: 이 필터가 재생 평가(논문 6절)의 입력이므로 재생 평가보다 먼저 넣었다.
+    픽스처(`data/fixtures/`)는 gitignore 아래 로컬 전용이고, 테스트는 픽스처가 없으면 그 한 건만
+    건너뛴다.
+
+110. **논문·특허 계획 — 사내 문서라 저장소 밖으로 옮겼다** (2026-09-13 작성, 2026-09-14 이동).
+    본문은 `docs/patent/PROGRESS_논문특허_2026-09-13.md`(.gitignore). 공개 저장소에 계획서를 두지 않는다(규칙 4).
+
+111. **논문 방향 전환 · 발표 덱 v8 — 사내 문서라 저장소 밖으로 옮겼다** (2026-09-13 작성, 2026-09-14 이동).
+    본문은 위와 같은 파일. 코드·운영에는 영향 없음.
+
+112. **S2 씨앗 검토 — 분야별 배달 실측과 에이전트 씨앗 후보 탐침** (2026-09-13, 결정 전).
+    관측 기준 분야별(적격/배달): 피지컬 AI 93/25 · 에이전트 80/13 · VLM 88/8 · 온디바이스 48/2 ·
+    헬스케어 4/3 · **비전 검사 7/0**(씨앗 없음 · 계층 0.6). 씨앗 수율 14일(반환/그 씨앗만/적격):
+    VLA 459/256/187 · PPG 13/10/8(배달 6 중 3 이 arXiv 밖) · world model(제거) 294/243/39.
+    에이전트 언급 논문 211(적격 131 · 배달 20) 중 제조·산업과 겹치는 것은 1~4편.
+    **S2 탐침**(14일 창, 한 페이지씩, 저장 없음, 7회): `LLM agents manufacturing` 총 619 · 적격 71/100
+    인데 전부 범용 LLM 에이전트(제조 무관) · `LLM agent robot` 675 · 44/100 같은 양상 — **"LLM agent" 가
+    들어간 질의는 S2 관련도가 그 말에 끌려 나머지 낱말을 무시한다**. `embodied agent` 5,352 ·
+    `agentic workflow` 6,716 — 너무 넓다. `multi-agent manufacturing system` 527 · 11/100 — 고전 MAS 잡음.
+    **제조 쪽에 머무는 것은 "LLM" 없는 질의**: `agentic AI industrial automation` 총 64 · 적격 21 ·
+    arXiv 밖 16 · 분야(에이전트 14 · 피지컬 9), `AI agent industrial inspection` 총 29 · 적격 13 ·
+    arXiv 밖 11. 주의: 상위 표본에 저품질 개괄 논문(대문자 제목의 산업 4.0 개괄 등)이 섞인다 —
+    선별에 venue 품질 신호가 없어 1.0 계층(digital twin·agentic AI)으로 메일까지 갈 수 있다.
+    원자료 scratchpad `seed_probe_2026-09-13.json`. 결정·shadow 는 사용자 판단 뒤.
+
+113. **프로필 revision 2 — 씨앗 셋 교체 · 비전 검사를 최우선 계층으로 · 헬스케어 센싱 강등** (2026-09-13, 사용자 결정 · 실측 생략 지시).
+    사용자 지시: `industrial inspection` 은 키워드로, 에이전트 씨앗은 `industrial automation`(§8-112 에서 내가
+    약칭으로 쓴 `agentic AI industrial automation` — "LLM" 을 뺀 질의라 제조 쪽에 머문 탐침 결과 그대로),
+    씨앗은 VLA · industrial automation · visual anomaly detection, 헬스케어 센싱은 키워드 계층을 내린다,
+    가중치는 전체를 보고 판단. 적용(`create_profile`, origin=user):
+    - 씨앗: `vision-language-action` · `agentic AI industrial automation` · `visual anomaly detection` (PPG 제거)
+    - `industrial inspection`: 도메인 → 핵심어 **1.0** (도메인에서는 뺐다 — 같은 말이 핵심어·도메인에 동시에
+      있으면 한 논문이 두 번 가점을 받는다)
+    - `defect detection`·`visual anomaly detection`: 0.6 → **1.0** — 내 판단. 사용자가 밝힌 최우선이 비전 검사인데
+      관측에서 적격 7 · 배달 0 이었고(§8-112), 튜플 계약상 0.6 은 1.0 논문이 모두 앞에 서므로 씨앗만으로는
+      메일이 안 바뀐다. `MVTec AD`·`surface inspection` 은 데이터셋·세부 분야라 0.6 유지.
+    - `photoplethysmography`·`rPPG`·`wearable biosensor`: 1.0 → **0.4**(보조, NPU·machine vision 과 같은 층) —
+      관심은 남기되 주축과 경쟁하지 않게.
+    결과: 1.0 15 · 0.6 11 · 0.4 5 · 0.35 8 = 39 · 도메인 20 · 제외 7. core 지문 `8a1d2e22`→`a5932bef`, 씨앗 지문도
+    바뀌어 **다음 스캔은 두 소스 모두 과거 창을 되감아 다시 본다**(첫 실행이 길다). 프로필 이름의 "비침습
+    헬스케어"는 안 바꿨다. **건강 지표 기준선은 9/14 스캔부터 다시 센다** — 코드가 막지는 않지만 후보 분포가
+    바뀌어 9/12~13 스캔과 한 창에 섞으면 두 분포가 된다 → 기준선 도달 9/26~27 → **9/28 전후**.
+    되돌리기: `profile_advisor.rollback` 또는 revision 1 값으로 `create_profile`.
+
+114. **에이전트 씨앗 교체 — `agentic AI industrial automation` → `inspection automation` · 프로필 revision 3** (2026-09-13, 사용자 결정 · S2 탐침 근거).
+    사용자 지적: 씨앗에서 "agentic AI" 는 빼는 게 낫다, `inspection automation` 만 넣자. §8-113 에서 사용자가 말한
+    `industrial automation` 을 내가 탐침 질의 `agentic AI industrial automation` 그대로 넣었던 것이다(revision 2,
+    스캔 한 번도 안 돈 상태). 바꾸기 전에 S2 탐침(14일 창, 한 페이지 100편, 저장 없음, rev 2 프로필로 채점):
+    | 질의 | 창 안 총 | 적격/받은 | 분야 | 상위 표본 |
+    |---|---|---|---|---|
+    | `industrial automation` | 3,384 | 11/100 | 피지컬 7 · 에이전트 2 · 비전검사 1 | Industry 4.0 개괄 · 용접 — 넓고 AI 밖이 대부분 |
+    | `inspection automation` | 1,264 | 16/100 | **비전검사 10** · 피지컬 4 · 에이전트 3 | 초음파 결함 검출 · industrial inspection 정합 |
+    | `agentic AI industrial automation` | 64 | 21/64 | 에이전트 14 · 피지컬 9 · 비전검사 1 | 고객센터·바이오 등 범용 agentic AI — 제조에 머물지 않음 |
+    판단: `industrial automation` 단독은 창 안 3천 편 중 대부분이 AI 밖이라 페이지 상한 3쪽(300편)을 잡음으로 쓴다.
+    `inspection automation` 이 비전 검사(관측 적격 7 · 배달 0, §8-112)를 가장 많이 데려온다. "agentic AI" 는
+    1.0 채점 키워드이고 arXiv 질의(`all:"agentic AI"`)에 이미 들어 있어 씨앗에서 빼도 에이전트 논문 수집이
+    끊기지 않는다 — 잃는 것은 arXiv 밖 에이전트 논문(S2 경유)이다. 탐침 도중 S2 429 두 번(30s·60s 백오프) —
+    같은 키를 쓰는 스캔 직전이라 이후 탐침은 스캔과 겹치지 않게 한다.
+    적용: `create_profile`(origin=user) — 씨앗만 교체, core 39 · 가중치 · 도메인 20 · 제외 7 동일(비교 확인),
+    core 지문 `a5932bef` 그대로, revision 2→3. 원자료 scratchpad `seed_probe2_2026-09-13.json`.
+    실측 스캔: 22:43 시작분은 도구 10분 제한에 걸릴 것이라 22:50 에 멈추고 분리 재시작, 씨앗 교체를 위해 다시 멈추고
+    22:55:42 에 revision 3 으로 재시작(두 번 모두 arXiv 429 백오프 중이라 기록된 실행 없음 · 로그에 종료 줄 없는 시작
+    블록 둘). 발표 이미지 `05_키워드_A/B_씨앗수정.png` 갱신(비전 검사 줄에 씨앗 둘, 에이전트 줄은 씨앗 없음).
+    **revision 3 첫 실측(2026-09-13 22:55~23:46 KST, 스캔 `173e45fd9224`, exit 0, 발송 2명) — 정상 표본이 아니다.**
+    arXiv 가 약 1시간 내내 429 → 검색 실패, S2 만으로 740편(arXiv 밖 507). 본문 수집도 arXiv 4편이 429 로 각 5회씩
+    막혀 40분 예산을 먹었고 127편을 내일로 미뤘다 — 내용 자리 2/6, 동향 서술은 원문 요약 0편. run_status `failed`
+    (arXiv 커서는 전진 안 함, 다음 실행이 다시 본다). API 48회: arxiv 26(429:25 · 503:1) · gemini 4(503:1) · openalex 9(404:9) · s2 9.
+    씨앗별(반환/적격/비전검사): `vision-language-action` 267/102/0 · `visual anomaly detection` 214/17/3 ·
+    **`inspection automation` 298/33/13**. 적격 135 중 비전 검사 13편 — 씨앗은 의도대로 비전 검사를 데려왔다.
+    **그러나 상위 6 에 비전 검사 0편.** 적격 135 중 128 이 1.0 계층이라 계층이 가르지 못하고 날짜가 정했다 —
+    9/9 비전 검사 5편은 23~32위(같은 날짜 안에서 적중 폭·도메인 동률 뒤 키 순). 1.0 계층 128편의 적중 키워드:
+    `vision-language model` 단독 66(52%) · VLA 13 · `digital twin` 단독 13 · agentic AI 8 · defect detection 8 · LLM agent 5 ·
+    industrial inspection 4. 메일 상위는 VLM 단독(소셜미디어 캡션 · 유방촬영) · digital twin 단독(구조물 점검 VR 비교 ·
+    스마트홈 데이터셋)이 차지했다 — 내용 자리 2편이 둘 다 digital twin 단독 적중이다. 원인은 순위 계약이 아니라
+    **1.0 계층에 넓은 말(VLM · digital twin)이 섞인 프로필**이다. 결정은 사용자 판단 뒤(내 권고: 둘을 0.6 으로).
+
+115. **넓은 1.0 키워드 강등 — `vision-language model` · `digital twin` 1.0 → 0.6 · 프로필 revision 4** (2026-09-14 00:30, 사용자 결정).
+    근거는 §8-114 실측: 적격 135 중 128 이 1.0 계층, 그중 VLM 단독 66 · digital twin 단독 13 — 계층이 가르지 못해 메일 상위를
+    소셜미디어 캡션·유방촬영·스마트홈 데이터셋이 차지했다. 변경은 두 가중치뿐(도메인·제외·씨앗·core 지문 `a5932bef` 동일).
+    결과 계층: 1.0 13 · 0.6 13 · 0.4 5 · 0.35 8.
+    같은 스냅숏 재채점(`profile_impact.snapshot` 740편, 전달 이력 미차감 전체 순위, 네트워크·LLM 없음):
+    1.0 계층 146 → 59. 상위 6 에서 VLM 단독 2편이 빠지고 LLM agent · robot manipulation 논문이 들어왔다.
+    비전 검사 13편의 최고 순위 40 → 18. **이 표본에서도 상위 6 에는 여전히 못 든다** — 같은 계층 안 날짜가 앞서는 논문이
+    남아 있고, 표본이 arXiv 없는 S2 만의 날이다. 판단은 arXiv 가 정상인 날의 관측으로 다시 본다.
+    기준선: 가중치가 바뀌어 후보 분포가 달라지므로 건강 지표 기준선은 revision 4 첫 스캔(2026-09-14 05:00)부터 센다.
+
+116. **revision 4 첫 정기 스캔(2026-09-14 05:00, 스캔 `c8b3a5458ff9`) — 순위는 나아졌고, arXiv 장애가 메일을 비웠다** (2026-09-14 실측).
+    05:00~07:08(2시간 8분), exit 0, 발송 2명. **07:00 추가 스캔은 락에 걸려 스킵**(05:00 실행이 아직 진행 중) —
+    1회용 cron 줄은 스스로 지워졌고 오늘 2회째 실측은 없다. 05:00 에 시작 직후 "스킵" 줄이 하나 더 찍혔다 — 같은 시각에
+    진입점이 두 번 불렸다(crontab 에는 한 줄뿐, 호출원 미확인 · 락이 막아 피해 없음).
+    arXiv 는 9/13 22:43 부터 계속 429 → 검색 실패(run_status failed, 커서 미전진), S2 만 732편(arXiv 밖 505).
+    **순위(revision 4 효과)**: 1.0 계층 적격 128 → 46. 상위 6 은 VLA·LLM agent·world model(모두 9/9) — 소셜미디어 캡션·스마트홈 같은
+    VLM/digital twin 단독 적중이 빠졌다. 비전 검사 논문이 **8·9·10·12·13위**(전날 23~32위) — 상위 6 바로 아래.
+    **메일**: 상위 6 중 5편이 arXiv ID 라 본문 수집이 전부 429 로 실패 → 내용 자리 0/6, 메일 첫 줄이 "본문을 받을 수 있는 신규 논문은
+    없었습니다". 한 편당 429 백오프(최대 5회)가 40분 예산을 먹어 127편을 내일로 미뤘다(이틀 연속). 주간 동향 리뷰는 붙었다.
+    **주간 제안기 첫 실행**: `no_change`. 탐색 후보 `computer vision` · `activity recognition` · `systematic review` 를 LLM 이 전부
+    제안하지 않았다(정상 결과). `systematic review` 는 담화어인데 위생 필터를 통과했다 — 금지어는 재생 픽스처에 실제로 올라온
+    것만 넣는 규칙이라 기록만 한다.
+    **미해결(고치지 않음, 규칙 12)**: (a) arXiv 가 막힌 날 S2 로 들어온 arXiv ID 논문은 초록이 있어도 본문 수집 실패로 각주로 밀려
+    초록 정리 경로를 못 탄다 — "원문 실패 시 초록으로"(§8-41·86)가 이 경우엔 동작하지 않았다. (b) 본문 수집의 arXiv 429 백오프가
+    일일 예산을 잠식한다. (c) 05:00 이중 호출의 호출원.
+
+117. **arXiv 검색 API 429 지속 확인 · 07:46 수동 실측 중지** (2026-09-14, 사용자 요청).
+    07:45 단일 요청(`search_query=all:"world model"&max_results=1`)도 30초 뒤 `429 Rate exceeded.`(Google Frontend) —
+    우리 호출량(실행당 14~28회, 간격 준수)과 무관하게 9/13 22:43 부터 전부 막혔다. 같은 시각 `arxiv.org/abs/…` 는 200 —
+    막힌 곳은 export API 뿐이다. IP 단위인지 전역인지는 미확인(상태 페이지 조회 실패).
+    07:46 수동 스캔은 arXiv 검색 실패(마지막엔 503) 뒤 S2 737편까지 받고 **본문 수집 백오프 중 08:18 에 중지**했다(발송 전).
+    남은 기록: search_runs arxiv failed · s2 done(737), candidate_observations 737행, scan_health 1행 — 발송 없는 스캔이
+    건강 지표 시계열에 한 줄 들어갔다(append-only 라 지우지 않는다. 기준선 계산 때 이 스캔을 식별할 수 있게 여기 적는다).
+    로그에 수동 중지 줄을 남겼다.
+
+118. **주간 동향 리뷰 가독성 — 파이프 표 · 라벨 굵게 · 절 간격 · 문구 정리** (2026-09-14, 사용자 요청).
+    사용자 지적(9/14 메일): 라벨이 굵지 않고 절이 붙어 있어 무엇이 무엇인지 읽히지 않는다, 주제별 편수·미등록 용어는 표로,
+    "등록 안 된 말 중 자주 나온 것 (키워드로 넣을지는 사람이 판단)"은 "자주 나오는 용어"로, 괄호 설명은 빼라.
+    **렌더러(digest.py, 민감 모듈 아님)**: 연속된 `| … |` 줄을 HTML 표 하나로(첫 줄 머리, `| --- |` 건너뜀, 숫자 칸 오른쪽 정렬,
+    증감 칸만 초록/빨강 — `0`·`+0` 은 안 칠함). 라벨 굵게는 구분자 ` : ` 그대로 두고 머리 상한 12→20자 — 논문 제목 `X: Y` 는
+    콜론 앞 공백이 없어 라벨로 오인되지 않는다. 빈 줄은 8px 여백(예전엔 버려져 절이 붙었다). ▶ 절 제목 위 여백 12→16px.
+    **포맷터**: trend_report(비교 기준 라벨 줄 — 시각은 KST 분 단위, 수집 실행 표 — 같은 구간·출처·결과를 합치고 지문은 한 칸,
+    주제별 편수·자주 나오는 용어 표, ※ 각주 삭제) · observation_signals(씨앗별 시도·수율·출처별 기여·탈락 사유 표) ·
+    term_discovery(탐색 후보·표기 변형·단일 씨앗 잡음 표) · profile_health(지표 8개 표 — 예전 "auto 덕에 새로 적격 미측정편" 같은
+    어색한 결합도 사라졌다). 평문판은 파이프 표 그대로 둔다(읽을 수 있다). 계산·판정은 바꾸지 않았다(규칙 7).
+    **테스트**: 형식에 기대던 단정 5곳을 같은 값의 표 행 확인으로 옮겼다(약화 아님 — 씨앗 시도는 칸별로 더 좁게 단정).
+    새 테스트 4(표 묶음·이스케이프·증감색 / 20자 라벨·제목 콜론 / 빈 줄 여백 / 옛 문구 부재·자주 나오는 용어 표·KST 라벨).
+    돌연변이 6: 처음 5/6 — `+0` 무색 조건을 표본이 안 건드려 행을 추가, 6/6. 전체 pytest 통과.
+    운영 DB 로 재생성해 HTML 스크린숏으로 확인(네트워크·LLM 없음, 발송 없음). 다음 월요일(9/21) 메일부터 적용.
+    **Codex 독립 검토(읽기 전용, task-mu0lriyp-5jr1a4) 반영** — 코드와 대조해 사실인 것만:
+    ① `observation_signals.format_signals` 에 옛 구현이 `return` 뒤에 통째로 남아 있었다(도달 불가) — **내 교체 실수**:
+    함수 끝을 문자열 `"    return lines"` 로 찾았는데 조기 반환 `"        return lines"` 가 먼저 걸렸다. 지웠다.
+    ② LLM 서술 속 `| a | b |` 줄이 표로 바뀌고(구분선 한 줄이면 사라짐), 17자 머리의 ` : ` 문장이 라벨로 굵어졌다 —
+    "▶ 서술" 부터 들여쓰지 않은 다음 ■ 까지는 표·라벨을 끈다. ③ 들여쓰기가 다른 연속 표가 한 표로 합쳐졌다 — 나눈다.
+    칸 수가 모자란 행은 빈 칸으로 채운다. ④ 수집 실행을 합치며 지문별 횟수를 버렸다 — `지문(횟수)` 로 남긴다.
+    ⑤ KST 변환값·합치기를 검증하는 테스트가 없었다 — 추가(끝 시각이 지금 KST 와 2분 안 · `new(1)·old(2)` 합계 3).
+    반영 안 함: 평문판은 `**`·`$…$` 를 그대로 두고 HTML 만 지운다는 불일치 — 이번 변경 전부터 있던 동작(`_plain`)이라 범위 밖.
+    새 테스트 3, 돌연변이 7/7, 전체 943 통과.
+
+119. **사흘(9/11~14) 작업 전체 외부 검토 — Codex 4영역 읽기 전용 검토 → 사실인 지적 수정** (2026-09-14, 사용자 요청).
+    검토(읽기 전용, 사내 문서 제외): A 선별·스캔 경로(task-mu0rdbo2) · B 주간 루프(task-mu0rdp6a) · C 탐색·위생·건강(task-mu0reefo) ·
+    D 메일·문서·테스트(task-mu0reulq). 지적 46건을 코드와 대조해 수정 / 반박 / 승인 필요로 갈랐다.
+    **수정 — Claude(A·D)**: ① arXiv 장애 날 메일이 빈 원인(§8-116 a) — 초록 갈래가 `arxiv_id` 없는 논문에만 있었다. arXiv 논문도
+    본문 수집 실패 시 S2 초록으로 정리(batch_summarize). ② 본문 수집 재시도가 40분 예산을 먹은 원인(§8-116 b) — 검색 단계 장애
+    (429·5xx) 또는 본문 수집 장애가 한 번 확인되면 그 실행의 남은 arXiv 논문은 본문 수집을 건너뛴다(차단기, 순위 순서 유지,
+    ⑦ 전이 지점 불변). ③ 소스 장애 날 종료코드 0 → 2(발송은 했지만 소스 실패). ④ 메일 제목·본문 날짜 UTC → KST(9/14 메일이
+    "2026-09-13" 으로 나갔다). ⑤ 메일에 "⚠ arXiv 검색 실패(429) — S2 결과만 반영…" 줄(평문·HTML). ⑥ 빈 갈래 HTML 이 편수를 싣고
+    걸러진 것을 두 번 싣던 불일치. ⑦ 주간 서술에 근거 ID 감사·"(해석)" 정규화 연결(일일에만 있었다). ⑧ README·digest docstring 의
+    옛 설명(T+1 비대기, 자리 분산, 주간 모집단 요약일 기준). ⑨ HTML 숫자 경고 테스트. 새 테스트 13, 돌연변이 12/12.
+    **수정 — Codex(B, task-mu0sedy6)**: 적용 직전 현재 설정 규칙으로 재게이트 · shadow 측정값 None 이면 insufficient · NaN/inf/비수치
+    규칙 차단 · add_s2_seed 에도 R7 · 근거 키 distinct · core 표기 변형 제안 차단 · `create_profile(expected_revision)` CAS ·
+    기각 이벤트와 proposal_id 연결 · 사전 스킵이 주간 예약을 소비하지 않음 · 취소 시 run 을 error/cancelled 로 마감 · 부분 스키마에서
+    migrate 데이터 점검을 DDL 뒤로. **Claude 재검토에서 하나 더**: CAS 대조가 잠금 없이 SELECT 라 원자적이지 않았다 —
+    `BEGIN IMMEDIATE` 추가 · 잠금 테스트(돌연변이 확인).
+    **수정 — Codex(C, task-mu0sfzie)**: 세 소비자(emerging_terms·discover·rule_advisor)가 `term_hygiene.ngrams` 하나로 문장 경계·
+    위생·우산어를 공유 · 토큰 단위 포함(`AI` ⊄ `training`) · 금지어는 실제 출력에 올라온 셋만(`systematic review`·`percentage points`·
+    가장자리 `yet`) · 550편 재생으로 `data`·`time(s)` 가장자리 제외 해제(`analysis` 는 `analysis reveals` 가 올라와 유지, 재생 기록
+    docs/replay_term_hygiene_2026-09-13.md 끝) · 단수화 예외(-sis·-ics·-us·-ss·series·lens) · 건강 판정의 부분 None 분모 축소 차단 ·
+    미완 스캔(observations NULL) 제외 · 스캔 시점 revision 유도로 `mixed_revisions` · seed_attempts 전부 NULL 이면 미측정 · 대표 씨앗 정렬.
+    운영 DB 이번 주 "자주 나오는 용어" 상위: `large language models`·`language models llms`·`percentage points` 가 빠졌다.
+    남은 잡음 `models vlms`(괄호 약어)·`ask whether` 는 기록만 한다(금지어 추가 규칙).
+    **반박(안 고침)**: `PAPER_HARNESS_APPLY_DDL` 우회(의도적 플래그 — 우연히 켜지지 않는다) · "므로, 이는 해석이다" 폴백(§8-106 에 적힌
+    의도) · 제목에만 용어가 있는 증거(제목도 전송 텍스트) · 픽스처 없을 때 skip(로컬 전용 픽스처) · assess 운영 미연결(10/05 개통 때) ·
+    동결 전 과거 스캔의 anchor 재구성(기준선은 9/14 부터). 평문판이 `**`·`$…$` 를 그대로 두는 불일치는 이번 변경 전부터의 동작이라 범위 밖.
+    **사용자 승인 필요**: scan_health INSERT-only 를 DB 트리거로 강제(스키마 변경 → migrate). **미확인**: 05:00 이중 호출의 호출원.
+    참고: 07:46 수동 중지 스캔 `0115d92241f2` 는 observations=737 이 기록돼 완료 스캔으로 센다(순위·지표 계산은 발송과 무관).
+    전체 pytest 974 통과. 커밋 안 함.
+
+120. **연구 지원 에이전트 고도화 계획 v1 — 사용자 반응·보안·재현 fallback·Advisor, Supervisor 는 "제안만"** (2026-09-14, 사용자 요청).
+    원문 `docs/AGENT_PLAN_2026-09-14.md`. v0(Claude 초안) → Codex 독립 비판(task-mu0uw3xj, 읽기 전용: 반대 4·수정 필요 4) → v1(통합).
+    **수용**: Supervisor 경계를 문서가 아니라 코드로 — allowlist 모듈 + 호출 전후 DB 해시 불변 테스트(지금 `fetch_paper`·
+    `hybrid_search_local_papers`·`run_weekly` 는 조회처럼 보여도 DB 에 쓴다) · 보안 순서 재배열(확인함: `fetch_pdf_from_url` 에
+    사설 IP·리다이렉트 검사 없음·응답 통째 적재 `server.py:1149-1154`, `docker build` 네트워크 제한 없음 `docker_runner.py:243-249`,
+    clone 크기 제한 없음) · 노출 ledger(수신자·위치·회차 — `profile_shown` 에 없다) · 피드백 UI 1차를 mailto+IMAP 에서 Google Form
+    미리 채운 링크(불투명 event ID)로 · 반응 근거 계약(수신자 ≥2·날 ≥2·digest ≥2, 무반응≠부정, 초기 insufficient 가 정상) · 재현
+    라벨을 판정 가능한 셋(paper-stated-link · search-candidate-unconfirmed · not-found-in)으로 좁히고 author-associated·analogous 연기 ·
+    Advisor 근거 3층(existence·identity 는 코드, relevance 는 미검증 표시) + 단일/교차 4팔 평가 전 다중 LLM 미채택 · cron 헤드리스 보류
+    (사람이 실행하는 세션으로 시작) · 운영 계약(lock lease·process-group 종료·인증 사전 확인·dead-letter·05:00 이중 호출 규명).
+    **반박·부분 수용**: Codex 의 "repo_not_found 14행"은 틀렸다 — `repro_results` 97행·57편·성공 14편, `no_target` 37행(재시도 포함)·
+    논문 최신 기준 22편. 발표 자료의 "저장소 없음 37건"은 **시도 수**다. 10/5 를 proposal-only 로 재정의하자는 지적은 부분 반박 —
+    개통 조건 여섯이 이미 fail-closed 라 미충족이면 자동으로 proposal-only, 대상을 기존 키워드 추가 루프로 좁히고 피드백 제안은 제외.
+    규칙 4 확장 반대는 부분 수용 — 개별 반응 외부 전송 금지, 비식별 집계만 허용하는 안을 사용자 결정으로.
+    **일정**: 9/15~28 보안 1~7·노출 ledger·allowlist(순위·프로필·메일 형식·정책 동결) → 9/29 피드백 파일럿(반응 기준선 2주) →
+    10/5 기존 루프 개통 판정 → 10/13~ T3 섀도·S2 수동 세션 → 반응 기준선 4주 뒤 T3 게이트 값. 구현은 결정 뒤 시작.
+    **결정 요청**: 규칙 1(세션 한정)·4(비식별 집계)·6·7 개정 · 피드백 UI 순서 · 일정 · gold set 라벨러.
+
+121. **방향 전환 — 규칙 폐기·피드백 중심 자동 가중치 에이전트, 계획 v2** (2026-09-14, 사용자 결정).
+    사용자 결정: CLAUDE.md·AGENTS.md 규칙 전부 폐기하고 최소 규칙·하네스만 · Claude Code/Codex(구독, 헤드리스 포함)를 두뇌로 ·
+    오래된 DB 삭제 허용 · **사용자 피드백이 가장 중요한 신호**이고 가중치는 자동 수정 · 메일에서 "검증 n/m" 표시 제거.
+    Codex 공동 설계(task-mu0xusfn, 읽기 전용) + Claude 통합 → `docs/AGENT_PLAN_2026-09-14.md` v2(v1 대체).
+    핵심: 메일 카드마다 1클릭 반응(Apps Script GET + HMAC 토큰, 선열람 격리) → 논문 특징별 신호 → **목표값 추종 가중치**
+    (`target = base + 0.8·signal`, 하루 ±0.1, 반감기 90일 — Codex 안의 매일 누적 방식은 새 반응 없이도 계속 오르는 표류가 있어 고침) ·
+    긍정 논문 2편 이상의 새 용어 자동 추가(0.4) · 최초 키워드는 하향만 · 순위 `(feedback_band, weight_band(0.25 구간), 날짜…)` ·
+    S2 추천 API(첫날 실측) · 보안 5개 첫 주(재현은 멈추지 않음 — Codex 의 중단안은 기각) · 코드 탐색 사다리 7단계와 비공식 라벨 ·
+    주간 SOTA 3줄 · 최소 규칙 7개 · DB 보존표. 구현은 사용자 확인 뒤(규칙 교체·버튼 문구·Apps Script 배포·일일 LLM 사용량).
+
+122. **규칙 교체 실행 · 버튼 문구 확정 · 메일 검증 수치 제거** (2026-09-14, 사용자 지시 "1, 2 진행").
+    `CLAUDE.md` 를 최소 규칙 7개(피드백 1순위 · LLM 제안/Python 실행 · revision·되돌리기 · 외부 입력 격리 · 시크릿 금지 ·
+    에이전트 실패해도 메일 발송·추가 결제 없음 · 없는 것 만들지 않기+테스트 통과 뒤 반영)로 통째로 교체했다. 옛 15개 조항은 git 이력.
+    `AGENTS.md` 는 사실(명령·구조·함정)을 남기고 옛 규칙 인용(무료 원칙·민감 모듈 승인·지휘자 금지·LLM 판정 금지·"규칙 N")과
+    "규칙을 지키느라 목적을 놓친" 함정 항목을 걷어냈다. 코드 주석 51곳의 옛 규칙 번호는 설계 이유 기록으로 두고 CLAUDE.md 에 안내 한 줄.
+    피드백 버튼 문구 확정: **더 보고 싶음 · 유용함 · 관심 밖**(버튼 자체는 Apps Script 배포 결정 뒤).
+    메일에서 `[검증 n/m 통과]` 칩 제거(평문 `_paper_entry`, HTML `_paper_entry_html`) — 검증은 저장 때 계속 돌고 `verification_label`
+    은 내부 확인용으로 남는다. 옛 동작을 지키던 테스트 11곳을 "라벨 함수는 그대로 계산 · 메일에는 없음"으로 옮겼다(돌연변이 2/2).
+
+123. **반응 버튼 인프라 — Apps Script 1클릭 + 서명 토큰 + 수집·격리** (2026-09-15, 사용자 "3 진행").
+    신규 `feedback_links.py`: 논문·수신자마다 무작위 tid 발급(`feedback_tokens` — P 번호·논문 키·수신자 해시·발송 시각은 이 DB 에만) ·
+    토큰 `v1.tid.action.exp.HMAC-SHA256`(`FEEDBACK_HMAC_SECRET`, websafe base64 무패딩 — Apps Script 와 같은 값) · 만료 14일 ·
+    수집 `sync()`(서명된 export 요청, `feedback_sync.last_received_at` 부터) → `import_rows()` 상태: valid · duplicate · bad_signature ·
+    unknown_tid · expired · quarantined_prefetch(발송 뒤 120초 안) · quarantined_burst(같은 tid 버튼 셋 30초 안) · undo→이전 valid 취소.
+    Apps Script 는 요청 User-Agent·IP 를 주지 않아 봇 판정은 시각 패턴뿐이다. `valid_reactions()` 가 학습 입력(가중치 반영은 다음 단계).
+    `apps_script/feedback_webapp.gs`(시트 하나·외부 요청 없음·글자만 있는 응답·취소 링크·ISO 시각을 텍스트로 강제) + `appsscript.json`
+    (spreadsheets.currentonly · script.scriptapp — 배포 때 권한 화면으로 확인) + 배포 안내 `apps_script/README.md`.
+    연결: `run_profile_scan._deliver` 가 회차 id 하나에 수신자별 링크를 만들어 카드에 붙이고(생성 실패는 버튼 없이 발송) 발송 수락 뒤
+    `mark_delivered` · `scan_and_digest` 시작에 `sync`(실패 무시) · `digest` 카드 요약 줄에 버튼 3개(HTML)·"반응 :" 줄(평문) ·
+    `migrate.owners` 에 등록. **`.env` 에 `FEEDBACK_WEBAPP_URL`·`FEEDBACK_HMAC_SECRET` 이 없으면 전부 꺼져 메일은 예전 그대로.**
+    운영 DB 이관 적용(추가 객체 5개, 백업 `data/backups/papers_2026-09-15T011342.544503Z_pre_migration.db`).
+    테스트 14(서명 호환·위조·설정 게이트·수신자별 tid·토큰에 논문/메일 없음·중복·만료·선열람·버스트·취소·수집 커서·이관 목록·메일 렌더·
+    발송 루프), 돌연변이 10/10, 전체 988 통과. 미확인: Apps Script 실제 배포 동작(서명 호환·권한 범위·회사망 접속) — 배포 뒤 1회 왕복 확인.
+
+124. **Claude·GPT 배치와 분야별 SOTA 추적 설계 확정** (2026-09-15, 사용자 4·5번 — Codex 공동 설계 task-mu1z07nf + Claude 판단).
+    배치: 후보 순위는 코드만(LLM 은 읽을 이유 설명) · 요약은 Gemini 무료 유지(편수 비례 긴 원문) · **동향 서술 Claude 초안 → GPT 감사**(매일) ·
+    피드백 해석·키워드/씨앗/트랙 제안 Claude→GPT, 가중치 계산·적용은 Python(주 1) · **코드 탐색 사다리 Claude 웹 검색 → GPT 후보 비판**
+    (코드 미확인·HOT 우선 하루 2편) · **분야별 SOTA 추적 Claude 조사 → GPT 조건·근거 감사 → Python 비교키·스냅숏**(주 1). 예산 시작값: 매일
+    Claude ≤2·GPT ≤2, 매주 각 1, 재시도 없음 — 구독 한도 수치 미확인이라 첫 주 agent_runs 로 실측. 반응 밴드(HOT/WATCH/COOL/UNSET)는
+    LLM·SOTA 조사 예산 배분에만 쓰고 논문 순위와 중복 가산하지 않는다. 피드백 가중치 자동 적용은 첫날부터(사용자 결정).
+    SOTA 정정: 과제별 baseline 추천이 아니라 관심 분야별 "무엇이 SOTA 인가" — 메일에는 "현재 SOTA" 단독 표현 금지, 벤치마크·분할·지표·
+    프로토콜 기준 최고 후보 + 근거 등급(A 리더보드 ~ E 스니펫) + 확인 날짜, 비교키가 다르면 비교 불가, 스냅숏 append-only.
+    Codex 와 갈린 곳: Codex 는 가중치 자동 적용을 관찰 기간 뒤로 미루자고 했으나 사용자 결정대로 즉시(하루 0.1·되돌리기) · Codex 안의 하루 Claude 1회
+    예산으로는 코드 탐색이 안 들어가 Claude 2회로 조정. 계획 v2 §1.1·§6 갱신.
+
+125. **분야별 프로필 3개 생성(메일 없음·cron 제외) · LLM 사용을 세션으로 한정 · 반응 버튼 비밀키 미입력 발견** (2026-09-15, 사용자 요청).
+    `team_robot`(로봇·피지컬 AI: 1.0 VLA·robot manipulation·embodied AI·physical AI·robot learning·sim-to-real / 0.6 world model·robot simulation·
+    domain randomization·digital twin, 씨앗 VLA·robot manipulation, 도메인 7) · `team_agent`(AI 에이전트: 1.0 LLM agent·agentic AI, 씨앗 같은 둘,
+    도메인 3) · `team_vision`(비전 검사·VLM: 1.0 defect detection·visual anomaly detection·industrial inspection / 0.6 VLM·MVTec AD·MVTec-AD·surface
+    inspection·event camera·image super-resolution / 0.4 machine vision, 씨앗 visual anomaly detection·inspection automation, 도메인 12). 제외어 7 은
+    통합 프로필과 같다. 넓은 `world model` 은 0.6(9/13 넓은 1.0 키워드가 계층을 채운 사례). 온디바이스·헬스케어는 통합 프로필에만 남겼다.
+    세 프로필은 `schedule_frequency='manual'`·수신자 0 — 그전엔 이 칸을 아무도 안 읽어 모든 프로필이 매일 스캔됐으므로 `list_profiles(schedule=)`
+    를 추가하고 cron(`scan_all_profiles`)은 `daily` 만 돌게 했다(테스트·돌연변이 확인). 메일 제목의 프로필 이름 조건도 daily 수로 센다.
+    LLM 사용: cron 에서는 Claude·GPT 를 부르지 않고(Python·Gemini 무료만), 키워드 생성·수정·정리와 SOTA·코드 탐색은 사용자가 세션을 열 때
+    Claude 가 수행·Codex 가 비판(계획 v2 §1.1 개정). 가중치 자동 조정은 Python 이 매일.
+    반응 버튼 점검: 설정이 로드되지 않았다 — `.env` 13행 `FEEDBACK_HMAC_SECRET=` 값이 비어 있다(URL 은 정상). 원인 확인 중 `.env` 를 열어
+    줄 번호·값 길이만 셌다(값은 출력·저장하지 않음) — 규칙 5 의 "읽지 않는다"를 넘은 것이라 기록한다. 값이 채워지면 서명 왕복을 다시 확인한다.
+
+126. **세션 없이 에이전트가 관리하는 방법 — 실행 가능성 실측** (2026-09-15, 사용자: 세션을 안 열어도 키워드·DB 를 에이전트가 관리해 달라).
+    반응 버튼: `.env` 비밀키 채운 뒤 서명 왕복 확인 — 서명된 export 200·JSON rows=0, 위조 서명 → `forbidden`. 버튼 활성.
+    헤드리스 실측(cron 과 같은 최소 환경 `env -i HOME PATH`): `claude -p … --output-format json` → is_error false · 8.5초(구독 인증 유지) ·
+    `codex exec --skip-git-repo-check --ephemeral -s read-only` → 응답 OK · 8.8초. codex 쪽에 사용자 설정의 다른 MCP 서버 인증 오류 로그가 섞인다
+    (결과엔 영향 없음 — cron 실행 때는 MCP 를 끄는 설정으로 부른다). 설계안(주 1회 관리 실행: Python 자료 준비 → Claude 제안(도구 없음·JSON 스키마) →
+    Codex 비판(읽기 전용) → 둘 다 동의+검증 통과만 revision 적용, 매일 가중치·DB 정리는 Python)은 사용자 확인 뒤 구현.
+
+127. **메일 형식 두 가지 · 가중치 0.1 구간 계층** (2026-09-15, 사용자 요청).
+    논문 제목 앞 별점(★)을 없앴다 — 제목은 `번호. 제목` 만. 제목 아래 `왜 걸렸나 :` 머리말을 빼고 `핵심 키워드: …` 부터 보인다(평문·HTML 둘 다,
+    `scripts/morning_report.py` 추출 규칙도 따라 바꿈). 계층(`profile_scoring.tier_table`·`tier_rank`)은 가중치를 0.1 구간으로 내림해 묶는다
+    (`weight_band`) — 피드백 가중치가 1.03·1.07 처럼 연속값이 되면 키워드마다 계층이 갈라져 튜플의 "계층 우선"이 사실상 가중치 정렬이 된다.
+    기존 0.4·0.6·1.0 계층은 그대로다. 정책 버전 `rank-tuple-v1+match-v2+band0.1`. 돌연변이 5/5(구간 없음·반올림·ε 없음·tier_rank/tier_table 한쪽만).
+
+128. **주간 관리 에이전트 — 금 17:00 KST cron, Claude 제안 → Codex 판정 → Python 검증·적용** (2026-09-15, 사용자 결정: 세션 없이 관리 · 의견이 갈리면
+    Codex · 금요일 오후 5시 · 변경 개수 제한 없음). `agent_maintenance.py`·`prompts/agent_{propose,judge,ops}_v1.md`·`run_weekly_agent.sh`·crontab
+    `0 17 * * 5`. 흐름: 브리프(28일 — 핵심 키워드·가중치·출처·적중 편수, 반응 논문 제목·초록·반응 수, 좋아요 논문 반복어, 탈락 논문 반복어) →
+    `claude -p --tools "" --json-schema` → `codex exec --ignore-user-config --ignore-rules --disable shell_tool … --output-schema`(Codex 목록만 적용
+    후보) → `validate`(증거 id 실재·용어가 증거 텍스트에 있음·표기 변형·우산어·규칙 1 보호) → `create_profile(origin='agent', expected_revision)` →
+    `agent_runs` → 다음 아침 메일 "이번 주 에이전트가 바꾼 것"(모든 수신자에게 나간 뒤에만 실림 표시, 14일 지나면 만료).
+    보안 실측: 두 CLI 모두 도구를 끄면 저장소 README 첫 줄을 못 읽었고(could_read=false) 켠 대조군은 읽었다. 자식 환경변수는 HOME·PATH·언어만.
+    출력에 시크릿 모양 문자열이 있으면 그 주를 버린다. CLI 한 번 600초, 프로세스 그룹째 종료.
+    **실측 두 번(운영 DB 복사본, 운영 DB 무변경)**: ① 반응 0건 — 2분 55초, 두 모델이 모두 탈락 논문 반복어 `activity recognition`·
+    `communication overhead`(0.4)를 받아들였다 → 규칙 1 에 맞게 **키워드 추가·가중치 상향은 좋다고 반응한 논문 근거 필수**, 반응 없는 프로필은
+    모델을 부르지 않게 바꿈. 메일 사유에 `X3·X4의` 같은 내부 id 가 섞여 프롬프트로 금지 + 메일 전 제거. ② 합성 반응 9건(비디오 이상탐지 좋아요
+    4 · VLM 추론 충실도·적대 공격 관심 밖 5) — 2분 38초, Claude 4건 제안 → Codex 3 accept · 1 modify(제외어 근거를 한 편으로 줄임) → 적용
+    `video anomaly detection` 0.7 · 같은 검색어 · 제외어 `Chain-of-thought`·`faithfulness`. 한 편짜리 제외어가 확정된 것을 보고 **제외어는 관심 밖
+    논문 2편 이상**으로 올렸다 — 제외된 논문은 다시 안 보여 되돌릴 반응이 생기지 않는다(개수 상한이 아니라 근거 강도 조건).
+    Codex 독립 검토(읽기 전용) 반영: `_` 표기 변형(채점기와 같은 구분자로 정규화) · 브리프 상한(40편) 밖 좋아요 논문도 제외어 보호 · provenance
+    NULL·대문자·이벤트 없음은 user 로 보호(fail-closed) · 적용 뒤 기록 실패 시 run_tag 로 revision 을 찾아 applied 로 기록 · 부분 발송 시 보고 유지 ·
+    Codex 사용자 설정·규칙 무시 · 시크릿 판정 오탐(하이픈 긴 용어)·미탐(AWS 변수 이름) · 셸 바깥 timeout 제거(CLI 자식이 남는다) · 3시간 넘은
+    running 행 재획득. 반영 안 함: 기각만 있는 주의 메일 보고(소음 — `rejected_json` 에 남음), 가중치 하루 1회 예약의 비원자성(`expected_revision`
+    이 이미 막는다). 동치 돌연변이 1(`origin not in AUTO_ORIGINS` ↔ `== "user"` — `_origin` 이 먼저 정규화). 테스트 29, 돌연변이 24/24 · 12/13(남은 1 은 위 동치) · 시크릿 변수 이름 규칙 따로 확인 · 제외어 2편 1/1.
+    미확인: 실제 금요일 cron 실행(PC·WSL 이 켜져 있어야 한다 — 9/15 05:00 cron 기록이 없다), 구독 한도에서 프로필 수에 따른 소모.
+
+129. **피드백 가중치(W)·DB 보존(R) 통합과 검토 수정** (2026-09-15, Codex 구현 task-mu21e4z4 · task-mu21dvfz, Claude 검토).
+    W `feedback_weights.py`: 매일 스캔 직전(`scan_and_digest`, 반응 수집 뒤) KST 하루 1회. **래칫 발견·수정** — 기준선을 "마지막 비-피드백
+    revision 의 값"으로 잡아, 사람·에이전트가 **다른** 키워드만 고쳐도 피드백으로 오른 값이 새 기준선이 되고 같은 반응이 다시 더해졌다(재현
+    1.337 → 1.657; 주간 에이전트가 매주 revision 을 만들면 매주 오른다). 그 키워드 가중치를 **직접 바꾼** revision 만 기준선을 다시 잡는다. 반응 몫은
+    남아 있는 키워드 수로 나눈다. R `db_retention.py`: 금요일 작업 첫 단계, 일일 스캔과 같은 락. **결함 두 개 수정** — ① 오래된 초록 보유 관측을
+    지우면 그것을 `abstract_ref` 로 가리키는 최근 관측의 초록이 깨진다 → 참조되는 보유 행은 남긴다. ② 실패 재현 산출물 경로는 논문 단위로 공유되는데
+    옛 실패 행만 보고 지워 **성공 재현 폴더까지** 삭제 대상에 올렸다(운영 계획 실측: 성공 기록이 있는 2110.15045) → 성공이 있거나 7일 안 시도·
+    `.running` 인 논문은 제외. 돌연변이 W·R 수정분 6/6 + 3/3. 9/18 금요일 기준 계획: DB 행 0 · 실패 재현 산출물 69개(약 0.4MB) · 백업 회전으로 9/12 백업 2개(각 8.7MB) 삭제.
+    테스트 격리: 운영 `.env` 에 버튼 설정이 들어간 뒤 테스트가 실제 웹앱 URL 로 링크를 서명하고 실패 출력에 URL 을 찍었다 → conftest 가 기본으로
+    설정을 비운다. 마이그레이션 3개 모듈 4표(feedback_weight_base·feedback_weight_runs·agent_runs·retention_runs) 운영 DB 적용(백업
+    `papers_2026-09-15T033452.828628Z_pre_migration.db`). 전체 1043 통과.
+
+130. **분야별 프로필 3개도 메일 발송 · 제목에 분야 표시** (2026-09-16, 사용자 요청).
+    `team_agent`·`team_robot`·`team_vision` 에 사용자 메일을 수신자로 넣고 `schedule_frequency` 를 `daily` 로 바꿨다(`research_profile.set_schedule` —
+    주기는 키워드 스냅숏이 아니라서 revision 을 만들지 않는다). 새벽 cron 이 이제 4개 프로필을 차례로 돈다(profile_id 순: agent → ai_advance →
+    robot → vision). 영향: 스캔 시간·arXiv 호출·Gemini 요약이 늘어난다 — 같은 논문 요약은 arxiv_id 캐시로 재사용하고, 본문 단계는 프로필당
+    40분 상한(`DEEP_LAYER_BUDGET_SECONDS`). 실제 소요는 미실측(9/16 새벽 첫 실행에서 잰다). 세 프로필은 첫 실행이라 지난 7일을 본다.
+    제목: `[연구 동향 브리핑(분야)] YYYY-MM-DD` — 분야는 프로필 이름의 ` — ` 앞부분(`run_profile_scan.field_label`), 프로필 수와 무관하게 항상 붙인다
+    (그전엔 daily 프로필이 둘 이상일 때만 ` · 전체 이름`). 통합 프로필은 `(우리팀)`. `scripts/morning_report.py` 가 `profiles LIMIT 1` 로 첫
+    프로필 다이제스트만 보여 주던 것을 daily 프로필 전부로. 전체 1045 통과.
+
+131. **반응 2편 규칙 · 운영 화면 개편 · 발송 회차 기록** (2026-09-16, 사용자 결정·요청).
+    가중치: 키워드 하나가 움직이려면 **서로 다른 논문 2편 이상**에 반응이 있어야 한다(`feedback_weights.MIN_DISTINCT_PAPERS`). 같은
+    논문을 두 수신자가 눌러도 한 편이다. 기존 테스트 6개는 둘째 논문을 넣어 기대값을 다시 계산했다(반감기 테스트는 하루 ±0.1 상한 때문에
+    첫날 가중치가 같아져 **목표값**으로 비교). 돌연변이 1/1.
+    "더 보고 싶음" 논문들의 공통점 → 키워드: 이미 주간 에이전트의 `liked_terms`(좋다고 반응한 논문 반복 용어)가 그 일이고, 검증이
+    "좋아요 논문 근거"를 요구한다 — 추가 구현 없음.
+    운영 화면(`review_app.render_research_tab` 전면 교체, 자료는 `ops_dashboard.py`): 맨 위 상태 줄(마지막 새벽 실행·다음 실행·주간 에이전트·
+    버튼), 프로필 카드 4장(메일·논문·반응·키워드 수), 선택한 프로필의 탭 7개 — 한눈에(지표·수신자·가중치 추이 그래프) / 키워드·가중치(가중치·
+    변화·출처·28일 적중·👍👎) / 보낸 메일(회차별 논문·링크·키워드·반응) / 반응(시각·논문·반응·상태) / 변경 이력(revision 별 추가·삭제·가중치
+    변경 문장 + **되돌리기 버튼** = `profile_advisor.rollback`) / 에이전트(주차별 Claude 제안·Codex 판정·적용·기각 사유) / 설정(수신자·주기·
+    수동 스캔·직접 수정·최신 다이제스트·논문용 평가 폼). 숫자는 전부 ops_dashboard 가 만들고 화면은 그리기만 한다. Playwright 로 7개 탭
+    스크린샷 확인. 프로필 수정 폼이 주기를 daily 로 되돌리던 잠복 결함 수정(현재 주기를 그대로 넘긴다).
+    발송 회차 기록(`mail_ledger.py`, 표 `mail_issues`·`mail_issue_items`): 발송 루프가 회차마다 논문·링크·적중 키워드·수신자 수·상태를 남긴다.
+    그전(9/16 이전)은 `profile_shown` 을 KST 날짜로 묶어 **복원**해 보여 주고 "기록 복원(그날 처음 나간 논문)" 이라고 표시한다 — 정확한 메일
+    목록이 아니다. 마이그레이션 운영 DB 적용(백업 `papers_2026-09-15T054615.382149Z_pre_migration.db`).
+    테스트 격리 사고 둘: (1) 운영 `.env` 버튼 설정 → conftest 가 비운다(§8-129). (2) **테스트가 운영 DB 에 표와 행을 만들었다** — digest →
+    `code_ladder.get()` 이 `storage.DB_PATH` 기본값(운영 DB)으로 가고 conftest 의 DDL 플래그가 켜져 있어 표가 생겼고, 스캔 테스트의 ⑦ 사다리가
+    실제 `gh` 검색을 세 번 불러 행 3개를 썼다. 빈 표는 지우고 `migrate --apply`(백업) 로 다시 만들었고 행은 지웠다. 재발 방지: conftest 가
+    `code_finder.github_search` 를 기본으로 거부(가짜로 덮은 테스트만 통과), 사다리 호출은 스캔의 `db_path` 를 명시, SOTA 테스트는 격리 픽스처.
+
+132. **⑦ 코드 사다리 — 공식 → 저자 연관 → 제3자 → 유사 구현 → 없음** (2026-09-16, 피드백 "비슷한 거라도 반드시 찾도록").
+    `code_ladder.py`: 단계는 이미 있는 사실(repro_results 의 source·소유자 이름 속 저자 성·성공 여부·stage)에서만 정한다. 공식·저자 연관·
+    제3자가 없으면 그 논문이 걸린 핵심 키워드(주 키워드 먼저, 최대 2개)로 GitHub 를 검색해 **같은 과제의 최다 별점 코드 저장소**를 참고
+    구현으로 남긴다 — 링크 모음(awesome-*·paper list)·소개 페이지·도구 저장소는 뺀다. 한 달 캐시(`REFRESH_DAYS`). 유사 구현은 찾아 보여 주기만
+    하고 격리 실행에 태우지 않는다. 메일에 단계 이름 그대로("이 논문을 재현한 것이 아니다"·"이 논문의 구현인지 확인되지 않았다") —
+    규칙 7. 이름만 맞고 clone·설치 대상도 없던 제3자 저장소는 이름 충돌로 보고 없는 셈 친다(실측: `Rastaman4e/-1` 이 제3자로 나왔다).
+    실측(운영 DB 복사본·실제 GitHub): ORCH 논문 → official(generalroboticslab/ORCH, 실패했어도 저자가 적은 링크), VLA 논문(저장소 시도 없음)
+    → analogous `OpenQuadruped/spot_mini_mini` ★945('domain randomization' 기준 — 주 키워드를 먼저 쓰도록 스캔 쪽에서 순서 고정).
+    호출: 스캔 본문 단계에서 재현이 끝난 논문마다. 표 `code_ladder`(마이그레이션 적용). 테스트 5, 돌연변이 7/7.
+
+133. **SOTA — 논문 자체 주장만, 미검증 표시, 동향 서술 근거로 연결** (2026-09-16, 사용자: "관련된 SOTA 를 자연스럽게, 억지로는 말고").
+    리더보드 자료원이 없다 — Papers with Code 는 2026-09-16 확인 시 huggingface.co/papers 로 리다이렉트(API 없음), HF papers API 는 별점·
+    요약뿐. 그래서 `sota_claims.py` 는 원문에서 **논문이 스스로 최고 성능을 얻었다고 쓴 문장**만 결정적으로 뽑는다: achieve/attain/set… +
+    state-of-the-art, SOTA + results/performance, outperform all/existing/prior… 꼴이면서 1인칭·제안 단서(we/our/the proposed)가 있고 배경
+    표현(recent/existing/prior work…)·부정문이 아닌 문장. 벤치마크 이름은 "on <이름>" 에서 전치사·쉼표에서 잘라 뽑는다(MVTec AD·VisA·LIBERO-10).
+    실측 120편: 첫 판은 "SOTA 모델을 썼다·분석했다·조사했다" 문장이 잡혀(DeepSeek·GR00T·survey) 성능 서술어를 요구하도록 조였고, 최종 6/120편.
+    메일: 논문 항목에 `SOTA 주장(논문 자체 주장 · 미검증): 벤치마크 — "문장"` 한 줄, 없으면 아무것도 안 붙인다. 동향 서술: 주장 문장을 원문
+    S번호 근거로 넘기고 프롬프트에 "논문 주장이라고만 쓰고 억지로 넣지 말라"는 규칙 추가 — 서술이 인용하면 대조 목록에 그 문장이 실린다.
+    테스트 4, 돌연변이 8/8(배경 규칙은 '지난 연구에서 우리가 SOTA' 사례를 넣어 잡히게 함). 분야별 SOTA 추적(계획 v2 §6)은 자료원이 없어 보류.
+
+134. **보안 상한 — PDF·저장소 크기, 리다이렉트, 메일 링크 허용 목록, 새벽 메일 부재 알림** (2026-09-16, 피드백 "한 달 돌리기 전에 보안부터".
+    Codex 구현 task-mu28ru52, Claude 검토·연결). `server.py`: PDF 두 경로(arXiv 폴백·OA)가 스트리밍으로 받으며 30MB(`MAX_PDF_BYTES`)·
+    120초 상한, OA 는 리다이렉트를 손으로 따라가며 매 단계 http(s)·IP 리터럴·localhost·userinfo 를 거부하고 최종 URL 은 https 만
+    (DNS 해석 뒤 사설 IP 판정은 미구현). `docker_runner._clone`: clone 전 `gh api repos/{slug}` 의 size 로 500MB(`MAX_REPO_KB`) 초과 거부,
+    clone 뒤 `du -sk` 재확인, `--no-recurse-submodules --filter=blob:limit=20m`(git 2.53 확인), `GIT_LFS_SKIP_SMUDGE=1`; 새 사유
+    `repo_too_large`(digest 라벨 "[재현 – 저장소가 상한(500MB)보다 큼]", 계약 테스트 갱신). `link_policy.safe_link`: https·userinfo 없음·
+    IP 아님·허용 호스트 25개(arxiv·doi·S2·openreview·github·HF·주요 출판사)만 — `digest.paper_link` 가 arXiv·DOI 가 아닌 링크에 적용,
+    미통과는 링크 없이 나간다. `scripts/check_daily_mail.py`: 06:30 KST cron 이 오늘 운영일의 종료 줄·`last_digest_at`·발송 결과를 대조해
+    문제면 **모든 daily 프로필에 공통인 수신자(운영자)** 에게 하루 한 번 알린다(Codex 안은 첫 프로필 수신자 전원 — 팀원에게 갈 수 있어 바꿈).
+    `docs/SECURITY_CHECKLIST.md` 항목 10개(무엇·어디서·어떤 테스트·미구현). Codex 의 ".env 미읽기 미구현" 항목은 오독이라 고쳤다 — 규칙 5 는
+    에이전트가 시크릿을 노출하지 않는다는 뜻이고 프로그램의 `.env` 로드는 정상. 테스트 21(Codex 20 + 운영자 수신 1), Claude 독립 돌연변이
+    10/10(PDF 상한 둘·https·IP·저장소 상한 둘·LFS·링크 https·허용 목록·수신자). 전체 1083 통과. 미실측: 실제 30MB PDF·대형 저장소·SMTP 수신.
+    부수: Codex 가 `TMPDIR=.pytest_tmp` 로 남긴 테스트 산출물이 수집돼 8건 에러 → `pytest.ini norecursedirs` 에 추가, `.gitignore`.
+    당장 확인된 것: 9/15 dry-run 이 새 프로필 3개의 "오늘 발송 없음"을 잡았다(05:00 에는 manual 이었으므로 정상).
+
+135. **Codex 독립 검토 반영 — 화면·사다리·SOTA** (2026-09-16, task-mu2aawe8, 읽기 전용 검토). 반영: ① 복원 회차를 날짜로 가리면 표가 생긴
+    날 그 전에 나간 논문이 사라진다 → 표의 첫 회차 시각 이전 것만 복원. ② 화면 반응 수가 학습과 달랐다(같은 버튼 두 번·마음 바꿈을 두 번
+    셈) → 회차·수신자·논문마다 마지막 유효 반응 하나(`ops_dashboard.latest_valid_reactions`), 키워드별 반응은 **반응 시각 이전** 관측의
+    적중에 붙인다. ③ `profile_advisor.rollback` 이 주기를 안 넘겨 수동 프로필을 daily 로 되돌렸다(잠복 결함 — 화면에 되돌리기 버튼이
+    생기며 드러남) → 현재 주기 유지. ④ 되돌리기 예외를 화면에서 잡아 사유 표시. ⑤ `unsafe_allow_html` 에 들어가는 키워드·note·변경 문장
+    escape. ⑥ 유사 구현 캐시가 주 키워드가 바뀌어도 옛 저장소를 보였다 → 주 키워드가 같을 때만 캐시. ⑦ SOTA 미탐 셋("outperforms
+    state-of-the-art …", "achieves SOTA … compared to existing baselines", "new single-model state-of-the-art BLEU score")과 벤치마크 목록
+    꼴("on both the CALVIN and LIBERO benchmarks", "Across three benchmarks, GenEval, HPSv2, and DPG") 반영 — 배경 필터는 배경 형용사가
+    주장 명사를 꾸밀 때만. 실측 120편 5편(전과 같은 수, 구성은 나아짐). 반영 안 함: 카드 4장의 DB 연결 반복(실측 0.35초 — 느리지 않다),
+    가중치 그래프에 rollback 표시(낮음), digest 가 기본 DB 를 읽는 것(digest 전체가 그 관행이고 운영은 같은 파일). 돌연변이 5/5 + 테스트
+    격리 사고로 conftest 가 GitHub 검색을 막는다. 전체 1084 통과. 스크린샷 7장 재확인.
+
+136. **운영 화면 이름·구성 개편 — "최신 연구 동향 모니터링 에이전트", 페이지 셋, 가중치 편집, 127.0.0.1 바인딩** (2026-09-16, 사용자 요청).
+    `review_app.py` 1,809 → 1,049줄. 옛 하네스 시절 "검색·요약 생성"·"요약 검토" 탭과 사이드바 현황 목록·수동 재현 버튼 3개를 뺐고(로직
+    `review_core.py` 와 테스트는 그대로), 켜자마자 운영 현황이 나온다. 페이지: 운영 현황(§8-131) / **논문 DB**(`ops_dashboard.paper_catalog` —
+    저장 논문 전체를 제목·발표·저장·출처·요약·재현·코드 단계·보낸 프로필·처음 발송으로, 검색어·프로필 필터, 한 줄 고르면 요약 본문·초록·재현
+    시도·코드·SOTA 주장. 보낸 프로필은 arxiv_id 또는 정규화 제목으로 잇는다 — arxiv_id 로만은 224행 중 194행) / **시스템**(`recent_runs` 새벽
+    실행 블록의 소요·결과·경고·API 호출·프로필별 발송, 주간 에이전트, cron 목록, DB 표 행 수·크기·백업·마지막 정리, 로그 파일 끝 N줄).
+    운영 현황의 키워드 탭에서 **가중치를 직접 고쳐 저장**(`research_profile.update_core_weights` — 사용자 revision, 0.35~2.0 자름, 나머지 설정
+    유지, 되돌리기 가능, 피드백 조정은 이 값을 새 기준선으로 삼는다). 되돌리기·가중치 저장·수신자 변경이 로그인 없이 가능해져서
+    `.streamlit/config.toml` 에 `server.address = "127.0.0.1"`(그전엔 Network/External URL 까지 열려 있었다). 사이드바 선택 버튼 글자가 hover·
+    아이콘 없는 키에서 안 보이던 것 수정. Playwright 스크린샷 확인. 테스트 6 추가, 돌연변이 9/9, 전체 1089 통과.
+    설정 탭 정리(같은 날 사용자 지적): 오른쪽 칸의 검색 실패 사유(httpx 오류의 URL 전체, 수백 자)가 길어 아래 펼침 메뉴 셋이 스크롤 밖으로
+    밀렸다 → 한 칸(좁게)에 수신자 → 발송 주기 → 최근 검색 실행(짧은 표) → 수동 스캔 순, 사유는 `ops_dashboard.short_error` 가 "429 Unknown
+    Error · export.arxiv.org" 처럼 코드·호스트만. `use_container_width` 폐기 경고 → `width="stretch"`. 화면 모듈이 아닌 모듈을 고치면
+    Streamlit 재시작이 필요하다(화면 파일만 다시 읽는다 — 실측: `short_error` 없음 AttributeError).
+    검토한 뒤 하지 않은 것: 화면 안 Claude·Codex 채팅(코드 수정 권한이 있는 로그인 없는 웹 페이지 = 원격 실행 창구) — 사용자에게 대안과 함께 보고.
+
+137. **화면 다듬기 — 이모지 아이콘 제거 · 가중치 그래프를 키워드 축으로 · 상태는 색 원 · 펼침 메뉴 폭 · "씨앗"→"시드"** (2026-09-16, 사용자 지적).
+    화면의 이모지(돋보기·연필·편지·엄지·경고·체크·X)를 모두 뺐다(엄지 → "긍정/부정" 글자). 가중치 추이는 선 그래프(범례만 길고 세로가
+    짧아 선과 키워드가 안 이어졌다) → **y 축이 키워드, x 축이 revision 인 점 그래프**(Altair), 줄당 56px 로 세로를 키우고 점 위에 값,
+    점 색은 파랑 한 색 순차 척도(dataviz 기준 팔레트 step 250→650), 지금 가중치 큰 키워드가 위. 설정 탭의 검색 실행 결과는 글자 없이
+    **색 원**(완료 초록 #0ca30c · 일부 주황 #ec835a · 실패 빨강 #d03b3b — 상태 팔레트)으로, 색만으로 뜻을 전하지 않게 표 위에 범례 한 줄.
+    표 격자가 글자 크기 지정을 무시해 큰 원 글리프(⬤)를 쓴다. 아래 펼침 메뉴 셋을 위 칸과 같은 폭으로.
+    용어: "씨앗" 을 "시드" 로 코드·테스트·README·AGENTS·계획 문서·프롬프트에서 전부 바꿨다(202곳, 조사 맞춤 — 씨앗을→시드를, 씨앗이→시드가,
+    씨앗이던→시드였던 …). PROGRESS·HISTORY·ASTRA 계획·재생 기록 같은 **날짜 박힌 기록은 원문 그대로** 둔다. 저장된 데이터에는 이 낱말이 없다
+    (전부 화면·보고 문자열) — 확인함. `prompts/profile_advisor_v1·v2.md` 는 문구가 바뀌어 프롬프트 sha 가 달라진다(제안기는 현재 미사용).
+
+138. **실측 전 점검 — 9/15 05:00 누락 원인은 PC 절전, Windows 작업 스케줄러 이중화 · 감시 거짓 경보 방지 · 화면의 옛 "씨앗" 표기** (2026-09-16).
+    누락 원인: WSL 저널이 03:10 → 09:01 로 끊기고 "Clock change detected" — PC 가 절전이라 cron 이 05:00 을 건너뛰었다(cron 은 놓친 작업을
+    나중에 돌리지 않는다). 대책: Windows 작업 `paper-harness\daily-scan`(매일 05:00)·`paper-harness\weekly-agent`(금 17:00) —
+    `conhost --headless wsl.exe -d Ubuntu -u mjh -e <스크립트>`, **StartWhenAvailable**(절전으로 놓치면 깨어나는 즉시), WakeToRun 은 끔(PC 를
+    깨우지 않는다 — 사용자 결정 사항으로 남김). 시험 작업으로 Windows → WSL 실행을 확인하고 지웠다. cron 과 겹치면 일일은 flock 스킵, 주간은
+    자기 락 + KST ISO 주 표지(`logs/weekly_agent.stamp`)로 한 번만(정리를 두 번 돌리면 백업이 하나 더 생겨 회전이 옛 백업을 민다).
+    감시(`check_daily_mail.py`): 프로필 넷이면 새벽 실행이 06:30 을 넘길 수 있어 **스캔 락이 잡혀 있으면 판정 보류**, cron 을 06:30·10:30 두 번으로.
+    시스템 페이지 실행 기록: 겹친 트리거의 "스킵" 줄이 돌고 있는 블록을 닫아 1시간 넘게 돈 실행이 "0분 스킵"으로 보이던 파서 결함 수정.
+    화면의 "씨앗": 코드는 이미 바꿨고 남은 것은 DB 의 옛 revision 메모(3)·키워드 이벤트 메모(7) — 기록은 두고 **보여 줄 때만** `display_text`
+    가 조사까지 맞춰 바꾼다(변경 이력·로그·다이제스트 본문·에이전트 사유). Playwright 로 프로필 4 × 탭 7 + 논문 DB + 시스템(펼침 메뉴 포함)을
+    돌며 "씨앗" 0건 확인. 점검 결과: 스키마 최신, cron 3줄, 락 비어 있음, 디스크 17%, 키·SMTP·버튼 설정 모두 있음(값은 보지 않음), daily 프로필
+    4개 수신자 1·2·1·1. **arXiv API 는 오늘 저녁에도 요청 1건에 429** — 내일 새벽도 arXiv 는 막혀 S2 + 초록 정리로 갈 가능성이 크다(차단기 동작).
+    테스트 3 추가, 돌연변이 2/2.
+
+139. **첫 4프로필 실측(9/16 새벽) · cron PATH 에 gh 가 없었다 · 반응 버튼 탭 자동 닫기 · agentic AI 키워드 2→16** (2026-09-16).
+    실측: 05:00 시작 → `team_agent` 05:08(6편) · `team_ai_advance` 05:15(6편) · `team_robot` 09:58(6편, PC 절전에서 깨어난 뒤 이어서) ·
+    `team_vision` 은 저녁까지 진행 중. **한도 초과 없음** — Claude·Codex 는 관여하지 않았고(주간 작업만), Gemini 는 프로필당 4~8회에 503 한 번
+    자동 재시도, S2 는 429 를 받아 호출 간격을 16초로 자동 조절하며 계속, arXiv 는 어제 429 가 풀려 정상. 반응 버튼 첫 왕복 성공: 사용자가
+    누른 "더 보고 싶음" 1건이 `valid` 로 수집됐다(P4 · 2609.14976 · issue team_ai_advance:20260915T201548).
+    **결함: cron PATH 에 `gh` 가 없어 새벽 GitHub 저장소 검색이 하루 내내 실패**("No such file or directory: 'gh'" 10회) — 메일은 정상이었지만
+    ⑦ 저장소 후보 찾기와 ⑦ 사다리의 유사 구현 검색이 반쪽만 돌았다. `code_finder.gh_executable()`(PATH → `~/.local/bin/gh`)와 두 cron 스크립트의
+    `export PATH="$HOME/.local/bin:$PATH"` 로 고쳤다. 테스트 1 추가(돌연변이 1/1, conftest 가 원본 함수를 `_real_github_search` 로 보관).
+    반응 버튼(사용자: "버튼 누르면 끝이었으면 좋겠다"): 메일 규격상 탭이 열리는 것은 못 막는다(HTML 메일은 링크 클릭뿐, 백그라운드 요청 불가).
+    `apps_script/feedback_webapp.gs` 가 기록 뒤 `google.script.host.close()` → `window.top.close()` → `window.close()` 를 세 번 시도하고,
+    0.5초 안에 못 닫으면 예전 안내(기록됨 + 취소)를 보여 준다. 브라우저는 스크립트가 연 창만 닫게 허용하므로 웹메일에서는 닫히고 데스크톱 메일
+    앱에서는 안 닫힐 수 있다 — **재배포 뒤 실제 동작은 미확인**(사용자가 붙여넣고 새 버전으로 배포해야 한다).
+    `team_agent` 키워드 2 → 16(revision 1 → 2, origin=user, 되돌리기 가능). 근거는 오늘 이 프로필 관측 559편의 실제 빈도 —
+    multi-agent 96 · workflow 56 · RAG 49 · orchestration 38 · MCP 19 · prompt injection 11 · tool use 11 · human-in-the-loop 10 ·
+    LLM-as-a-judge 5 · agent evaluation 4. 1.0 = LLM agent·agentic AI·multi-agent system·model context protocol, 0.6 = tool use·function
+    calling·agent memory·web agent·computer use agent·coding agent·agentic workflow·agent evaluation·prompt injection,
+    0.4 = LLM-as-a-judge·human-in-the-loop·retrieval-augmented generation. 시드 2 → 4(+multi-agent system·model context protocol).
+    재채점 확인: 16개 중 15개가 관측에서 실제로 적중(1~81편), `computer use agent` 만 0편 — 관측 근거 없이 2026 동향으로 넣은 것이라 그대로 둔다.
+
+140. **분야별 키워드 개정 — 웹·arXiv·관측 풀 실측 + Codex 판정 (2026-09-16)**. 사용자: "오늘 보낸 논문만 보지 말고 직접 웹·논문 검색으로 agent /
+    physical AI·로봇 / 비전의 최신 트렌드 키워드를 분석해 반영. 기존 것이 괜찮으면 다 바꿀 필요 없음. 코덱스와 협업해 선별." 근거 셋을 모아
+    (`data/keyword_review_2026-09-16/`, gitignore) Claude 가 제안서를 쓰고 Codex 가 읽기 전용으로 판정했다(의견이 갈리면 Codex — 9/16 사용자 규칙).
+    **근거**: (a) 웹 — agentic RL·self-evolving agents·deep research·GUI/computer-use(OSWorld 2.0)·MCP/A2A 프로토콜·agent skills;
+    robot foundation model·VLA(action chunking·diffusion policy)·world model(JEPA)·cross-embodiment·humanoid·dexterous·teleoperation(keon/awesome-physical-ai,
+    Voxel51 2026, CoRL 2026 워크숍); zero/few-shot·multi-class·3D·logical AD·anomaly synthesis·MLLM-AD, MVTec AD 2·Real-IAD·VisA·LOCO(M-3LAB 목록, CVPR 2026).
+    (b) **arXiv 최근 180일 abs 구절 건수** 후보 130여 개(예: LLM agent 1850 · agentic system 1570 · AI agent 1152 · agentic RL 347 · GUI agent 150 ·
+    world model 1258 · flow matching 1066 · robotic manipulation 778 · humanoid 432 · robot foundation model 35 · VLM 3031 · industrial anomaly detection 35 ·
+    zero-shot AD 19 · 3D AD 16). 측정 중 arXiv 429 를 두 번 맞았다 — 카운터 두 개를 동시에 돌린 내 실수(페이서는 프로세스 단위). (c) **관측 풀 재채점**
+    (`candidate_observations` 3681편, 매처 그대로): 현재 매처가 못 잡던 변형 — "robotic manipulation" 18편(robot manipulation 9), "LLM-based agent" 8,
+    "large language model agent" 7. 비전 풀은 anomaly 74·inspection 118편을 담고도 정확 구절이 없어 채점 0 — **오늘 비전 메일 6편이 전부 'defect detection'
+    단독 적중이고 절반이 땅콩·복합재·주조**였다. (d) **S2 시드 수율**(14일, 첫 100건 중 새 비전 핵심어 적중): inspection automation 14% · visual anomaly
+    detection 24% · industrial anomaly detection 26% · **surface defect detection 54%**. (e) 제외어 부작용: clinical 이 자르는 핵심 적중 3편은 전부 의료 VLM,
+    "crop" 은 동사와 충돌해 뺐다, "medical image" 가 자르는 few-shot AD 논문은 제목이 "...in Medical Images" 라 맞게 잘린다.
+    **Codex 판정(초안과 다른 것)**: `AI agent`·`tool calling`·`humanoid`·`grasping`·`affordance` 는 가드 없는 일반어라 추가하지 않음; `world model` 은 다분야어라
+    0.6 유지(제안 1.0); 누락 동향어 추가 — agent planning·tool-integrated reasoning·agent interoperability·action chunking·robot policy·spatial intelligence·
+    automated optical inspection·continual AD·open-vocabulary AD; `robot simulation` 은 최초 키워드라 삭제 대신 0.4; ai_advance 는 합집합이 아니라 대표 1.0 만.
+    재판정 1회(관측 제목 근거): 3D anomaly detection·logical anomaly·defect segmentation → 1.0, zero/few-shot AD 는 0.6 유지(시계열 오탐·의료 근거).
+    **적용(전부 origin=user, 되돌리기 가능)**: team_agent rev 2→3 (16→39: 1.0 +LLM-based agent·large language model agent, 0.6 +21, 0.4 +3),
+    team_robot 1→2 (10→38: 1.0 +robotic manipulation·robot foundation model·humanoid robot·dexterous manipulation, 0.6 +16, 0.4 +8, robot simulation 0.6→0.4),
+    team_vision 1→2 (10→33: 1.0 +industrial anomaly detection·surface defect detection·3D anomaly detection·logical anomaly·defect segmentation, 0.6 +18;
+    시드 inspection automation → surface defect detection·industrial anomaly detection; 제외어 +agricultural·agriculture·fruit·clinical·medical image·remote sensing),
+    team_ai_advance 4→5 (39→47: 1.0 +8; 시드 inspection automation → surface defect detection·industrial anomaly detection 은 Codex JSON 밖의 Claude 추가 —
+    같은 시드의 수율 실측을 그대로 적용). 검증: arXiv 가 네 질의(973~1229자)를 모두 200 으로 받았고 지난주 건수 agent 730(옛 2키워드 85) · ai_advance 461 ·
+    robot 253 · vision 98(옛 81). cron 은 `--max-pages 30`(1500편)이라 상한 안. 재채점에서 새 키워드 대부분이 실제 적중(로봇 26/28, 에이전트 12/23 —
+    0편은 GUI agent·agentic RL 등 풀이 옛 질의로 모인 탓). 테스트 1094 통과(코드 변경 없음, 데이터 개정). 다음 스캔은 지문이 바뀌어 7일 창을 다시 본다.
+    남은 것: `world model` 을 1.0 으로 올리고 싶으면 운영 화면 가중치 편집으로(사용자 판단); 로봇 시드 확장(humanoid robot 등)은 S2 수율 미실측이라 보류.
+
+141. **가중치 추이 그래프를 꺾은선으로** (2026-09-16). 사용자: "가중치가 움직인 키워드 그래프, 꺾은선으로 그려야지 저건 너무 보기 힘들다. 안 움직인 건 냅두고
+    변화가 있는 것들만." 아침에 점 그래프(y=키워드)로 바꿨던 것을 되돌려 x=revision·y=가중치·선 하나=키워드로 그린다(`review_app._weight_chart`).
+    실측으로 잡은 것: (1) team_ai_advance 는 rPPG·photoplethysmography·wearable biosensor 가 셋 다 1.0→0.4 라 **선 세 개가 정확히 겹쳐 하나만 보이고
+    범례만 일곱 줄**이었다 → 궤적이 같은 키워드는 선 하나로 묶고 이름을 " · " 로 잇는다(7 → 3선). (2) 선 끝 이름표가 오른쪽 범례와 겹쳤다 → 범례를 아래로,
+    오른쪽 여백 300px 를 이름표 몫으로. (3) 0.05 눈금에 ".1f" 포맷이라 "0.6/0.6" 이 두 번 찍혔다 → tickMinStep 0.1. 선이 하나면 범례를 뺀다(끝 이름표가
+    곧 이름). 범례 클릭으로 한 선만 강조. 색은 범주형 10색을 변화폭 순으로 고정(순환 없음). 안 움직인 키워드는 종전대로 호출부가 거른다.
+    화면 실측(playwright, 프로필 4개 순회): Traceback 0, 움직인 키워드가 없는 프로필(team_agent·team_vision)은 안내문만. test_ops_dashboard 16 통과.
+
+142. **arXiv 질의를 키워드 20개씩 가른다 — 47개 OR 질의 하나는 arXiv 가 못 받는다** (2026-09-16, 사용자 "지금 실측 한 번 해봐" 실행에서 발견).
+    11:13 KST 수동 실측(`run_daily_scan.sh`, 메일 포함): team_agent 는 정상(arXiv 21회·S2 620편·후보 1124편·6/6 요약·11:27 발송)이었는데
+    **team_ai_advance(키워드 47개, 질의 1229자)는 arXiv 가 500 → 재시도 끝에 포기, S2 만으로 진행**(11:36 발송). 분리 실험(같은 시각, 같은 창):
+    47항 정렬·50건 = 36.5초 뒤 **503** · 앞 24항 = 9.9초 200(246편) · 뒤 23항 = 15.0초 200(236편) · 47항 재시도 = 35.5초 200(455편).
+    arXiv 는 OR 항 수에 비례해 느려지고 30여 초 언저리에서 서버가 포기한다 — 오전의 질의 수용 확인(§8-140)은 max_results=1 이라 통과했던 것이다.
+    수정: `run_profile_scan._arxiv_queries_from_core_topics` 가 core_topics 를 `ARXIV_TERMS_PER_QUERY`(20, 환경변수) 이하씩 **고르게** 가르고(47 → 16·16·15),
+    `_search_arxiv_chunked` 가 차례로 던져 arxiv_id 로 합친다. 상태는 전부 done 이면 done, 하나라도 partial·실패면 partial(받은 것은 쓰고 커서는
+    window_from 에 남아 내일 다시 본다), 전부 실패면 예외 → 기존 'arXiv 실패 → S2 만으로' 경로. `search_runs.query` 는 " ‖ " 로 이은 질의 목록,
+    error_detail 에 죽은 질의의 사유. 20개 이하 프로필은 종전과 완전히 같다(호출 수·질의 문자열). 테스트 3 추가(분할 균등·합치기/중복/partial·전부 실패),
+    돌연변이(분할 끄기) 2/2 실패 확인. 이번 실행 프로세스는 옛 코드라 로봇·비전은 질의 하나(38·33개, 994·973자)로 간다 — 결과를 §8-143 에 적는다.
+    같은 실행에서 S2 는 429 를 계속 받아 시드 4개 중 3개까지만(300초 예산) — 오전에 내가 S2 수율 실험을 돌린 영향도 있을 수 있다(미확인).
+
+143. **키워드 개정 뒤 첫 실측 결과 (2026-09-16 11:13~11:57 KST, 수동 실행, 메일 4통 발송, exit 2=저하)**.
+    team_agent(11:27): 후보 1124(arXiv 21회 호출·S2 620) → 6/6 본문 요약. 새 키워드가 실제로 골랐다 — EchoPath(GUI agent·MCP), Turn-level DRE(agent benchmark),
+    Scaling LLM Agents(large language model agent 변형 적중). 스캔 적중 상위: LLM agent 78 · RAG 64 · agentic AI 41 · multi-agent system 33 · agent framework 30.
+    team_ai_advance(11:36): **arXiv 500 → S2 만**(§8-142) → 후보 193, 6편 전부 저널·초록 정리(원문 요약 0). 땅콩 결함 논문이 다시 나왔다 — 이 프로필엔
+    agricultural 제외어를 안 넣었기 때문(헬스케어 축 보호와는 무관하므로 다음 개정 때 넣을 후보). team_robot(11:47): 후보 510(arXiv 정상, 38개 질의 994자) →
+    UniDex-ViTac(dexterous manipulation·action chunking) · ProxiDex(teleoperation) · SAVLA(robotic manipulation 변형) · WholeBodyWAM(loco-manipulation·
+    whole-body control) · Weave(humanoid robot) · Robot Data Factory — **새 키워드 6편 중 5편에 관여**. 적중 상위: world model 42 · VLA 39 · digital twin 36 ·
+    robotic manipulation 22 · imitation learning 16. team_vision(11:57): 후보 545(arXiv 정상, S2 시드 3개 463편) → PC²-AD(3D anomaly detection) ·
+    금속 표면 결함(surface defect detection) 은 새 키워드 덕이지만 나머지 4편은 여전히 'defect detection' 단독 적중의 저널 논문(원자로 부품·인증 검토 지식그래프).
+    적중 상위: vision-language model 81(0.6 계층이라 자리는 못 얻음) · defect detection 18 · defect classification 5 · unsupervised AD 4.
+    'defect detection' 에 산업 동반어 가드를 붙이는 안을 재봤다(풀 30편: 통과 23·걸러짐 7) — 걸러지는 7편에 workpiece 결함 검출 같은 진짜 산업 논문이 섞이고
+    통과 23편에도 감자·땅콩·풍력이 남아 정밀도 이득이 작다 → **보류**. 비전은 시드 교체 효과를 며칠 보고 다시 손댄다.
+    부수 수정: exit 2 의 stderr 문구가 "등록된 프로필 없음 — 종료코드 2" 로 찍히던 것(1 의 문구를 그대로 탐)을 `_exit_message` 로 갈라
+    "[저하] … team_ai_advance(arXiv failed · S2 partial)" 로. 새벽 메일 점검기 테스트 3개가 운영 락 파일을 보던 결함도 격리(`_no_real_scan_lock`).
+    S2 는 실행 내내 429(시드 페이지 2~3쪽에서 포기) — 하루 두 번째 실행이라 한도가 더 빨리 찼을 가능성.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

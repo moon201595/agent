@@ -147,3 +147,24 @@ def test_bootstrap_은_DDL_과_별개의_데이터_이관이라_DDL_뒤에_죽�
     with sqlite3.connect(db) as con:
         d = con.execute("SELECT actor_origin, provenance_origin FROM profile_keyword_events WHERE keyword='d'").fetchone()
     assert d == ("bootstrap", "user")
+
+
+def test_migrate는_부분_스키마에서_데이터_점검을_DDL_뒤로_미룬다(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 부분 스키마의 data_pending이 SchemaOutOfDate로 DDL 적용 전에 중단되는 것
+    (외부 검토 2026-09-14)."""
+    monkeypatch.delenv(schema_guard.APPLY_ENV, raising=False)
+    import migrate
+    import research_profile as rp
+    monkeypatch.setattr(migrate, "BACKUP_DIR", tmp_path / "backups")
+    db = tmp_path / "partial.db"
+    monkeypatch.setenv(schema_guard.APPLY_ENV, "1")
+    rp.create_profile(db, "p", "이름", core_topics=["A"], max_items=2, s2_seeds=["A"])
+    monkeypatch.delenv(schema_guard.APPLY_ENV)
+    with sqlite3.connect(db) as con:
+        con.execute("DROP TABLE scan_runs")
+    monkeypatch.setattr(migrate, "owners", lambda scope="operational": {
+        "operational": [("research_profile", rp._ddl)], "evaluation": [], "all": [("research_profile", rp._ddl)]}[scope])
+    assert migrate.main(["--db", str(db), "--apply"]) == 0
+    assert migrate.data_pending(db) == {}
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='scan_runs'").fetchone()[0] == 1

@@ -19,3 +19,8 @@ htmlcov/
 # Claude Code 스킬 캐시 — 도구가 관리하는 디렉터리지 이 프로젝트 코드가 아니다.
 .agents/
 skills-lock.json
+
+# 특허 출원 재료 — 사내 문서. 저장소가 공개이므로 커밋하지 않는다(2026-09-13, 계획 §2.1)
+docs/patent/
+docs/paper/
+.pytest_tmp/

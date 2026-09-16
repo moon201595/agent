@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import numbers
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -54,7 +56,7 @@ def snapshot(db: Path, profile_id: str, start: datetime, end: datetime) -> dict:
 
     같은 논문의 관측이 여럿이면 `(observed_at, scan_id)` 가 가장 뒤인 행의
     메타데이터를 쓴다(동률 규칙을 고정한다 — 입력 순서에 기대지 않는다).
-    발견 출처·씨앗은 기간 내 관측의 **합집합**이다 — 최신 행 값만 쓰면 이전
+    발견 출처·시드는 기간 내 관측의 **합집합**이다 — 최신 행 값만 쓰면 이전
     발견 경로가 사라진다.
 
     초록은 `abstract_ref` 를 따라 **보유 행에서 직접** 복원한다. 참조 대상이
@@ -182,7 +184,7 @@ def diff_profiles(before: dict, after: dict) -> dict:
     tier_changes = {k: (a["core_weights"].get(k, 1.0), b["core_weights"].get(k, 1.0))
                     for k in set(a["core_topics"]) & set(b["core_topics"])
                     if a["core_weights"].get(k, 1.0) != b["core_weights"].get(k, 1.0)}
-    # **실효** S2 질의 비교 — 명시 씨앗이 비면 가중치 폴백이라 계층 변경만으로도 바뀐다
+    # **실효** S2 질의 비교 — 명시 시드가 비면 가중치 폴백이라 계층 변경만으로도 바뀐다
     seeds_before = sorted(s2_delta.keywords_for_s2(before))
     seeds_after = sorted(s2_delta.keywords_for_s2(after))
     disallowed = []
@@ -307,6 +309,16 @@ DEFAULT_SHADOW_RULES: dict = {
 }
 
 
+def _is_finite_rule_value(value: object) -> bool:
+    """유한한 실수형만 게이트 규칙으로 인정한다(외부 검토 2026-09-14)."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _unconfigured_rule_names(values: dict, defaults: dict) -> list[str]:
+    """None·NaN·무한대·비수치 규칙을 같은 미설정 목록으로 돌려준다(외부 검토 2026-09-14)."""
+    return [name for name in defaults if not _is_finite_rule_value(values.get(name))]
+
+
 def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
          shadow: dict | None = None, shadow_rules: dict | None = None) -> tuple[str, list[str]]:
     """상태 하나 + 사유 전부. 차단 사유가 여럿이면 다 남긴다.
@@ -322,6 +334,12 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
         return INVALID, [f"disallowed:{d}" for d in diff["disallowed"]]
     if diff["no_change"]:
         return VALID, ["no_change"]
+    invalid_apply = [name for name in DEFAULT_APPLY_RULES
+                     if rules.get(name) is not None and not _is_finite_rule_value(rules.get(name))]
+    # 유한성 검사는 비교식보다 먼저 한다 — NaN은 모든 비교가 거짓이고 inf는
+    # 사실상 무제한이어서 두 값 모두 fail-closed를 우회한다(외부 검토 2026-09-14).
+    if invalid_apply:
+        return INSUFFICIENT, ["apply_rules_unconfigured:" + ",".join(invalid_apply)]
     if diff["seed_changed"]:
         reasons.append("effective_s2_seeds_changed")
     if diff["arxiv_query_changed"]:
@@ -329,16 +347,34 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
     shadow_held: list[str] = []
     if reasons:
         if shadow is None:
+            if shadow_rules is not None:
+                unconfigured = _unconfigured_rule_names(srules, DEFAULT_SHADOW_RULES)
+                if unconfigured:
+                    return INSUFFICIENT, reasons + ["shadow_rules_unconfigured:" + ",".join(unconfigured)]
             return NEEDS_SHADOW, reasons     # 로컬 영향은 계산했지만 검색 효과는 못 잰다(§7.4)
         if shadow.get("status") not in ("done",):
             return INSUFFICIENT, reasons + [f"shadow_status:{shadow.get('status')}"]
         sd = shadow["diff"]
-        unconfigured = [n for n, v in srules.items() if v is None]
+        unconfigured = _unconfigured_rule_names(srules, DEFAULT_SHADOW_RULES)
         if unconfigured:
             return INSUFFICIENT, reasons + ["shadow_rules_unconfigured:" + ",".join(unconfigured)]
+        unmeasured: list[str] = []
+        if sd.get("eligible_lost") is None:
+            unmeasured.append("shadow_eligible_lost_unmeasured")
+        if sd.get("topk_overlap") is None:
+            unmeasured.append("shadow_topk_overlap_unmeasured")
+        if sd.get("noise_after") is None:
+            unmeasured.append("shadow_noise_after_unmeasured")
+        required_unmeasured = [reason for name, reason in (
+            ("max_eligible_lost", "shadow_eligible_lost_unmeasured"),
+            ("min_topk_overlap", "shadow_topk_overlap_unmeasured"),
+            ("max_noise_after", "shadow_noise_after_unmeasured"),
+        ) if srules[name] is not None and reason in unmeasured]
+        if required_unmeasured:
+            return INSUFFICIENT, reasons + required_unmeasured
         if len(sd["eligible_lost"]) > srules["max_eligible_lost"]:
             shadow_held.append(f"shadow_eligible_lost:{len(sd['eligible_lost'])}>{srules['max_eligible_lost']}")
-        if sd["topk_overlap"] is not None and sd["topk_overlap"] < srules["min_topk_overlap"]:
+        if sd["topk_overlap"] < srules["min_topk_overlap"]:
             shadow_held.append(f"shadow_topk_overlap:{sd['topk_overlap']:.2f}<{srules['min_topk_overlap']}")
         if sd["noise_after"] > srules["max_noise_after"]:
             shadow_held.append(f"shadow_noise_after:{sd['noise_after']}>{srules['max_noise_after']}")
@@ -357,7 +393,7 @@ def gate(diff: dict, imp: dict, snap: dict, rules: dict | None = None,
             reasons.append(f"added_core_zero_hits:{term}")
     if reasons:
         return INSUFFICIENT, shadow_tag + reasons
-    unconfigured = [name for name, v in rules.items() if v is None]
+    unconfigured = _unconfigured_rule_names(rules, DEFAULT_APPLY_RULES)
     if unconfigured:
         return INSUFFICIENT, shadow_tag + ["apply_rules_unconfigured:" + ",".join(unconfigured)]
     held: list[str] = list(shadow_held)
@@ -429,8 +465,9 @@ def regate_with_shadow(db: Path, analysis_id: str, shadow_id: str,
         snap = {"paper_count": scope.get("papers", 0), "scans": scope["scans"],
                 "abstract_corrupt": scope.get("abstract_corrupt") or []}
         metrics = {**json.loads(sh["metrics_json"]), "status": sh["status"], "shadow_id": shadow_id}
-        eff_rules = {**DEFAULT_APPLY_RULES, **(rules or json.loads(an["rules_json"]))}
-        eff_srules = {**DEFAULT_SHADOW_RULES, **(shadow_rules or {})}
+        stored_rules = json.loads(an["rules_json"])
+        eff_rules = {**DEFAULT_APPLY_RULES, **(rules if rules is not None else stored_rules)}
+        eff_srules = {**DEFAULT_SHADOW_RULES, **(shadow_rules if shadow_rules is not None else {})}
         status, reasons = gate(diff, imp, snap, eff_rules, metrics, eff_srules)
         con.execute("UPDATE impact_analyses SET gate_status=?, reasons_json=? WHERE analysis_id=?",
                     (status, json.dumps(reasons), analysis_id))
@@ -460,7 +497,7 @@ def _ddl(con: sqlite3.Connection) -> None:
         " analysis_id  TEXT NOT NULL,"
         " profile_id   TEXT NOT NULL,"
         " decided_at   TEXT NOT NULL,"
-        " source       TEXT NOT NULL,"    # analyze | regate_with_shadow
+        " source       TEXT NOT NULL,"    # analyze | regate_with_shadow | apply_analysis
         " shadow_id    TEXT,"
         " gate_status  TEXT NOT NULL,"
         " reasons_json TEXT NOT NULL,"

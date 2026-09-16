@@ -4,8 +4,17 @@
 # 공통으로 적용되는 색상 기반만 정한다.
 [theme]
 base = "light"
-primaryColor = "#0EA5E9"
+primaryColor = "#3B5BDB"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#EAF6FD"
+secondaryBackgroundColor = "#EEF1FF"
 textColor = "#1E293B"
 font = "sans serif"
+
+# 운영 화면에는 되돌리기·가중치 저장·수신자 변경 버튼이 있고 로그인이 없다(2026-09-16). 이 PC 에서만 열리게 묶는다 —
+# WSL 의 localhost 포워딩으로 Windows 브라우저의 http://localhost:8501 은 그대로 열린다.
+[server]
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false

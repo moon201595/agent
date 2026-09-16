@@ -41,8 +41,8 @@ def _merge(base: dict, other: dict) -> dict:
     for key in ("citation_count", "year"):
         if out.get(key) is None and other.get(key) is not None:
             out[key] = other[key]
-    # **씨앗·검색 출처는 합집합이다**(2026-09-11, B단계 §6.2). "채워진 값이
-    # 이긴다"면 S2 두 씨앗이 각각 데려온 행이 제목으로 합쳐질 때 둘째 행의
+    # **시드·검색 출처는 합집합이다**(2026-09-11, B단계 §6.2). "채워진 값이
+    # 이긴다"면 S2 두 시드가 각각 데려온 행이 제목으로 합쳐질 때 둘째 행의
     # 귀속이 사라진다. arXiv 와 S2 양쪽에서 발견된 논문도 `source` 하나로는
     # 알 수 없어 `retrieval_sources` 를 따로 둔다 — S2 응답에 arXiv ID 가 있다는
     # 것은 이번 arXiv 검색에서도 발견했다는 뜻이 아니다.

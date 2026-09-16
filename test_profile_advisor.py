@@ -136,6 +136,52 @@ def test_근거_키는_전송_부분집합에_있어야_하고_용어는_문자�
     assert "term_absent_in_evidence" in v[1]["errors"]
 
 
+def test_add_s2_seed도_실제_전송_텍스트와_전송_근거_키를_요구한다(db):
+    """이 테스트가 잡는 것: add_s2_seed가 R7 문자열 실재와 전송된 근거 키 검사를 우회하는 것
+    (외부 검토 2026-09-14)."""
+    sent = {"papers": [{"key": "a1", "title": "target term", "abstract": "known text"}],
+            "exploration": [], "sent_paper_keys": ["a1"], "allowed_tiers": [1.0]}
+    profile = {"core_topics": ["target term"]}
+    absent = adv.validate_proposals({"decision": "propose", "proposals": [
+        {"action": "add_s2_seed", "term": "phantom seed", "evidence_paper_keys": []}]}, sent, profile)
+    assert "term_absent_in_sent_text" in absent[0]["errors"]
+    missing = adv.validate_proposals({"decision": "propose", "proposals": [
+        {"action": "add_s2_seed", "term": "target term", "evidence_paper_keys": ["not-sent"]}]}, sent, profile)
+    assert any(e.startswith("evidence_not_sent") for e in missing[0]["errors"])
+    sent["exploration"] = [{"term": "novel seed", "papers": [
+        {"key": "e1", "title": "evidence", "abstract": "novel seed appears here"}]}]
+    sent["sent_paper_keys"].append("e1")
+    accepted = adv.validate_proposals({"decision": "propose", "proposals": [
+        {"action": "add_s2_seed", "term": "novel seed", "evidence_paper_keys": ["e1"]}]}, sent, profile)
+    assert accepted[0]["errors"] == []
+
+
+def test_add_core_term_근거_편수와_실재_편수는_서로_다른_키로_센다(db):
+    """이 테스트가 잡는 것: 같은 evidence key를 두 번 세어 두 편 근거와 두 편 실재로 오인하는 것
+    (외부 검토 2026-09-14)."""
+    sent = {"papers": [{"key": "a1", "title": "world model", "abstract": "world model"}],
+            "exploration": [], "sent_paper_keys": ["a1"], "allowed_tiers": [1.0]}
+    profile = {"core_topics": ["target term"]}
+    out = adv.validate_proposals({"decision": "propose", "proposals": [
+        {"action": "add_core_term", "term": "world model", "proposed_tier": 1.0,
+         "evidence_paper_keys": ["a1", "a1"]}]}, sent, profile)
+    assert "insufficient_evidence_keys" in out[0]["errors"]
+    assert "term_absent_in_evidence" in out[0]["errors"]
+
+
+def test_add_core_term은_기존_core의_하이픈_공백_복수형_변형을_막는다(db):
+    """이 테스트가 잡는 것: 기존 core의 표기 변형을 새 core로 중복 등록하는 것
+    (외부 검토 2026-09-14)."""
+    sent = {"papers": [{"key": "a1", "title": "vision language models", "abstract": "vision language models"},
+                        {"key": "a2", "title": "vision language models", "abstract": "vision language models"}],
+            "exploration": [], "sent_paper_keys": ["a1", "a2"], "allowed_tiers": [1.0]}
+    profile = {"core_topics": ["vision-language model"]}
+    out = adv.validate_proposals({"decision": "propose", "proposals": [
+        {"action": "add_core_term", "term": "vision language models", "proposed_tier": 1.0,
+         "evidence_paper_keys": ["a1", "a2"]}]}, sent, profile)
+    assert "already_core" in out[0]["errors"]
+
+
 # ── JSON·액션 계약 ───────────────────────────────────────────────────────
 def test_미지_액션_새_계층_NaN_중복_초과는_거부되고_guard_는_보류된다(db):
     _seed_corpus(db)
@@ -205,6 +251,36 @@ def test_같은_주에_두_번_돌지_않고_예산_소진이면_요청_0(db):
     assert out["reason"] == "request_budget_exhausted" and client.calls == []
 
 
+def test_사전_skip은_주간_run_예약을_소비하지_않고_snapshot_실패도_안전하게_끝낸다(db, monkeypatch):
+    """이 테스트가 잡는 것: 관측 없음·snapshot 예외를 run 예약 뒤에 처리해 같은 주 재시도를 막는 것
+    (외부 검토 2026-09-14)."""
+    out = _run(db, FakeClient([]))
+    assert out["status"] == "skipped" and out["reason"] == "no_observations"
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM advisor_budget").fetchone()[0] == 0
+    monkeypatch.setattr(adv.profile_impact, "snapshot", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("snapshot down")))
+    out = asyncio.run(adv.run_weekly(db, "p", FakeClient([]), START, END,
+                                     now=datetime(2026, 9, 18, 3, 0, tzinfo=timezone.utc)))
+    assert out["status"] == "skipped" and out["reason"].startswith("snapshot_error:")
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM advisor_budget").fetchone()[0] == 0
+
+
+def test_바깥_취소는_started_run을_error_cancelled로_마감하고_취소를_다시_올린다(db):
+    """이 테스트가 잡는 것: asyncio.wait_for 취소가 advisor_runs를 started로 남기는 것
+    (외부 검토 2026-09-14)."""
+    _seed_corpus(db)
+
+    class CancelClient:
+        async def post(self, *args, **kwargs):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(db, CancelClient())
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT status, status_reason FROM advisor_runs").fetchone() == ("error", "cancelled")
+
+
 def test_provider_잔여를_모르면_보내지_않는다(db):
     _seed_corpus(db)
     client = FakeClient([gemini_ok(PROPOSAL)])
@@ -253,7 +329,7 @@ def test_적용은_게이트_모드_stale_을_스스로_확인하고_복구는_�
     # 검색 영향 없는 순수 계층 변경 + 테스트용 규칙 → eligible 을 만들 수 있다
     after = dict(prof, core_weights={"target term": 1.0, "trend term": 1.0})
     rules = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
-    # 씨앗이 명시돼 있어 실효 질의는 불변이어야 한다
+    # 시드가 명시돼 있어 실효 질의는 불변이어야 한다
     assert not pi.diff_profiles(prof, after)["seed_changed"]
     an = pi.analyze_and_store(db, snap, prof, after, 2, rules=rules)
     assert an["gate_status"] == pi.ELIGIBLE
@@ -284,6 +360,62 @@ def test_적용은_게이트_모드_stale_을_스스로_확인하고_복구는_�
         kinds = [k for (k,) in con.execute("SELECT kind FROM advisor_events ORDER BY at, event_id")]
         n_rev = con.execute("SELECT count(*) FROM profile_revisions").fetchone()[0]
     assert "applied" in kinds and "rolled_back" in kinds and n_rev == before_rev + 2
+
+
+def test_적용_직전에_현재_advisor_설정으로_다시_게이트하고_설정된_규칙만_적용한다(db):
+    """이 테스트가 잡는 것: 호출자가 만든 eligible 판정과 오래된 분석 규칙만 믿어 현재 설정의
+    미설정 게이트를 우회해 적용하는 것(외부 검토 2026-09-14)."""
+    _seed_corpus(db)
+    prof = rp.get_profile(db, "p")
+    snap = pi.snapshot(db, "p", START, END)
+    after = dict(prof, core_weights={"target term": 1.0, "trend term": 1.0})
+    rules = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    an = pi.analyze_and_store(db, snap, prof, after, 2, rules=rules)
+    adv.init_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, '{}')",
+                    (adv.MODE_AUTO_APPLY,))
+    before_rev = rp.current_revision(db, "p")
+    refused = adv.apply_analysis(db, "p", an["analysis_id"])
+    assert refused["applied"] is False and refused["reason"] == "gate:insufficient_evidence"
+    assert rp.current_revision(db, "p") == before_rev
+    with sqlite3.connect(db) as con:
+        detail = json.loads(con.execute(
+            "SELECT detail_json FROM advisor_events WHERE kind='apply_refused' ORDER BY at DESC, rowid DESC LIMIT 1"
+        ).fetchone()[0])
+    assert detail["gate_reasons"] and any("apply_rules_unconfigured" in r for r in detail["gate_reasons"])
+    # 현재 설정의 apply·shadow 묶음을 읽어야 같은 분석이 설정된 뒤에만 적용된다.
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE advisor_settings SET rules_json=? WHERE profile_id='p'",
+                    (json.dumps({"apply": rules, "shadow": {}}),))
+    applied = adv.apply_analysis(db, "p", an["analysis_id"])
+    assert applied["applied"] is True
+
+
+def test_apply_analysis는_재검사한_revision을_프로필_쓰기까지_전달한다(db, monkeypatch):
+    """이 테스트가 잡는 것: 적용 직전에 읽은 revision을 create_profile에 전달하지 않아 경합한 쓰기를
+    허용하는 것(외부 검토 2026-09-14)."""
+    _seed_corpus(db)
+    prof = rp.get_profile(db, "p")
+    snap = pi.snapshot(db, "p", START, END)
+    after = dict(prof, core_weights={"target term": 1.0, "trend term": 1.0})
+    rules = {"max_core_changes": 5, "max_topk_left_ratio": 1.0, "max_exclude_risk": 1.0}
+    an = pi.analyze_and_store(db, snap, prof, after, 2, rules=rules)
+    adv.init_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO advisor_settings (profile_id, mode, rules_json) VALUES ('p', ?, ?)",
+                    (adv.MODE_AUTO_APPLY, json.dumps(rules)))
+    original = rp.create_profile
+    seen: dict[str, int | None] = {}
+
+    def wrapped(*args, **kwargs):
+        seen["expected_revision"] = kwargs.get("expected_revision")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rp, "create_profile", wrapped)
+    before_revision = rp.current_revision(db, "p")
+    assert adv.apply_analysis(db, "p", an["analysis_id"])["applied"] is True
+    assert seen["expected_revision"] == before_revision
 
 
 def test_이전_revision_에서_만든_분석은_stale_로_거부된다(db):

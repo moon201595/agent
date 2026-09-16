@@ -107,6 +107,7 @@ def test_fail_detail_codes_are_the_ones_digest_knows():
     import digest
     produced = {
         "repo_not_found", "clone_timeout", "clone_failed", "unsupported_host",
+        "repo_too_large",          # 2026-09-16 보안 상한(docker_runner.MAX_REPO_KB)
         "no_install_target", "build_failed", "install_only_no_run_target",
         "run_network_suspected", "run_timeout", "run_nonzero_exit",
     }
