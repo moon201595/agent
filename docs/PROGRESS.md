@@ -6063,6 +6063,15 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     `test_scan_layout.py` 가 경계를 지킨다(검색 모듈이 요약·발송을 import 하면, 발송 모듈이 검색을 import 하면, 재수출이 빠지면 실패).
     `server.py`(1,610)·`digest.py`(1,950)는 계획대로 안 나눴다. 전체 1,067 통과, CLI `--help` 정상.
 
+156. **논문 키 통일(S5, 동치 확인된 두 곳만)** (2026-09-17). 자체 키 `arxiv_id or doi or title.lower()` 를 쓰던 `s2_delta`(시드 간 합치기)와
+    `digest.mentioned_papers`(상자에 실린 논문 vs 이름만 부른 논문)를 `research_profile.paper_key` 로 바꿨다. 둘 다 "같은 실행 안의 같은 객체"를
+    비교하던 자리라 동작은 같고, 정본 키가 더 잘 맞는 경우만 생긴다 — DOI 대소문자·제목 공백(S2), 본문 처리 뒤 `pdf-` 합성 ID 를 단 논문과
+    검색 때 모습(digest). 테스트 둘(옛 코드에서 실패 확인). **`selection.dedupe` 는 안 바꿨다** — arxiv_id 색인과 정규화 제목 색인 둘로 "다른
+    소스의 같은 논문"을 합치는 것이라 키 하나로 표현되지 않는다(계획 C-3 의 보류 그대로). `mail_ledger`·`profile_impact` 는 이미 정본 키였다.
+    **`advisor_*` 표 6개 DROP 은 하지 않았다** — 운영 DB 스키마 변경이라 자동 실행 권한이 막혔고(규칙 3 의 취지대로 사람이 결정할 일),
+    표에는 9/14 시험 실행 1회분 5행뿐이다. `db_retention`(`표 없음` 건너뜀)·`evaluation.term_adoption_latency`(`OperationalError` → n=0)는
+    표가 없어도 돈다. 지우려면: `migrate.backup()` 으로 백업 → 6개 `DROP TABLE` → `PRAGMA integrity_check`. 전체 1,069 통과.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

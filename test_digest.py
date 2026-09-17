@@ -1009,6 +1009,16 @@ def test_unmentioned_papers_do_not_come_back_as_a_list():
     assert "이름으로 부른 논문" not in digest.generate_digest(scan, "t")
 
 
+def test_mentioned_papers_recognise_a_listed_paper_by_shared_key():
+    """2026-09-17(§8-156): 내용 자리 논문이 본문 처리 뒤 `pdf-<해시>` 합성 ID 를 달아도 DOI 가 같으면 같은 논문이다 — 키가
+    `research_profile.paper_key` 라서다. 잡는 것: 자체 키(`arxiv_id or doi …`)로 되돌아가 같은 저널 논문을 상자와 "이름으로 부른 논문" 에 두 번 싣는 것."""
+    listed = {"title": "GED-YOLO Defect Detection", "arxiv_id": "pdf-c8bbaedce8", "doi": "10.1007/X"}
+    raw = {"title": "GED-YOLO Defect Detection", "arxiv_id": None, "doi": "10.1007/x"}
+    scan = {"papers": [listed], "candidates_found": 2, "title_only_papers": [raw],
+            "narrative": ("GED-YOLO Defect Detection 이 눈에 띈다.", [])}
+    assert digest.mentioned_papers(scan) == []
+
+
 def test_acronym_match_is_case_sensitive():
     """'HINT' 와 'hint' 는 다르다. 구분을 풀면 평범한 문장이 논문 이름으로
     오인돼 엉뚱한 링크가 붙는다."""

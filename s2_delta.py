@@ -28,6 +28,7 @@ S2 검색은 arXiv 처럼 정확 필드 매칭이 아니라 관련도 매칭이�
 from __future__ import annotations
 
 import http_client
+import research_profile
 import time
 from datetime import datetime
 
@@ -300,8 +301,7 @@ async def find_new_papers_since(
                   f"{f' (전체 {found.total}편 중 {len(found.papers)}편)' if found.total else ''}"
                   f" — {tail}", flush=True)
         for paper in found.papers:
-            key = (paper.get("arxiv_id") or paper.get("doi")
-                   or paper["title"].lower())
+            key = research_profile.paper_key(paper)     # 2026-09-17: 논문 키는 research_profile.paper_key 하나(그전엔 DOI 대소문자·제목 공백을 안 맞췄다)
             if key in seen:
                 # **어느 시드가 데려왔는지 버리지 않는다**(2026-09-11, B단계 §6.2).
                 # 그전엔 첫 시드만 남고 뒤 시드의 발견은 지워졌다 — 그러면
