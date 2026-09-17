@@ -767,3 +767,38 @@ def test_citation_audit_treats_branch_list_lines_as_evidence_of_the_lead_sentenc
     # 목록 줄이 아닌 곳의 T 만 title_only — 목록에만 T 가 있으면 비어야 한다
     b = trend_report.citation_audit("첫째, 흐름이다.\n- B [P2:T]", corpus)
     assert b["title_only"] == [] and b["cited_lines"] == 1
+
+
+# ── 갈래 목록 줄이 근거 ID 만일 때 (2026-09-17 team_vision 실측: 7/7 줄이 "- [P1:T] [P1:T]")
+
+def test_tag_only_bullets_get_the_title_from_the_corpus():
+    """망가뜨리면 실패하는 것: 채움을 빼서 메일 갈래에 태그만 나가는 것 · 자료에 없는 제목을 만들어 넣는 것(P9) ·
+    설명 문장(목록 줄 아님)을 건드리는 것 · 같은 태그를 두 번 남기는 것."""
+    import trend_report as tr
+    corpus = ("- [P1:T] Research on surface defect detection for PV panels\n  발표일: 2026-09-15\n  [P1:A] abstract\n"
+              "- [P2:T] Cigarette defect detection with YOLOv8s\n  [P2:A] abs\n")
+    text = ("■ 갈래\n첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A].\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P9:T] [P9:T]\n"
+            "■ 우리 분야와 만나는 지점\n[P1:A] 로 시작하는 설명 문장은 목록이 아니다.")
+    out, filled = tr.fill_tag_only_bullets(text, corpus)
+    assert filled == 2
+    lines = out.splitlines()
+    assert lines[2] == "- Research on surface defect detection for PV panels [P1:T]"
+    assert lines[3] == "- Cigarette defect detection with YOLOv8s [P2:T] [P2:A]"
+    assert lines[4] == "- [P9:T] [P9:T]"                       # 자료에 없는 번호는 손대지 않는다
+    assert lines[1] == "첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A]."
+    assert lines[6] == "[P1:A] 로 시작하는 설명 문장은 목록이 아니다."
+
+
+def test_narrative_applies_the_bullet_repair(monkeypatch):
+    """narrative() 가 모델 응답에 채움을 실제로 거친다 — fill 함수만 있고 안 부르면 실패한다."""
+    import trend_report as tr
+    import summarize_engine as se
+
+    async def fake_call(fn, label):
+        return "■ 갈래\n첫째, 흐름이다.\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P3:T] [P3:A]"
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", fake_call)
+    rows = [{"arxiv_id": f"p{i}", "title": f"Paper {i}", "abstract": f"abstract {i}", "published": "2026-09-15"} for i in (1, 2, 3)]
+    result = asyncio.run(tr.narrative(None, rows, {"core_topics": ["defect"]}))
+    assert result is not None
+    text = result[0]
+    assert "- Paper 1 [P1:T]" in text and "- Paper 2 [P2:T] [P2:A]" in text and "- Paper 3 [P3:T] [P3:A]" in text

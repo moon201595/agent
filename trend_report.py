@@ -524,7 +524,37 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     text = (text or "").strip()
     if not text:
         return None
+    text, filled = fill_tag_only_bullets(text, corpus)
+    if filled:
+        print(f"  [동향] 갈래 목록 {filled}줄이 근거 ID 만이라 자료의 제목을 채웠다")
     return text, ungrounded_numbers(text, corpus), enriched
+
+
+_TAG_RE = r"\[P\d+:(?:[ART]|S\d+)\]"
+_TAG_ONLY_BULLET_RE = re.compile(r"^(\s*[-•]\s+)((?:" + _TAG_RE + r"\s*)+)$")
+
+
+def fill_tag_only_bullets(text: str, corpus: str) -> tuple[str, int]:
+    """갈래 목록 줄이 근거 ID 만으로 돼 있으면 자료의 제목을 앞에 채운다. (고친 글, 채운 줄 수).
+
+    2026-09-17 새벽 team_vision 메일의 갈래 7줄이 전부 "- [P1:T] [P1:T]" 였다(다른 세 프로필 27줄은 정상) — 모델이 자료의
+    "- [P1:T] 제목" 표기를 보고 T 태그 자체를 제목 자리로 쓴 것이다. 제목은 우리가 준 자료(corpus)에서 그대로 가져오므로
+    새 내용이 아니고(규칙 7), 같은 태그가 두 번이면 하나로 줄인다. 자료에 없는 P 번호면 손대지 않는다 — 그건 citation_audit 의
+    `unknown` 이 잡는다. 목록 줄이 아닌 곳(설명 문장)은 건드리지 않는다."""
+    titles = dict(re.findall(r"(?m)^- \[(P\d+):T\] (.+)$", corpus))
+    out: list[str] = []
+    filled = 0
+    for line in text.splitlines():
+        m = _TAG_ONLY_BULLET_RE.match(line)
+        if m:
+            tags = list(dict.fromkeys(re.findall(_TAG_RE, m.group(2))))
+            first = re.match(r"\[(P\d+):", tags[0]).group(1)
+            title = titles.get(first)
+            if title:
+                line = f"{m.group(1)}{title} {' '.join(tags)}"
+                filled += 1
+        out.append(line)
+    return "\n".join(out), filled
 
 
 # 시각 비교는 **문자열**로 한다(2026-09-12). julianday() 는 배정도라 마이크로초를 버려
