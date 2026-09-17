@@ -182,11 +182,10 @@ def test_system_status_reads_last_daily_run_and_next_times(tmp_path):
 
 def test_rollback_keeps_manual_schedule(tmp_path):
     """외부 검토 2026-09-16. 이 테스트가 잡는 것: 되돌리기가 프로필 주기를 기본값 daily 로 되돌려 수동 프로필이 새벽 cron 에 들어가는 것."""
-    import profile_advisor
     db = tmp_path / "rb.db"
     rp.create_profile(db, "p", "P", ["alpha"], schedule_frequency="manual", schedule_time="09:00")
     rp.create_profile(db, "p", "P", ["alpha", "beta"], schedule_frequency="manual", schedule_time="09:00")
-    res = profile_advisor.rollback(db, "p", 1, reason="test")
+    res = rp.rollback_to_revision(db, "p", 1, reason="test")
     assert res["rolled_back"] and rp.get_profile(db, "p")["core_topics"] == ["alpha"]
     assert rp.get_schedule(db, "p") == ("manual", "09:00")
 

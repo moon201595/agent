@@ -24,6 +24,17 @@ def _no_real_feedback_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_shadow_search(monkeypatch):
+    """주간 에이전트가 적용 직전에 격리 검색(shadow_search)을 부른다(2026-09-17). 테스트가 실제 arXiv·S2 를 치면 안 된다 —
+    검색 함수를 덮으면 그 아래를 가짜로 대는 다른 테스트가 깨지므로(첫 시도에서 74개), **호출 지점**(`agent_maintenance.shadow_of`)만 끈다.
+    격리 검색 자체는 test_shadow_search 가 자기 가짜로, 연결은 test_agent_maintenance 가 shadow_of 를 다시 살려 검증한다."""
+    import agent_maintenance
+    if not hasattr(agent_maintenance, "_real_shadow_of"):
+        agent_maintenance._real_shadow_of = agent_maintenance.shadow_of      # 원 함수 보관 — 연결을 검증하는 테스트가 되살린다
+    monkeypatch.setattr(agent_maintenance, "shadow_of", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_github_search(monkeypatch):
     """테스트가 GitHub 검색을 실제로 부르지 않게 한다(2026-09-16 실측: 스캔 테스트가 ⑦ 사다리를 거쳐 gh 를 세 번 불렀고 운영 DB 에 행을
     남겼다). 검색이 필요한 테스트는 자기 가짜로 다시 monkeypatch 한다 — 그러면 이 기본값을 덮는다."""

@@ -176,10 +176,6 @@ def is_weekly_review_day(now: datetime | None = None) -> bool:
     return moment.astimezone(READER_TZ).weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
-# 주간 제안기의 배치 deadline 위에 얹는 여유(초). 배달을 오래 붙잡지 않기 위한 바깥 상한이다.
-ADVISOR_TIMEOUT_GRACE_S = 30
-
-
 def _primary_keyword(paper: dict) -> str:
     """이 논문을 대표하는 핵심 키워드 — 가장 무거운 적중.
 
@@ -1063,29 +1059,8 @@ async def scan_all_profiles(
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
 
-    # **주간 프로필 개선기**(2026-09-11, D단계 — docs/ASTRA_PLAN §8·§9, PROGRESS §8-89).
-    # 모든 프로필의 일일 처리·전달이 **끝난 뒤**에 돈다 — 첫 프로필의 제안이
-    # 둘째 프로필의 요약보다 먼저 예산을 쓰면 안 된다(외부 점검 지적). 주 1회는
-    # 요일이 아니라 (profile_id, week) 예약이 지킨다 — 수동 스캔도 같은 진입점이다.
-    # 제안만 하고 적용하지 않는다(운영 모드 기본 `proposal_only`). 실패·예산 소진·
-    # 관측 없음은 전부 정상 종료이고 위 summary(배달)를 건드리지 않는다.
-    # 새 지휘자 계층이 아니다(규칙 6) — 기존 진입점 안의 한 단계다.
-    if send and is_weekly_review_day():
-        import profile_advisor
-        from datetime import timedelta
-        end = datetime.now(timezone.utc)
-        for profile_id in list(summary):
-            try:
-                out = await asyncio.wait_for(
-                    profile_advisor.run_weekly(db_path, profile_id, client, end - timedelta(days=30), end),
-                    timeout=profile_advisor.BATCH_DEADLINE_S + ADVISOR_TIMEOUT_GRACE_S)
-                summary[profile_id]["advisor"] = {k: out.get(k) for k in ("status", "reason", "gate", "applied")}
-                print(f"  [제안] {profile_id}: {out.get('status')}"
-                      f"{' — ' + str(out.get('reason')) if out.get('reason') else ''}"
-                      f"{' · 게이트 ' + str(out.get('gate')) if out.get('gate') else ''}", flush=True)
-            except Exception as e:  # noqa: BLE001 — 제안기 장애가 배달 결과를 바꾸면 안 된다
-                summary[profile_id]["advisor"] = {"status": "error", "reason": f"{type(e).__name__}: {str(e)[:120]}"}
-                print(f"  [제안] {profile_id}: 실패(무시) {type(e).__name__}", flush=True)
+    # 옛 주간 프로필 개선기(`profile_advisor.run_weekly`, 월요일·proposal_only)는 2026-09-17 에 지웠다 — 금요일 17:00 의
+    # `agent_maintenance`(Claude 제안 → Codex 판정 → Python 검증·적용)가 같은 역할을 맡는다(운영 이력 1회, 제안 0건이었다).
     return summary
 
 

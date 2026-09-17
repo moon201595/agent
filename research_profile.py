@@ -772,6 +772,47 @@ def get_schedule(db_path: Path, profile_id: str) -> tuple[str, str]:
     return (row[0], row[1]) if row else ("daily", "05:00")
 
 
+def rollback_to_revision(db_path: Path, profile_id: str, to_revision: int, reason: str) -> dict:
+    """어느 revision 의 내용을 **새 revision 으로** 복원한다(origin='rollback'). 이력을 지우지 않는다.
+    2026-09-17 에 옛 주간 개선기(`profile_advisor`)에서 옮겨 왔다 — 되돌리기는 화면과 새 주간 에이전트가 같이 쓰는 프로필의 일이다.
+    복원 직전 revision 경합은 `create_profile(expected_revision=)` 의 쓰기 원자성 검사로 막는다(외부 검토 2026-09-14).
+    되살아나는 키워드의 provenance 는 **그 revision 에 활성이던 세대**의 것이다 — actor 는 rollback 이지만 사람이 넣었던 것은 user 로,
+    에이전트가 넣었던 것은 agent 로 돌아온다(§8-102). 되살릴 revision 이 이벤트 표 도입 전이면 legacy provenance 로 보충한다."""
+    import json
+    init_db(db_path)
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT snapshot FROM profile_revisions WHERE profile_id=? AND revision=?",
+                          (profile_id, to_revision)).fetchone()
+        if not row:
+            return {"rolled_back": False, "reason": "revision_not_found"}
+        snap = json.loads(row[0])
+        current = get_profile(db_path, profile_id)
+        current_revision = con.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?", (profile_id,)).fetchone()[0]
+    kws = snap["keywords"]
+    core = [k for k, kind, w in kws if kind == "core"]
+    weights = {k: float(w if w is not None else 1.0) for k, kind, w in kws if kind == "core"}
+    restore = {kk: v["provenance_origin"] for kk, v in active_generations(db_path, profile_id, as_of_revision=to_revision).items()}
+    target_keys = {(k.lower(), kind) for k, kind, _w in kws}
+    missing = target_keys - set(restore)
+    if missing:
+        restore.update(legacy_provenance(db_path, profile_id, missing))
+    freq, at = get_schedule(db_path, profile_id)      # 주기는 스냅숏이 아니라 프로필 설정 — 안 넘기면 daily 기본값으로 되돌아간다(외부 검토 2026-09-16)
+    try:
+        rev = create_profile(
+            db_path, profile_id, current["name"], core_topics=core, core_weights=weights,
+            target_domain=[k for k, kind, w in kws if kind == "target"],
+            exclude=[k for k, kind, w in kws if kind == "exclude"], venues=current.get("venues") or [],
+            max_items=snap.get("max_items") or current["max_items"], schedule_frequency=freq, schedule_time=at,
+            s2_seeds=[k for k, kind, w in kws if kind == "s2_seed"], origin="rollback", note=reason,
+            restore_provenance=restore, expected_revision=current_revision)
+    except ValueError as e:
+        if not str(e).startswith("expected_revision_mismatch:"):
+            raise
+        return {"rolled_back": False, "reason": "revision_changed"}
+    return {"rolled_back": True, "revision": rev}
+
+
 def update_core_weights(db_path: Path, profile_id: str, weights: dict[str, float], note: str | None = None) -> int:
     """핵심 키워드 가중치만 바꾼 revision(origin='user'). 운영 화면의 가중치 편집(2026-09-16)이 부른다 — 나머지(도메인·제외어·
     검색어·주기)는 그대로 넘긴다. 모르는 키워드는 무시하고, 값은 0.35~2.0 으로 자른다(피드백 조정과 같은 범위)."""

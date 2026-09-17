@@ -88,14 +88,13 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 | `injection_scan.py` | 논문 텍스트의 지시문·비정상 유니코드 패턴을 탐지해 의심 이유를 반환. 안전을 보증하는 판정기는 아님 |
 | `scripts/morning_report.py` | 최근 일일 로그와 DB의 운영 상태를 모아 `logs/morning_report.txt`에 보고 |
 | `observation_signals.py` | 스캔별 관측(`candidate_observations`·`scan_runs`)에서 시드 수율·출처 기여·탈락 사유를 센다. 관측 없는 기간은 0 이 아니라 미측정 (B, 2026-09-11) |
-| `profile_impact.py` | 프로필 변경 하나의 적용 전 영향 분석 — 고정 스냅샷에서 전후 재채점, 게이트 상태 7종. 임계값 미설정이면 `eligible_for_apply` 가 나오지 않는다 (C) |
-| `profile_advisor.py` · `prompts/profile_advisor_v1.md` | 주간 LLM 프로필 제안기. 밖에 나가는 것은 관심사와 논문 제목·초록·키뿐. HTTP 요청 2회 상한을 영속 장부로 지킨다. 운영 모드 기본 `proposal_only` — 적용은 닫혀 있다 (D) |
+| `profile_impact.py` | 프로필 변경의 적용 전 **반사실 재채점** — 고정 관측 스냅샷에 전후 프로필을 적용해 적격·상위 K 변화를 잰다. 2026-09-17 부터 주간 에이전트(`agent_maintenance`)가 적용 직전에 불러 `impact_analyses`·`agent_runs.impact_json` 에 기록만 한다(차단 임계 없음) |
 | `evaluation.py` | 지연·비용·제안 효율·core 적중 비율, 독립 라벨이 있을 때만 의미상 지표, 시점 누수 없는 재생, 불변 실험 manifest (E1) |
 | `profile_health.py` | 프로필 건강 지표 — 스캔별 당시 스냅샷 재채점으로 anchor 적중·계층·최신성·제외어 충돌을 센다. "적용 후 악화"의 정의(규칙은 미설정으로 시작) |
 | `term_discovery.py` | 탐색 차선 — 키워드에 안 걸려 탈락한 논문에서 n-gram 후보 용어를 로컬로 찾고 용어당 증거 논문만 제안기에 넘긴다(LLM 은 검토자) |
 | `schema_guard.py` · `migrate.py` | DDL 은 `PAPER_HARNESS_APPLY_DDL=1` 일 때만 실행, 아니면 대조만 하고 뒤처지면 멈춘다. 모든 스키마 변경(새 설치 포함)은 `migrate.py --apply [--scope operational\|evaluation\|all]` 하나로 — WAL 을 포함한 일관 백업 → 적용 → 재대조 |
-| `shadow_search.py` | ⑦ shadow 검색 — 검색 집합을 바꾸는 변경안(시드·질의)을 두 팔로 격리 실측. 운영 커서·후보·배달 기록 불변, 결과는 shadow_runs 한 표. 게이트의 needs_shadow_search 를 푼다 |
-| (research_profile) `profile_keyword_events` · (profile_impact) `gate_decisions` | 키워드 세대 이력(전후 논리 diff, actor/provenance 분리, rollback 은 세대 복원) · 게이트 판정마다 실제 규칙을 남기는 감사 표. 적용기는 판정 기록을 대조한다 |
+| `shadow_search.py` | 격리 검색 — 검색 집합을 바꾸는 변경(시드·arXiv 질의)을 두 팔로 실측해 손실을 잰다. 운영 커서·후보·배달 기록 불변, 결과는 `shadow_runs`. 2026-09-17 부터 주간 에이전트가 검색어 변경 적용 직전에 불러 기록만 한다 |
+| (research_profile) `profile_keyword_events` · (profile_impact) `gate_decisions` | 키워드 세대 이력(전후 논리 diff, actor/provenance 분리, rollback 은 세대 복원 — `research_profile.rollback_to_revision`) · 재채점 판정 기록(감사 표; 지금은 기록만) |
 
 기존 도구·요약·재현 계층은 그대로 재사용한다.
 

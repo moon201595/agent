@@ -4,7 +4,6 @@ from collections import Counter
 import term_hygiene as H
 import term_discovery as td
 import trend_report
-import profile_advisor
 
 
 def _r(term: str):
@@ -118,11 +117,9 @@ def test_discover_는_사유별_진단을_세고_제안기_입력에는_안_싣�
     assert "previous studies" not in names and "state-of-the-art performance" not in names
     for k in ("edge_stop", "boilerplate_phrase", "hard_noise", "umbrella_generic"):
         assert diag[k] > 0, (k, dict(diag))
-    sent = profile_advisor.build_input({"papers": []}, prof, [], terms) if hasattr(profile_advisor, "build_input") else {}
-    flat = str(sent)
-    for k in diag:
-        assert k not in flat                                      # 진단 키가 밖으로 안 나간다
-    # 망가뜨리면: discover 가 diag 에 안 세면 첫 assert 가 실패. build_input 이 diag 를 실으면 마지막이 실패.
+    # 진단 키(diag)가 제안기 입력으로 새지 않는지는 옛 profile_advisor.build_input 이 지켰다 — 모듈 삭제(2026-09-17)로 그 검사는
+    # 새 주간 에이전트의 브리프(agent_maintenance.build_brief)가 맡는다(test_agent_maintenance 참조).
+    # 망가뜨리면: discover 가 diag 에 안 세면 첫 assert 가 실패.
 
 
 def test_재생_픽스처_before_after_가_기록과_같다():

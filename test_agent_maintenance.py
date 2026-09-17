@@ -527,3 +527,84 @@ def test_secret_detector_catches_env_style_names_but_not_long_terms():
     for fine in ("vision-language-action-v2-for-robot-manipulation", "MVTec-AD 결함 검출 논문 두 편에 반복",
                  "key point detection", "RT-2 와 OpenVLA-7B 비교"):
         assert not am.secret_like(fine), fine
+
+
+# ── 적용 직전 반사실 재채점 기록(2026-09-17, 옛 profile_advisor 에서 옮겨 연결) ─────────────────────────────────
+def test_apply_records_a_counterfactual_impact_but_never_blocks(world, monkeypatch):
+    """이 테스트가 잡는 것: 적용 전에 profile_impact 를 부르지 않는 것(특허 A 실시예·논문 섀도 평가 근거가 사라진다), 재채점 요약이
+    agent_runs.impact_json·impact_analyses 에 안 남는 것, 재채점이 죽었을 때 적용까지 막는 것(기록 단계가 적용을 막으면 규칙 6 위반),
+    보고서에 재채점 줄이 안 붙는 것."""
+    import profile_impact
+    b = am.build_brief(world, "p")
+    r1 = _rid(b, "tactile")
+    claude = {"actions": [_act("add_keyword", "tactile skin", [r1], 0.7)]}
+    codex = {"reviews": [], "actions": [_act("add_keyword", "tactile skin", [r1], 0.7, "좋다고 한 두 편에 반복")]}
+    res = am.run_profile(world, "p", FakeRunner(claude, codex))
+    assert res["status"] == "applied"
+    with sqlite3.connect(world) as con:
+        raw = con.execute("SELECT impact_json FROM agent_runs WHERE profile_id='p' ORDER BY started_at DESC").fetchone()[0]
+        n_analyses = con.execute("SELECT count(*) FROM impact_analyses WHERE profile_id='p'").fetchone()[0]
+    imp = json.loads(raw)
+    assert imp["status"] == "ok" and n_analyses == 1 and imp["snapshot_papers"] > 0
+    assert set(imp) >= {"analysis_id", "gained", "lost", "topk_changed", "exclude_risk", "gate_status"}
+    lines, _keys = am.pending_report(world, "p")
+    assert any("지난 4주 관측" in l and "재채점 기록, 차단 없음" in l for l in lines)
+    # 재채점이 죽어도 적용은 된다
+    monkeypatch.setattr(profile_impact, "snapshot", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    res2 = am.run_profile(world, "p", FakeRunner(claude, {"reviews": [], "actions": [_act("set_weight", "tactile skin", [r1], 0.9, "더")]}),
+                          now=am._now() + timedelta(days=7), force=True)
+    assert res2["status"] == "applied" and rp.get_profile(world, "p")["core_weights"]["tactile skin"] == 0.9
+    with sqlite3.connect(world) as con:
+        raw2 = con.execute("SELECT impact_json FROM agent_runs WHERE profile_id='p' ORDER BY started_at DESC").fetchone()[0]
+    assert json.loads(raw2)["status"].startswith("error:")
+
+
+def test_projected_profile_matches_what_apply_writes(world):
+    """이 테스트가 잡는 것: 재채점이 보는 '뒤' 프로필과 실제로 쓰는 프로필이 달라지는 것(둘이 다른 코드를 타면 재채점이 거짓말을 한다)."""
+    before = rp.get_profile(world, "p")
+    actions = [_act("add_keyword", "tactile skin", ["x"], 0.7), _act("add_exclude", "medical imaging", ["y"]), _act("add_seed", "tactile skin", ["x"])]
+    after = am.projected_profile(before, actions)
+    rev = am.apply(world, "p", actions, rp.current_revision(world, "p"), "t")
+    written = rp.get_profile(world, "p")
+    assert rev and written["core_topics"] == after["core_topics"] and written["core_weights"] == after["core_weights"]
+    assert written["exclude"] == after["exclude"] and sorted(written["s2_seeds"]) == sorted(after["s2_seeds"])
+
+
+def test_shadow_search_runs_only_for_search_term_changes_and_is_recorded(world, monkeypatch):
+    """2026-09-17 연결. 이 테스트가 잡는 것: 검색어(시드·arXiv 질의)가 바뀌는 변경에서 격리 검색을 안 부르는 것, 결과가 agent_runs.impact_json 의
+    shadow 와 shadow_runs 에 안 남는 것, 검색 실패가 적용을 막는 것, 보고서에 격리 검색 줄이 안 붙는 것. conftest 는 shadow_of 를 끄므로 여기서 되살린다."""
+    import shadow_search, s2_delta, find_new_papers
+    monkeypatch.setattr(am, "shadow_of", am._real_shadow_of)      # conftest 스텁 해제 — 원 함수는 conftest 가 보관해 둔다
+    calls = []
+
+    async def fake_s2(client, keywords, since, until, limit=100, budget_s=300.0):
+        calls.append(("s2", tuple(keywords)))
+        return {"papers": [{"arxiv_id": "s1", "title": "tactile skin robot manipulation", "abstract": "", "published": "2026-09-10T00:00:00Z",
+                            "source": "s2", "s2_seeds": list(keywords)}], "status": "done"}
+
+    async def fake_arxiv(client, query, since, **kw):
+        calls.append(("arxiv", query))
+        return {"papers": [], "status": "done", "until": datetime.now(timezone.utc).isoformat(), "query": query}
+    monkeypatch.setattr(s2_delta, "find_new_papers_since", fake_s2)
+    monkeypatch.setattr(find_new_papers, "find_new_papers_since", fake_arxiv)
+    b = am.build_brief(world, "p")
+    r1 = _rid(b, "tactile")
+    # 시드는 핵심 키워드여야 받는다(seed_not_core) — 키워드 추가와 시드 추가를 한 주에 같이 낸다
+    claude = {"actions": [_act("add_keyword", "tactile skin", [r1], 0.7), _act("add_seed", "tactile skin", [r1])]}
+    codex = {"reviews": [], "actions": [_act("add_keyword", "tactile skin", [r1], 0.7, "좋다고 한 두 편에 반복"),
+                                         _act("add_seed", "tactile skin", [r1], None, "같은 근거")]}
+    res = am.run_profile(world, "p", FakeRunner(claude, codex))
+    assert res["status"] == "applied" and any(c[0] == "s2" for c in calls), "시드 추가는 격리 검색을 탄다"
+    with sqlite3.connect(world) as con:
+        imp = json.loads(con.execute("SELECT impact_json FROM agent_runs WHERE profile_id='p' ORDER BY started_at DESC").fetchone()[0])
+        n_shadow = con.execute("SELECT count(*) FROM shadow_runs WHERE profile_id='p'").fetchone()[0]
+    assert imp["shadow"]["status"] == "done" and imp["shadow"]["seeds_added"] == ["tactile skin"] and n_shadow == 1
+    lines, _ = am.pending_report(world, "p")
+    assert any("격리 검색으로 재 보면" in l for l in lines)
+    # 검색이 죽어도 적용은 된다
+    async def boom(*a, **k):
+        raise RuntimeError("S2 down")
+    monkeypatch.setattr(s2_delta, "find_new_papers_since", boom)
+    res2 = am.run_profile(world, "p", FakeRunner(claude, {"reviews": [], "actions": [_act("add_exclude", "medical imaging", [_rid(b, "medical"), _rid(b, "medical")])]}),
+                          now=am._now() + timedelta(days=7), force=True)
+    assert res2["status"] in ("applied", "no_change")
