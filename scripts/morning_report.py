@@ -66,13 +66,10 @@ def _elapsed(started: str | None, ended: str | None) -> str:
 
 
 def _kst(ts: str | None) -> str:
-    if not ts:
-        return "?"
-    try:
-        d = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return ts
-    return d.astimezone().strftime("%m-%d %H:%M")
+    """그전엔 `astimezone()`(인자 없음)이라 **호스트 시간대**로 찍혔다 — WSL 이 UTC 면 화면·메일과 날짜가 달랐다(Codex 구조 검토 2026-09-16).
+    이제 time_policy 가 KST 로 고정한다."""
+    from time_policy import kst_hm
+    return kst_hm(ts, missing="?")
 
 
 def _work_window(started: str | None) -> str | None:

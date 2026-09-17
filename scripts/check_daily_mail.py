@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-KST = timezone(timedelta(hours=9))
+from time_policy import KST, kst_date as _tp_kst_date, operating_day_start_utc   # 2026-09-17: 시각 정책 통합
 UTC = timezone.utc
 DEFAULT_LOG = ROOT / "logs" / "daily_scan.log"
 DEFAULT_DB = ROOT / "data" / "papers.db"
@@ -56,10 +56,9 @@ def _parse_utc(value: str) -> datetime:
 
 
 def _operational_day(now: datetime) -> tuple[date, datetime]:
-    """05:00 KST 경계를 UTC 20:00 전날로 환산해 운영일을 정한다."""
+    """05:00 KST 경계를 UTC 전날 20:00 으로 환산해 운영일을 정한다(time_policy)."""
     local_day = now.astimezone(KST).date()
-    boundary = datetime.combine(local_day, time(5), tzinfo=KST).astimezone(UTC)
-    return local_day, boundary
+    return local_day, operating_day_start_utc(local_day)
 
 
 def _completed_runs(log_text: str) -> list[tuple[datetime, datetime, str]]:
@@ -111,16 +110,8 @@ def _summary_from_block(block: str) -> dict:
 
 
 def _kst_date(value: str | None) -> date | None:
-    """DB의 UTC ISO 시각을 KST 날짜로 바꿔 운영일과 비교한다."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(KST).date()
+    """DB의 UTC ISO 시각을 KST 날짜로 바꿔 운영일과 비교한다(time_policy)."""
+    return _tp_kst_date(value)
 
 
 def _database_state(db_path: Path, today: date) -> tuple[list[str], list[str], list[str]]:

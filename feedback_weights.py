@@ -16,7 +16,7 @@ HALF_LIFE_DAYS = 90.0
 # 키워드 하나가 움직이려면 **서로 다른 논문 2편 이상**에 반응이 있어야 한다(2026-09-16 사용자 결정). 클릭 한 번에 계층이
 # 한 칸 오르면 프로필이 클릭에 흔들린다 — 한 편은 그 논문이 좋았다는 뜻이지 그 키워드가 좋다는 뜻이 아니다.
 MIN_DISTINCT_PAPERS = 2
-KST = timezone(timedelta(hours=9))
+from time_policy import KST, as_utc, kst_day   # 2026-09-17: 시각 정책 통합
 
 
 def _ddl(con: sqlite3.Connection) -> None:
@@ -51,10 +51,8 @@ def init_db(db: Path) -> None:
 
 
 def _utc(value: datetime) -> datetime:
-    """시간대가 없는 입력은 기존 저장소의 UTC 관행으로 해석한다."""
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+    """시간대가 없는 입력은 기존 저장소의 UTC 관행으로 해석한다(time_policy.as_utc)."""
+    return as_utc(value)
 
 
 def _now() -> datetime:
@@ -75,7 +73,7 @@ def _keyword_key(keyword: Any) -> str:
 
 
 def _run_date(now: datetime) -> str:
-    return _utc(now).astimezone(KST).strftime("%Y-%m-%d")
+    return kst_day(now)
 
 
 def _latest_reactions(rows: list[dict]) -> list[dict]:

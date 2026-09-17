@@ -18,7 +18,7 @@ import feedback_links
 import mail_ledger
 import research_profile
 
-KST = timezone(timedelta(hours=9))
+from time_policy import KST, kst_hm, kst_day   # 시각 정책은 time_policy 하나(2026-09-17)
 HIT_WINDOW_DAYS = 28
 ACTION_LABELS = {"more": "더 보고 싶음", "useful": "유용함", "out": "관심 밖"}
 STATUS_LABELS = {feedback_links.STATUS_VALID: "유효", "quarantined_prefetch": "선열람 격리(보안 스캐너)",
@@ -45,21 +45,11 @@ def display_text(value: str | None) -> str:
 
 
 def _kst(value: str | None) -> str:
-    if not value:
-        return "—"
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(KST).strftime("%m-%d %H:%M")
-    except ValueError:
-        return str(value)[:16]
+    return kst_hm(value)            # 이름은 화면 코드 호환용 — 구현은 time_policy
 
 
 def _kst_day(value: str | None) -> str:
-    if not value:
-        return "—"
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(KST).strftime("%Y-%m-%d")
-    except ValueError:
-        return str(value)[:10]
+    return kst_day(value)
 
 
 # ── 시스템 상태 ─────────────────────────────────────────────────────────────

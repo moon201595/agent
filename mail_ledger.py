@@ -16,7 +16,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-KST = timezone(timedelta(hours=9))
+from time_policy import KST, kst_day   # 2026-09-17: 시각 정책 통합
 _ARXIV_KEY_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
 
@@ -109,7 +109,9 @@ def _legacy_issues(con: sqlite3.Connection, profile_id: str, before: str | None)
     for key, title, shown_at in con.execute(
             "SELECT paper_key, title, shown_at FROM profile_shown WHERE profile_id=? ORDER BY shown_at", (profile_id,)):
         try:
-            day = datetime.fromisoformat(str(shown_at).replace("Z", "+00:00")).astimezone(KST).strftime("%Y-%m-%d")
+            day = kst_day(str(shown_at), missing="")
+            if len(day) != 10 or day[4] != "-":
+                raise ValueError(day)
         except ValueError:
             continue
         if before is not None and str(shown_at) >= before:
@@ -133,7 +135,7 @@ def list_issues(db: Path, profile_id: str, limit: int | None = None) -> list[dic
         rows = [dict(r) for r in con.execute(
             "SELECT * FROM mail_issues WHERE profile_id=? ORDER BY sent_at DESC", (profile_id,))]
         for r in rows:
-            r["day"] = datetime.fromisoformat(r["sent_at"]).astimezone(KST).strftime("%Y-%m-%d")
+            r["day"] = kst_day(r["sent_at"])
             r["source"] = "ledger"
             r["items"] = [{"position": it["position"], "paper_key": it["paper_key"], "title": it["title"] or "",
                            "link": it["link"] or "", "core_hits": json.loads(it["core_hits"] or "[]")}
