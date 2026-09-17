@@ -88,65 +88,10 @@ def latency(db: Path, profile_id: str, start: datetime, end: datetime,
     }
 
 
-def term_adoption_latency(db: Path, profile_id: str) -> dict:
-    """용어 반영 지연 — 제안이 만들어진 시각 → 적용 revision 시각. advisor_events 로 센다.
-    적용된 게 없으면 n=0 이지 0일이 아니다."""
-    try:
-        with sqlite3.connect(db) as con:
-            rows = con.execute(
-                "SELECT e.at, r.created_at FROM advisor_events e "
-                "JOIN advisor_proposals p ON p.bundle_analysis_id = e.ref_id "
-                "JOIN advisor_runs r ON r.run_id = p.run_id "
-                "WHERE e.profile_id=? AND e.kind='applied'", (profile_id,)).fetchall()
-    except sqlite3.OperationalError:
-        return {"n": 0, "note": "advisor tables absent"}
-    xs = [(_dt(a) - _dt(c)).total_seconds() / 86400 for a, c in rows if _dt(a) and _dt(c)]
-    return {"unit": "days", **_quantiles(xs)}
-
-
-# ── 제안 효율·비용 (§11.2) ───────────────────────────────────────────────
-def proposal_efficiency(db: Path, profile_id: str, start: datetime, end: datetime) -> dict:
-    try:
-        with sqlite3.connect(db) as con:
-            runs = con.execute(
-                "SELECT status, COUNT(*) FROM advisor_runs WHERE profile_id=? AND created_at>=? AND created_at<? "
-                "GROUP BY status", (profile_id, start.isoformat(), end.isoformat())).fetchall()
-            gates = con.execute(
-                "SELECT a.gate_status, COUNT(*) FROM advisor_proposals p JOIN advisor_runs r ON r.run_id=p.run_id "
-                "JOIN impact_analyses a ON a.analysis_id=p.bundle_analysis_id "
-                "WHERE r.profile_id=? AND r.created_at>=? AND r.created_at<? GROUP BY a.gate_status",
-                (profile_id, start.isoformat(), end.isoformat())).fetchall()
-            events = con.execute(
-                "SELECT kind, COUNT(*) FROM advisor_events WHERE profile_id=? AND at>=? AND at<? GROUP BY kind",
-                (profile_id, start.isoformat(), end.isoformat())).fetchall()
-    except sqlite3.OperationalError:
-        return {"note": "advisor tables absent"}
-    return {"runs": dict(runs), "gate": dict(gates), "events": dict(events)}
-
-
-def operating_cost(db: Path, profile_id: str, start: datetime, end: datetime) -> dict:
-    """제안기의 요청·사용량. 토큰은 provider 보고값이 있을 때만 합산하고 종류를 표시한다.
-    일일 요약·서술의 비용은 api_usage(프로세스 내 계측)라 여기 없다 — 로그를 봐야 한다."""
-    try:
-        with sqlite3.connect(db) as con:
-            rows = con.execute(
-                "SELECT a.outcome, a.usage_json, a.usage_kind FROM advisor_attempts a JOIN advisor_runs r "
-                "ON r.run_id=a.run_id WHERE r.profile_id=? AND a.started_at>=? AND a.started_at<?",
-                (profile_id, start.isoformat(), end.isoformat())).fetchall()
-    except sqlite3.OperationalError:
-        return {"note": "advisor tables absent"}
-    out = {"requests": len(rows), "by_outcome": {}, "tokens": {"prompt": 0, "output": 0},
-           "usage_kind": {}}
-    for outcome, usage, kind in rows:
-        out["by_outcome"][outcome] = out["by_outcome"].get(outcome, 0) + 1
-        out["usage_kind"][kind or "unknown"] = out["usage_kind"].get(kind or "unknown", 0) + 1
-        if usage and kind == "provider_reported":
-            u = json.loads(usage)
-            out["tokens"]["prompt"] += int(u.get("promptTokenCount") or 0)
-            out["tokens"]["output"] += int(u.get("candidatesTokenCount") or 0)
-    if out["usage_kind"].get("provider_reported", 0) < len(rows):
-        out["tokens"]["note"] = "일부 시도는 provider 보고값이 없어 합계에 빠졌다"
-    return out
+# 용어 반영 지연·제안 효율·운영 비용(§11.2)은 옛 주간 개선기의 advisor_* 표에서 셌다. 그 표는 2026-09-17 DROP 됐고(§8-157) 함수는
+# "advisor tables absent" 만 돌려주고 있었다(Codex 사후 검토 #5) — 지표를 0 이 아니라 **미측정**으로 보고한다. 새 에이전트(agent_runs)
+# 기준으로 다시 정의하는 것은 별도 결정이다.
+_ADVISOR_METRICS_UNMEASURED = ("term_adoption_latency", "proposal_efficiency", "operating_cost")
 
 
 # ── 키워드 적중 비율 (precision 이 아니다) ───────────────────────────────
@@ -246,13 +191,11 @@ def report(db: Path, profile_id: str, start: datetime, end: datetime,
     if sem.get("status") == LABELS_UNAVAILABLE:
         unmeasured += ["precision_at_k", "candidate_recall", "semantic_noise_rate"]
     unmeasured += ["independent_set_capture_rate", "summary_semantic_accuracy", "new_seed_search_yield"]
+    unmeasured += list(_ADVISOR_METRICS_UNMEASURED)
     return {
         "profile_id": profile_id, "window": [start.isoformat(), end.isoformat()],
         "latency": lat,
-        "term_adoption_latency": term_adoption_latency(db, profile_id),
         "core_hit_ratio": core_hit_ratio(db, profile_id, start, end),
-        "proposal_efficiency": proposal_efficiency(db, profile_id, start, end),
-        "operating_cost": operating_cost(db, profile_id, start, end),
         "semantic": sem,
         "unmeasured": unmeasured,
     }

@@ -773,11 +773,11 @@ def test_citation_audit_treats_branch_list_lines_as_evidence_of_the_lead_sentenc
 
 def test_tag_only_bullets_get_the_title_from_the_corpus():
     """망가뜨리면 실패하는 것: 채움을 빼서 메일 갈래에 태그만 나가는 것 · 자료에 없는 제목을 만들어 넣는 것(P9) ·
-    설명 문장(목록 줄 아님)을 건드리는 것 · 같은 태그를 두 번 남기는 것."""
+    설명 문장(목록 줄 아님)을 건드리는 것 · 같은 태그를 두 번 남기는 것 · 두 논문이 섞인 줄에 첫 논문 제목을 붙이는 것(Codex #7, 2026-09-17)."""
     import trend_report as tr
     corpus = ("- [P1:T] Research on surface defect detection for PV panels\n  발표일: 2026-09-15\n  [P1:A] abstract\n"
               "- [P2:T] Cigarette defect detection with YOLOv8s\n  [P2:A] abs\n")
-    text = ("■ 갈래\n첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A].\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P9:T] [P9:T]\n"
+    text = ("■ 갈래\n첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A].\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P9:T] [P9:T]\n- [P1:A] [P2:A]\n"
             "■ 우리 분야와 만나는 지점\n[P1:A] 로 시작하는 설명 문장은 목록이 아니다.")
     out, filled = tr.fill_tag_only_bullets(text, corpus)
     assert filled == 2
@@ -785,8 +785,9 @@ def test_tag_only_bullets_get_the_title_from_the_corpus():
     assert lines[2] == "- Research on surface defect detection for PV panels [P1:T]"
     assert lines[3] == "- Cigarette defect detection with YOLOv8s [P2:T] [P2:A]"
     assert lines[4] == "- [P9:T] [P9:T]"                       # 자료에 없는 번호는 손대지 않는다
+    assert lines[5] == "- [P1:A] [P2:A]"                       # 두 논문이 섞인 줄은 어느 제목도 붙이지 않는다
     assert lines[1] == "첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A]."
-    assert lines[6] == "[P1:A] 로 시작하는 설명 문장은 목록이 아니다."
+    assert lines[7] == "[P1:A] 로 시작하는 설명 문장은 목록이 아니다."
 
 
 def test_narrative_applies_the_bullet_repair(monkeypatch):

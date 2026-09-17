@@ -110,29 +110,6 @@ def test_feedback_profile_and_gate_tables_are_never_touched(tmp_path):
         assert con.execute("SELECT count(*) FROM gate_decisions").fetchone()[0] == 1
 
 
-def test_old_advisor_raw_fields_are_nulled_but_rows_remain(tmp_path):
-    """이 테스트가 잡는 것: advisor 원문을 행째 삭제하거나 최근 원문까지 NULL로 만드는 것.
-    `advisor_*` 표는 옛 주간 개선기(2026-09-17 삭제)의 유산이지만 운영 DB 에 남아 있어 보존 정리는 계속 다룬다 — 표는 여기서 그 시절 DDL 대로 만든다."""
-    db, data = _db(tmp_path)
-    with sqlite3.connect(db) as con:
-        con.execute("CREATE TABLE IF NOT EXISTS advisor_runs (run_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
-                    " base_revision INTEGER NOT NULL, week TEXT NOT NULL, window_start TEXT NOT NULL, window_end TEXT NOT NULL,"
-                    " snapshot_id TEXT, snapshot_sha256 TEXT, sent_input_json TEXT, sent_input_sha256 TEXT, prompt_version TEXT,"
-                    " prompt_sha256 TEXT, prompt_text TEXT, status TEXT NOT NULL, status_reason TEXT)")
-        con.execute("CREATE TABLE IF NOT EXISTS advisor_attempts (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, attempt INTEGER NOT NULL,"
-                    " purpose TEXT NOT NULL, requested_model TEXT, response_model TEXT, key_name TEXT, started_at TEXT NOT NULL, finished_at TEXT,"
-                    " outcome TEXT NOT NULL, http_status INTEGER, raw_response TEXT, usage_json TEXT, usage_kind TEXT)")
-        _insert(con, "advisor_runs", "run_id,profile_id,created_at,base_revision,week,window_start,window_end,prompt_text,sent_input_json,status", ("old", "p", OLD_10, 1, "w", OLD, OLD, "PROMPT", "INPUT", "done"))
-        _insert(con, "advisor_attempts", "attempt_id,run_id,attempt,purpose,started_at,outcome,raw_response", ("a", "old", 1, "advisor", OLD_10, "ok", "RESPONSE"))
-        _insert(con, "advisor_runs", "run_id,profile_id,created_at,base_revision,week,window_start,window_end,prompt_text,sent_input_json,status", ("new", "p", RECENT, 1, "w", RECENT, RECENT, "NEW", "NEW_INPUT", "done"))
-    retention.run(db, apply=True, now=NOW, data_dir=data)
-    with sqlite3.connect(db) as con:
-        assert con.execute("SELECT count(*) FROM advisor_runs").fetchone()[0] == 2
-        assert con.execute("SELECT prompt_text,sent_input_json FROM advisor_runs WHERE run_id='old'").fetchone() == (None, None)
-        assert con.execute("SELECT raw_response FROM advisor_attempts WHERE attempt_id='a'").fetchone() == (None,)
-        assert con.execute("SELECT prompt_text FROM advisor_runs WHERE run_id='new'").fetchone() == ("NEW",)
-
-
 def test_old_unprotected_paper_and_cache_files_are_deleted(tmp_path):
     """이 테스트가 잡는 것: 보호되지 않은 논문만 지우지 않거나 DB가 참조하지 않는 오래된 캐시를 남기는 것."""
     db, data = _db(tmp_path)
@@ -184,6 +161,22 @@ def test_old_failed_reproduction_artifacts_are_removed_but_success_stays(tmp_pat
     assert not failed_log.exists()
     assert not failed_clone.exists()
     assert not very_old_log.exists()
+
+
+def test_plan_survives_missing_db_and_read_failure(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 계획의 두 대체 경로(DB 파일 없음 · DB 읽기 실패)가 정책 표 목록을 잘못 참조해 죽는 것.
+    2026-09-17 advisor 정책을 지우면서 이 두 줄에 `_ADVISOR_POLICIES` 가 남아 NameError 였는데, 어느 테스트도 그 경로를 안 밟아
+    전체 1,074 가 green 이었다(Codex 2차 검토가 실행으로 잡음). 정상 경로 테스트만으로는 대체 경로가 안 보인다."""
+    missing = retention.plan(tmp_path / "없는.db", now=NOW, data_dir=tmp_path / "data")
+    assert "DB 없음" in missing["skipped"]
+    assert missing["tables"]["candidate_observations"]["status"] == "skipped: 표 없음"
+    assert not (tmp_path / "없는.db").exists()                       # 읽기 전용 계획이 파일을 만들지 않는다
+
+    db, data = _db(tmp_path)
+    monkeypatch.setattr(retention, "_plan_tables", lambda con, now: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
+    broken = retention.plan(db, now=NOW, data_dir=data)
+    assert any(x.startswith("DB 읽기 실패") for x in broken["skipped"])
+    assert broken["tables"]["repro_results"]["status"] == "skipped: DB 읽기 실패"
 
 
 def test_missing_retention_column_is_reported_without_failure(tmp_path):

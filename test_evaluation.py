@@ -89,7 +89,9 @@ def test_보고서는_미측정_목록을_내고_성과를_지어내지_않는�
     db = _db(tmp_path)
     r = ev.report(db, "p", T0 - timedelta(days=7), T0)
     assert "precision_at_k" in r["unmeasured"] and r["semantic"]["precision_at_k"] is None
-    assert r["term_adoption_latency"]["n"] == 0
+    # advisor_* 표가 사라진 뒤(2026-09-17) 제안기 지표 셋은 0 이 아니라 미측정이다
+    assert {"term_adoption_latency", "proposal_efficiency", "operating_cost"} <= set(r["unmeasured"])
+    assert "term_adoption_latency" not in r
     assert r["latency"]["papers"] == 0 and r["latency"]["collection"] == {}
 
 

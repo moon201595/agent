@@ -200,6 +200,8 @@ async def embed_text(client: httpx.AsyncClient, text: str, task_type: str) -> li
                 "content": {"parts": [{"text": text[:_EMBED_TEXT_CHAR_CAP]}]},
                 "taskType": task_type,
             },
+            # 이름 목록(gemini_key_names, 위)과 값 조회가 **같은 dict** 여야 한다 — summarize_engine 이 키 목록의 주인이라 값도 거기서 읽는다.
+            # 자기 별칭 ENV 로 바꾸면 engine.ENV 를 통째로 교체하는 테스트(test_embedding_key_rotation)에서 이름과 값이 갈린다(2026-09-17 실측, Codex #2 검토 뒤 되돌림).
             headers={"x-goog-api-key": summarize_engine.ENV[name]},
             timeout=30,
         )
