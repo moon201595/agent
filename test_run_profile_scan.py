@@ -11,6 +11,7 @@ import pytest
 
 import research_profile as rp
 import run_profile_scan as rps
+import scan_search          # 2026-09-17 분할: 검색 소스 모듈은 여기서 patch 한다
 import server
 
 
@@ -49,7 +50,7 @@ def no_s2_search(monkeypatch):
         return {"papers": [], "status": "skipped", "query": "(테스트 스텁)",
                 "keywords_failed": 0}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _empty)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", _empty)
 
 
 def _setup_profile(db_path):
@@ -595,13 +596,13 @@ def test_arxiv_failure_does_not_kill_the_day(tmp_path, monkeypatch):
     async def boom(*a, **kw):
         raise RuntimeError("arXiv API 429")
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", boom)
 
     async def s2_ok(client, keywords, since, until, *a, **kw):
         return {"papers": [_journal_paper("10.1/j1", "An agent journal")],
                 "status": "done", "query": "S2 keywords×1"}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", s2_ok)
 
     result = asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
     assert [p["title"] for p in result["papers"]] == ["An agent journal"]
@@ -643,13 +644,13 @@ def test_arxiv_search_outage_skips_fetch_from_the_first_paper(tmp_path, monkeypa
     async def boom(*a, **kw):
         raise RuntimeError("Client error '429 Unknown Error' for url 'https://export.arxiv.org/api/query'")
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", boom)
 
     async def s2_ok(client, keywords, since, until, *a, **kw):
         return {"papers": [_journal_paper("10.1/j1", "An agent journal")], "status": "done",
                 "query": "S2 keywords×1"}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", s2_ok)
     seen = []
 
     async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False,
@@ -683,7 +684,7 @@ def test_s2_failure_does_not_kill_the_day(tmp_path, monkeypatch):
     async def boom(*a, **kw):
         raise RuntimeError("S2 500")
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", boom)
 
     result = asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
     assert [p["arxiv_id"] for p in result["papers"]] == ["p1"]
@@ -702,8 +703,8 @@ def test_both_sources_failing_is_raised(tmp_path, monkeypatch):
     async def boom(*a, **kw):
         raise RuntimeError("죽음")
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", boom)
 
     with pytest.raises(RuntimeError, match="검색 소스가 전부 실패"):
         asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
@@ -1472,8 +1473,8 @@ def test_window_follows_the_source_that_saw_less(tmp_path, monkeypatch):
         return {"papers": [], "status": "done", "query": "q",
                 "keywords_failed": 0, "keywords_searched": 0, "keywords_truncated": 0}
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", no_s2)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", spy_arxiv)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", no_s2)
     asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
 
     assert seen["since"] == s2_only, (
@@ -1655,9 +1656,9 @@ def test_skipped_s2_does_not_hold_the_window(tmp_path, monkeypatch):
         return {"status": "done", "papers": [], "pages_used": 1, "query": query,
                 "until": datetime.now(timezone.utc).isoformat()}
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", spy_arxiv)
     # **S2 를 끈다** — 이 프로필은 이번 실행에서 S2 를 질의하지 않는다.
-    monkeypatch.setattr(rps.s2_delta, "keywords_for_s2", lambda profile, **kw: [])
+    monkeypatch.setattr(scan_search.s2_delta, "keywords_for_s2", lambda profile, **kw: [])
 
     asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
 
@@ -1688,9 +1689,9 @@ def test_active_s2_still_holds_the_window(tmp_path, monkeypatch):
         return {"papers": [], "status": "done", "query": "q",
                 "keywords_failed": 0, "keywords_searched": 1, "keywords_truncated": 0}
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", spy_arxiv)
-    monkeypatch.setattr(rps.s2_delta, "keywords_for_s2", lambda profile, **kw: ["defect detection"])
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", no_s2)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", spy_arxiv)
+    monkeypatch.setattr(scan_search.s2_delta, "keywords_for_s2", lambda profile, **kw: ["defect detection"])
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", no_s2)
 
     asyncio.run(rps.scan_profile(db_path, "team_ai", None, max_pages=2))
     age = (datetime.now(timezone.utc) - seen["since"]).days
@@ -1761,7 +1762,7 @@ def test_s2_실행기록이_시드_지문을_남긴다(tmp_path, monkeypatch):
         return {"papers": [], "status": "done", "query": f"S2×{len(keywords)}",
                 "keywords_failed": 0}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _s2)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", _s2)
 
     async def fake_throttled(client, params):
         class FakeResp:
@@ -1813,7 +1814,7 @@ def test_시드를_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
     async def _s2(client, keywords, since, until, limit=100):
         return {"papers": [], "status": "done", "query": "S2", "keywords_failed": 0}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", _s2)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", _s2)
 
     async def fake_throttled(client, params):
         class FakeResp:
@@ -1921,7 +1922,7 @@ def test_scan_profile_merges_chunked_arxiv_queries_and_dedupes(tmp_path, monkeyp
                            {"arxiv_id": f"only{n}", "title": f"agent {n} paper", "abstract": "", "published": now}],
                 "status": "done", "until": now, "since": since.isoformat(), "query": query}
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", fake_search)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", fake_search)
     result = asyncio.run(rps.scan_profile(db_path, "team_big", None, max_pages=2))
     assert len(calls) == 3 and all(q.count(" OR ") + 1 == 15 for q in calls)
     ids = sorted(p["arxiv_id"] for p in result["papers"])
@@ -1942,12 +1943,12 @@ def test_scan_profile_all_chunks_failing_takes_the_arxiv_failed_path(tmp_path, m
     async def boom(*a, **kw):
         raise RuntimeError("arXiv API 500")
 
-    monkeypatch.setattr(rps.find_new_papers, "find_new_papers_since", boom)
+    monkeypatch.setattr(scan_search.find_new_papers, "find_new_papers_since", boom)
 
     async def s2_ok(client, keywords, since, until, *a, **kw):
         return {"papers": [_journal_paper("10.1/j1", "An agent 1 journal")], "status": "done", "query": "S2 keywords×1"}
 
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", s2_ok)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", s2_ok)
     result = asyncio.run(rps.scan_profile(db_path, "team_big", None, max_pages=2))
     assert result["run_status"] == "failed" and result["s2_count"] == 1 and result["arxiv_count"] == 0
     import sqlite3

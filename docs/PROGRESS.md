@@ -6054,6 +6054,15 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
       import 하지 않아 pytest 는 green 이었고 운영 화면은 뜨지 않았을 것이다(9/17 아침 스캔은 화면과 무관해 정상). 고치고 `test_ui_helpers`
       에 import 가드를 두었다. `AppTest` 로 첫 화면 렌더 확인(예외 0). 전체 1,064 통과.
 
+155. **`run_profile_scan.py` 분할(S4)** (2026-09-17). 1,165줄 → 조정기 572 + `scan_search.py` 472(①② `scan_profile`·arXiv 분할 질의·델타 창·
+    `_already_summarized/_summary_exists`) + `scan_deliver.py` 138(⑨ `_deliver`·`mail_subject`·`DELIVERY_*`). **함수 본문은 한 줄도 안 바꿨다** —
+    줄 범위를 그대로 옮기고 import 만 정리했다. `run_profile_scan` 이 옮긴 이름을 전부 재수출해 cron·화면·테스트의 옛 경로가 그대로 돈다.
+    테스트가 `rps._deliver`·`rps._summary_exists`·`rps.scan_profile` 을 monkeypatch 하므로 조정기는 그 이름을 **자기 전역**으로 부른다(모듈 경로로
+    바꾸면 patch 가 안 먹는다 — AGENTS 에 적음). 테스트 쪽 변경은 검색 소스 모듈 patch 5개 파일의 `rps.find_new_papers/s2_delta` → `scan_search.…` 뿐.
+    같이 지운 것: `FULL_TEXT_RESERVED`(어느 함수도 안 읽던 상수 — 설계 기록은 §8-44·§8-86 에 있다) · `digest._READER_TZ` 의 자체 ZoneInfo(→ time_policy).
+    `test_scan_layout.py` 가 경계를 지킨다(검색 모듈이 요약·발송을 import 하면, 발송 모듈이 검색을 import 하면, 재수출이 빠지면 실패).
+    `server.py`(1,610)·`digest.py`(1,950)는 계획대로 안 나눴다. 전체 1,067 통과, CLI `--help` 정상.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

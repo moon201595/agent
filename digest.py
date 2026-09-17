@@ -33,7 +33,6 @@ import re
 import textutil
 import sqlite3
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import storage
@@ -1084,7 +1083,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
 
 # 날짜는 받는 사람 시간대로 쓴다(2026-09-14, 외부 검토 A·D). 05:00 KST 실행은 UTC 로 전날 20:00 이라
 # 9/14 아침 메일이 "2026-09-13" 으로 나갔다 — 주간 리뷰 요일은 이미 KST(run_profile_scan.READER_TZ)였다.
-_READER_TZ = ZoneInfo("Asia/Seoul")
+from time_policy import KST as _READER_TZ   # 2026-09-17: 시각 정책 통합
 
 
 def reader_date() -> str:
