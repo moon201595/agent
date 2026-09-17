@@ -6035,6 +6035,25 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     테스트 격리 함정: 검색 함수 둘을 conftest 에서 덮었더니 그 아래를 가짜로 대는 테스트 74개가 깨졌다 → **호출 지점**(`shadow_of`)만 끄고 원 함수를
     `_real_shadow_of` 로 보관. 전체 1,053 통과. 특허·논문의 "C+A 한 실시예" 조건(§8-148 Codex 지적: 두 경로가 갈라져 있었다)이 이제 성립한다.
 
+153. **시각 정책을 `time_policy.py` 하나로** (2026-09-17, 구조 정리 S2-시간). KST 변환이 다섯 곳에 각자 있었다(`mail_ledger`·`ops_dashboard._kst`·
+    `feedback_weights._utc/_run_date`·`scripts/check_daily_mail`·`scripts/morning_report`·`trend_report._READER_TZ`·`run_profile_scan.READER_TZ`).
+    규칙 두 줄로 모았다 — **저장은 UTC ISO(시간대 없는 값은 UTC 로 해석), 사람에게 보이는 시각·운영일(05:00 경계)·요일은 Asia/Seoul**.
+    동작 불변이되 하나만 의도된 변경: `scripts/morning_report._kst` 가 `astimezone()`(인자 없음)이라 **호스트 시간대**를 따랐다 — WSL 이 UTC 면
+    아침 보고의 날짜가 화면·메일과 달랐다. 이제 같은 KST 다. `test_time_policy.py`(운영일 경계·naive=UTC·요일). 전체 1,056 통과.
+
+154. **.env 파서 셋·HTML 이스케이프 셋·키워드 매처 사설 참조를 하나씩으로 — 그리고 화면 모듈이 사흘 동안 깨져 있었다** (2026-09-17, S2 나머지).
+    - `config.py`: `load_env`·`ENV`·`apply_to_os` 하나. `summarize_engine.ENV`·`hybrid_search.ENV` 는 **같은 dict 객체의 별칭**이라 테스트의
+      `monkeypatch.setitem(engine.ENV, …)` 가 모든 소비자에 그대로 보인다. `server.py` 는 MCP 자식 프로세스라 `apply_to_os` 로 os.environ 에도 채운다.
+      호출부 이름(`engine.ENV.get(이름)`)은 안 바꿨다 — 값은 여전히 어디에도 출력하지 않는다.
+    - `textutil.esc`: `digest._esc`(네 글자)·`review_app._h`·`check_daily_mail` 의 `html.escape` 를 하나로. 작은따옴표까지 다섯 글자를 바꾼다 —
+      메일 HTML 의 `'` 가 `&#x27;` 로 바뀌지만 표시는 같다(digest 테스트 전부 통과).
+    - `profile_scoring.keyword_pattern`·`TOKEN_SPLIT_RE` 공개. `agent_maintenance._in_text/_norm_term`·`term_discovery` 가 사설 이름 대신 쓴다 —
+      "에이전트가 근거 있다고 본 키워드를 채점기는 못 잡는" 불일치를 막는 것이 목적이고 테스트(`domain` 안의 `ai` 는 둘 다 안 잡음)로 고정.
+      `term_hygiene`(후보 정규화·우산어)는 목적이 달라 합치지 않는다(docstring 에 경계 명시).
+    - **발견**: `review_app._render_history` 첫 줄 들여쓰기가 b792b1f(§8-152)에서 깨져 `IndentationError` 였다 — 어느 테스트도 화면 모듈을
+      import 하지 않아 pytest 는 green 이었고 운영 화면은 뜨지 않았을 것이다(9/17 아침 스캔은 화면과 무관해 정상). 고치고 `test_ui_helpers`
+      에 import 가드를 두었다. `AppTest` 로 첫 화면 렌더 확인(예외 0). 전체 1,064 통과.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
