@@ -44,22 +44,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 ROOT = Path(__file__).resolve().parent
-ENV_PATH = ROOT / ".env"
 
 
-def _load_env() -> dict:
-    env = dict(os.environ)
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env.setdefault(k.strip(), v.strip())
-    return env
-
-
-ENV = _load_env()
+import config as _config
+ENV = _config.ENV          # 2026-09-17: 파서는 config 하나(그전엔 자체 사본을 만들고 실제 임베딩 이름은 summarize_engine.ENV 에서 읽었다)
 
 # 영문/숫자 단어 또는 한글 음절 연속을 토큰으로 본다 — 이 저장소의 논문은
 # 거의 전부 영문 제목·초록이라 한글 처리는 부수적이지만, 사용자 질의가

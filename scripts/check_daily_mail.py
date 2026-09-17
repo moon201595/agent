@@ -8,7 +8,6 @@ cron 자체가 절전·종료로 건너뛰면 스캔 로그와 DB 모두 조용�
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import re
 import sqlite3
@@ -20,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import textutil
 from time_policy import KST, kst_date as _tp_kst_date, operating_day_start_utc   # 2026-09-17: 시각 정책 통합
 UTC = timezone.utc
 DEFAULT_LOG = ROOT / "logs" / "daily_scan.log"
@@ -177,7 +177,7 @@ def _send_alert(recipients: list[str], reasons: list[str], today: date) -> None:
         + "\n".join(f"- {reason}" for reason in reasons)
     )
     email_delivery.send_digest_email(
-        text, ALERT_SUBJECT, recipients, f"<pre>{html.escape(text)}</pre>"
+        text, ALERT_SUBJECT, recipients, f"<pre>{textutil.esc(text)}</pre>"
     )
 
 

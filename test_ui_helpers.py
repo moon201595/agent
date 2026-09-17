@@ -32,3 +32,12 @@ def test_relative_time_passes_through_unparseable():
     assert app._relative_time("언제인지 모름") == "언제인지 모름"
     assert app._relative_time("") == ""
 
+
+
+def test_review_app_imports_cleanly():
+    """2026-09-17: b792b1f 가 `review_app._render_history` 첫 줄 들여쓰기를 깨뜨렸는데(IndentationError) 어느 테스트도 화면 모듈을
+    import 하지 않아 pytest 는 green 이었다 — 운영 화면은 뜨지 않았을 것이다. 이 테스트는 그 구멍을 막는다: 화면 모듈이 문법·import 수준에서
+    깨지면 실패한다(Streamlit 은 import 만으로는 서버를 띄우지 않는다)."""
+    import importlib
+    mod = importlib.import_module("review_app")
+    assert callable(mod._render_history)

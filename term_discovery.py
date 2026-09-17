@@ -265,7 +265,7 @@ def snippet(text: str, term: str, chars: int) -> str:
     용어가 없어 R7(문자열 실재) 검증에서 죽는다(외부 검토 2026-09-12). 용어가 없으면 앞부터."""
     if not text or len(text) <= chars:
         return text or ""
-    pat = profile_scoring._keyword_pattern(term)
+    pat = profile_scoring.keyword_pattern(term)
     m = pat.search(text)
     if not m:
         return text[:chars]

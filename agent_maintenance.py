@@ -312,13 +312,14 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
 def _in_text(term: str, text: str) -> bool:
-    return bool(profile_scoring._keyword_pattern(term).search(text or ""))
+    """채점기와 **같은** 매처(match-v2)로 근거 논문 본문에서 찾는다 — 규칙이 둘이면 "근거 있음"과 "적중" 이 어긋난다."""
+    return bool(profile_scoring.keyword_pattern(term).search(text or ""))
 
 
 def _norm_term(term: str) -> str:
     """채점기(profile_scoring match-v2)와 같은 구분자 — 공백·하이픈류·언더스코어·슬래시 — 로 나눈 소문자 낱말열, 마지막 낱말 단수.
     term_discovery.canonical 은 하이픈만 풀어서 `robot_manipulation` 과 `robot manipulation` 을 다른 말로 봤다(외부 검토 2026-09-15)."""
-    toks = [t for t in profile_scoring._TOKEN_SPLIT_RE.split(str(term).lower().replace("(", " ").replace(")", " ")) if t]
+    toks = [t for t in profile_scoring.TOKEN_SPLIT_RE.split(str(term).lower().replace("(", " ").replace(")", " ")) if t]
     if toks:
         toks[-1] = term_hygiene.singular(toks[-1])
     return " ".join(toks)

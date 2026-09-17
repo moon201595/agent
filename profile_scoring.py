@@ -41,12 +41,16 @@ from datetime import datetime, timezone
 
 _WORD_RE_CACHE: dict[str, re.Pattern] = {}
 # 낱말 사이에 올 수 있는 것: 공백, 하이픈류(‐ - – — ―), 언더스코어, 슬래시, 괄호. 이것뿐이다.
-_TOKEN_SPLIT_RE = re.compile(r"[\s\-‐-―_/]+")
+TOKEN_SPLIT_RE = re.compile(r"[\s\-‐-―_/]+")     # 공개(2026-09-17) — agent_maintenance._norm_term 이 같은 구분자로 나눠야 한다
 _TOKEN_SEP = r"(?:[\s\-‐-―_/]|\(|\))+"
 
 
-def _keyword_pattern(keyword: str) -> re.Pattern:
-    """다단어 키워드("digital twin")도 통째로 단어 경계 매칭한다. 순수
+def keyword_pattern(keyword: str) -> re.Pattern:
+    """**키워드 매칭의 유일한 정의**(match-v2). 채점(`match_keywords`·`score_paper`)뿐 아니라 주간 에이전트의 근거 확인
+    (`agent_maintenance._in_text`)·용어 발견(`term_discovery`)도 이걸 쓴다 — 2026-09-17 에 공개 이름으로 열었다. 두 곳이 다른 매처를 쓰면
+    "에이전트가 근거 있다고 본 키워드를 채점기는 못 잡는" 불일치가 생긴다. `term_hygiene` 는 **후보 용어 정규화·우산어** 라 목적이 달라 합치지 않는다.
+
+    다단어 키워드("digital twin")도 통째로 단어 경계 매칭한다. 순수
     substring 매칭을 안 쓰는 이유: "AI"가 "domain" 안에 우연히 들어있는
     것 같은 거짓 양성을 막기 위해서다.
 
@@ -62,15 +66,16 @@ def _keyword_pattern(keyword: str) -> re.Pattern:
         # "MVTec-AD"·"digital-twin" 을 못 잡았다. 탐색 차선(§8-98)이 찾아냈고 offline 재생으로
         # 관측 947편에서 56편이 새로 잡혔는데 전부 진양성이었다(오탐 0). `.*`나 `\W+` 같은
         # 넓은 허용은 안 한다 — 사이에 다른 낱말이 끼면 여전히 안 잡힌다.
-        tokens = [t for t in _TOKEN_SPLIT_RE.split(keyword) if t]
+        tokens = [t for t in TOKEN_SPLIT_RE.split(keyword) if t]
         body = _TOKEN_SEP.join(re.escape(t) for t in tokens) if tokens else re.escape(keyword)
         pat = re.compile(r"\b" + body + r"(?:es|s)?\b", re.IGNORECASE)
         _WORD_RE_CACHE[keyword] = pat
     return pat
 
 
+
 def _find_hits(text: str, keywords: list[str]) -> list[str]:
-    return [kw for kw in keywords if _keyword_pattern(kw).search(text)]
+    return [kw for kw in keywords if keyword_pattern(kw).search(text)]
 
 
 def _paper_text(paper: dict) -> str:
@@ -83,7 +88,7 @@ def raw_hits(paper: dict, profile: dict) -> dict:
     탐색용(②)에는 이쪽을 쓴다(2026-09-12). 다의어 가드는 score_paper 와 같은 규칙을 탄다."""
     text = _paper_text(paper)
     core = _drop_subsumed([kw for kw in profile.get("core_topics", [])
-                           if _keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)])
+                           if keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)])
     return {"core_hits": core,
             "exclude_hits": _find_hits(text, profile.get("exclude", [])),
             "domain_hits": _find_hits(text, profile.get("target_domain", []))}
@@ -416,7 +421,7 @@ def _drop_subsumed(hits: list[str]) -> list[str]:
     쪽으로 틀린다(점수를 부풀리지 않는 쪽).
     """
     return [h for h in hits
-            if not any(h != o and _keyword_pattern(h).search(o) for o in hits)]
+            if not any(h != o and keyword_pattern(h).search(o) for o in hits)]
 
 
 def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float, float]:
@@ -448,7 +453,7 @@ def core_hits_with_weight(paper: dict, profile: dict) -> tuple[list[str], float,
     text = _paper_text(paper)
     weights = profile.get("core_weights") or {}
     matched = [kw for kw in profile.get("core_topics", [])
-               if _keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)]
+               if keyword_pattern(kw).search(text) and _passes_polysemy_guard(kw, text)]
     hits = _drop_subsumed(matched)
     total = sum(float(weights.get(kw, 1.0)) for kw in hits)
     top = max((float(weights.get(kw, 1.0)) for kw in hits), default=0.0)

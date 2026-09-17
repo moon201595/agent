@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import json
 import re
+
+import textutil
 import sqlite3
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -1212,16 +1214,7 @@ _FLAG_INK = "#8A4B00"
 _HTML_EXCERPT_CHARS = 400  # 텍스트판(220)보다 넉넉하되 102KB 상한을 지키는 선
 
 
-def _esc(text: str) -> str:
-    """HTML 이스케이프. 논문 제목·초록에는 &, <, > 가 실제로 들어온다
-    (예: "A < B", "R&D") — 그대로 넣으면 레이아웃이 깨진다."""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+_esc = textutil.esc          # 2026-09-17: 세 사본 → textutil.esc 하나. 이 파일 안의 35곳 호출 이름은 그대로 둔다
 
 
 def _html_excerpt(paper: dict) -> str:
