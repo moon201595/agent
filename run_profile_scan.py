@@ -19,7 +19,6 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import httpx
@@ -121,7 +120,7 @@ WEEKLY_REVIEW_WEEKDAY = 0
 # 읽는 사람의 시간대. §8-71 은 "읽는 사람의 요일"이 맞았지만 구현이 `astimezone()`
 # (= 이 컴퓨터의 시간대)여서 UTC 컨테이너에서는 같은 순간이 일요일이 됐다
 # (§8-93 ①, 2026-09-11 외부 검증). 컴퓨터가 어디 있든 답이 같아야 한다.
-READER_TZ = ZoneInfo("Asia/Seoul")
+from time_policy import KST as READER_TZ   # 2026-09-17: 시각 정책 통합
 
 # 상위 목록에서 **본문을 받을 수 있는 논문에 최소한 보장할 자리 수**(2026-09-05).
 #

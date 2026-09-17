@@ -28,7 +28,6 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -844,7 +843,7 @@ async def frontier_papers(
     return counter.most_common(10), examined
 
 
-_READER_TZ = ZoneInfo("Asia/Seoul")   # 주간 리뷰 시각 표시용 — 받는 사람 시간대
+from time_policy import KST as _READER_TZ   # 주간 리뷰 시각 표시용 — 받는 사람 시간대(time_policy, 2026-09-17)
 
 
 def _cell(value: object) -> str:
