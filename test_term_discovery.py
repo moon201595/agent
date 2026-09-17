@@ -9,7 +9,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import http_client
-import profile_advisor as adv
 import research_profile as rp
 import run_profile_scan as rps
 import term_discovery as td
@@ -90,31 +89,6 @@ def test_발견은_아는_말과_우산_용어를_빼고_증거는_풀_안의_�
     assert td.discover(pool, profile, {"min_papers": 5}) == [], "min_papers 미만은 우연이다"
 
 
-def test_제안기_입력에는_용어와_증거만_나가고_편수는_안_나간다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: support·도메인 편수가 프롬프트에 새는 것(규칙 4·R5), 증거 키가
-    sent_paper_keys 에 없어 R3 검증에서 죽는 것, 프롬프트 v2 에 탐색 절이 안 붙는 것."""
-    db = tmp_path / "t.db"; _profile(db)
-    _run(db, monkeypatch, DROPPED + HIT)
-    profile = rp.get_profile(db, "p")
-    import profile_impact
-    snap = profile_impact.snapshot(db, "p", *_win())
-    terms = td.discover(td.exploration_pool(db, "p", *_win()), profile)
-    sent = adv.build_input(snap, profile, adv.select_papers(snap, profile, limit=adv.DELIVERY_PAPERS), terms)
-    spk = next(t for t in sent["exploration"] if t["term"] == "spiking sensor")   # 'edge devices' 와 동률 → 용어 순
-    assert set(spk) == {"term", "papers"}
-    assert all(set(p) == adv.SENT_FIELDS for p in spk["papers"])
-    assert {"d1", "d0"} <= set(sent["sent_paper_keys"]) and "h1" in sent["sent_paper_keys"]
-    prompt = adv.render_prompt(sent)
-    assert "## 탐색 후보 용어" in prompt and "- 용어: spiking sensor" in prompt and "[d1]" in prompt
-    assert "support" not in prompt and "4편" not in prompt
-    assert adv.PROMPT_VERSION == "profile_advisor_v2"
-    # 증거 키로 낸 제안은 R3 를 통과한다
-    proposals = [{"action": "add_core_term", "term": "spiking sensor", "proposed_tier": 1.0,
-                  "evidence_paper_keys": ["d1", "d0"], "reason": "r", "ambiguity_risks": []}]
-    validated = adv.validate_proposals({"decision": "propose", "proposals": proposals}, sent, profile)
-    assert validated and not validated[0].get("errors"), validated
-
-
 def test_주간_리뷰에_탐색_절이_붙고_관측_없는_기간은_미측정이다(tmp_path, monkeypatch):
     """이 테스트가 잡는 것: 절이 안 붙는 것, 관측 없는 기간을 '없음(0)'으로 쓰는 것."""
     import storage, trend_report
@@ -125,18 +99,6 @@ def test_주간_리뷰에_탐색_절이_붙고_관측_없는_기간은_미측정
     _run(db, monkeypatch, DROPPED + HIT)
     report = asyncio.run(trend_report.build(db, profile, None))
     assert "탐색 풀 4편" in report and "| spiking sensor | 4 |" in report
-
-
-def test_탐색이_실패해도_주간_제안은_대표_논문만으로_간다(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: 탐색 예외가 run_weekly 를 죽이는 것."""
-    db = tmp_path / "t.db"; _profile(db)
-    _run(db, monkeypatch, DROPPED + HIT)
-    monkeypatch.setattr(td, "exploration_pool", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    out = asyncio.run(adv.run_weekly(db, "p", None, *_win()))
-    assert out["status"] in ("budget_unknown", "no_client", "proposed", "no_change", "skipped"), out
-    with sqlite3.connect(db) as con:
-        row = con.execute("SELECT sent_input_json FROM advisor_runs ORDER BY rowid DESC LIMIT 1").fetchone()
-    assert row is None or row[0] is None or json.loads(row[0]).get("exploration") in (None, [])
 
 
 def test_최신_관측이_적중이면_탐색_풀에서_빠지고_반대는_들어온다(tmp_path, monkeypatch):

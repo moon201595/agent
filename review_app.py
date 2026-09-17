@@ -558,8 +558,7 @@ def _render_reactions(db_path, pid: str) -> None:
 
 
 def _render_history(db_path, pid: str) -> None:
-    import profile_advisor
-    hist = ops_dashboard.revision_history(db_path, pid)
+        hist = ops_dashboard.revision_history(db_path, pid)
     current = hist[0]["revision"] if hist else 0
     for h in hist:
         st.divider()
@@ -571,7 +570,7 @@ def _render_history(db_path, pid: str) -> None:
         if h["revision"] != current:
             if body.button("이 상태로 되돌리기", key=f"rollback_{pid}_{h['revision']}"):
                 try:
-                    res = profile_advisor.rollback(db_path, pid, h["revision"], reason=f"ui rollback to rev {h['revision']}")
+                    res = research_profile.rollback_to_revision(db_path, pid, h["revision"], reason=f"ui rollback to rev {h['revision']}")
                 except Exception as e:  # noqa: BLE001 — 화면이 통째로 죽지 않게 실패 사유를 보인다(외부 검토 2026-09-16)
                     res = {"rolled_back": False, "reason": f"{type(e).__name__}: {e}"}
                 if res.get("rolled_back"):

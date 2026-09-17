@@ -121,8 +121,13 @@ def _ddl(con: sqlite3.Connection) -> None:
         " applied_json  TEXT,"                   # 적용된 변경
         " rejected_json TEXT,"                   # Python 검증에서 버린 변경과 사유
         " reported_at   TEXT,"                   # 아침 메일에 실린 시각 — 한 번만 싣는다
+        " impact_json   TEXT,"                   # 적용 직전 반사실 재채점 요약(profile_impact, 기록만 — 2026-09-17)
         " PRIMARY KEY (profile_id, week))"
     )
+    # 2026-09-17 추가 컬럼 — 표가 이미 있는 DB 에는 migrate 가 아니라 여기서 보탠다(schema_guard 가 이 DDL 을 부를 때만)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(agent_runs)")}
+    if "impact_json" not in cols:
+        con.execute("ALTER TABLE agent_runs ADD COLUMN impact_json TEXT")
 
 
 def init_db(db: Path) -> None:
@@ -467,14 +472,8 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
 
 
 # ── 적용 ────────────────────────────────────────────────────────────────────
-def apply(db: Path, profile_id: str, actions: list[dict], base_revision: int, run_tag: str) -> int | None:
-    """검증을 통과한 변경을 revision 하나로 쓴다(origin='agent'). 되돌리기는 profile_advisor.rollback."""
-    if not actions:
-        return None
-    current = research_profile.current_revision(db, profile_id)
-    if current != base_revision:     # 검증은 base 상태 기준이었다 — 그 사이 바뀌었으면 이번 주는 버린다
-        raise ValueError(f"expected_revision_mismatch:{base_revision}!={current}")
-    profile = research_profile.get_profile(db, profile_id)
+def projected_profile(profile: dict, actions: list[dict]) -> dict:
+    """변경을 적용한 **뒤**의 프로필(dict) — 쓰지 않고 계산만. `apply` 와 `impact_of` 가 같은 함수를 써야 재채점이 실제 적용과 같은 상태를 본다."""
     core = list(profile["core_topics"])
     weights = dict(profile["core_weights"])
     seeds = list(profile["s2_seeds"])
@@ -493,11 +492,74 @@ def apply(db: Path, profile_id: str, actions: list[dict], base_revision: int, ru
             seeds.remove(t)
         elif a["op"] == "add_exclude":
             exclude.append(t)
+    return {**profile, "core_topics": core, "core_weights": weights, "s2_seeds": seeds, "exclude": exclude}
+
+
+IMPACT_WINDOW = timedelta(days=28)      # 반사실 재채점이 보는 관측 기간 — 브리프와 같은 4주
+
+
+def impact_of(db: Path, profile_id: str, before: dict, after: dict, now: datetime) -> dict | None:
+    """적용 직전 **반사실 재채점**(profile_impact) — 지난 4주 관측 스냅숏에 전·후 프로필을 적용해 무엇이 바뀌는지 잰다.
+    2026-09-17: 옛 주간 개선기(profile_advisor)만 부르던 것을 새 에이전트 경로에 연결했다. **기록만 한다** — 차단 임계는 두지 않는다
+    (임계값은 기준선 실측 뒤 정한다, 계획 v2 §9). `impact_analyses` 에 전체가, `agent_runs.impact_json` 에 요약이 남는다.
+    실패는 None — 재채점이 안 된다고 적용을 막지 않는다(기록만 하는 단계가 적용을 막으면 규칙 6 을 어긴다)."""
+    import profile_impact
+    try:
+        snap = profile_impact.snapshot(db, profile_id, now - IMPACT_WINDOW, now)
+        if not snap["papers"]:
+            return {"status": "no_observations"}
+        consumed = research_profile.already_shown(db, profile_id)
+        k = int(after.get("max_items") or before.get("max_items") or 5)
+        row = profile_impact.analyze_and_store(db, snap, before, after, k, consumed_keys=consumed)
+        imp = json.loads(row.get("impact_json") or "{}") if isinstance(row.get("impact_json"), str) else (row.get("impact_json") or {})
+        delivered = imp.get("delivery_view") or {}
+        return {"status": "ok", "analysis_id": row["analysis_id"], "snapshot_papers": snap["paper_count"],
+                "gained": len(imp.get("eligible_gained") or []), "lost": len(imp.get("eligible_lost") or {}),
+                "topk_changed": len(imp.get("topk_entered") or []) + len(imp.get("topk_left") or []),
+                "exclude_risk": (imp.get("exclude_risk") or {}).get("rate"), "gate_status": row.get("gate_status"),
+                "delivered_gained": len(delivered.get("gained") or []) if delivered else None}
+    except Exception as e:  # noqa: BLE001 — 기록 단계의 예외는 적용을 막지 않는다
+        return {"status": f"error:{type(e).__name__}"}
+
+
+def shadow_of(db: Path, profile_id: str, before: dict, after: dict, analysis_id: str | None, now: datetime) -> dict | None:
+    """검색어(S2 시드·arXiv 질의)가 바뀌는 변경만 **격리 검색**(shadow_search)으로 손실을 잰다 — 재채점은 저장된 관측만 보므로
+    "시드를 빼면 앞으로 못 보게 되는 논문"을 알 수 없다(2026-09-12 실측: world model 시드 제거 294→40). 2026-09-17 새 에이전트 경로에 연결.
+    **기록만** 한다(`shadow_runs`). 검색어 변경이 없으면 None. 실패는 상태로 남기고 적용을 막지 않는다. 주 1회·시드 몇 개라 S2 예산 안이다."""
+    import shadow_search
+    try:
+        arms = shadow_search.arms_for(before, after)
+        if not (arms["seed_changed"] or arms["arxiv_query_changed"]):
+            return None
+        import asyncio
+        import httpx
+
+        async def _go():
+            async with httpx.AsyncClient() as client:
+                return await shadow_search.run_shadow(db, profile_id, before, after, client, analysis_id=analysis_id, now=now)
+        out = asyncio.run(_go())
+        d = (out.get("metrics") or {}).get("diff") or {}
+        return {"status": out.get("status"), "shadow_id": out.get("shadow_id"), "seeds_removed": arms["seeds_removed"],
+                "seeds_added": arms["seeds_added"], "eligible_before": d.get("eligible_before"), "eligible_after": d.get("eligible_after"),
+                "eligible_lost": len(d.get("eligible_lost") or []), "topk_overlap": d.get("topk_overlap"), "api_calls": out.get("api_calls")}
+    except Exception as e:  # noqa: BLE001
+        return {"status": f"error:{type(e).__name__}"}
+
+
+def apply(db: Path, profile_id: str, actions: list[dict], base_revision: int, run_tag: str) -> int | None:
+    """검증을 통과한 변경을 revision 하나로 쓴다(origin='agent'). 되돌리기는 research_profile.rollback_to_revision."""
+    if not actions:
+        return None
+    current = research_profile.current_revision(db, profile_id)
+    if current != base_revision:     # 검증은 base 상태 기준이었다 — 그 사이 바뀌었으면 이번 주는 버린다
+        raise ValueError(f"expected_revision_mismatch:{base_revision}!={current}")
+    profile = research_profile.get_profile(db, profile_id)
+    after = projected_profile(profile, actions)
     freq, at = _schedule(db, profile_id)
     return research_profile.create_profile(
-        db, profile_id, profile["name"], core, target_domain=profile["target_domain"], exclude=exclude,
+        db, profile_id, profile["name"], after["core_topics"], target_domain=profile["target_domain"], exclude=after["exclude"],
         venues=profile["venues"], max_items=profile["max_items"], schedule_frequency=freq, schedule_time=at,
-        core_weights=weights, s2_seeds=seeds, origin="agent", note=run_tag,
+        core_weights=after["core_weights"], s2_seeds=after["s2_seeds"], origin="agent", note=run_tag,
         expected_revision=base_revision)
 
 
@@ -667,7 +729,13 @@ def run_profile(db: Path, profile_id: str, runner, now: datetime | None = None, 
                    "applied_json": json.dumps(accepted, ensure_ascii=False),
                    "rejected_json": json.dumps(rejected, ensure_ascii=False)}
         if accepted:
-            # 적용 **전에** 무엇을 적용하려는지와 run_tag 를 남긴다. 적용 뒤 기록이 실패해도 revision 과 짝을 찾을 수 있다.
+            # 적용 **전에** 반사실 재채점을 기록한다(기록만, 차단 없음 — 2026-09-17). 그다음 무엇을 적용하려는지와 run_tag 를 남긴다.
+            before_profile = research_profile.get_profile(db, profile_id)
+            after_profile = projected_profile(before_profile, accepted)
+            imp = impact_of(db, profile_id, before_profile, after_profile, now)
+            shadow = shadow_of(db, profile_id, before_profile, after_profile, (imp or {}).get("analysis_id"), now)
+            decided["impact_json"] = json.dumps({**(imp or {}), "shadow": shadow}, ensure_ascii=False)
+            # 적용 뒤 기록이 실패해도 revision 과 짝을 찾을 수 있다.
             _finish(db, profile_id, week, status="applying", run_tag=run_tag, **decided, **common)
         new_rev = apply(db, profile_id, accepted, brief.base_revision, run_tag)
         status = "applied" if new_rev else "no_change"
@@ -707,12 +775,12 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
     init_db(db)
     cutoff = ((now or _now()) - REPORT_TTL).isoformat()
     with sqlite3.connect(db) as con:
-        rows = con.execute("SELECT week, status, error, base_revision, new_revision, applied_json, run_tag FROM agent_runs "
+        rows = con.execute("SELECT week, status, error, base_revision, new_revision, applied_json, run_tag, impact_json FROM agent_runs "
                            "WHERE profile_id=? AND reported_at IS NULL AND status IN ('applied','failed','applying') "
                            "AND COALESCE(finished_at, started_at) >= ? ORDER BY week", (profile_id, cutoff)).fetchall()
     lines: list[str] = []
     keys: list[tuple[str, str]] = []
-    for week, status, error, base, new, applied, run_tag in rows:
+    for week, status, error, base, new, applied, run_tag, impact_raw in rows:
         if status == "applying":
             new = _tagged_revision(db, profile_id, run_tag)
             status, error = ("applied", error) if new is not None else ("failed", "interrupted")
@@ -726,6 +794,14 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
             w = f" {a['weight']:g}" if a.get("weight") is not None else ""
             why = reader_reason(a.get("reason") or "")
             lines.append(f"   - {OP_LABELS.get(a['op'], a['op'])}: {a['term']}{w}" + (f" — {why}" if why else ""))
+        imp = json.loads(impact_raw) if impact_raw else None
+        if imp and imp.get("status") == "ok":
+            lines.append(f"   - 지난 4주 관측 {imp['snapshot_papers']}편에 이 변경을 대 보면: 새로 걸리는 논문 {imp['gained']}편 · "
+                         f"빠지는 논문 {imp['lost']}편 · 상위 자리 바뀜 {imp['topk_changed']}편 (재채점 기록, 차단 없음)")
+        sh = (imp or {}).get("shadow")
+        if sh and sh.get("status") in ("done", "partial"):
+            lines.append(f"   - 검색어 변경을 격리 검색으로 재 보면: 적격 {sh['eligible_before']} → {sh['eligible_after']}편"
+                         f" (잃음 {sh['eligible_lost']}편, 상위 겹침 {sh['topk_overlap'] if sh['topk_overlap'] is not None else '미측정'}) — 기록만")
     return lines, keys
 
 

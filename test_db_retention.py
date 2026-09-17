@@ -12,7 +12,6 @@ import pytest
 
 import db_retention as retention
 import feedback_links
-import profile_advisor
 import profile_impact
 import research_profile
 import storage
@@ -30,7 +29,6 @@ def _db(tmp_path: Path, *, data_dir: Path | None = None) -> tuple[Path, Path]:
     data.mkdir(parents=True, exist_ok=True)
     storage.init_storage(db)
     research_profile.init_db(db)
-    profile_advisor.init_db(db)
     profile_impact.init_db(db)
     feedback_links.init_db(db)
     retention.init_db(db)
@@ -113,9 +111,17 @@ def test_feedback_profile_and_gate_tables_are_never_touched(tmp_path):
 
 
 def test_old_advisor_raw_fields_are_nulled_but_rows_remain(tmp_path):
-    """이 테스트가 잡는 것: advisor 원문을 행째 삭제하거나 최근 원문까지 NULL로 만드는 것."""
+    """이 테스트가 잡는 것: advisor 원문을 행째 삭제하거나 최근 원문까지 NULL로 만드는 것.
+    `advisor_*` 표는 옛 주간 개선기(2026-09-17 삭제)의 유산이지만 운영 DB 에 남아 있어 보존 정리는 계속 다룬다 — 표는 여기서 그 시절 DDL 대로 만든다."""
     db, data = _db(tmp_path)
     with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS advisor_runs (run_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, created_at TEXT NOT NULL,"
+                    " base_revision INTEGER NOT NULL, week TEXT NOT NULL, window_start TEXT NOT NULL, window_end TEXT NOT NULL,"
+                    " snapshot_id TEXT, snapshot_sha256 TEXT, sent_input_json TEXT, sent_input_sha256 TEXT, prompt_version TEXT,"
+                    " prompt_sha256 TEXT, prompt_text TEXT, status TEXT NOT NULL, status_reason TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS advisor_attempts (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, attempt INTEGER NOT NULL,"
+                    " purpose TEXT NOT NULL, requested_model TEXT, response_model TEXT, key_name TEXT, started_at TEXT NOT NULL, finished_at TEXT,"
+                    " outcome TEXT NOT NULL, http_status INTEGER, raw_response TEXT, usage_json TEXT, usage_kind TEXT)")
         _insert(con, "advisor_runs", "run_id,profile_id,created_at,base_revision,week,window_start,window_end,prompt_text,sent_input_json,status", ("old", "p", OLD_10, 1, "w", OLD, OLD, "PROMPT", "INPUT", "done"))
         _insert(con, "advisor_attempts", "attempt_id,run_id,attempt,purpose,started_at,outcome,raw_response", ("a", "old", 1, "advisor", OLD_10, "ok", "RESPONSE"))
         _insert(con, "advisor_runs", "run_id,profile_id,created_at,base_revision,week,window_start,window_end,prompt_text,sent_input_json,status", ("new", "p", RECENT, 1, "w", RECENT, RECENT, "NEW", "NEW_INPUT", "done"))

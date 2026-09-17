@@ -6020,6 +6020,21 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     **남긴 것(Codex 상의 뒤 결정)**: `profile_advisor`(월요일 훅·rollback 이 살아 있어 삭제는 설계 판단) · `shadow_search`·`profile_impact`(연결 후보) ·
     `evaluation.py`(논문 라벨용 보류) · `eval.py`(수동 기준선). AGENTS/README 갱신.
 
+152. **옛 자산 정리 2단계 — profile_advisor 삭제, profile_impact·shadow_search 를 주간 에이전트에 "기록만" 연결** (2026-09-17).
+    Codex 상의는 어제 저녁·오늘 아침 두 번 다 **사용 한도 초과**로 실패(15분 분석하다 죽음, 다음 가능 시각 14:43). 기다리지 않고 어제 받은
+    Codex 구조 보고서(§8-150)의 사실 위에서 결정했다 — 한도가 풀리면 결과를 사후 검토로 넘긴다.
+    삭제: `profile_advisor.py`(월요일 새벽 훅 포함 — 운영 이력 1회, 제안 0건, 새 에이전트와 역할 중복) + `prompts/profile_advisor_v{1,2}.md` +
+    `test_profile_advisor.py`. 살린 것: `rollback` → `research_profile.rollback_to_revision`(화면 되돌리기·provenance 복원 그대로).
+    옛 advisor 의 기각 기억·게이트 판정 테스트(keyword_events 5·shadow 3·term_discovery 2·evaluation 1)는 함께 뺐고, `advisor_*` 표 6개는 운영 DB 에
+    유산으로 남긴다(db_retention 이 원문 필드만 계속 비운다 — 테스트가 그 시절 DDL 을 직접 만든다). DROP 은 하지 않았다.
+    연결: `agent_maintenance.run_profile` 이 적용 **직전**에 ① `profile_impact.analyze_and_store`(지난 4주 관측 스냅숏에 전·후 프로필 재채점,
+    `projected_profile` 이 apply 와 같은 계산) ② 검색어(시드·arXiv 질의)가 바뀌면 `shadow_search.run_shadow`(격리 검색 손실) 를 부르고 요약을
+    `agent_runs.impact_json`(새 컬럼, migrate 적용·백업 `papers_2026-09-17T014031…`)에, 전체는 `impact_analyses`·`shadow_runs` 에 남긴다.
+    **차단 임계는 두지 않는다** — 기록만(임계값은 기준선 실측 뒤). 재채점·검색이 죽어도 적용은 된다(테스트로 고정). 다음 아침 메일의 에이전트
+    보고에 "지난 4주 관측 N편에 이 변경을 대 보면: 새로 걸리는 +a · 빠지는 −b · 상위 자리 바뀜 c (재채점 기록, 차단 없음)" 한 줄이 붙는다.
+    테스트 격리 함정: 검색 함수 둘을 conftest 에서 덮었더니 그 아래를 가짜로 대는 테스트 74개가 깨졌다 → **호출 지점**(`shadow_of`)만 끄고 원 함수를
+    `_real_shadow_of` 로 보관. 전체 1,053 통과. 특허·논문의 "C+A 한 실시예" 조건(§8-148 Codex 지적: 두 경로가 갈라져 있었다)이 이제 성립한다.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
