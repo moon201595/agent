@@ -28,7 +28,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS profiles (
     profile_id TEXT PRIMARY KEY,
     name TEXT,
-    max_items INTEGER DEFAULT 8,
+    max_items INTEGER DEFAULT 5,
     schedule_frequency TEXT DEFAULT 'daily',
     schedule_time TEXT DEFAULT '05:00',
     created_at TEXT,
@@ -88,6 +88,9 @@ CREATE TABLE IF NOT EXISTS search_runs (
 # 구간을 다시 조회하는 비용은 arXiv 페이지 요청 몇 번뿐이고, LLM 비용은
 # 0 이다 — 이미 요약된 논문은 랭킹 전에 빠지기 때문이다(scan_profile).
 REINDEX_SAFETY_DAYS = 5
+
+# 새 프로필의 다이제스트 편수 기본값. 8은 너무 많다는 사용자 결정(2026-09-17) — 운영 중인 프로필 넷은 이미 5다.
+DEFAULT_MAX_ITEMS = 5
 
 
 def topic_signature(core_topics: list[str]) -> str:
@@ -332,7 +335,7 @@ def create_profile(
     db_path: Path, profile_id: str, name: str,
     core_topics: list[str], target_domain: list[str] | None = None,
     exclude: list[str] | None = None, venues: list[str] | None = None,
-    max_items: int = 8, schedule_frequency: str = "daily", schedule_time: str = "05:00",
+    max_items: int = DEFAULT_MAX_ITEMS, schedule_frequency: str = "daily", schedule_time: str = "05:00",
     core_weights: dict[str, float] | None = None,
     s2_seeds: list[str] | None = None,
     origin: str = "user", note: str | None = None,

@@ -33,12 +33,6 @@ ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon=":material/monitoring:")
 
 
-# 사이드바 내비 아이콘(단선 1.6px, DESIGN.md 파랑) — st.button 은 이미지 아이콘을 못 받아 버튼 배경으로 얹는다.
-_NAV_ICONS = {
-    "nav_research": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOSIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI0LjUiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjYiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMS4zIiBmaWxsPSIjM0I1QkRCIi8+CjxwYXRoIGQ9Ik0xMiAxdjNNMTIgMjB2M00xIDEyaDNNMjAgMTJoMyIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg==",
-    "nav_papers": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTYgMmg5bDQgNHYxNkg2VjJ6IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxwYXRoIGQ9Ik0xNSAydjRoNCIgc3Ryb2tlPSIjM0I1QkRCIiBzdHJva2Utd2lkdGg9IjEuNiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8cGF0aCBkPSJNOSAxMi41aDZNOSAxNmg0IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTguNSAyMGwxLjggMS44TDE0IDE4IiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+",
-    "nav_system": "PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iNyIgcng9IjIiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjYiLz48cmVjdCB4PSIzIiB5PSIxNCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjciIHJ4PSIyIiBzdHJva2U9IiMzQjVCREIiIHN0cm9rZS13aWR0aD0iMS42Ii8+PGNpcmNsZSBjeD0iNyIgY3k9IjYuNSIgcj0iMS4xIiBmaWxsPSIjM0I1QkRCIi8+PGNpcmNsZSBjeD0iNyIgY3k9IjE3LjUiIHI9IjEuMSIgZmlsbD0iIzNCNUJEQiIvPjxwYXRoIGQ9Ik0xMSA2LjVoNk0xMSAxNy41aDYiIHN0cm9rZT0iIzNCNUJEQiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
-}
 
 
 def _inject_custom_style() -> None:
@@ -137,19 +131,20 @@ def _inject_custom_style() -> None:
         }
         [data-testid="stAlert"] { border-radius: 8px; }
 
-        /* 사이드바 — 탐색 영역만 옅은 배경. 내비는 텍스트+아이콘, 선택은 연한 파랑 배경(채운 덩어리 아님). */
+        /* 사이드바 — 탐색 영역만 옅은 배경. 내비는 텍스트만(아이콘은 2026-09-17 사용자 요청으로 뺐다), 선택은 연한 파랑 배경(채운 덩어리 아님). */
         [data-testid="stSidebar"] { background-color: var(--canvas); border-right: 1px solid var(--line); width: 340px !important; }
         [data-testid="stSidebar"] .sidebar-brand {
-            padding: 0.3rem 0 0.9rem 0; font-size: 1.15rem; font-weight: 700; color: var(--ink);
+            padding: 0.3rem 0 0.9rem 0; font-size: 1.5rem; font-weight: 700; color: var(--ink);  /* 제목은 내비(1.1rem)보다 커야 한다(2026-09-17 사용자) */
             border-bottom: 1px solid var(--line); margin-bottom: 0.4rem; letter-spacing: -0.01em;
         }
-        [data-testid="stSidebar"] .sidebar-brand-sub { font-size: 0.85rem; color: var(--muted); font-weight: 400; }
-        [data-testid="stSidebar"] .sidebar-brand-icon { width: 28px; height: 28px; vertical-align: middle; border-radius: 6px; margin-right: 4px; position: relative; top: -2px; }
+        [data-testid="stSidebar"] .sidebar-brand-sub { font-size: 0.95rem; color: var(--muted); font-weight: 400; }
         [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.5rem; }
         [data-testid="stSidebar"] [data-testid="stButton"] button {
             justify-content: flex-start; text-align: left; font-weight: 500; border: 1px solid transparent; background-color: transparent;
-            padding-left: 2.4rem; background-repeat: no-repeat; background-size: 18px 18px; background-position: 12px center; box-shadow: none;
+            padding: 0.5rem 0.9rem; box-shadow: none;
         }
+        /* 내비 글자 — 2026-09-17 사용자 요청: 아이콘을 빼고 글자를 키운다(기본 0.875rem 이 작았다) */
+        [data-testid="stSidebar"] [data-testid="stButton"] button p { font-size: 1.1rem; }
         [data-testid="stSidebar"] [data-testid="stButton"] button:hover { background-color: var(--canvas-2); border-color: transparent; color: var(--ink); }
         [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
         [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
@@ -163,15 +158,11 @@ def _inject_custom_style() -> None:
         [data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] > [class*="st-key-pick_"] button:disabled) {
             border-color: var(--blue-200) !important; border-radius: 12px !important; box-shadow: inset 0 3px 0 var(--blue), var(--shadow-1);
         }
-        .st-key-nav_research button { background-image: url("data:image/svg+xml;base64,__ICON_RESEARCH__"); }
-        .st-key-nav_papers button { background-image: url("data:image/svg+xml;base64,__ICON_PAPERS__"); }
-        .st-key-nav_system button { background-image: url("data:image/svg+xml;base64,__ICON_SYSTEM__"); }
         [data-testid="stSidebar"] [data-testid="stExpander"] { box-shadow: none; margin-bottom: 0.35rem; }
         [data-testid="stSidebar"] [data-testid="stExpander"] summary { font-size: 0.82rem; padding: 0.4rem 0.6rem; }
         [data-testid="stSidebar"] .sidebar-item { font-size: 0.8rem; color: var(--ink); padding: 0.22rem 0.1rem; overflow-wrap: break-word; }
         </style>
-        """.replace("__ICON_RESEARCH__", _NAV_ICONS["nav_research"]).replace("__ICON_PAPERS__", _NAV_ICONS["nav_papers"])
-           .replace("__ICON_SYSTEM__", _NAV_ICONS["nav_system"]),
+        """,
         unsafe_allow_html=True,
     )
 
@@ -257,7 +248,7 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
     )
     max_items = st.number_input(
         "다이제스트에 담을 최대 편수", min_value=1, max_value=50,
-        value=existing["max_items"] if existing else 8, key=f"{key_prefix}_max",
+        value=existing["max_items"] if existing else research_profile.DEFAULT_MAX_ITEMS, key=f"{key_prefix}_max",
     )
 
     label = "프로필 만들기" if is_new else "수정 저장"
@@ -909,38 +900,30 @@ def render_system_page() -> None:
 
 
 # ---------------------------------------------------------------- 메인
-_BRAND_ICON = (
-    "data:image/svg+xml;base64,"
-    "PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIw"
-    "MDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzNCNUJEQiIvPgo8cmVjdCB4PSI3IiB5"
-    "PSI2IiB3aWR0aD0iMTIiIGhlaWdodD0iMTYiIHJ4PSIxLjUiIGZpbGw9IndoaXRlIiBmaWxsLW9wYWNpdHk9IjAuOTQiLz4KPGxp"
-    "bmUgeDE9IjkuNSIgeTE9IjEwIiB4Mj0iMTYuNSIgeTI9IjEwIiBzdHJva2U9IiMyRjRBQjgiIHN0cm9rZS13aWR0aD0iMS4xIiBz"
-    "dHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjEzIiB4Mj0iMTYuNSIgeTI9IjEzIiBzdHJva2U9IiMy"
-    "RjRBQjgiIHN0cm9rZS13aWR0aD0iMS4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPGxpbmUgeDE9IjkuNSIgeTE9IjE2IiB4"
-    "Mj0iMTQiIHkyPSIxNiIgc3Ryb2tlPSIjMkY0QUI4IiBzdHJva2Utd2lkdGg9IjEuMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+"
-    "CjxjaXJjbGUgY3g9IjIwLjUiIGN5PSIxOS41IiByPSI0LjMiIGZpbGw9Im5vbmUiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0"
-    "aD0iMiIvPgo8bGluZSB4MT0iMjMuNiIgeTE9IjIyLjYiIHgyPSIyNyIgeTI9IjI2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lk"
-    "dGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPg=="
-)
 
 _PAGES = (("research", "운영 현황"), ("papers", "논문 DB"), ("system", "시스템"))
 
 if st.session_state.get("nav_page") not in {k for k, _ in _PAGES}:
     st.session_state.nav_page = "research"          # 켜자마자 운영 현황(2026-09-16 사용자 요청)
 
+
+
+def _go(page: str) -> None:
+    st.session_state.nav_page = page
+
+
 with st.sidebar:
     st.markdown(
-        f'<div class="sidebar-brand"><img src="{_BRAND_ICON}" class="sidebar-brand-icon"/> '
-        '<b>최신 연구 동향</b> '
+        '<div class="sidebar-brand"><b>최신 연구 동향</b> '
         '<span class="sidebar-brand-sub">모니터링 에이전트</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     for key, label in _PAGES:
-        if st.button(label, key=f"nav_{key}", width="stretch",
-                     type="primary" if st.session_state.nav_page == key else "secondary"):
-            st.session_state.nav_page = key
-            st.rerun()
+        # on_click 콜백은 재실행 **앞에서** 돌아 그 한 번의 실행이 이미 새 페이지를 그린다. 그전(`if st.button():` 뒤에 명시적 재실행 호출)에는
+        # 클릭 재실행 + 명시적 재실행으로 전환마다 스크립트가 두 번 돌았다(2026-09-17 실측: 브라우저 전환 1.6~2.8초, 첫 방문 4~9초).
+        st.button(label, key=f"nav_{key}", width="stretch", on_click=_go, args=(key,),
+                  type="primary" if st.session_state.nav_page == key else "secondary")
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     try:
         _status = ops_dashboard.system_status(server.DB_PATH, ROOT)
