@@ -128,6 +128,17 @@ def test_same_paper_from_two_keywords_is_counted_once(monkeypatch):
     assert len(out["papers"]) == 1
 
 
+def test_s2_dedupe_uses_the_shared_paper_key(monkeypatch):
+    """2026-09-17(§8-156): 소스 안 합치기의 키가 `research_profile.paper_key` 다. 잡는 것: 자체 키(`arxiv_id or doi or title.lower()`)로
+    되돌아가 DOI 대소문자·제목 공백이 다른 같은 논문을 둘로 세는 것 — 그러면 시드별 수율이 부풀고 채점 후보에 같은 논문이 둘 들어간다."""
+    a = {"title": "Surface  Defect Detection", "externalIds": {"DOI": "10.1/ABC"}, "publicationDate": "2026-08-30"}
+    b = {"title": "Surface Defect Detection", "externalIds": {"DOI": "10.1/abc"}, "publicationDate": "2026-08-30"}
+    out, _ = _run(["surface inspection", "defect detection"], monkeypatch,
+                  {"surface inspection": [a], "defect detection": [b]})
+    assert len(out["papers"]) == 1
+    assert out["papers"][0]["s2_seeds"] == ["surface inspection", "defect detection"]
+
+
 def test_one_failing_keyword_does_not_kill_the_rest(monkeypatch):
     """한 키워드가 죽어도 나머지는 살아야 한다(프로필 간 실패 격리와 같은 원칙)."""
     good = {"title": "Good Paper", "publicationDate": "2026-08-30"}

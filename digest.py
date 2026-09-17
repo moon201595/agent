@@ -35,6 +35,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import research_profile
 import storage
 
 _ABSTRACT_EXCERPT_CHARS = 220
@@ -1027,12 +1028,11 @@ def mentioned_papers(scan_result: dict) -> list[dict]:
     if not story:
         return []
     text = story[0] if isinstance(story, (tuple, list)) else str(story)
-    shown_ids = {p.get("arxiv_id") or p.get("doi") or (p.get("title") or "").lower()
-                 for p in (scan_result.get("papers") or [])}
+    # 2026-09-17: 키는 research_profile.paper_key 하나 — 상위 논문이 본문 처리 뒤 `pdf-` 합성 ID 를 달아도 DOI 로 같은 논문임을 안다.
+    shown_ids = {research_profile.paper_key(p) for p in (scan_result.get("papers") or [])}
     out = []
     for paper in scan_result.get("title_only_papers") or []:
-        key = (paper.get("arxiv_id") or paper.get("doi")
-               or (paper.get("title") or "").lower())
+        key = research_profile.paper_key(paper)
         if key in shown_ids:
             continue
         if _is_mentioned(paper.get("title") or "", text):
