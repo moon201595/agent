@@ -41,3 +41,35 @@ def test_review_app_imports_cleanly():
     import importlib
     mod = importlib.import_module("review_app")
     assert callable(mod._render_history)
+
+
+def test_nav_switches_page_without_explicit_rerun():
+    """2026-09-17 사용자 지적 "운영 현황·논문 DB·시스템 오가는 게 느리다". 원인은 `if st.button(): ...; st.rerun()` — 클릭 재실행 뒤
+    또 한 번 재실행이라 전환마다 스크립트가 두 번 돌았다. 지금은 on_click 콜백이 재실행 앞에서 nav_page 를 바꾼다.
+    망가뜨리면 실패하는 것: (a) 내비 블록에 st.rerun 을 다시 넣는 것 (b) 클릭해도 페이지가 안 바뀌는 것 (c) 어느 페이지든 그리다 예외."""
+    import inspect
+    import review_app
+    from streamlit.testing.v1 import AppTest
+    src = inspect.getsource(review_app)
+    nav = src[src.index("with st.sidebar:"):src.index('if st.session_state.nav_page == "papers":')]
+    assert "st.rerun" not in nav
+    assert "on_click=_go" in nav
+    at = AppTest.from_file("review_app.py", default_timeout=120).run()
+    for key in ("papers", "system", "research"):
+        at.button(key=f"nav_{key}").click().run()
+        assert at.session_state.nav_page == key
+        assert not at.exception
+
+
+def test_new_profile_defaults_to_five_items(tmp_path):
+    """2026-09-17 사용자 결정: 다이제스트 기본 8편은 너무 많다 → 5. 화면 폼과 create_profile 기본값이 같은 상수를 본다.
+    망가뜨리면 실패하는 것: 어느 한쪽이 숫자를 다시 박아 넣어 둘이 갈리는 것."""
+    import inspect
+    import research_profile
+    import review_app
+    assert research_profile.DEFAULT_MAX_ITEMS == 5
+    assert "research_profile.DEFAULT_MAX_ITEMS" in inspect.getsource(review_app._render_profile_form)
+    db = tmp_path / "p.db"
+    research_profile.init_db(db)
+    research_profile.create_profile(db, "p1", "이름", core_topics=["x"])
+    assert research_profile.get_profile(db, "p1")["max_items"] == 5

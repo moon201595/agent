@@ -6082,6 +6082,19 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
       지금 동작이 이미 그렇다 — `scan_search.scan_profile` 이 예외를 올려 `search_runs` 에 두 소스 모두 `failed` 로 남고, `scan_all_profiles`
       요약이 `status=error`, 종료코드 ≠0, `check_daily_mail` 이 경보 메일을 보낸다. "논문 0편" 메일은 조용한 날과 구분이 안 되므로
       메일 부재가 정직한 신호다(원설계 커밋 92f6049 2026-09-06 유지). 이 결정으로 §8-150 의 열린 질문을 닫는다.
+158. **화면 전환이 두 번 돌고 있었다 — 내비를 on_click 으로, 아이콘 삭제·글자 확대, 새 프로필 기본 5편** (2026-09-17, 사용자 요청).
+    - 사용자: "운영 현황·논문 DB·시스템 오가는 게 느리다". 서버 쪽은 빨랐다(`ops_dashboard` 함수 전부 0.14s 이하, AppTest 페이지당 0.2~0.6s).
+      원인은 내비 코드 — `if st.button(): nav_page=...; st.rerun()` 이라 클릭 재실행 뒤 **한 번 더** 재실행. 실제 브라우저(Playwright, WSL 안
+      chromium, 127.0.0.1) 실측: 고치기 전 전환 1.6~2.8s(첫 방문 2.3~9.0s) → `on_click=_go` 콜백(재실행 앞에서 상태 변경, 1회 실행)으로
+      0.65~0.97s(첫 방문 1.1~1.9s). 두 번씩 재서 재현됨. 남은 0.7s 는 스크립트 1회 + 프런트 렌더(altair·dataframe)라 더 줄이려면
+      `ops_dashboard` 결과 캐시가 필요한데, 저장·되돌리기 버튼이 DB 를 바꾸므로 무효화 설계 없이는 안 붙인다(미착수).
+    - 사이드바 아이콘 4개(브랜드 1 + 내비 3, base64 SVG) 삭제 — "AI 티 난다". 내비 글자 0.875 → 1.1rem. `_NAV_ICONS`·`_BRAND_ICON` 상수와
+      background-image CSS 제거.
+    - 새 프로필 다이제스트 편수 기본 8 → 5 (`research_profile.DEFAULT_MAX_ITEMS`, 폼·`create_profile`·DDL DEFAULT 가 같은 값). 운영 프로필 넷은
+      이미 5 였다(DB 확인). DDL DEFAULT 변경은 schema_guard 가 열 이름만 비교하므로 마이그레이션 대상이 아니다.
+    - 테스트 2(`test_ui_helpers`): 내비 블록에 명시적 재실행이 다시 들어오거나 클릭이 페이지를 안 바꾸면 실패 / 기본 편수 상수가 갈리면 실패. 전체 1,073 green.
+    - 함정: 켜 둔 서버가 `review_app.py` 변경은 다시 읽었지만 import 된 `research_profile` 은 옛 모듈이라 `DEFAULT_MAX_ITEMS` AttributeError 가
+      화면에 떴다(사용자 스크린샷). 상수를 다른 모듈에 추가했으면 서버를 재시작한다. 사이드바 제목 1.15 → 1.5rem(내비 1.1rem 보다 크게).
 
 ## 9. 폐기된 것
 
