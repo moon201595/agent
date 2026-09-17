@@ -20,7 +20,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 주요 스택: Python 3.14 · MCP 서버(stdio) · Streamlit(사람 판단 UI) · SQLite(`data/papers.db`) · Docker(⑦ 코드 재현 격리 실행)
 - 요약·서술 LLM 은 현재 Gemini 우선, Groq 대체다. 에이전트 두뇌로 Claude Code·Codex(구독, 헤드리스 포함)를 붙이는 중이다(계획 v2 §1).
 - 모노레포가 아니다. 루트 평면 배치이고 `src/` 레이아웃이 아니다. 하위 AGENTS.md 도 없다.
-- 일일 진입점은 `run_daily_scan.sh → run_profile_scan.py` 이고, Python 모듈이 검색·저장·실행을 맡는다. LLM 은 JSON 제안을 돌려주고 Python 이 검증·적용한다.
+- 일일 진입점은 `run_daily_scan.sh → run_profile_scan.py`(조정기) 이고, ①② 는 `scan_search.scan_profile`, ⑨ 는 `scan_deliver._deliver` 다(2026-09-17 분할 — 이름·시그니처는
+  그대로이고 `run_profile_scan` 이 재수출한다. 테스트가 `rps._deliver`·`rps.scan_profile` 을 monkeypatch 하므로 조정기는 **자기 전역**으로 부른다 — `scan_deliver._deliver(...)`
+  처럼 모듈 경로로 바꾸면 patch 가 안 먹는다). 공용 정책은 `time_policy`(시각)·`config`(`.env`)·`textutil`(escape) 하나씩이다. LLM 은 JSON 제안을 돌려주고 Python 이 검증·적용한다.
 
 파이프라인 단계는 문서·주석·모듈 docstring 전반에서 ①~⑨ 원문자로 부른다.
 ① 검색 ② 중복 제거·선별 ③ 본문 확보 ④ 요약 ⑤ 수치 검증 ⑥ 사람 판단 ⑦ 코드 재현
@@ -194,7 +196,7 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   폭은 문자열이 아니라 **개념**(robot/robotic·LLM/LLM-based 변형은 하나)으로 센다 — `rank-tuple-v2+match-v2+band0.1+dateband3`. 선정 경로에 합산
   재정렬(MMR·자리 상한·문지기)을 다시 붙이면 계약이 깨진다 — `test_rank_contract.py` 가 감시한다.
 - **거짓 성공을 기록하지 않는다.** TSPulse 재현이 실패했는데 성공으로 기록된 사례가 있다(PROGRESS.md).
-- **arXiv 는 OR 항이 많은 질의를 못 받는다**(2026-09-16 실측). 키워드 47개 질의 하나는 36초 뒤 503, 24개씩 둘은 10·15초에 200. `run_profile_scan` 이
+- **arXiv 는 OR 항이 많은 질의를 못 받는다**(2026-09-16 실측). 키워드 47개 질의 하나는 36초 뒤 503, 24개씩 둘은 10·15초에 200. `scan_search` 가
   `ARXIV_TERMS_PER_QUERY`(20)개씩 갈라 던지고 합친다 — 프로필 키워드를 늘릴 때 이 상한을 없애거나 `_arxiv_query_from_core_topics` 하나로 되돌리지 않는다.
 - **테스트가 운영 DB 를 건드릴 수 있다**(2026-09-16 실측). conftest 가 켠 DDL 플래그 아래서 `storage.DB_PATH` 기본값으로 가는 코드는 운영 DB 에
   표를 만들고, 스캔 테스트가 실제 `gh` 검색을 불렀다. 새 모듈은 DB 경로를 인자로 받고, digest 를 부르는 테스트는 격리 픽스처(`isolated_store`)를 쓴다.

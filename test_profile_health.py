@@ -12,6 +12,7 @@ import http_client
 import profile_health as ph
 import research_profile as rp
 import run_profile_scan as rps
+import scan_search          # 2026-09-17 분할: 검색 소스 모듈은 여기서 patch 한다
 
 
 def _profile(db, core=("target term", "trend term"), weights=None, exclude=("banned",), k=2):
@@ -32,7 +33,7 @@ def _run(db, monkeypatch, papers):
         return {"papers": [], "status": "done", "query": "S2", "keywords_failed": 0}
     monkeypatch.setattr(http_client, "throttled_arxiv_get", fake_get)
     monkeypatch.setattr(http_client, "parse_arxiv_feed", lambda _: {0: papers}.get(seen[-1], []))
-    monkeypatch.setattr(rps.s2_delta, "find_new_papers_since", fake_s2)
+    monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", fake_s2)
     return asyncio.run(rps.scan_profile(db, "p", None))
 
 

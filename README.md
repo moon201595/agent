@@ -72,7 +72,9 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 
 | 파일 | 역할 |
 | --- | --- |
-| `run_daily_scan.sh` · `run_profile_scan.py` | cron 진입점과 프로필별 검색·선별·기존 처리 함수 호출·다이제스트 저장·발송 |
+| `run_daily_scan.sh` · `run_profile_scan.py` | cron 진입점과 조정기(`scan_and_digest`: 가중치→검색→본문·요약→동향·근거·사다리→다이제스트→발송→주간 후속)·종료코드. 2026-09-17 분할 뒤 검색·발송 이름을 재수출한다 |
+| `scan_search.py` · `scan_deliver.py` | ①② 프로필 하나의 후보 만들기(`scan_profile`, arXiv 분할 질의·델타 창·채점·관측 기록) · ⑨ 발송과 발송 대장(`_deliver`, `DELIVERY_*` 접두사 소유) |
+| `time_policy.py` · `config.py` · `textutil.py` | 공용 정책 셋(2026-09-17): 시각(저장 UTC·표시 KST·운영일 05:00 경계) · `.env` 로딩(`config.ENV` 하나, 값은 출력 안 함) · HTML 이스케이프 |
 | `research_profile.py` | 프로필·키워드·시드·수신자, 검색 이력·후보·배달 기록·최근 다이제스트의 SQLite 저장과 검색 커서 계산 |
 | `profile_scoring.py` | 제목·초록의 키워드 적중으로 관련도와 순위를 계산하며 점수 근거를 반환 |
 | `find_new_papers.py` · `delta_search.py` | arXiv 날짜 범위 요청과 순수 페이지 수집·날짜 경계 계산을 분리 |
@@ -112,7 +114,7 @@ arXiv는 `find_new_papers.py`가 제출일 범위와 최신순 정렬로 요청�
 - `prompts/summary_template.md` — 요약 템플릿 v2 와 작성 규칙 (프롬프트 자산, 버전 관리 대상)
 - `prompts/summary_template_survey.md` — 서베이/리뷰 논문 전용 변형 (분류체계·하위주제 비교 구조, 절대 규칙 R1~R6은 동일)
 - `eval.py` — 저장된 전체 요약의 통과율 일괄 측정 (회귀 기준선)
-- `test_*.py` — 테스트 파일 56개, 전체 pytest **1,080개 통과**(2026-09-16 실측; 2026-09-09 에는 35개 파일·785개). `test_smoke.py` 는 pytest 가 수집하지 않는 수동 네트워크 스모크다
+- `test_*.py` — 테스트 파일 59개, 전체 pytest **1,067개 통과**(2026-09-17 실측; 2026-09-09 에는 35개 파일·785개). `test_smoke.py` 는 pytest 가 수집하지 않는 수동 네트워크 스모크다
 - `data/` — PDF·추출 텍스트·요약·이미지·SQLite 인덱스 (자동 생성, 커밋 제외)
 - `.env` — `GOOGLE_API_KEY` · `GROQ_API_KEY` · `S2_API_KEY` · `UNPAYWALL_EMAIL` · `OPENALEX_API_KEY` · `SMTP_USER` · `SMTP_PASSWORD` 등의 설정 (커밋 제외, 시크릿을 읽거나 출력하지 않는다)
 
@@ -286,7 +288,7 @@ pypdf 는 2단 조판과 표를 자주 뭉개고, 그게 ⑤ 의 거짓 불일�
 | 메일 | 1명 발송 완료 |
 | 같은 운행의 arXiv core 적중 | 388편 중 313편(80.7%) |
 | 같은 운행의 S2 core 적중 | 59편 중 13편(22.0%) |
-| 전체 테스트 | `.venv/bin/python -m pytest` 1,080개 통과 · 테스트 파일 56개 (2026-09-16) |
+| 전체 테스트 | `.venv/bin/python -m pytest` 1,067개 통과 · 테스트 파일 59개 (2026-09-17) |
 | 유지할 회귀 기준선 | `eval.py`, 39편 · pass_ratio 0.982 |
 
 출처별 적중률은 검색 후보의 core 적중이며, 검색 회수율이나 요약 정확도가 아니다. 수치 검증 통과도 요약 전체의 의미적 정확성을 보증하지 않는다. 현재 요약의 의미적 정확도와 전체 관련 논문 대비 검색 회수율은 **미실측**이다. 이 한 번의 운행을 평균 처리 시간이나 매일의 성능 보장으로 쓰지 않는다. 같은 날짜의 프로필·시드 개정 후 성능도 이 운행값만으로 입증되지 않는다.
