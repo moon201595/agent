@@ -47,6 +47,10 @@ class _FakeClient:
     async def post(self, url, json, headers, timeout):
         key = headers["x-goog-api-key"]
         self.used.append(key)
+        if key not in self.statuses:
+            # dict 색인(KeyError) 은 메시지에 **키 값**을 싣는다 — 코드가 fixture 가 아닌 실제 ENV 를 읽는 순간 pytest 출력에
+            # 진짜 키가 찍혔다(2026-09-17 실측, Codex 2차 검토 #5). 값 없이 실패시킨다.
+            raise AssertionError("가짜 클라이언트가 모르는 키 — 코드가 fixture(engine.ENV)가 아닌 다른 매핑을 읽고 있다")
         return _FakeResp(self.statuses[key], key)
 
 

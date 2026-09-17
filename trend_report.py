@@ -548,8 +548,10 @@ def fill_tag_only_bullets(text: str, corpus: str) -> tuple[str, int]:
         m = _TAG_ONLY_BULLET_RE.match(line)
         if m:
             tags = list(dict.fromkeys(re.findall(_TAG_RE, m.group(2))))
-            first = re.match(r"\[(P\d+):", tags[0]).group(1)
-            title = titles.get(first)
+            papers = {re.match(r"\[(P\d+):", t).group(1) for t in tags}
+            # 한 논문의 태그만일 때 채운다. "- [P1:A] [P2:A]" 처럼 두 논문이 섞인 줄에 P1 제목을 붙이면 P2 근거까지 P1 얘기로
+            # 보인다(Codex 사후 검토 2026-09-17 #7) — 그런 줄은 보정하지 않고 그대로 둔다(뒤의 citation_audit 대상으로 남는다).
+            title = titles.get(next(iter(papers))) if len(papers) == 1 else None
             if title:
                 line = f"{m.group(1)}{title} {' '.join(tags)}"
                 filled += 1

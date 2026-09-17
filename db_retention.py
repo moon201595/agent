@@ -25,7 +25,6 @@ CANDIDATE_DAYS = 90
 OBSERVATION_DAYS = 180
 RUN_DAYS = 180
 PAPER_DAYS = 180
-ADVISOR_RAW_DAYS = 30
 REPRO_FAILURE_DAYS = 180
 REPRO_ARTIFACT_DAYS = 7
 CACHE_DAYS = 60
@@ -37,11 +36,6 @@ _TABLE_TIME_POLICIES: dict[str, tuple[str, int]] = {
     "scan_runs": ("started_at", RUN_DAYS),
     "scan_health": ("computed_at", RUN_DAYS),
     "search_runs": ("started_at", RUN_DAYS),
-}
-
-_ADVISOR_POLICIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "advisor_runs": ("created_at", ("sent_input_json", "prompt_text")),
-    "advisor_attempts": ("started_at", ("raw_response",)),
 }
 
 _PAPER_TABLES = {"papers", "summaries"}
@@ -341,28 +335,6 @@ def _plan_tables(con: sqlite3.Connection, now: datetime) -> tuple[dict[str, dict
         }
         internal["summary_rows"] = summary_rows
 
-    advisor_tables: dict[str, dict[str, Any]] = {}
-    for table, (time_column, raw_columns) in _ADVISOR_POLICIES.items():
-        columns = _table_columns(con, table)
-        if columns is None:
-            advisor_tables[table] = _skip(table, "표 없음")
-            continue
-        available_raw = [column for column in raw_columns if column in columns]
-        if time_column not in columns or not available_raw:
-            advisor_tables[table] = _skip(table, "컬럼 없음")
-            continue
-        targets = [_row_target(row) for row in _old_rows(con, table, time_column, _cutoff(now, ADVISOR_RAW_DAYS))]
-        advisor_tables[table] = {
-            "status": "planned",
-            "cutoff_column": time_column,
-            "raw_columns": available_raw,
-            "cutoff": _iso(_cutoff(now, ADVISOR_RAW_DAYS)),
-            "deleted": 0,
-            "nulled": len(targets) * len(available_raw),
-            "rows": len(targets),
-            "targets": targets,
-        }
-    tables.update(advisor_tables)
 
     repro_columns = _table_columns(con, _REPRO_TABLE)
     failed_old_rows: list[sqlite3.Row] = []
@@ -594,7 +566,6 @@ def _plan_impl(
             "candidate_observations": _iso(_cutoff(current, OBSERVATION_DAYS)),
             "search_candidates": _iso(_cutoff(current, CANDIDATE_DAYS)),
             "runs": _iso(_cutoff(current, RUN_DAYS)),
-            "advisor_raw": _iso(_cutoff(current, ADVISOR_RAW_DAYS)),
             "papers": _iso(_cutoff(current, PAPER_DAYS)),
             "repro_artifacts": _iso(_cutoff(current, REPRO_ARTIFACT_DAYS)),
             "cache": _iso(_cutoff(current, CACHE_DAYS)),
@@ -607,7 +578,7 @@ def _plan_impl(
         "_internal": {},
     }
     if not db.exists():
-        for table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, *_ADVISOR_POLICIES, _REPRO_TABLE):
+        for table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, _REPRO_TABLE):
             result["tables"][table] = _skip(table, "표 없음")
         result["skipped"].append("DB 없음")
     else:
@@ -620,7 +591,7 @@ def _plan_impl(
                 result["_internal"] = {"tables": tables, "internal": internal}
         except sqlite3.Error as exc:
             result["skipped"].append(f"DB 읽기 실패: {type(exc).__name__}")
-            for table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, *_ADVISOR_POLICIES, _REPRO_TABLE):
+            for table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, _REPRO_TABLE):
                 result["tables"].setdefault(table, _skip(table, "DB 읽기 실패"))
     result["elapsed_seconds"] = round(time.monotonic() - started, 6)
     return result
@@ -641,26 +612,15 @@ def plan(
     return _public_plan(_plan_impl(db, now=now, data_dir=data_dir))
 
 
-def _execute_targets(
-    con: sqlite3.Connection,
-    table: str,
-    info: dict[str, Any],
-    *,
-    null_columns: tuple[str, ...] = (),
-) -> dict[str, Any]:
+def _execute_targets(con: sqlite3.Connection, table: str, info: dict[str, Any]) -> dict[str, Any]:
+    # "nulled" 키는 옛 advisor 원문 비우기(2026-09-17 표 DROP 과 함께 삭제, Codex 사후 검토 #5)의 흔적이다 — 주간 로그 JSON 모양을 지키려고 0 으로 남긴다.
     if info.get("status") != "planned":
         return {"deleted": 0, "nulled": 0}
     rowids = [int(target["rowid"]) for target in info.get("targets", [])]
-    nulled = 0
-    if null_columns and rowids:
-        assignments = ", ".join(f'"{column}" = NULL' for column in null_columns)
-        placeholders = ",".join("?" for _ in rowids)
-        con.execute(f'UPDATE "{table}" SET {assignments} WHERE rowid IN ({placeholders})', rowids)
-        nulled = len(rowids) * len(null_columns)
-    elif rowids:
+    if rowids:
         placeholders = ",".join("?" for _ in rowids)
         con.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
-    return {"deleted": 0 if null_columns else len(rowids), "nulled": nulled}
+    return {"deleted": len(rowids), "nulled": 0}
 
 
 def _delete_files(files: list[dict[str, Any]], data_dir: Path) -> dict[str, Any]:
@@ -747,13 +707,7 @@ def run(
         with sqlite3.connect(db) as con:
             con.execute("BEGIN")
             for table, info in tables.items():
-                if table in _ADVISOR_POLICIES:
-                    raw_columns = tuple(info.get("raw_columns", ())) if info.get("status") == "planned" else ()
-                    table_result[table] = {
-                        "status": info.get("status"),
-                        **_execute_targets(con, table, info, null_columns=raw_columns),
-                    }
-                elif table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, _REPRO_TABLE):
+                if table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, _REPRO_TABLE):
                     table_result[table] = {
                         "status": info.get("status"),
                         **_execute_targets(con, table, info),

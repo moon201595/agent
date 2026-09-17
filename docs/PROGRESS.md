@@ -6071,6 +6071,7 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
     **`advisor_*` 표 6개 DROP 은 하지 않았다** — 운영 DB 스키마 변경이라 자동 실행 권한이 막혔고(규칙 3 의 취지대로 사람이 결정할 일),
     표에는 9/14 시험 실행 1회분 5행뿐이다. `db_retention`(`표 없음` 건너뜀)·`evaluation.term_adoption_latency`(`OperationalError` → n=0)는
     표가 없어도 돈다. 지우려면: `migrate.backup()` 으로 백업 → 6개 `DROP TABLE` → `PRAGMA integrity_check`. 전체 1,069 통과.
+    [후속, 같은 날 오후] 사용자 결정으로 **DROP 실행함** — 기록은 §8-159. 위 "하지 않았다"는 이 절을 쓸 당시의 사실이다.
 
 157. **갈래 목록이 태그만으로 나갔다 — Python 이 자료의 제목을 채운다 · 검색 전부 실패한 날은 메일을 안 보낸다(사용자 결정)** (2026-09-17).
     - 9/17 05:45 `team_vision` 메일의 ■ 갈래 7줄이 전부 `- [P1:T] [P1:T]` 였다(저장된 다이제스트로 확인; 다른 세 프로필 27줄은 제목이 있었다).
@@ -6092,9 +6093,37 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
       background-image CSS 제거.
     - 새 프로필 다이제스트 편수 기본 8 → 5 (`research_profile.DEFAULT_MAX_ITEMS`, 폼·`create_profile`·DDL DEFAULT 가 같은 값). 운영 프로필 넷은
       이미 5 였다(DB 확인). DDL DEFAULT 변경은 schema_guard 가 열 이름만 비교하므로 마이그레이션 대상이 아니다.
-    - 테스트 2(`test_ui_helpers`): 내비 블록에 명시적 재실행이 다시 들어오거나 클릭이 페이지를 안 바꾸면 실패 / 기본 편수 상수가 갈리면 실패. 전체 1,073 green.
+    - 테스트 2(`test_ui_helpers`): 내비 블록에 명시적 재실행이 다시 들어오거나 클릭이 페이지를 안 바꾸면 실패 / 기본 편수 상수가 갈리면 실패. 전체 1,073 green(당시; §8-159 뒤 1,075).
     - 함정: 켜 둔 서버가 `review_app.py` 변경은 다시 읽었지만 import 된 `research_profile` 은 옛 모듈이라 `DEFAULT_MAX_ITEMS` AttributeError 가
       화면에 떴다(사용자 스크린샷). 상수를 다른 모듈에 추가했으면 서버를 재시작한다. 사이드바 제목 1.15 → 1.5rem(내비 1.1rem 보다 크게).
+159. **Codex 구조 정리 사후 검토(§8-151~158) 반영** (2026-09-17). 보고서 `data/codex_research_2026-09-16/refactor_review.md`(항목 8개 + 우선순위).
+    Codex 잡이 read-only 샌드박스로 떠서 파일 저장이 두 번 막혔고("읽기 전용 검토"라는 문구가 샌드박스 선택까지 바꿨다), 같은 스레드에
+    전문을 응답으로 내게 해 Claude 가 옮겨 저장했다 — 다음부터 검토 위임은 "코드는 안 고치되 보고서 파일 하나는 쓴다"고 적는다.
+    - **반영** — #6(높음) `scripts/morning_report.py` 가 `run_daily_scan.sh` 에서 매일 돌면서 어느 테스트도 import 안 했다 → `test_morning_report.py`
+      (임시 로그·DB 로 main() 스모크 2개, 네트워크 없음). #7 `fill_tag_only_bullets` 가 `- [P1:A] [P2:A]` 처럼 두 논문 태그 줄에 P1 제목을 붙이던 것 →
+      한 논문 태그만일 때 채우고 섞인 줄은 citation_audit 로 넘긴다(테스트 확장). #5 DROP 뒤 남은 `advisor_*` 참조 — `db_retention` 의 원문 NULL 정책
+      (`_ADVISOR_POLICIES`·`ADVISOR_RAW_DAYS`·`_execute_targets` NULL 분기)과 그 테스트 삭제, `evaluation` 의 제안기 지표 셋(용어 반영 지연·제안 효율·
+      운영 비용)은 "advisor tables absent" 만 돌려주던 것을 **미측정 목록**으로 옮겼다(0 으로 채우지 않는다). `gate_decisions` 는 profile_impact 소유라 둔다.
+    - **반영 안 함(근거)** — #2 `hybrid_search` 가 `summarize_engine.ENV` 로 값을 읽는 것: 자기 별칭 `ENV` 로 바꿔 봤더니 `test_embedding_key_rotation`
+      4개가 깨졌다 — 그 테스트가 `engine.ENV` 를 **통째로 교체**하므로 키 이름(`gemini_key_names`, engine.ENV)과 값 조회가 같은 dict 여야 한다. 되돌리고
+      주석으로 이유를 박았다. #4 `paper_key` 통일이 "동작 불변"이 아니라는 지적: §8-156 이 이미 DOI 대소문자·공백·`pdf-` 합성 ID 를 의도된 개선으로
+      적어 두었고 제목 fallback 충돌은 옛 자체 키(`title.lower()`)에도 있던 것이라 문안·코드 그대로. #8 기존 DB 의 `max_items` 열 DEFAULT 는 8 로 남는다는
+      지적: 맞지만 운영 코드의 INSERT 는 전부 `max_items` 를 명시한다(`research_profile.py:386`, 생략 INSERT 는 테스트 픽스처뿐) — 마이그레이션 없음.
+      #1·#3 은 현 구조 유지에 동의.
+    - 실패 출력에서 배운 것: `test_embedding_key_rotation` 이 실제 `config.ENV` 를 만나면 KeyError 메시지에 **키 값**이 찍힌다(가짜 클라이언트가 값으로
+      응답을 찾는다). 파일에는 안 남았지만 로그로 새는 자리다 — 미수정, 다음 정리 때 이름만 찍게 바꿀 것.
+    - **`advisor_*` 표 6개 DROP 기록**(§8-156 의 "하지 않았다" 이후, 사용자 결정): `migrate.backup()` → `data/backups/papers_2026-09-17T051957.616803Z_pre_migration.db`
+      → `DROP TABLE` 6개 → `PRAGMA integrity_check` ok. 15:40 재확인: 운영 DB 에 `advisor_%` 표 없음, integrity ok. 기록을 빠뜨린 채 §8-157 을 썼다.
+    - **Codex 2차 검토**(`refactor_review_round2.md`, 쓰기 허용으로 띄움) — "지금은 커밋하면 안 된다"가 결론이었고 맞았다:
+      (1) 위 #5 정리에서 `db_retention._plan_impl` 의 대체 경로 두 줄(DB 없음·DB 읽기 실패)에 지운 `_ADVISOR_POLICIES` 가 남아 **NameError** —
+      전체 1,074 가 green 인 채였다(어느 테스트도 그 경로를 안 밟음; Codex 가 `plan()` 을 없는 DB 로 실행해 잡음). 고치고
+      `test_plan_survives_missing_db_and_read_failure` 추가. (2) `test_embedding_key_rotation._FakeClient` 가 모르는 키를 dict 색인해 KeyError 메시지에
+      **키 값**을 싣던 것 → 값 없는 AssertionError. (3) #7 주석의 "uncovered 로 넘긴다"는 코드보다 강한 주장(audit 는 태그 있는 줄을 cited 로 셀 수
+      있다) → "보정하지 않고 둔다"로. (4) #2 는 **보류로 확정** — `hybrid_search` 는 이름·값 모두 `summarize_engine` 을 읽는 호환 상태이고
+      `hybrid_search.ENV` 별칭은 선언만 있다. 이름·값을 `config.ENV` 하나로 모으고 fixture 도 그쪽을 patch 하는 통합은 별도 과제(미착수).
+      (5) Codex 가 묶음 6파일 실행에서 `test_backup_rotation_keeps_new_backup_and_latest_four` 1회 실패(단독은 통과)를 봤다 — Claude 가 같은 묶음
+      2회 돌려 재현 실패. 원인 미확인(후보: 백업 mtime·부수 파일). 열어 둔다.
+    - 테스트 1,075 green(파일 60). 커밋 전.
 
 ## 9. 폐기된 것
 
