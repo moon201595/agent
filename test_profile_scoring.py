@@ -492,7 +492,7 @@ def test_키워드_매처는_낱말_사이_제한된_구분자만_허용한다()
     """match-v2(§8-99). 이 테스트가 잡는 것: 통째 escape 로 돌아가 "(LLM) agents"·"vision--language
     models"·"MVTec-AD" 를 놓치는 것, 반대로 `.*`/`\\W+` 로 넓혀 사이에 다른 낱말이 낀 것까지 잡는 것."""
     import profile_scoring as ps
-    hit = lambda kw, text: bool(ps._keyword_pattern(kw).search(text))
+    hit = lambda kw, text: bool(ps.keyword_pattern(kw).search(text))
     assert hit("LLM agent", "large language model (LLM) agents can plan")
     assert hit("LLM agent", "an LLM-agent-driven pipeline")
     assert hit("vision-language model", "three vision--language models (VLMs)")
@@ -505,3 +505,14 @@ def test_키워드_매처는_낱말_사이_제한된_구분자만_허용한다()
     assert not hit("vision-language model", "vision, language, and model"), "쉼표는 허용 구분자가 아니다"
     assert not hit("digital twin", "digital and twin"), "'and' 는 낱말이다"
     assert not hit("AI", "domain")                                   # 단어 경계는 그대로
+
+
+def test_keyword_pattern_is_the_single_matcher_for_agent_evidence():
+    """2026-09-17: 주간 에이전트의 근거 확인(`agent_maintenance._in_text`)이 채점기의 공개 매처(`keyword_pattern`)를 쓴다.
+    망가뜨리면 실패하는 것: 에이전트가 자체 매처(substring 등)로 갈아타 "근거 있음"과 채점 "적중"이 어긋나는 것 —
+    `domain` 안의 `ai` 는 채점기가 안 잡으므로 에이전트도 잡으면 안 된다."""
+    import agent_maintenance as am
+    assert am._in_text("ai", "the domain of robotics") is False
+    assert am._in_text("event camera", "Event cameras for drones") is True
+    assert am._in_text("vision language model", "vision--language models") is True     # match-v2 구분자
+    assert not hasattr(profile_scoring, "_keyword_pattern")

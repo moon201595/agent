@@ -231,18 +231,13 @@ ADDENDUM_MAX_WAIT = 120.0
 
 
 def load_env() -> dict:
-    env = dict(os.environ)
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env.setdefault(k.strip(), v.strip())
-    return env
+    """2026-09-17: 구현은 `config.load_env` 하나 — 여기 이름은 호출부·테스트 호환용."""
+    import config
+    return config.load_env(ENV_PATH)
 
 
-ENV = load_env()
+import config as _config
+ENV = _config.ENV          # 같은 dict 객체 — 테스트가 `summarize_engine.ENV` 를 monkeypatch 하면 config.ENV 도 같이 바뀐다
 
 
 def build_prompt(chunk_text: str, template: str) -> str:

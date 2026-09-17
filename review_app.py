@@ -24,6 +24,7 @@ import ops_dashboard
 import research_profile
 import run_profile_scan
 import server
+import textutil
 from ui_helpers import _relative_time, run_async
 
 APP_TITLE = "최신 연구 동향 모니터링 에이전트"
@@ -328,10 +329,7 @@ def _render_recipients(db_path, profile_id: str) -> None:
 _KIND_LABELS = {"core": "핵심 키워드", "s2_seed": "검색어", "target": "도메인", "exclude": "제외어"}
 
 
-def _h(value) -> str:
-    """unsafe_allow_html 에 넣는 동적 값은 전부 여기를 거친다 — 키워드·note 에 외부 논문 용어가 섞인다."""
-    import html
-    return html.escape(str(value), quote=True)
+_h = textutil.esc            # unsafe_allow_html 에 넣는 동적 값은 전부 여기를 거친다 — 키워드·note 에 외부 논문 용어가 섞인다
 _ORIGIN_SHORT = {"user": "사용자", "feedback": "반응", "agent": "에이전트", "advisor": "제안기", "rule": "규칙"}
 
 
@@ -558,7 +556,7 @@ def _render_reactions(db_path, pid: str) -> None:
 
 
 def _render_history(db_path, pid: str) -> None:
-        hist = ops_dashboard.revision_history(db_path, pid)
+    hist = ops_dashboard.revision_history(db_path, pid)
     current = hist[0]["revision"] if hist else 0
     for h in hist:
         st.divider()
