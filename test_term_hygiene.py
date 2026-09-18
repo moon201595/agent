@@ -138,3 +138,13 @@ def test_재생_픽스처_before_after_가_기록과_같다():
     assert "computational overhead" in allc                         # 검토 의견대로 일단 유지
     assert "data" not in H.EDGE_STOP and "time" not in H.EDGE_STOP and "times" not in H.EDGE_STOP
     assert "analysis" in H.EDGE_STOP                                  # 제거 시 `analysis reveals`가 상위에 올라온다
+
+
+def test_project_page_is_boilerplate_but_technical_terms_survive():
+    """이 테스트가 잡는 것: `project page` 같은 링크 딱지를 용어로 올리는 것(2026-09-18 실제 메일에 나갔다) ·
+    그것을 막겠다고 `ground truth`·`inference time` 같은 진짜 기술 용어까지 함께 죽이는 것."""
+    import term_hygiene as th
+    assert th.reject_reason(["project", "page"]) == "boilerplate_phrase"
+    assert th.reject_reason(["project", "website"]) == "boilerplate_phrase"
+    assert th.reject_reason(["ground", "truth"]) is None
+    assert th.reject_reason(["inference", "time"]) is None
