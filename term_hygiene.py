@@ -79,6 +79,10 @@ BOILERPLATE_PHRASES: tuple[tuple[str, ...], ...] = (
     ("previous", "work"), ("prior", "work"), ("related", "work"), ("future", "work"), ("this", "work"), ("our", "work"),
     ("further", "research"), ("future", "research"),
     ("systematic", "review"), ("percentage", "point"),
+    # 2026-09-18 실측: 첫 7일 창 메일에서 `project page` 가 team_ai_advance "자주 나온 말" 4위로 올라왔다.
+    # 논문이 본문 끝에 "project page: https://…" 를 적어 생긴 링크 딱지이지 연구 개념이 아니다.
+    # 같은 실행에서 함께 올라온 `ground truth`·`inference time` 은 실제 기술 용어라 넣지 않는다(과잉 필터 금지).
+    ("project", "page"), ("project", "website"),
     ("order", "of", "magnitude"), ("paving", "the", "way"), ("pave", "the", "way"),
 )
 
