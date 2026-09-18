@@ -30,13 +30,14 @@ DEFAULT_EVAL_DB = ROOT / "data" / "evaluation.db"
 
 def owners(scope: str = "operational") -> list[tuple[str, object]]:
     """scope: operational(운영 DB) | evaluation(평가 DB — 다른 파일) | all."""
-    import agent_maintenance, code_ladder, db_retention, evaluation, evidence_state, feedback_links, feedback_weights, mail_ledger, profile_impact, research_profile, shadow_search, storage
+    import agent_maintenance, code_ladder, db_retention, evaluation, evidence_state, feedback_links, feedback_weights, mail_ledger, narrative_store, profile_impact, research_profile, shadow_search, storage
     op = [("storage", storage._ddl), ("research_profile", research_profile._ddl),
           ("profile_impact", profile_impact._ddl),
           ("evidence_state", evidence_state._ddl), ("shadow_search", shadow_search._ddl),
           ("feedback_links", feedback_links._ddl), ("feedback_weights", feedback_weights._ddl),
           ("agent_maintenance", agent_maintenance._ddl), ("db_retention", db_retention._ddl),
-          ("mail_ledger", mail_ledger._ddl), ("code_ladder", code_ladder._ddl)]
+          ("mail_ledger", mail_ledger._ddl), ("code_ladder", code_ladder._ddl),
+          ("narrative_store", narrative_store._ddl)]
     ev = [("evaluation", evaluation._ddl)]
     return {"operational": op, "evaluation": ev, "all": op + ev}[scope]
 

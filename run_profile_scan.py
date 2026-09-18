@@ -378,10 +378,21 @@ async def scan_and_digest(
             if reserve:
                 result["reserve_terms"] = reserve
                 print(f"  [동향] 자리 밖 후보 {reserve['count']}편에서 용어 {len(reserve['terms'])}개")
+            # 지난 5일치 **동향 서술**을 맥락으로 준다(2026-09-18 사용자 결정 — 논문을 다시 읽히지 않는다).
+            try:
+                import narrative_store
+                past = narrative_store.recent(db_path, profile_id, narrative_store.DAILY,
+                                              days=5, before=narrative_store.reader_date())
+            except Exception as e:  # noqa: BLE001 — 지난 글을 못 읽어도 오늘 글은 쓴다
+                past = []
+                print(f"  [동향] 지난 서술 조회 실패(무시): {type(e).__name__}")
+            if past:
+                print(f"  [동향] 지난 서술 {len(past)}일치를 맥락으로 넣는다 ({past[-1]['reader_date']}~{past[0]['reader_date']})")
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
-                                                 movement=movement)
+                                                 movement=movement, past=past)
             if story:
-                text, ungrounded, enriched = story
+                text, ungrounded, enriched, engine = story
+                result["narrative_engine"] = engine
                 result["narrative"] = (text, ungrounded)
                 # 라벨이 "무엇을 보고 썼는지"를 말하려면 이 수가 필요하다(규칙 8).
                 result["narrative_summaries"] = enriched
@@ -389,6 +400,14 @@ async def scan_and_digest(
                 result["citation_audit"] = trend_report.citation_audit(text, corpus)
                 result["evidence_catalog"] = trend_report.evidence_catalog(shown, excerpts)
                 print(f"  [동향] 오늘의 서술을 붙였다 (원문 요약 {enriched}편 반영)")
+                # 쌓아 둔다 — 내일 서술의 맥락이 되고, 나중에 "그때 뭐라고 했나"를 다시 읽을 수 있다(§8-162).
+                try:
+                    narrative_store.save(db_path, profile_id, narrative_store.DAILY, text,
+                                         scan_id=result.get("scan_id"), engine=result.get("narrative_engine"),
+                                         audit=result.get("citation_audit"),
+                                         papers_seen=len(shown), window_days=1)
+                except Exception as e:  # noqa: BLE001 — 보관 실패가 메일을 막지 않는다
+                    print(f"  [동향] 서술 보관 실패(무시): {type(e).__name__}")
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
 
@@ -407,6 +426,12 @@ async def scan_and_digest(
         try:
             result["weekly_review"] = await trend_report.build(db_path, profile, client=client)
             print("  [동향] 주간 리뷰를 다이제스트에 붙였다")
+            try:
+                import narrative_store
+                narrative_store.save(db_path, profile_id, narrative_store.WEEKLY,
+                                     result["weekly_review"], scan_id=result.get("scan_id"), window_days=7)
+            except Exception as e:  # noqa: BLE001
+                print(f"  [동향] 주간 리뷰 보관 실패(무시): {type(e).__name__}")
         except Exception as e:  # noqa: BLE001
             print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
 

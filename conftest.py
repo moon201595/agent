@@ -45,3 +45,26 @@ def _no_real_github_search(monkeypatch):
     # 검색 함수 자체를 검사하는 테스트는 이 이름으로 원본을 부른다(gh 경로 처리 회귀 — 2026-09-16).
     monkeypatch.setattr(code_finder, "_real_github_search", code_finder.github_search, raising=False)
     monkeypatch.setattr(code_finder, "github_search", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_codex_cli(monkeypatch):
+    """테스트가 구독 CLI(Codex)를 실제로 부르지 않게 한다.
+
+    2026-09-18 실측: 동향 서술 엔진을 Codex 우선으로 바꾼 직후 전체 pytest 가 **진짜 codex 를 호출했다**
+    (로그에 `[동향] 서술 엔진 codex (574자)`). 옛 경로(`summarize_engine`)만 가짜로 덮던 테스트들이
+    새 경로를 안 덮었기 때문이다. 사용 한도를 테스트가 태우고 결과가 실행마다 달라진다.
+
+    막는 자리는 **CLI 탐색**이다 — `codex` 를 못 찾은 것으로 만들면 `narrative_engine._codex` 가
+    조용히 다음 엔진으로 넘어간다(설치 안 된 컴퓨터와 같은 경로). Codex 경로 자체를 보는 테스트는
+    `shutil.which` 를 자기 가짜로 다시 덮으므로(테스트 픽스처가 autouse 뒤에 걸린다) 영향받지 않는다.
+    다른 실행 파일 탐색(docker 등)은 그대로 통과시킨다."""
+    import shutil
+
+    real_which = shutil.which
+
+    def which(cmd, *args, **kwargs):
+        if cmd == "codex":
+            return None
+        return real_which(cmd, *args, **kwargs)
+    monkeypatch.setattr(shutil, "which", which)
