@@ -127,6 +127,62 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
     return [(g, now[g], prev.get(g, 0)) for g in ranked[:top_n]]
 
 
+def window_movement(db: Path, profile: dict, days: int = 7,
+                    end: datetime | None = None,
+                    top_keywords: int = 8, top_terms: int = 6) -> dict | None:
+    """최근 `days` 일과 그 직전 같은 길이를 견준다. 편수는 전부 Python 이 센다(규칙 2).
+
+    왜 필요한가(2026-09-18 사용자 지적): 매일 메일의 동향 서술은 **그날 실린 5편**만 보고 쓴다 —
+    "오늘의 스냅숏"이지 흐름이 아니다. 기간 비교는 월요일 주간 리뷰(`format_report`)에만 있었고
+    그건 9/21 이 첫 발송이라 여태 한 번도 나간 적이 없다. 같은 셈을 매일 붙일 작은 판으로 뺐다.
+
+    **직전 구간에 관측이 없으면 증감을 만들어내지 않는다.** 2026-09-18 실측: team_robot·team_vision 은
+    수집 이력이 9/16 하루, team_agent 는 9/15~18 나흘뿐이라 직전 7일이 통째로 비어 있다. 그대로 빼면
+    모든 키워드가 0 에서 솟은 것처럼 보인다 — `comparable` 이 그 자리를 막는다(규칙 7).
+
+    반환: {"days", "window", "previous", "papers", "days_covered", "comparable",
+           "keywords": [(키워드, 이번, 직전)], "terms": [(용어, 이번, 직전)]}
+    관측이 아예 없으면 None.
+    """
+    end = end or datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    previous = start - timedelta(days=days)
+    this_rows = observed_rows(db, profile, start, end)
+    prev_rows = observed_rows(db, profile, previous, start)
+    if not this_rows:
+        return None
+
+    def covered(rows: list[dict]) -> int:
+        """관측이 실제로 있던 날 수 — 창 길이가 아니라 이것이 표본의 두께다."""
+        return len({(r.get("first_seen") or "")[:10] for r in rows if r.get("first_seen")})
+
+    days_now, days_prev = covered(this_rows), covered(prev_rows)
+    comparable = days_prev > 0
+    now_c = keyword_counts(this_rows, profile)
+    prev_c = keyword_counts(prev_rows, profile) if comparable else Counter()
+
+    if comparable:
+        # 움직인 것부터 — 늘어난 쪽과 줄어든 쪽을 함께 보여 준다. 증가만 보여 주면 흐름이 아니라 광고다.
+        movers = [(kw, now_c.get(kw, 0), prev_c.get(kw, 0))
+                  for kw in set(now_c) | set(prev_c)
+                  if abs(now_c.get(kw, 0) - prev_c.get(kw, 0)) >= 1]
+        movers.sort(key=lambda t: (-abs(t[1] - t[2]), -t[1], t[0]))
+        keywords = movers[:top_keywords]
+    else:
+        keywords = [(kw, n, 0) for kw, n in now_c.most_common(top_keywords)]
+
+    terms = emerging_terms(this_rows, profile, prev_rows if comparable else None,
+                           top_n=top_terms)
+    return {"days": days,
+            "window": (start.isoformat(), end.isoformat()),
+            "previous": (previous.isoformat(), start.isoformat()),
+            "papers": (len(this_rows), len(prev_rows)),
+            "days_covered": (days_now, days_prev),
+            "comparable": comparable,
+            "keywords": keywords,
+            "terms": terms}
+
+
 # ---------------------------------------------------------------- 서술 (2026-09-03)
 #
 # "규칙 기반으로 어떻게 동향을 보고하나"는 지적을 받고 넣었다. 맞는 말이다 —
@@ -185,7 +241,7 @@ NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
 # 이제 **논문 목록은 한 줄씩으로 줄었으므로 종합이 본체**다. 사용자 지적:
 # "논문별로는 간단하게, 맨 아래에 전체적인 동향 정리를 해줘야지."
 _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 제목과 초록이다.
-최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.
+최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}
 일부 논문에는 `[원문 요약 · 결과]` 줄이 붙어 있다 — 그건 초록이 아니라
 **수치 대조와 실측 읽기 범위 조건을 충족한 요약의 결과 발췌**다.
 이 조건은 주장의 의미적 정확성을 보장하지 않는다. 붙어 있으면 그쪽을 우선해서 읽는다.
@@ -492,9 +548,27 @@ def narrative_topics(profile: dict, rows: list | None = None, limit: int = 12) -
     return ", ".join(ranked[:limit])
 
 
+def _movement_context(movement: dict | None) -> str:
+    """최근 창에서 늘어난 말을 서술에 **맥락으로만** 준다.
+
+    편수·증감 수치는 넣지 않는다 — 모델이 그 숫자를 문장에 옮기면 우리가 센 값인지 지어낸 값인지
+    독자가 못 가른다. 수치는 Python 이 메일의 별도 절에 그대로 싣는다(규칙 2·7).
+    비교 불가한 구간(직전 창에 관측 없음)에서는 "늘었다"는 말 자체가 성립하지 않아 맥락을 주지 않는다.
+    """
+    if not movement or not movement.get("comparable"):
+        return ""
+    rising = [t for t, now, prev in (movement.get("terms") or []) if now > prev][:6]
+    if not rising:
+        return ""
+    return ("\n최근 " + str(movement.get("days", 7)) + "일 집계에서 직전 같은 기간보다 늘어난 말: "
+            + ", ".join(rising)
+            + "\n(우리가 DB 에서 센 것이다. 오늘 논문과 실제로 이어질 때만 언급하고, 편수나 증감 수치를 쓰지 않는다.)")
+
+
 async def narrative(client: httpx.AsyncClient, rows: list,
                     profile: dict | None = None,
                     summaries: dict[str, str] | None = None,
+                    movement: dict | None = None,
                     ) -> tuple[str, list[str], int] | None:
     """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들, 요약 붙인 편수).
 
@@ -511,7 +585,8 @@ async def narrative(client: httpx.AsyncClient, rows: list,
         return None      # 표본이 이보다 적으면 "흐름"이라 부를 게 없다
 
     topics = narrative_topics(profile or {}, rows) or "(지정 없음)"
-    prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics)
+    prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics,
+                                      movement=_movement_context(movement))
     try:
         text = await se._call_with_rate_limit_retry(
             lambda: se._post_gemini(client, prompt), "Gemini(동향 서술)")
