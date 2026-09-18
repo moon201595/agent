@@ -241,7 +241,7 @@ NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
 # 이제 **논문 목록은 한 줄씩으로 줄었으므로 종합이 본체**다. 사용자 지적:
 # "논문별로는 간단하게, 맨 아래에 전체적인 동향 정리를 해줘야지."
 _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 제목과 초록이다.
-최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}
+최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}{history}
 일부 논문에는 `[원문 요약 · 결과]` 줄이 붙어 있다 — 그건 초록이 아니라
 **수치 대조와 실측 읽기 범위 조건을 충족한 요약의 결과 발췌**다.
 이 조건은 주장의 의미적 정확성을 보장하지 않는다. 붙어 있으면 그쪽을 우선해서 읽는다.
@@ -548,6 +548,34 @@ def narrative_topics(profile: dict, rows: list | None = None, limit: int = 12) -
     return ", ".join(ranked[:limit])
 
 
+def _history_context(past: list[dict] | None, max_chars: int = 1200) -> str:
+    """지난 며칠 동안 **우리가 뭐라고 썼는지**를 오늘 서술에 준다.
+
+    사용자 결정(2026-09-18): "이미 동향이 논문을 보고 적은 건데 뭐하러 또 논문을 봐." 그래서 창을 넓힐 때
+    일주일치 초록을 다시 넣지 않고 **지난 서술만** 넣는다. 그 글들이 이미 그날 논문을 읽고 쓴 요약이다.
+
+    각 날짜의 글은 앞부분만 자른다 — 다섯 날치를 통째로 넣으면 오늘 논문보다 지난 글이 길어져
+    모델이 어제 얘기를 다시 쓴다. 자른 사실은 프롬프트에 적어 "그게 전부"라고 오해하지 않게 한다.
+    """
+    if not past:
+        return ""
+    blocks = []
+    for row in past:
+        body = (row.get("body") or "").strip()
+        if not body:
+            continue
+        clipped = body[:max_chars]
+        tail = " …(이 뒤는 잘랐다)" if len(body) > max_chars else ""
+        blocks.append(f"[{row.get('reader_date')}]\n{clipped}{tail}")
+    if not blocks:
+        return ""
+    return ("\n\n--- 지난 며칠 우리가 쓴 동향 정리(최신순) ---\n"
+            + "\n\n".join(blocks)
+            + "\n--- 여기까지가 지난 글이다 ---\n"
+            "지난 글은 **맥락**이다. 오늘 글에서 그대로 되풀이하지 말고, 오늘 논문이 그 흐름을 잇는지·"
+            "갈라지는지·처음 보는 것인지를 말한다. 지난 글에 있던 근거 ID 는 오늘 자료의 것이 아니므로 쓰지 않는다.\n")
+
+
 def _movement_context(movement: dict | None) -> str:
     """최근 창에서 늘어난 말을 서술에 **맥락으로만** 준다.
 
@@ -569,8 +597,9 @@ async def narrative(client: httpx.AsyncClient, rows: list,
                     profile: dict | None = None,
                     summaries: dict[str, str] | None = None,
                     movement: dict | None = None,
-                    ) -> tuple[str, list[str], int] | None:
-    """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들, 요약 붙인 편수).
+                    past: list[dict] | None = None,
+                    ) -> tuple[str, list[str], int, str] | None:
+    """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들, 요약 붙인 편수, 쓴 엔진).
 
     summaries 를 주면 그 논문에 한해 **원문 요약의 결과 절**까지 보고 쓴다
     (2026-09-08). 세 번째 반환값은 실제로 요약이 붙은 편수다 — 배달 쪽 라벨이
@@ -578,7 +607,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
 
     실패하면 None — 셈 절은 그대로 나간다. 서술은 부가 정보다.
     """
-    import summarize_engine as se
+    import narrative_engine
 
     corpus, used, enriched = _narrative_corpus(rows, summaries)
     if used < 3:
@@ -586,23 +615,19 @@ async def narrative(client: httpx.AsyncClient, rows: list,
 
     topics = narrative_topics(profile or {}, rows) or "(지정 없음)"
     prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics,
-                                      movement=_movement_context(movement))
-    try:
-        text = await se._call_with_rate_limit_retry(
-            lambda: se._post_gemini(client, prompt), "Gemini(동향 서술)")
-    except Exception:
-        try:
-            text = await se._call_with_rate_limit_retry(
-                lambda: se._post_groq(client, prompt), "Groq(동향 서술)")
-        except Exception:
-            return None
-    text = (text or "").strip()
-    if not text:
+                                      movement=_movement_context(movement),
+                                      history=_history_context(past))
+    # 2026-09-18 사용자 결정: 서술은 구독 CLI(Codex)가 먼저 쓰고, 실패하면 Gemini·Groq 로 내려간다.
+    # 입력이 오늘 논문 + 지난 5일 서술로 넓어져 종합 추론이 필요해졌기 때문이다. 폴백은 규칙 6 —
+    # 2026-09-17 에 Codex 가 사용 한도로 세 번 연속 실패한 적이 있어 선택이 아니라 필수다.
+    produced = await narrative_engine.generate(client, prompt, label="동향 서술")
+    if not produced:
         return None
+    text, engine = produced
     text, filled = fill_tag_only_bullets(text, corpus)
     if filled:
         print(f"  [동향] 갈래 목록 {filled}줄이 근거 ID 만이라 자료의 제목을 채웠다")
-    return text, ungrounded_numbers(text, corpus), enriched
+    return text, ungrounded_numbers(text, corpus), enriched, engine
 
 
 _TAG_RE = r"\[P\d+:(?:[ART]|S\d+)\]"

@@ -388,6 +388,9 @@ async def scan_profile(
             seed_attempts=(s2_result or {}).get("per_keyword") if s2_keywords else [],
             observations=n)
         print(f"  [관측] {n}편을 스캔 {scan_id} 에 묶어 남겼다")
+        # 이 실행의 관측 묶음 id 를 결과에 실어 둔다 — 동향 서술 보관이 "어느 스캔의 글인지"를
+        # 가리키려면 필요하다(2026-09-18, §8-162). 없으면 나중에 글과 관측을 못 잇는다.
+        result["scan_id"] = scan_id
         # 건강 지표 입력을 **지금** 얼린다(§8-96): anchor/auto 는 이 시점 이력으로, 반사실
         # 상위 K 는 이 시점 채점 코드로. 나중에 세면 둘 다 그 뒤 이력·코드에 따라 흔들린다.
         # 관측 저장이 확정된 **뒤** 별도 try — 얼리기 실패가 "관측 저장 실패"로 둔갑하면
