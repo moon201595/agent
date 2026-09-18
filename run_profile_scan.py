@@ -356,7 +356,30 @@ async def scan_and_digest(
                     paper["_sota_claims"] = claims
                     known = {e["id"] for e in paper["_evidence"]}
                     paper["_evidence"] = paper["_evidence"] + [e for e in sota_claims.evidence_packets(claims) if e["id"] not in known]
-            story = await trend_report.narrative(client, shown, profile, summaries=excerpts)
+            # 최근 7일 창 — 서술 앞에서 먼저 센다. 서술에는 늘어난 "말"만 맥락으로 주고(수치는 안 준다),
+            # 수치 자체는 Python 이 메일의 별도 절에 싣는다(2026-09-18, 사용자 요청 ①).
+            try:
+                movement = trend_report.window_movement(db_path, profile)
+            except Exception as e:  # noqa: BLE001 — 창 집계가 실패해도 서술·메일은 나간다
+                movement = None
+                print(f"  [동향] 최근 창 집계 실패(무시): {type(e).__name__}")
+            if movement:
+                result["trend_window"] = movement
+                cmp_label = "직전 7일 대비" if movement["comparable"] else "직전 구간 관측 없음 — 비교 안 함"
+                print(f"  [동향] 최근 {movement['days']}일 {movement['papers'][0]}편 ({cmp_label})")
+            # 자리 밖으로 밀린 후보(reserve)를 버리지 않고 집계만이라도 싣는다(2026-09-18, 사용자 요청 ②).
+            # 관측은 이미 `scan_search` 가 저장했으므로 이 프로필의 최신 실행이 곧 이번 실행이다.
+            try:
+                import observation_signals
+                reserve = observation_signals.reserve_terms(db_path, profile_id)
+            except Exception as e:  # noqa: BLE001 — 집계가 실패해도 메일은 나간다
+                reserve = None
+                print(f"  [동향] 자리 밖 후보 집계 실패(무시): {type(e).__name__}")
+            if reserve:
+                result["reserve_terms"] = reserve
+                print(f"  [동향] 자리 밖 후보 {reserve['count']}편에서 용어 {len(reserve['terms'])}개")
+            story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
+                                                 movement=movement)
             if story:
                 text, ungrounded, enriched = story
                 result["narrative"] = (text, ungrounded)

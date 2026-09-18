@@ -1081,6 +1081,134 @@ def _narrative_section(scan_result: dict) -> list[str]:
     return lines
 
 
+def _window_html(scan_result: dict) -> str:
+    """최근 창 셈의 HTML 판. 값은 평문판(`_window_section`)과 같은 dict 하나에서 나온다 —
+    두 판이 갈라지면 같은 메일 안에서 숫자가 달라진다(§8-70 이 그 사고였다)."""
+    mv = scan_result.get("trend_window")
+    if not mv:
+        return _reserve_html(scan_result)
+    days = mv.get("days", 7)
+    now_n, prev_n = mv.get("papers", (0, 0))
+    d_now, d_prev = mv.get("days_covered", (0, 0))
+    comparable = bool(mv.get("comparable"))
+    if comparable:
+        head = (f"관련 논문 <b>{now_n}편</b> (직전 {days}일 {prev_n}편) · 관측일 {d_now}일 / 직전 {d_prev}일")
+        note = "우리가 DB 에서 센 값이다. 발표량 증감이 아니라 이 프로필이 발견한 편수다."
+    else:
+        head = f"관련 논문 <b>{now_n}편</b> · 관측일 {d_now}일"
+        note = f"직전 {days}일에는 관측이 없어 증감을 내지 않았다 — 수집을 시작한 지 얼마 안 됐다."
+    rows = ""
+    for kw, now, prev in (mv.get("keywords") or []):
+        if comparable:
+            delta = now - prev
+            colour = _INK if delta >= 0 else _MUTED
+            sign = "+" if delta > 0 else ""
+            cell = (f'<span style="color:{colour};">{now}</span> '
+                    f'<span style="color:{_MUTED};">← {prev} ({sign}{delta})</span>')
+        else:
+            cell = f'<span style="color:{_INK};">{now}편</span>'
+        rows += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
+                 f'<span style="color:{_INK};">{_esc(kw)}</span> · {cell}</div>')
+    terms = ""
+    for term, now, prev in (mv.get("terms") or []):
+        tail = f' <span style="color:{_MUTED};">(직전 {prev})</span>' if comparable else ""
+        terms += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
+                  f'<span style="color:{_INK};">{_esc(term)}</span> · {now}편{tail}</div>')
+    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+           f'font-weight:600;margin:18px 0 4px;">최근 {days}일 흐름</p>'
+           f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0 0 2px;">{head}</p>'
+           f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0 0 6px;">{_esc(note)}</p>')
+    if rows:
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:6px 0 2px;">'
+                f'키워드{" (이번 ← 직전)" if comparable else " (이번 창 편수)"}</div>{rows}')
+    if terms:
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
+                f'핵심 키워드 밖인데 자주 나온 말</div>{terms}')
+    return out + _reserve_html(scan_result)
+
+
+def _reserve_html(scan_result: dict) -> str:
+    """자리 밖 후보 집계의 HTML 판. 값은 평문판과 같은 dict 하나에서 나온다."""
+    rv = scan_result.get("reserve_terms")
+    if not rv or not rv.get("count"):
+        return ""
+    body = ""
+    for term, n in (rv.get("terms") or []):
+        body += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
+                 f'<span style="color:{_INK};">{_esc(term)}</span> · {n}편</div>')
+    if not body:
+        body = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:2px 0;padding-left:10px;">여러 편에 겹치는 말이 없었다</div>')
+    return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
+            f'자리에 못 든 후보 <b>{rv["count"]}편</b>에서 자주 나온 말</div>{body}'
+            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
+            f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
+
+
+def _window_section(scan_result: dict) -> list[str]:
+    """최근 7일 창의 셈 — 서술(해석)과 **다른 절**로 둔다.
+
+    2026-09-18 사용자 지적: 매일 메일의 동향은 그날 5편만 보고 쓴 스냅숏이라 "무엇이 늘었나"가 없다.
+    수치는 `trend_report.window_movement` 가 DB 에서 세고 여기는 그리기만 한다. 직전 구간에 관측이
+    없으면 증감을 만들지 않고 그 사실을 적는다 — 수집을 막 시작한 프로필에서 0→N 이 급증으로 보이면 안 된다.
+    """
+    mv = scan_result.get("trend_window")
+    reserve = _reserve_lines(scan_result)
+    if not mv:
+        # 창 집계가 없어도 자리 밖 후보는 따로 싣는다 — 둘은 다른 자료에서 나온다
+        # (창은 search_candidates, 자리 밖은 candidate_observations).
+        return ["", "─" * 62, "■ 이번 실행에서 자리에 못 든 후보"] + reserve if reserve else []
+    days = mv.get("days", 7)
+    now_n, prev_n = mv.get("papers", (0, 0))
+    d_now, d_prev = mv.get("days_covered", (0, 0))
+    lines = ["", "─" * 62, f"■ 최근 {days}일 흐름"]
+    if mv.get("comparable"):
+        lines.append(f"   관련 논문 {now_n}편 (직전 {days}일 {prev_n}편) · 관측일 {d_now}일 / 직전 {d_prev}일")
+        lines.append("   우리가 DB 에서 센 값이다. 발표량 증감이 아니라 이 프로필이 발견한 편수다.")
+    else:
+        lines.append(f"   관련 논문 {now_n}편 · 관측일 {d_now}일")
+        lines.append(f"   직전 {days}일에는 관측이 없어 증감을 내지 않았다 — 수집을 시작한 지 얼마 안 됐다.")
+    keywords = mv.get("keywords") or []
+    if keywords:
+        lines.append("")
+        lines.append("   ▸ 키워드" + (" (이번 → 직전)" if mv.get("comparable") else " (이번 창 편수)"))
+        for kw, now, prev in keywords:
+            if mv.get("comparable"):
+                delta = now - prev
+                sign = "+" if delta > 0 else ""
+                lines.append(f"      {kw} : {now} → 직전 {prev} ({sign}{delta})")
+            else:
+                lines.append(f"      {kw} : {now}편")
+    terms = mv.get("terms") or []
+    if terms:
+        lines.append("")
+        lines.append("   ▸ 핵심 키워드 밖인데 자주 나온 말")
+        for term, now, prev in terms:
+            tail = f" (직전 {prev})" if mv.get("comparable") else ""
+            lines.append(f"      {term} : {now}편{tail}")
+    lines += reserve
+    return lines
+
+
+def _reserve_lines(scan_result: dict) -> list[str]:
+    """오늘 순위에는 들었으나 자리가 없어 못 실린 후보의 집계(2026-09-18 사용자 요청 ②).
+
+    그전에는 이 논문들이 흔적 없이 사라졌다 — 2026-09-18 team_agent 실측으로 내용 5편·각주 8편 뒤에
+    reserve 431편이 있었다. 제목을 다 싣는 건 메일이 못 버티므로 **무슨 말이 많았는지만** 남긴다.
+    """
+    rv = scan_result.get("reserve_terms")
+    if not rv or not rv.get("count"):
+        return []
+    lines = ["", f"   ▸ 자리에 못 든 후보 {rv['count']}편에서 자주 나온 말"]
+    if rv.get("terms"):
+        for term, n in rv["terms"]:
+            lines.append(f"      {term} : {n}편")
+    else:
+        lines.append("      (여러 편에 겹치는 말이 없었다)")
+    lines.append("      순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.")
+    return lines
+
+
 # 날짜는 받는 사람 시간대로 쓴다(2026-09-14, 외부 검토 A·D). 05:00 KST 실행은 UTC 로 전날 20:00 이라
 # 9/14 아침 메일이 "2026-09-13" 으로 나갔다 — 주간 리뷰 요일은 이미 KST(run_profile_scan.READER_TZ)였다.
 from time_policy import KST as _READER_TZ   # 2026-09-17: 시각 정책 통합
@@ -1135,6 +1263,7 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         lines += [outage, ""]
     if not empty:
         lines += _narrative_section(scan_result)
+        lines += _window_section(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -1921,6 +2050,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'{paras}{warn}{named}'
         )
 
+    body += _window_html(scan_result)
     body += details_body
     body += _agent_report_html(scan_result)
     body += _weekly_review_html(scan_result)

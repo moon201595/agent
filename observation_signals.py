@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import research_profile
+import term_hygiene
 
 
 def _rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dict]:
@@ -26,6 +27,54 @@ def _rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dic
             "SELECT * FROM candidate_observations WHERE profile_id=? "
             "AND observed_at >= ? AND observed_at < ? ORDER BY observed_at, scan_id, paper_key",
             (profile_id, start.isoformat(), end.isoformat()))]
+
+
+def reserve_terms(db: Path, profile_id: str, scan_id: str | None = None,
+                  min_papers: int = 3, top_n: int = 10) -> dict | None:
+    """실행 하나의 미배달 후보를 센다 — 관측이 없으면 미측정으로 남긴다."""
+    if not db.is_file():
+        return None
+    from contextlib import closing
+
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con:
+        if scan_id is None:
+            latest = con.execute(
+                "SELECT scan_id FROM scan_runs WHERE profile_id=? "
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1", (profile_id,)).fetchone()
+            if latest is None:
+                return None
+            scan_id = latest[0]
+        # 초록은 이전 실행의 실제 보유 행을 참조하므로 빈 초록으로 세면 용어가 사라진다.
+        rows = con.execute(
+            "SELECT o.title, COALESCE(o.abstract, holder.abstract, '') "
+            "FROM candidate_observations AS o "
+            "LEFT JOIN candidate_observations AS holder "
+            "ON holder.scan_id=o.abstract_ref AND holder.paper_key=o.paper_key "
+            "AND holder.profile_id=o.profile_id "
+            "WHERE o.profile_id=? AND o.scan_id=? AND o.outcome='reserve'",
+            (profile_id, scan_id)).fetchall()
+    if not rows:
+        return None
+    # get_profile 의 init_db 는 DDL 허용 환경에서 빠진 스키마를 만들 수 있다.
+    # 먼저 대조해 불완전한 DB 에서는 멈춘다 — 집계가 마이그레이션을 맡지 않는다.
+    import schema_guard
+    missing = schema_guard.missing_in(db, research_profile._ddl)
+    if missing:
+        raise schema_guard.SchemaOutOfDate("research_profile", missing)
+    profile = research_profile.get_profile(db, profile_id) or {}
+    known = {k.lower() for k in profile.get("core_topics", [])}
+    known.update(k.lower() for k in (profile.get("domain_hints") or []))
+    counts: Counter = Counter()
+    for title, abstract in rows:
+        counts.update(set(term_hygiene.ngrams(f"{title or ''}. {abstract}")))
+    candidates = {term for term, n in counts.items()
+                  if n >= min_papers and not term_hygiene.overlaps_known(term, known)}
+    # trend_report._subsumed 와 같은 토큰열 판정으로 부분 문자열 오인을 막는다.
+    terms = {term for term in candidates if not any(
+        term != other and term_hygiene.token_sequence_contains(other, term)
+        for other in candidates)}
+    ranked = sorted(terms, key=lambda term: (-counts[term], term))
+    return {"count": len(rows), "terms": [(term, counts[term]) for term in ranked[:top_n]]}
 
 
 def seed_yield(db: Path, profile_id: str, start: datetime, end: datetime) -> dict | None:

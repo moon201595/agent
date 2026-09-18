@@ -267,3 +267,145 @@ def test_관측_저장_실패는_스캔에_남고_배달을_막지_않는다(tmp
             "SELECT observations, observation_error, (SELECT count(*) FROM search_candidates) FROM scan_runs").fetchone()
     assert obs is None and "disk full" in err
     assert cand == 1, "후보(개체) 기록은 별도 try 라 살아남아야 한다"
+
+
+def _reserve_scan(db, texts, *, profile_id="p", started_at="2026-09-18T00:00:00+00:00",
+                  outcome="reserve"):
+    profile = rp.get_profile(db, profile_id)
+    scan = rp.begin_scan(db, profile_id, profile, started_at=started_at)
+    rows = []
+    for i, (title, abstract) in enumerate(texts):
+        row = _row(f"paper-{i}", "arxiv", title=title, outcome=outcome)
+        row["abstract"] = abstract
+        rows.append(row)
+    rp.record_observations(db, scan, profile_id, rows, core_signature="c", seed_signature="s")
+    return scan
+
+
+def test_reserve_terms_uses_shared_ngrams(tmp_path, monkeypatch):
+    """공용 ngrams 우회, 문장 경계 연결, 담화 구절 유입을 잡는다."""
+    import term_hygiene
+    db = _seed_db(tmp_path)
+    texts = [("Quantum", "Sensors. State estimation. In this paper.")] * 3
+    scan = _reserve_scan(db, texts)
+    original = term_hygiene.ngrams
+    calls = []
+
+    def tracked(text):
+        calls.append(text)
+        yield from original(text)
+
+    monkeypatch.setattr(term_hygiene, "ngrams", tracked)
+    assert sig.reserve_terms(db, "p", scan) == {
+        "count": 3, "terms": [("state estimation", 3)]}
+    assert calls == ["Quantum. Sensors. State estimation. In this paper."] * 3
+
+
+def test_reserve_terms_counts_each_paper_once(tmp_path):
+    """초록 안 반복을 편수로 중복 계산하거나 최소 편수 문턱을 무시하면 실패한다."""
+    db = _seed_db(tmp_path)
+    scan = _reserve_scan(db, [("", "Quantum sensing. Quantum sensing. Quantum sensing.")])
+    assert sig.reserve_terms(db, "p", scan, min_papers=1) == {
+        "count": 1, "terms": [("quantum sensing", 1)]}
+    assert sig.reserve_terms(db, "p", scan) == {"count": 1, "terms": []}
+
+
+def test_reserve_terms_excludes_known_topics_and_hints(tmp_path, monkeypatch):
+    """핵심어·domain_hints와의 양방향 정규화 겹침 제외를 없애면 실패한다."""
+    db = _seed_db(tmp_path)
+    rp.create_profile(db, "p", "이름", core_topics=["robot planning", "large language model"])
+    scan = _reserve_scan(db, [("", "Robot planning. Language models. Quantum sensing. State estimation.")] * 3)
+    original = rp.get_profile
+    calls = []
+
+    def with_hints(path, profile_id):
+        calls.append((path, profile_id))
+        return dict(original(path, profile_id), domain_hints=["quantum sensing"])
+
+    monkeypatch.setattr(rp, "get_profile", with_hints)
+    assert sig.reserve_terms(db, "p", scan) == {
+        "count": 3, "terms": [("state estimation", 3)]}
+    assert calls == [(db, "p")]
+
+
+def test_reserve_terms_no_observations_is_none(tmp_path):
+    """관측 없음을 0으로 채우거나 없는 DB 파일을 생성하면 실패한다."""
+    db = _seed_db(tmp_path)
+    assert sig.reserve_terms(db, "p") is None
+    assert sig.reserve_terms(db, "p", "missing") is None
+    empty_scan = _reserve_scan(db, [])
+    assert sig.reserve_terms(db, "p", empty_scan) is None
+    missing = tmp_path / "missing.db"
+    assert sig.reserve_terms(missing, "p") is None
+    assert not missing.exists()
+
+
+def test_reserve_terms_latest_scan_only(tmp_path):
+    """실행을 합치거나 삽입 순서로 최신을 고르거나 reserve 없는 최신 실행을 건너뛰면 실패한다."""
+    db = _seed_db(tmp_path)
+    latest = _reserve_scan(db, [("Quantum sensing", "")] * 3,
+                           started_at="2026-09-18T00:00:00+00:00")
+    old = _reserve_scan(db, [("State estimation", "")] * 4,
+                        started_at="2026-09-17T00:00:00+00:00")
+    assert sig.reserve_terms(db, "p") == sig.reserve_terms(db, "p", latest) == {
+        "count": 3, "terms": [("quantum sensing", 3)]}
+    assert sig.reserve_terms(db, "p", old) == {
+        "count": 4, "terms": [("state estimation", 4)]}
+    _reserve_scan(db, [("State estimation", "")] * 3,
+                  started_at="2026-09-19T00:00:00+00:00", outcome="content")
+    assert sig.reserve_terms(db, "p") is None
+
+
+def test_reserve_terms_filters_outcomes_and_profiles(tmp_path):
+    """content·title_only·dropped 또는 다른 프로필 관측이 분모·용어에 섞이면 실패한다."""
+    db = _seed_db(tmp_path)
+    scan = _reserve_scan(db, [("Quantum sensing", "")] * 3)
+    rows = [_row(f"other-{outcome}-{i}", "arxiv", title="State estimation", outcome=outcome)
+            for outcome in ("content", "title_only", "dropped") for i in range(3)]
+    rp.record_observations(db, scan, "p", rows, core_signature="c", seed_signature="s")
+    rp.create_profile(db, "other", "다른 프로필", core_topics=["target term"])
+    other = _reserve_scan(db, [("State estimation", "")] * 4, profile_id="other",
+                          started_at="2026-09-20T00:00:00+00:00")
+    assert sig.reserve_terms(db, "p") == {
+        "count": 3, "terms": [("quantum sensing", 3)]}
+    assert sig.reserve_terms(db, "p", other) is None
+
+
+def test_reserve_terms_restores_referenced_abstracts_readonly(tmp_path):
+    """이전 관측의 초록 참조를 놓치거나 조회가 DB 내용을 쓰면 실패한다."""
+    db = _seed_db(tmp_path)
+    texts = [("", "Quantum sensing.")] * 3
+    _reserve_scan(db, texts, started_at="2026-09-17T00:00:00+00:00", outcome="dropped")
+    scan = _reserve_scan(db, texts)
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM candidate_observations WHERE scan_id=? "
+                           "AND abstract IS NULL AND abstract_ref IS NOT NULL", (scan,)).fetchone()[0] == 3
+    before = db.read_bytes()
+    assert sig.reserve_terms(db, "p", scan) == {
+        "count": 3, "terms": [("quantum sensing", 3)]}
+    assert db.read_bytes() == before
+
+
+def test_reserve_terms_subsumption_sort_and_limit(tmp_path):
+    """짧은 조합 중복 제거, 편수·사전순 정렬, top_n 제한 중 하나를 깨면 실패한다."""
+    db = _seed_db(tmp_path)
+    texts = [("", "Quantum sensing. State estimation. Neural radiance fields.")] * 3
+    texts.append(("", "State estimation."))
+    scan = _reserve_scan(db, texts)
+    expected = [("state estimation", 4), ("neural radiance fields", 3), ("quantum sensing", 3)]
+    assert sig.reserve_terms(db, "p", scan) == {"count": 4, "terms": expected}
+    assert sig.reserve_terms(db, "p", scan, top_n=2) == {"count": 4, "terms": expected[:2]}
+
+
+def test_reserve_terms_does_not_migrate_profile_schema(tmp_path):
+    """get_profile의 초기화가 누락 테이블을 집계 중 생성하도록 두면 실패한다."""
+    import pytest
+    import schema_guard
+    db = _seed_db(tmp_path)
+    scan = _reserve_scan(db, [("Quantum sensing", "")] * 3)
+    with sqlite3.connect(db) as con:
+        con.execute("DROP TABLE profile_venues")
+    before = db.read_bytes()
+    with pytest.raises(schema_guard.SchemaOutOfDate):
+        sig.reserve_terms(db, "p", scan)
+    assert db.read_bytes() == before
