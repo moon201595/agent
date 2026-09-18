@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>9/14 피드백 6개 → 9/17 반영</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Feedback → Change · paper-harness</p>
+    <h1>9/14 피드백 6개 → 9/17 반영</h1>
+    <p class="sub">월요일 피드백 한 줄씩, 지금 어디에 어떻게 들어갔는지</p>
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="feedback-map-title feedback-map-desc">
+  <title id="feedback-map-title">9/14 피드백 6개 → 9/17 반영</title>
+  <desc id="feedback-map-desc">월요일에 받은 피드백 여섯 항목 각각이 이번 주에 어떤 기능·모듈로 구현됐는지 한 줄씩 짝지어 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<text x="40" y="36" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">9/14 (월) 피드백</text>
+<text x="512" y="36" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">9/17 (목) 지금</text>
+<rect x="40" y="56" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="56" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#2E75B6" stroke-width="1.2"/>
+<path d="M46 56.5 H496 V143.5 H46 A6 6 0 0 1 40 137.5 V62.5 A6 6 0 0 1 46 56.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="56" x2="496" y2="144" stroke="#D9E2F3" stroke-width="1"/>
+<rect x="497" y="57" width="742" height="86" rx="5" fill="#E9F0F8"/>
+<text x="56" y="80" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 01</text>
+<text x="56" y="110" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">사용자 경험 · 사용자 피드백으로 업데이트, UI</text>
+<text x="512" y="80" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="108" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 1클릭 반응 → 매일 가중치 자동 조정 · 운영 화면 개편</text>
+<text x="512" y="128" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">feedback_links · feedback_weights · review_app</text>
+<text x="1200" y="128" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="100.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="156" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="156" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 156.5 H496 V243.5 H46 A6 6 0 0 1 40 237.5 V162.5 A6 6 0 0 1 46 156.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="156" x2="496" y2="244" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="180" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 02</text>
+<text x="56" y="210" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 기준 ID 로 가중치 업데이트</text>
+<text x="512" y="180" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="208" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">발송 회차 id + 논문 P번호 토큰(서명) → 논문별 반응 → 키워드 가중치</text>
+<text x="512" y="228" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">feedback_tokens · mail_ledger · target ±0.1/day · revision</text>
+<text x="1200" y="228" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="200.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="256" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="256" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 256.5 H496 V343.5 H46 A6 6 0 0 1 40 337.5 V262.5 A6 6 0 0 1 46 256.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="256" x2="496" y2="344" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="280" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 03</text>
+<text x="56" y="310" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">규칙만 설정, 하네스</text>
+<text x="512" y="280" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">규칙 15개 → 최소 규칙 7개, 나머지는 코드가 강제</text>
+<text x="512" y="328" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">CLAUDE.md · agent_maintenance.validate</text>
+<text x="1200" y="328" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/14</text>
+<circle cx="1220" cy="300.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="356" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="356" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 356.5 H496 V443.5 H46 A6 6 0 0 1 40 437.5 V362.5 A6 6 0 0 1 46 356.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="356" x2="496" y2="444" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="380" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 04</text>
+<text x="56" y="410" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 바이러스·보안, 한 달 운영 가능하게 바로</text>
+<text x="512" y="380" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="408" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">링크 허용 목록 · PDF/저장소 상한 · 격리 실행 · 06:30 메일 부재 경보</text>
+<text x="512" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">link_policy · server · docker_runner · check_daily_mail</text>
+<text x="1200" y="428" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/16</text>
+<circle cx="1220" cy="400.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="456" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="456" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 456.5 H496 V543.5 H46 A6 6 0 0 1 40 537.5 V462.5 A6 6 0 0 1 46 456.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="456" x2="496" y2="544" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="480" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 05</text>
+<text x="56" y="510" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">저장소 못 찾아도 비슷한 것이라도 반드시</text>
+<text x="512" y="480" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="508" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">코드 사다리: 공식 → 저자 연관 → 제3자 → 유사 구현 → 없음</text>
+<text x="512" y="528" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">code_ladder</text>
+<text x="1200" y="528" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/16</text>
+<circle cx="1220" cy="500.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="556" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="556" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 556.5 H496 V643.5 H46 A6 6 0 0 1 40 637.5 V562.5 A6 6 0 0 1 46 556.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="556" x2="496" y2="644" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="580" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 06</text>
+<text x="56" y="610" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">과제 시 SOTA 제안, Claude·GPT, 에이전트처럼</text>
+<text x="512" y="580" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="608" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문 자체 SOTA 주장만 추출(미검증 표시) · 주간 에이전트 Claude→Codex</text>
+<text x="512" y="628" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">sota_claims · agent_maintenance (Fri 17:00)</text>
+<text x="1200" y="628" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="600.0" r="5" fill="#C55A11"/>
+<line x1="40" y1="668" x2="1240" y2="668" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="686" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<circle cx="132" cy="682" r="5" fill="#1E9E5A"/>
+<text x="144" y="686" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">운영 중</text>
+<circle cx="228" cy="682" r="5" fill="#C55A11"/>
+<text x="240" y="686" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">일부 — 분야별 SOTA 추적은 자료원이 없어 보류</text>
+<text x="1240" y="686" fill="#2E75B6" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">파란 테두리 = 이번 주의 중심 변경</text>
+</svg>
+  </div>
+</body>
+</html>

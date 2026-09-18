@@ -35,6 +35,7 @@ import sys
 import time
 import tomllib
 import uuid
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -227,7 +228,6 @@ def _write_dockerfile(repo_dir: Path, install_cmd: str) -> Path:
     # 달라져 COPY 레이어의 내용 해시가 매번 바뀌고, 이미 한 번 성공한 무거운
     # pip install RUN 레이어까지 캐시가 매번 깨져 매 시도마다 처음부터 다시
     # 설치했다. 실제 코드와 무관한 .git 은 빌드 컨텍스트에서 아예 뺀다.
-    (repo_dir.parent / ".dockerignore").write_text("*/.git\n", encoding="utf-8")
 
     dockerfile = repo_dir.parent / f"Dockerfile.{repo_dir.name}"
     lines = [
@@ -236,11 +236,13 @@ def _write_dockerfile(repo_dir: Path, install_cmd: str) -> Path:
         "RUN apt-get update && apt-get install -y --no-install-recommends git "
         "&& rm -rf /var/lib/apt/lists/*",
         "WORKDIR /repo",
-        f"COPY {repo_dir.name} /repo",
+        "COPY . /repo",
     ]
     if install_cmd:
         lines.append(f"RUN {install_cmd}")
     dockerfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 형제 clone·데이터셋이 컨텍스트에 섞이지 않게 이번 저장소만 보낸다.
+    dockerfile.with_name(dockerfile.name + ".dockerignore").write_text(".git\n", encoding="utf-8")
     return dockerfile
 
 
@@ -248,8 +250,9 @@ def _build_image(repo_dir: Path, dockerfile: Path, tag: str,
                   timeout: int = INSTALL_TIMEOUT) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
-            ["docker", "build", "-t", tag, "-f", str(dockerfile), "."],
-            cwd=repo_dir.parent, capture_output=True, text=True, timeout=timeout,
+            ["docker", "buildx", "build", "--builder", tag, "--load",
+             "-t", tag, "-f", str(dockerfile), "."],
+            cwd=repo_dir, capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
         return False, f"설치 타임아웃({timeout}s 초과): {e}"
@@ -300,41 +303,88 @@ def _run_container(tag: str, run_cmd: str, timeout: int, network: bool,
         start_cmd += ["--network", "none"]
     start_cmd += [tag, "sh", "-c", run_cmd]
 
-    start = time.monotonic()
     try:
-        subprocess.run(start_cmd, check=True, capture_output=True, text=True, timeout=30)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        stderr = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
-        return RunResult(False, None, "", stderr, False, network, 0.0)
+        start = time.monotonic()
+        try:
+            subprocess.run(start_cmd, check=True, capture_output=True, text=True, timeout=30)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            stderr = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
+            return RunResult(False, None, "", stderr, False, network, 0.0)
 
-    timed_out = False
-    exit_code: int | None = None
+        timed_out = False
+        exit_code: int | None = None
+        try:
+            wait = subprocess.run(
+                ["docker", "wait", name], capture_output=True, text=True, timeout=timeout,
+            )
+            exit_code = int(wait.stdout.strip())
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # 컨테이너 이름을 직접 지정해서 stop — 여기가 설계 결론 4의 핵심.
+            subprocess.run(["docker", "stop", "-t", "5", name], capture_output=True, text=True)
+
+        duration = time.monotonic() - start
+        logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+
+        success = (exit_code == 0) and not timed_out
+        return RunResult(success, exit_code, logs.stdout[-4000:], logs.stderr[-4000:],
+                          timed_out, network, duration)
+    finally:
+        error = _cleanup_command(["docker", "rm", "-f", name])
+        if error:
+            warnings.warn(error, RuntimeWarning)
+
+
+def _cleanup_command(command: list[str]) -> str | None:
+    """정리 실패가 실행 판정을 덮지 않되, 잔여 자원은 결과에 드러낸다."""
     try:
-        wait = subprocess.run(
-            ["docker", "wait", name], capture_output=True, text=True, timeout=timeout,
-        )
-        exit_code = int(wait.stdout.strip())
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        # 컨테이너 이름을 직접 지정해서 stop — 여기가 설계 결론 4의 핵심.
-        subprocess.run(["docker", "stop", "-t", "5", name], capture_output=True, text=True)
-
-    duration = time.monotonic() - start
-    logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
-
-    success = (exit_code == 0) and not timed_out
-    return RunResult(success, exit_code, logs.stdout[-4000:], logs.stderr[-4000:],
-                      timed_out, network, duration)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        if result.returncode and not any(text in result.stderr for text in
+                                         ("No such image", "No such container")):
+            return f"{command}: {result.stderr[-1000:]}"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"{command}: {type(exc).__name__}"
+    return None
 
 
 def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
+    """⑦ 시도마다 전용 빌더를 써서 다른 작업의 캐시·볼륨을 건드리지 않는다."""
+    tag = f"paper-repro-{uuid.uuid4().hex}"
+    outcome = {}
+    errors = []
+    try:
+        created = subprocess.run(
+            ["docker", "buildx", "create", "--name", tag, "--driver", "docker-container"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if created.returncode:
+            outcome = {"success": False, "stage": "build", "fail_detail": "build_failed",
+                       "log": created.stderr[-4000:], "attempts": []}
+        else:
+            outcome = _run_repo_in_docker(repo_dir, run_cmd, tag)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        outcome = {"success": False, "stage": "build", "fail_detail": "build_failed",
+                   "log": f"빌더 준비 실패: {type(exc).__name__}", "attempts": []}
+    finally:
+        # build 실패·타임아웃도 큰 설치 레이어를 남긴다. 성공 여부와 별도로
+        # 이번 UUID만 지우며 --keep-state·전역 prune은 사용하지 않는다.
+        for command in (["docker", "image", "rm", tag],
+                        ["docker", "buildx", "rm", "--force", "--timeout", "120s", tag]):
+            error = _cleanup_command(command)
+            if error:
+                errors.append(error)
+                warnings.warn(error, RuntimeWarning)
+        outcome["cleanup_errors"] = errors
+        outcome["docker_resources"] = {"builder": tag, "image": tag}
+    return outcome
+
+
+def _run_repo_in_docker(repo_dir: Path, run_cmd: str | None, tag: str) -> dict:
     """clone 된 저장소 하나를 빌드+실행한다. 후보 랭킹이나 여러 저장소 시도는
     reproduce() 가 담당 — 이 함수는 저장소 하나에 대한 결정론적 실행만 한다.
     """
     plan = detect_install_plan(repo_dir)
     cmd = run_cmd or plan.run_cmd
-    tag = f"repro-{repo_dir.name.lower()}"[:60]
 
     # 2026-08-03 실측(TSPulse의 HuggingFace 후보): 설치할 것도 임포트할 대상도
     # 못 찾으면 스모크 테스트가 아무것도 검증하지 않는 공허한 명령(placeholder
@@ -418,11 +468,11 @@ def run_repo_in_docker(repo_dir: Path, run_cmd: str | None = None) -> dict:
             "network_suspected": network_suspected,
             "fail_detail": _run_fail_detail(result.success, result.timed_out,
                                             network_suspected),
-            "attempts": [asdict(result)],
+            "attempts": [asdict(result)], "build_log": build_log,
         }
     finally:
         dockerfile.unlink(missing_ok=True)
-        subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
+        dockerfile.with_name(dockerfile.name + ".dockerignore").unlink(missing_ok=True)
 
 
 _CLONABLE_HOSTS = ("https://github.com/", "https://gitlab.com/",
@@ -513,7 +563,10 @@ def _remove_clone(path: Path) -> None:
     if path.is_symlink():
         path.unlink(missing_ok=True)
     elif path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            warnings.warn(f"clone 정리 실패: {path}: {type(exc).__name__}", RuntimeWarning)
 
 
 def _run_fail_detail(success: bool, timed_out: bool, network_suspected: bool) -> str:
@@ -570,8 +623,10 @@ def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
             clone_cmd, capture_output=True, text=True, timeout=120, check=True, env=env,
         )
     except subprocess.TimeoutExpired:
+        _remove_clone(dest)
         return None, "clone_timeout"
     except subprocess.CalledProcessError as e:
+        _remove_clone(dest)
         stderr = e.stderr or ""
         if _REPO_MISSING_RE.search(stderr):
             return None, "repo_not_found"
@@ -613,32 +668,34 @@ def reproduce(arxiv_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict:
             )
             continue
 
+        try:
+            revision = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            commit = revision.stdout.strip() if revision.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            commit = ""
         outcome = run_repo_in_docker(repo_dir)
+        outcome["git_commit"] = commit
         attempts_log.append({"candidate": cand, **outcome})
 
-        # 성공한 clone만 남긴다 — "설치+실행 성공 여부만 본다"는 원칙은 그대로
-        # 지키되(코드 내용을 판단하지 않는다), 성공했을 때 그 코드를 review_app.py
-        # 에서 실제로 열어볼 수 있어야 한다는 지적을 받아들였다(2026-08-12).
-        # 실패한 시도는 그대로 지운다 — 실패 이유는 stage/exit_code로 이미
-        # 충분히 남고, 코드까지 보관할 필요는 없다(디스크 낭비).
+        # 2026-09-18: 성공 clone 보관 대신 실행 근거를 먼저 저장한다.
+        # DB 저장 실패 때는 clone을 남겨 조사할 수 있도록 삭제 순서를 고정한다.
         local_path = ""
-        if outcome["success"]:
-            persist_dir = server.REPRO_DIR / "code" / arxiv_id.replace("/", "_")
-            shutil.rmtree(persist_dir, ignore_errors=True)  # 이전 성공 잔재가 있으면 교체
-            persist_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(repo_dir), str(persist_dir))
-            local_path = str(persist_dir)
-        else:
-            shutil.rmtree(repo_dir, ignore_errors=True)
-
+        log_path = workdir / f"attempt-{i}-{uuid.uuid4().hex[:8]}.json"
+        log_path.write_text(json.dumps({"candidate": cand, **outcome},
+                                      ensure_ascii=False, indent=2), encoding="utf-8")
         last_attempt = outcome["attempts"][-1] if outcome["attempts"] else None
         server.save_repro_result(
             arxiv_id, cand["url"], cand["source"], cand["confidence"],
             outcome["success"], (last_attempt or {}).get("exit_code"),
             outcome["stage"], i, (last_attempt or {}).get("network_enabled", False),
-            (last_attempt or {}).get("duration_s", 0.0), "", local_path,
+            (last_attempt or {}).get("duration_s", 0.0), str(log_path), local_path,
             fail_detail=outcome.get("fail_detail", ""),
         )
+
+        _remove_clone(repo_dir)
 
         if outcome["success"]:
             return {"arxiv_id": arxiv_id, "success": True, "attempt": i,

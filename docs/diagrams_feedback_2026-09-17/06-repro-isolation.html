@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>코드 재현 — 격리 컨테이너에서 exit code 로만 판정</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Process · paper-harness</p>
+    <h1>코드 재현 — 격리 컨테이너에서 exit code 로만 판정</h1>
+    <p class="sub">찾은 저장소 → 설치 → 격리 실행 → 판정 → 메일 라벨, 최대 3회</p>
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="repro-isolation-title repro-isolation-desc">
+  <title id="repro-isolation-title">코드 재현 — 격리 실행 후 흔적을 남기지 않는다</title>
+  <desc id="repro-isolation-desc">찾은 저장소를 네트워크 없는 격리 컨테이너에서 설치·실행하고 exit code 로 판정한 뒤, 근거를 기록하고 이미지·빌더·clone 을 모두 지우는 여섯 단계를 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<line x1="234" y1="320.0" x2="261" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="430" y1="320.0" x2="457" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="626" y1="320.0" x2="653" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="822" y1="320.0" x2="849" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="1018" y1="320.0" x2="1045" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M738.0 368 V416 A8 8 0 0 1 730.0 424 H354.0 A8 8 0 0 1 346.0 416 V369" fill="none" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="446.0" y="432" width="192" height="16" rx="2" fill="#FFFFFF"/>
+<text x="542.0" y="444" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">실패하면 다음 후보로 — 최대 3회</text>
+<rect x="66" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="66" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="150.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">논문 → 저장소</text>
+<text x="150.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">사다리 1~3단계에서 찾은 것</text>
+<text x="150.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">clone 전 500MB 확인</text>
+<rect x="262" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="262" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="346.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">설치</text>
+<text x="346.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">시도마다 전용 빌더</text>
+<text x="346.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">빌드 단계만 네트워크</text>
+<rect x="458" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="458" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="542.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">격리 실행</text>
+<text x="542.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">--network none</text>
+<text x="542.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">cap-drop ALL · read-only</text>
+<rect x="654" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="654" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="738.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">판정</text>
+<text x="738.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">exit code 만 본다</text>
+<text x="738.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">논문 수치 재현이 아니다</text>
+<rect x="850" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="850" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="934.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">기록</text>
+<text x="934.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">실행 로그 JSON · DB 결과</text>
+<text x="934.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">지우기 전에 먼저 남긴다</text>
+<rect x="1046" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="1046" y="272" width="168" height="96" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="1130.0" y="308" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">정리</text>
+<text x="1130.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">이미지·빌더·컨테이너</text>
+<text x="1130.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">clone 까지 — 실패해도 (9/18)</text>
+<text x="64" y="228" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문·저장소는 신뢰하지 않는 입력 — 논문 속 명령문은 데이터로만 (규칙 4)</text>
+<text x="640" y="508" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">재현 성공 = "설치되고 실행이 exit 0 으로 끝났다" 까지다. 논문의 숫자를 다시 얻었다는 뜻이 아니다.</text>
+<text x="640" y="534" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">그전엔 빌드 캐시와 성공 clone 이 계속 쌓여 C 드라이브를 채웠다 — 이제 판정 뒤 전부 지운다.</text>
+<line x1="40" y1="592" x2="1240" y2="592" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="610" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="597" width="24" height="14" rx="3" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="610" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">2026-09-18 새로 붙인 단계</text>
+<text x="1240" y="610" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">전역 prune·볼륨 삭제는 하지 않는다 — 이번 시도가 만든 것만 지운다</text>
+</svg>
+  </div>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>보안 층 — 외부 입력이 지나는 다섯 관문</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Layer stack · paper-harness</p>
+    <h1>보안 층 — 외부 입력이 지나는 다섯 관문</h1>
+    <p class="sub">한 달 무인 운영 전에 붙인 상한과 그래도 남는 것</p>
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="security-layers-title security-layers-desc">
+  <title id="security-layers-title">보안 층 — 외부 입력이 지나는 다섯 관문</title>
+  <desc id="security-layers-desc">메일 링크, 논문 PDF, 코드 저장소, 격리 실행, 감시의 다섯 층이 각각 무엇을 막고 무엇을 못 막는지 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<text x="160" y="64" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">외부 입력 — 논문·링크·저장소는 신뢰하지 않는다 (규칙 4)</text>
+<text x="1120" y="64" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">이 층이 못 막는 것</text>
+<rect x="160" y="88" width="960" height="88" fill="#FFFFFF"/>
+<rect x="160" y="88" width="960" height="88" fill="#E9F0F8"/>
+<text x="176" y="112" fill="#2E75B6" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L1</text>
+<text x="216" y="128" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 링크</text>
+<text x="216" y="152" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">허용 호스트 25개 · https 만 · 못 통과한 링크는 빼고 발송</text>
+<text x="1088" y="136.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="176" width="960" height="88" fill="#F7F9FC"/>
+<line x1="160" y1="176" x2="1120" y2="176" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="200" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L2</text>
+<text x="216" y="216" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문 PDF</text>
+<text x="216" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">30MB · 120초 · 리다이렉트마다 IP·localhost·userinfo 거부</text>
+<circle cx="1104" cy="220.0" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="1088" y="224.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">DNS 뒤 사설 IP 판정은 미구현</text>
+<rect x="160" y="264" width="960" height="88" fill="#FFFFFF"/>
+<line x1="160" y1="264" x2="1120" y2="264" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="288" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L3</text>
+<text x="216" y="304" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">코드 저장소</text>
+<text x="216" y="328" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">clone 전 500MB 확인 · blob 20MB · LFS 제외 · clone 뒤 재확인</text>
+<text x="1088" y="312.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="352" width="960" height="88" fill="#F7F9FC"/>
+<line x1="160" y1="352" x2="1120" y2="352" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="376" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L4</text>
+<text x="216" y="392" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">격리 실행</text>
+<text x="216" y="416" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">네트워크 없음 · 권한 전부 제거 · 읽기 전용 · nobody · pids/메모리/CPU 상한</text>
+<text x="1088" y="400.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="440" width="960" height="88" fill="#FFFFFF"/>
+<line x1="160" y1="440" x2="1120" y2="440" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="464" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L5</text>
+<text x="216" y="480" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">감시</text>
+<text x="216" y="504" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">06:30 메일 부재 경보(운영자 1인) · 본문 인젝션 의심 표시</text>
+<circle cx="1104" cy="484.0" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="1088" y="488.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">인젝션은 표시만, 차단 안 함</text>
+<rect x="160" y="88" width="960" height="440" fill="none" stroke="#1F3864" stroke-width="1"/>
+<rect x="160" y="88" width="960" height="88" fill="none" stroke="#2E75B6" stroke-width="1.2"/>
+<line x1="112" y1="96" x2="112" y2="520" stroke="#595959" stroke-width="1" marker-end="url(#arrow)"/>
+<rect x="72" y="298.0" width="80" height="20" rx="2" fill="#FFFFFF"/>
+<text x="112" y="312.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">처리 순서</text>
+<text x="160" y="568" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="start">끝까지 남는 것 — 사설 IP 판정과 인젝션 차단은 미구현이라고 적어 둔다 (docs/SECURITY_CHECKLIST.md 10항목).</text>
+<text x="160" y="594" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="start">격리 실행 한 층만 그전부터 있었고, 나머지 네 층은 9/16 에 붙였다 (§8-134).</text>
+<line x1="40" y1="608" x2="1240" y2="608" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="626" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="613" width="24" height="14" rx="2" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">피드백 "메일 바이러스" 의 직접 답</text>
+<circle cx="420" cy="621" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="434" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">이 층이 못 막는 것</text>
+</svg>
+  </div>
+</body>
+</html>
