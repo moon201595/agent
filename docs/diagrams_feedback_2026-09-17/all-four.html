@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>피드백 → 반영 · 다이어그램 6장</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .one { margin-bottom: 4rem; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <section class="one"><p class="eyebrow">Feedback → Change · paper-harness</p><h1>9/14 피드백 6개 → 9/17 반영</h1><p class="sub">월요일 피드백 한 줄씩, 지금 어디에 어떻게 들어갔는지</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="feedback-map-title feedback-map-desc">
+  <title id="feedback-map-title">9/14 피드백 6개 → 9/17 반영</title>
+  <desc id="feedback-map-desc">월요일에 받은 피드백 여섯 항목 각각이 이번 주에 어떤 기능·모듈로 구현됐는지 한 줄씩 짝지어 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<text x="40" y="36" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">9/14 (월) 피드백</text>
+<text x="512" y="36" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">9/17 (목) 지금</text>
+<rect x="40" y="56" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="56" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#2E75B6" stroke-width="1.2"/>
+<path d="M46 56.5 H496 V143.5 H46 A6 6 0 0 1 40 137.5 V62.5 A6 6 0 0 1 46 56.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="56" x2="496" y2="144" stroke="#D9E2F3" stroke-width="1"/>
+<rect x="497" y="57" width="742" height="86" rx="5" fill="#E9F0F8"/>
+<text x="56" y="80" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 01</text>
+<text x="56" y="110" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">사용자 경험 · 사용자 피드백으로 업데이트, UI</text>
+<text x="512" y="80" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="108" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 1클릭 반응 → 매일 가중치 자동 조정 · 운영 화면 개편</text>
+<text x="512" y="128" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">feedback_links · feedback_weights · review_app</text>
+<text x="1200" y="128" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="100.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="156" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="156" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 156.5 H496 V243.5 H46 A6 6 0 0 1 40 237.5 V162.5 A6 6 0 0 1 46 156.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="156" x2="496" y2="244" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="180" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 02</text>
+<text x="56" y="210" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 기준 ID 로 가중치 업데이트</text>
+<text x="512" y="180" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="208" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">발송 회차 id + 논문 P번호 토큰(서명) → 논문별 반응 → 키워드 가중치</text>
+<text x="512" y="228" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">feedback_tokens · mail_ledger · target ±0.1/day · revision</text>
+<text x="1200" y="228" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="200.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="256" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="256" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 256.5 H496 V343.5 H46 A6 6 0 0 1 40 337.5 V262.5 A6 6 0 0 1 46 256.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="256" x2="496" y2="344" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="280" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 03</text>
+<text x="56" y="310" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">규칙만 설정, 하네스</text>
+<text x="512" y="280" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">규칙 15개 → 최소 규칙 7개, 나머지는 코드가 강제</text>
+<text x="512" y="328" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">CLAUDE.md · agent_maintenance.validate</text>
+<text x="1200" y="328" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/14</text>
+<circle cx="1220" cy="300.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="356" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="356" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 356.5 H496 V443.5 H46 A6 6 0 0 1 40 437.5 V362.5 A6 6 0 0 1 46 356.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="356" x2="496" y2="444" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="380" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 04</text>
+<text x="56" y="410" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 바이러스·보안, 한 달 운영 가능하게 바로</text>
+<text x="512" y="380" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="408" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">링크 허용 목록 · PDF/저장소 상한 · 격리 실행 · 06:30 메일 부재 경보</text>
+<text x="512" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">link_policy · server · docker_runner · check_daily_mail</text>
+<text x="1200" y="428" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/16</text>
+<circle cx="1220" cy="400.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="456" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="456" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 456.5 H496 V543.5 H46 A6 6 0 0 1 40 537.5 V462.5 A6 6 0 0 1 46 456.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="456" x2="496" y2="544" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="480" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 05</text>
+<text x="56" y="510" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">저장소 못 찾아도 비슷한 것이라도 반드시</text>
+<text x="512" y="480" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="508" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">코드 사다리: 공식 → 저자 연관 → 제3자 → 유사 구현 → 없음</text>
+<text x="512" y="528" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">code_ladder</text>
+<text x="1200" y="528" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/16</text>
+<circle cx="1220" cy="500.0" r="5" fill="#1E9E5A"/>
+<rect x="40" y="556" width="1200" height="88" rx="6" fill="#FFFFFF"/><rect x="40" y="556" width="1200" height="88" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<path d="M46 556.5 H496 V643.5 H46 A6 6 0 0 1 40 637.5 V562.5 A6 6 0 0 1 46 556.5 Z" fill="#F7F9FC"/>
+<line x1="496" y1="556" x2="496" y2="644" stroke="#D9E2F3" stroke-width="1"/>
+<text x="56" y="580" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">FEEDBACK 06</text>
+<text x="56" y="610" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">과제 시 SOTA 제안, Claude·GPT, 에이전트처럼</text>
+<text x="512" y="580" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">CHANGE</text>
+<text x="512" y="608" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문 자체 SOTA 주장만 추출(미검증 표시) · 주간 에이전트 Claude→Codex</text>
+<text x="512" y="628" fill="#595959" font-size="12" font-weight="400" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0">sota_claims · agent_maintenance (Fri 17:00)</text>
+<text x="1200" y="628" fill="#595959" font-size="12" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0">9/15–16</text>
+<circle cx="1220" cy="600.0" r="5" fill="#C55A11"/>
+<line x1="40" y1="668" x2="1240" y2="668" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="686" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<circle cx="132" cy="682" r="5" fill="#1E9E5A"/>
+<text x="144" y="686" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">운영 중</text>
+<circle cx="228" cy="682" r="5" fill="#C55A11"/>
+<text x="240" y="686" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">일부 — 분야별 SOTA 추적은 자료원이 없어 보류</text>
+<text x="1240" y="686" fill="#2E75B6" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">파란 테두리 = 이번 주의 중심 변경</text>
+</svg></section>
+<section class="one"><p class="eyebrow">Loop · paper-harness</p><h1>메일 반응이 다음 메일을 바꾸는 루프</h1><p class="sub">1클릭 반응 → 매일 가중치 → 주 1회 키워드, 전부 revision 으로</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="feedback-loop-title feedback-loop-desc">
+  <title id="feedback-loop-title">메일 반응이 다음 메일을 바꾸는 루프</title>
+  <desc id="feedback-loop-desc">아침 메일의 1클릭 반응이 수집·격리를 거쳐 매일 가중치를 바꾸고, 주 1회 에이전트가 키워드를 손질하며, 모든 변경이 연구 프로필에 revision 으로 남는 순환을 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<path d="M756.000 123.790 A256 256 0 0 1 839.088 191.065" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M877.318 256.000 A256 256 0 0 1 877.766 446.887" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M839.840 512.000 A256 256 0 0 1 757.068 579.664" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M524.000 580.210 A256 256 0 0 1 440.912 512.935" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M402.682 448.000 A256 256 0 0 1 402.234 257.113" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M440.160 192.000 A256 256 0 0 1 522.932 124.336" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="804.574" y1="448.000" x2="735.263" y2="407.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<line x1="640.000" y1="576.000" x2="640.000" y2="410.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<line x1="475.426" y1="448.000" x2="544.737" y2="407.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="524" y="64" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="524" y="64" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="640.0" y="92" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">아침 메일</text>
+<text x="640.0" y="112" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">05:00 · 논문 5편 카드</text>
+<rect x="744" y="192" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="744" y="192" width="232" height="64" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="860.0" y="220" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">1클릭 반응</text>
+<text x="860.0" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">더 보고 싶음 · 유용함 · 관심 밖</text>
+<rect x="744" y="448" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="744" y="448" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="860.0" y="476" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">수집·격리</text>
+<text x="860.0" y="496" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">서명 검증 · 선열람·연타 격리 → 반응 기록</text>
+<rect x="524" y="576" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="524" y="576" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="640.0" y="604" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">가중치 갱신</text>
+<text x="640.0" y="624" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">하루 ±0.1 · 목표값 추종 → revision</text>
+<rect x="304" y="448" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="304" y="448" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="420.0" y="476" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">주간 에이전트</text>
+<text x="420.0" y="496" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">금 17:00 · Claude 제안 → Codex 판정</text>
+<rect x="304" y="192" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="304" y="192" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="420.0" y="220" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">검색·순위</text>
+<text x="420.0" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">arXiv · S2 · 가중치 띠 → 5편</text>
+<rect x="520.0" y="300.0" width="240" height="104" rx="8" fill="#1F3864"/>
+<text x="640" y="344" fill="#FFFFFF" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">연구 프로필</text>
+<text x="640" y="366" fill="#D1D5DB" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">키워드 · 가중치 · 제외어</text>
+<text x="640" y="386" fill="#D1D5DB" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">모든 변경은 revision — 되돌리기 가능</text>
+<line x1="40" y1="676" x2="1240" y2="676" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="694" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<line x1="120" y1="689" x2="160" y2="689" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="172" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">매일 흐름</text>
+<line x1="260" y1="689" x2="300" y2="689" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<text x="312" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">프로필에 기록 (revision)</text>
+<text x="1240" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">최초 키워드는 사용자가 정하고 자동으로 지우지 않는다 (규칙 1)</text>
+</svg></section>
+<section class="one"><p class="eyebrow">Flowchart · paper-harness</p><h1>코드 탐색 사다리 — 없으면 한 칸 아래로</h1><p class="sub">공식 → 저자 연관 → 제3자 → 유사 구현 → 없음, 단계 이름을 메일에 그대로</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="code-ladder-title code-ladder-desc">
+  <title id="code-ladder-title">코드 탐색 사다리 — 없으면 한 칸 아래로</title>
+  <desc id="code-ladder-desc">논문의 구현 코드를 공식 저장소부터 저자 연관, 제3자, 유사 구현 순으로 찾고, 어느 단계에서 찾았는지를 메일에 그대로 표시하는 다섯 단계를 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<line x1="256" y1="320.0" x2="303" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="258.0" y="294.0" width="44" height="16" rx="2" fill="#FFFFFF"/>
+<text x="280.0" y="306.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">없으면</text>
+<line x1="496" y1="320.0" x2="543" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="498.0" y="294.0" width="44" height="16" rx="2" fill="#FFFFFF"/>
+<text x="520.0" y="306.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">없으면</text>
+<line x1="736" y1="320.0" x2="783" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="738.0" y="294.0" width="44" height="16" rx="2" fill="#FFFFFF"/>
+<text x="760.0" y="306.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">없으면</text>
+<line x1="976" y1="320.0" x2="1023" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="978.0" y="294.0" width="44" height="16" rx="2" fill="#FFFFFF"/>
+<text x="1000.0" y="306.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">없으면</text>
+<rect x="64" y="272" width="192" height="96" rx="6" fill="#FFFFFF"/><rect x="64" y="272" width="192" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<rect x="76" y="282" width="20" height="14" rx="2" fill="transparent" stroke="#1F3864" stroke-opacity="0.4" stroke-width="0.8"/>
+<text x="86" y="293" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0">1</text>
+<text x="160.0" y="326" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">공식 저장소</text>
+<text x="160.0" y="348" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">논문이 적은 링크</text>
+<text x="160.0" y="408" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">격리 컨테이너에서 실행</text>
+<text x="160.0" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">성공·실패 그대로 기록</text>
+<rect x="304" y="272" width="192" height="96" rx="6" fill="#FFFFFF"/><rect x="304" y="272" width="192" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<rect x="316" y="282" width="20" height="14" rx="2" fill="transparent" stroke="#1F3864" stroke-opacity="0.4" stroke-width="0.8"/>
+<text x="326" y="293" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0">2</text>
+<text x="400.0" y="326" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">저자 연관</text>
+<text x="400.0" y="348" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">저자·소속 저장소</text>
+<text x="400.0" y="408" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">같은 실행 경로</text>
+<text x="400.0" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">'저자 연관' 라벨</text>
+<rect x="544" y="272" width="192" height="96" rx="6" fill="#FFFFFF"/><rect x="544" y="272" width="192" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<rect x="556" y="282" width="20" height="14" rx="2" fill="transparent" stroke="#1F3864" stroke-opacity="0.4" stroke-width="0.8"/>
+<text x="566" y="293" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0">3</text>
+<text x="640.0" y="326" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">제3자 구현</text>
+<text x="640.0" y="348" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">다른 사람의 재현</text>
+<text x="640.0" y="408" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">이름만 같은 저장소는 제외</text>
+<text x="640.0" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">'확인되지 않음' 표시</text>
+<rect x="784" y="272" width="192" height="96" rx="6" fill="#FFFFFF"/><rect x="784" y="272" width="192" height="96" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<rect x="796" y="282" width="20" height="14" rx="2" fill="transparent" stroke="#2E75B6" stroke-opacity="0.4" stroke-width="0.8"/>
+<text x="806" y="293" fill="#2E75B6" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0">4</text>
+<text x="880.0" y="326" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">유사 구현</text>
+<text x="880.0" y="348" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">같은 과제 최다 ★ 저장소</text>
+<text x="880.0" y="408" fill="#2E75B6" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">보여 주기만, 실행 안 함</text>
+<text x="880.0" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">'이 논문 재현 아님' 명시</text>
+<rect x="1024" y="272" width="192" height="96" rx="6" fill="#FFFFFF"/><rect x="1024" y="272" width="192" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<rect x="1036" y="282" width="20" height="14" rx="2" fill="transparent" stroke="#1F3864" stroke-opacity="0.4" stroke-width="0.8"/>
+<text x="1046" y="293" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0">5</text>
+<text x="1120.0" y="326" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">없음</text>
+<text x="1120.0" y="348" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">찾지 못함</text>
+<text x="1120.0" y="408" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">'없음' 그대로</text>
+<text x="1120.0" y="428" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">만들어 넣지 않는다 (규칙 7)</text>
+<line x1="160.0" y1="368" x2="160.0" y2="388" stroke="#8C99AD" stroke-width="1" marker-end="url(#arrow-soft)"/>
+<line x1="400.0" y1="368" x2="400.0" y2="388" stroke="#8C99AD" stroke-width="1" marker-end="url(#arrow-soft)"/>
+<line x1="640.0" y1="368" x2="640.0" y2="388" stroke="#8C99AD" stroke-width="1" marker-end="url(#arrow-soft)"/>
+<line x1="880.0" y1="368" x2="880.0" y2="388" stroke="#8C99AD" stroke-width="1" marker-end="url(#arrow-soft)"/>
+<line x1="1120.0" y1="368" x2="1120.0" y2="388" stroke="#8C99AD" stroke-width="1" marker-end="url(#arrow-soft)"/>
+<text x="640" y="528" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">메일에는 단계 이름 그대로 적는다 — 공식이 아닌 코드를 공식이라고 쓰지 않는다.</text>
+<text x="640" y="554" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">그전엔 못 찾으면 그냥 비어 있었다 (9/14 피드백: "비슷한 거라도 반드시").</text>
+<text x="64" y="236" fill="#8C99AD" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">INPUT</text>
+<text x="116" y="236" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">요약이 끝난 논문 한 편마다 · 결과는 한 달 캐시</text>
+<line x1="40" y1="608" x2="1240" y2="608" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="626" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="613" width="24" height="14" rx="3" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">9/16 새로 붙인 단계</text>
+<text x="1240" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">code_ladder.py · 단계는 이미 있는 사실(repro_results·저자 이름)로만 정한다</text>
+</svg></section>
+<section class="one"><p class="eyebrow">Layer stack · paper-harness</p><h1>보안 층 — 외부 입력이 지나는 다섯 관문</h1><p class="sub">한 달 무인 운영 전에 붙인 상한과 그래도 남는 것</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="security-layers-title security-layers-desc">
+  <title id="security-layers-title">보안 층 — 외부 입력이 지나는 다섯 관문</title>
+  <desc id="security-layers-desc">메일 링크, 논문 PDF, 코드 저장소, 격리 실행, 감시의 다섯 층이 각각 무엇을 막고 무엇을 못 막는지 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<text x="160" y="64" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">외부 입력 — 논문·링크·저장소는 신뢰하지 않는다 (규칙 4)</text>
+<text x="1120" y="64" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">이 층이 못 막는 것</text>
+<rect x="160" y="88" width="960" height="88" fill="#FFFFFF"/>
+<rect x="160" y="88" width="960" height="88" fill="#E9F0F8"/>
+<text x="176" y="112" fill="#2E75B6" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L1</text>
+<text x="216" y="128" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">메일 링크</text>
+<text x="216" y="152" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">허용 호스트 25개 · https 만 · 못 통과한 링크는 빼고 발송</text>
+<text x="1088" y="136.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="176" width="960" height="88" fill="#F7F9FC"/>
+<line x1="160" y1="176" x2="1120" y2="176" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="200" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L2</text>
+<text x="216" y="216" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문 PDF</text>
+<text x="216" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">30MB · 120초 · 리다이렉트마다 IP·localhost·userinfo 거부</text>
+<circle cx="1104" cy="220.0" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="1088" y="224.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">DNS 뒤 사설 IP 판정은 미구현</text>
+<rect x="160" y="264" width="960" height="88" fill="#FFFFFF"/>
+<line x1="160" y1="264" x2="1120" y2="264" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="288" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L3</text>
+<text x="216" y="304" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">코드 저장소</text>
+<text x="216" y="328" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">clone 전 500MB 확인 · blob 20MB · LFS 제외 · clone 뒤 재확인</text>
+<text x="1088" y="312.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="352" width="960" height="88" fill="#F7F9FC"/>
+<line x1="160" y1="352" x2="1120" y2="352" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="376" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L4</text>
+<text x="216" y="392" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">격리 실행</text>
+<text x="216" y="416" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">네트워크 없음 · 권한 전부 제거 · 읽기 전용 · nobody · pids/메모리/CPU 상한</text>
+<text x="1088" y="400.0" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">—</text>
+<rect x="160" y="440" width="960" height="88" fill="#FFFFFF"/>
+<line x1="160" y1="440" x2="1120" y2="440" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="464" fill="#8C99AD" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">L5</text>
+<text x="216" y="480" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">감시</text>
+<text x="216" y="504" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">06:30 메일 부재 경보(운영자 1인) · 본문 인젝션 의심 표시</text>
+<circle cx="1104" cy="484.0" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="1088" y="488.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">인젝션은 표시만, 차단 안 함</text>
+<rect x="160" y="88" width="960" height="440" fill="none" stroke="#1F3864" stroke-width="1"/>
+<rect x="160" y="88" width="960" height="88" fill="none" stroke="#2E75B6" stroke-width="1.2"/>
+<line x1="112" y1="96" x2="112" y2="520" stroke="#595959" stroke-width="1" marker-end="url(#arrow)"/>
+<rect x="72" y="298.0" width="80" height="20" rx="2" fill="#FFFFFF"/>
+<text x="112" y="312.0" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">처리 순서</text>
+<text x="160" y="568" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="start">끝까지 남는 것 — 사설 IP 판정과 인젝션 차단은 미구현이라고 적어 둔다 (docs/SECURITY_CHECKLIST.md 10항목).</text>
+<text x="160" y="594" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="start">격리 실행 한 층만 그전부터 있었고, 나머지 네 층은 9/16 에 붙였다 (§8-134).</text>
+<line x1="40" y1="608" x2="1240" y2="608" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="626" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="613" width="24" height="14" rx="2" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">피드백 "메일 바이러스" 의 직접 답</text>
+<circle cx="420" cy="621" r="4" fill="none" stroke="#C55A11" stroke-width="1.5"/>
+<text x="434" y="626" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">이 층이 못 막는 것</text>
+</svg></section>
+<section class="one"><p class="eyebrow">Swimlane · paper-harness</p><h1>주간 관리 — 제안은 모델, 적용은 코드</h1><p class="sub">DB 정리 → 브리프 → Claude 제안 → Codex 판정 → Python 검증·적용</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="weekly-agent-title weekly-agent-desc">
+  <title id="weekly-agent-title">주간 관리 — 제안은 모델, 적용은 코드</title>
+  <desc id="weekly-agent-desc">금요일 17:00 에 Python 이 DB 를 정리하고 브리프를 만들면 Claude 가 키워드 변경을 제안하고 Codex 가 판정하며 Python 이 규칙으로 검증해 revision 으로 적용하는 흐름을 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<rect x="176" y="72" width="1064" height="136" fill="#FFFFFF"/>
+<line x1="176" y1="72" x2="1240" y2="72" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="160" y="100" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">CLAUDE CODE</text>
+<text x="160" y="120" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">해석·제안</text>
+<rect x="176" y="208" width="1064" height="136" fill="#F7F9FC"/>
+<line x1="176" y1="208" x2="1240" y2="208" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="160" y="236" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">CODEX</text>
+<text x="160" y="256" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">비판·판정</text>
+<rect x="176" y="344" width="1064" height="136" fill="#FFFFFF"/>
+<line x1="176" y1="344" x2="1240" y2="344" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="160" y="372" fill="#1F3864" font-size="9" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">PYTHON</text>
+<text x="160" y="392" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">저장·검증·적용·되돌리기</text>
+<line x1="176" y1="480" x2="1240" y2="480" stroke="rgba(31,56,100,0.14)" stroke-width="1"/>
+<text x="176" y="52" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">금요일 17:00 · cron</text>
+<text x="1240" y="52" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">세션을 안 열어도 돈다 · 모델이 답을 못 주면 그 주는 건너뛴다</text>
+<line x1="376" y1="412.0" x2="407" y2="412.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M496.0 380.0 V148.0 A8 8 0 0 1 504.0 140.0 H615" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M704.0 172.0 V268.0 A8 8 0 0 0 712.0 276.0 H823" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M912.0 308.0 V404.0 A8 8 0 0 0 920.0 412.0 H1031" fill="none" stroke="#2E75B6" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+<rect x="200" y="380.0" width="176" height="64" rx="6" fill="#FFFFFF"/><rect x="200" y="380.0" width="176" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="288.0" y="408.0" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">DB 정리</text>
+<text x="288.0" y="428.0" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">백업 → 보존표대로 삭제</text>
+<rect x="408" y="380.0" width="176" height="64" rx="6" fill="#FFFFFF"/><rect x="408" y="380.0" width="176" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="496.0" y="408.0" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">브리프</text>
+<text x="496.0" y="428.0" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">28일 반응·적중·반복어</text>
+<rect x="616" y="108.0" width="176" height="64" rx="6" fill="#FFFFFF"/><rect x="616" y="108.0" width="176" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="704.0" y="136.0" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">키워드 제안</text>
+<text x="704.0" y="156.0" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">추가·가중치·제외어 JSON</text>
+<rect x="824" y="244.0" width="176" height="64" rx="6" fill="#FFFFFF"/><rect x="824" y="244.0" width="176" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="912.0" y="272.0" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">판정</text>
+<text x="912.0" y="292.0" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">근거 없는 제안은 뺀다</text>
+<rect x="1032" y="380.0" width="176" height="64" rx="6" fill="#FFFFFF"/><rect x="1032" y="380.0" width="176" height="64" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="1120.0" y="408.0" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">검증·적용</text>
+<text x="1120.0" y="428.0" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">revision · 다음 메일에 표시</text>
+<text x="176" y="516" fill="#1F3864" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">적용 전 Python 이 강제하는 것 — 두 모델이 동의해도 통과 못 한다 (agent_maintenance.validate)</text>
+<circle cx="182" cy="534" r="2.5" fill="#595959"/>
+<text x="194" y="538" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">새 키워드·상향은 좋다고 반응한 논문에 그 용어가 있을 때만</text>
+<circle cx="182" cy="556" r="2.5" fill="#595959"/>
+<text x="194" y="560" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">제외어는 서로 다른 관심 밖 논문 2편 이상</text>
+<circle cx="182" cy="578" r="2.5" fill="#595959"/>
+<text x="194" y="582" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">사용자가 정한 키워드는 지우지 않는다 — 하향만 (규칙 1)</text>
+<circle cx="182" cy="600" r="2.5" fill="#595959"/>
+<text x="194" y="604" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">증거 id 실재 · 표기 변형·우산어 거르기 · 출력에 시크릿 모양이 있으면 그 주는 버린다</text>
+<line x1="40" y1="676" x2="1240" y2="676" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="694" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="681" width="24" height="14" rx="3" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">실제로 DB 를 바꾸는 유일한 단계</text>
+<text x="1240" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">매일 05:00 가중치 조정은 Python 만 — 모델 없이 반응대로 (feedback_weights)</text>
+</svg></section>
+<section class="one"><p class="eyebrow">Process · paper-harness</p><h1>코드 재현 — 격리 컨테이너에서 exit code 로만 판정</h1><p class="sub">찾은 저장소 → 설치 → 격리 실행 → 판정 → 메일 라벨, 최대 3회</p><svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="repro-isolation-title repro-isolation-desc">
+  <title id="repro-isolation-title">코드 재현 — 격리 실행 후 흔적을 남기지 않는다</title>
+  <desc id="repro-isolation-desc">찾은 저장소를 네트워크 없는 격리 컨테이너에서 설치·실행하고 exit code 로 판정한 뒤, 근거를 기록하고 이미지·빌더·clone 을 모두 지우는 여섯 단계를 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<line x1="234" y1="320.0" x2="261" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="430" y1="320.0" x2="457" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="626" y1="320.0" x2="653" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="822" y1="320.0" x2="849" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="1018" y1="320.0" x2="1045" y2="320.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M738.0 368 V416 A8 8 0 0 1 730.0 424 H354.0 A8 8 0 0 1 346.0 416 V369" fill="none" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="446.0" y="432" width="192" height="16" rx="2" fill="#FFFFFF"/>
+<text x="542.0" y="444" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">실패하면 다음 후보로 — 최대 3회</text>
+<rect x="66" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="66" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="150.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">논문 → 저장소</text>
+<text x="150.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">사다리 1~3단계에서 찾은 것</text>
+<text x="150.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">clone 전 500MB 확인</text>
+<rect x="262" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="262" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="346.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">설치</text>
+<text x="346.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">시도마다 전용 빌더</text>
+<text x="346.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">빌드 단계만 네트워크</text>
+<rect x="458" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="458" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="542.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">격리 실행</text>
+<text x="542.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">--network none</text>
+<text x="542.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">cap-drop ALL · read-only</text>
+<rect x="654" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="654" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="738.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">판정</text>
+<text x="738.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">exit code 만 본다</text>
+<text x="738.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">논문 수치 재현이 아니다</text>
+<rect x="850" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="850" y="272" width="168" height="96" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="934.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">기록</text>
+<text x="934.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">실행 로그 JSON · DB 결과</text>
+<text x="934.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">지우기 전에 먼저 남긴다</text>
+<rect x="1046" y="272" width="168" height="96" rx="6" fill="#FFFFFF"/><rect x="1046" y="272" width="168" height="96" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="1130.0" y="308" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">정리</text>
+<text x="1130.0" y="330" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">이미지·빌더·컨테이너</text>
+<text x="1130.0" y="350" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">clone 까지 — 실패해도 (9/18)</text>
+<text x="64" y="228" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문·저장소는 신뢰하지 않는 입력 — 논문 속 명령문은 데이터로만 (규칙 4)</text>
+<text x="640" y="508" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">재현 성공 = "설치되고 실행이 exit 0 으로 끝났다" 까지다. 논문의 숫자를 다시 얻었다는 뜻이 아니다.</text>
+<text x="640" y="534" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">그전엔 빌드 캐시와 성공 clone 이 계속 쌓여 C 드라이브를 채웠다 — 이제 판정 뒤 전부 지운다.</text>
+<line x1="40" y1="592" x2="1240" y2="592" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="610" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="597" width="24" height="14" rx="3" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="610" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">2026-09-18 새로 붙인 단계</text>
+<text x="1240" y="610" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">전역 prune·볼륨 삭제는 하지 않는다 — 이번 시도가 만든 것만 지운다</text>
+</svg></section>
+  </div>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>메일 반응이 다음 메일을 바꾸는 루프</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Loop · paper-harness</p>
+    <h1>메일 반응이 다음 메일을 바꾸는 루프</h1>
+    <p class="sub">1클릭 반응 → 매일 가중치 → 주 1회 키워드, 전부 revision 으로</p>
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="feedback-loop-title feedback-loop-desc">
+  <title id="feedback-loop-title">메일 반응이 다음 메일을 바꾸는 루프</title>
+  <desc id="feedback-loop-desc">아침 메일의 1클릭 반응이 수집·격리를 거쳐 매일 가중치를 바꾸고, 주 1회 에이전트가 키워드를 손질하며, 모든 변경이 연구 프로필에 revision 으로 남는 순환을 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<path d="M756.000 123.790 A256 256 0 0 1 839.088 191.065" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M877.318 256.000 A256 256 0 0 1 877.766 446.887" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M839.840 512.000 A256 256 0 0 1 757.068 579.664" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M524.000 580.210 A256 256 0 0 1 440.912 512.935" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M402.682 448.000 A256 256 0 0 1 402.234 257.113" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M440.160 192.000 A256 256 0 0 1 522.932 124.336" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="804.574" y1="448.000" x2="735.263" y2="407.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<line x1="640.000" y1="576.000" x2="640.000" y2="410.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<line x1="475.426" y1="448.000" x2="544.737" y2="407.000" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="524" y="64" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="524" y="64" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="640.0" y="92" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">아침 메일</text>
+<text x="640.0" y="112" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">05:00 · 논문 5편 카드</text>
+<rect x="744" y="192" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="744" y="192" width="232" height="64" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="860.0" y="220" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">1클릭 반응</text>
+<text x="860.0" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">더 보고 싶음 · 유용함 · 관심 밖</text>
+<rect x="744" y="448" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="744" y="448" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="860.0" y="476" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">수집·격리</text>
+<text x="860.0" y="496" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">서명 검증 · 선열람·연타 격리 → 반응 기록</text>
+<rect x="524" y="576" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="524" y="576" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="640.0" y="604" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">가중치 갱신</text>
+<text x="640.0" y="624" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">하루 ±0.1 · 목표값 추종 → revision</text>
+<rect x="304" y="448" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="304" y="448" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="420.0" y="476" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">주간 에이전트</text>
+<text x="420.0" y="496" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">금 17:00 · Claude 제안 → Codex 판정</text>
+<rect x="304" y="192" width="232" height="64" rx="6" fill="#FFFFFF"/><rect x="304" y="192" width="232" height="64" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="420.0" y="220" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">검색·순위</text>
+<text x="420.0" y="240" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">arXiv · S2 · 가중치 띠 → 5편</text>
+<rect x="520.0" y="300.0" width="240" height="104" rx="8" fill="#1F3864"/>
+<text x="640" y="344" fill="#FFFFFF" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">연구 프로필</text>
+<text x="640" y="366" fill="#D1D5DB" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">키워드 · 가중치 · 제외어</text>
+<text x="640" y="386" fill="#D1D5DB" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">모든 변경은 revision — 되돌리기 가능</text>
+<line x1="40" y1="676" x2="1240" y2="676" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="694" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<line x1="120" y1="689" x2="160" y2="689" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="172" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">매일 흐름</text>
+<line x1="260" y1="689" x2="300" y2="689" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<text x="312" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">프로필에 기록 (revision)</text>
+<text x="1240" y="694" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">최초 키워드는 사용자가 정하고 자동으로 지우지 않는다 (규칙 1)</text>
+</svg>
+  </div>
+</body>
+</html>

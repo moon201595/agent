@@ -1544,8 +1544,8 @@ def save_repro_result(
     """⑦ Docker 격리 실행 결과를 축적한다. MCP 도구가 아니다 — docker_runner.py
     가 판단(성공/실패)까지 끝낸 뒤 결과만 저장한다(set_review_status 와 동일 패턴).
 
-    local_path: 성공한 시도만 docker_runner.py가 clone을 지우지 않고 여기 남긴다
-    (review_app.py가 "재현된 코드 보기"에서 읽는다) — 실패한 시도는 빈 문자열.
+    local_path: 과거 보관한 clone 경로와의 호환 필드다. 새 재현은 로그·결과를
+    저장한 뒤 clone을 제거하므로 빈 문자열이다(2026-09-18).
 
     fail_detail: 실패 사유를 stage 안에서 한 단계 더 나눈 코드(2026-09-01).
     docker_runner.py 가 결정론적으로 만든다 — repo_not_found / clone_timeout /
