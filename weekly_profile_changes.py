@@ -20,6 +20,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from time_policy import KST
+
 # 자동으로 일어난 변경은 상세히, 사람이 직접 한 변경은 건수만 — 이 절의 주인공은 "시스템이 무엇을 배웠나"다.
 AUTO_ORIGINS = ("feedback", "agent")
 
@@ -66,7 +68,10 @@ def _attribution(db: Path, profile_id: str, start_iso: str, end_iso: str) -> dic
     """{키워드: 그 주에 건드린 주체들}. 한 키워드를 여러 주체가 움직인 주가 실제로 있다
     (2026-09-19 실측: `defect detection` 을 사용자·반응·에이전트가 모두 건드려 0.6→1.7). 마지막 하나만
     적으면 나머지 기여가 사라져 오해를 준다 — 전부 남기고 렌더러가 함께 보여 준다. 가중치 변경에는 `profile_keyword_events` 가 남지 않아(추가·삭제만 남는다)
-    반응·에이전트 쪽 기록에서 따로 찾아야 한다. 어느 쪽에도 없으면 넣지 않는다 — 모르는 것은 모른다고 둔다."""
+    반응·에이전트 쪽 기록에서 따로 찾아야 한다. 어느 쪽에도 없으면 넣지 않는다 — 모르는 것은 모른다고 둔다.
+
+    `origins` 는 **그 기간에 이 항목을 건드린 주체들**이지 기여 분해가 아니다. 스냅숏 두 개는
+    순이동만 안다 — "에이전트가 +0.9, 반응이 +0.2" 는 재지 않았고, 재지 않은 값은 쓰지 않는다(규칙 7)."""
     who: dict[str, set[str]] = {}
     for row in _rows(db, "SELECT changes_json FROM feedback_weight_runs WHERE profile_id=? "
                          "AND created_at>=? AND created_at<?", (profile_id, start_iso, end_iso)):
@@ -92,15 +97,43 @@ def _attribution(db: Path, profile_id: str, start_iso: str, end_iso: str) -> dic
     return {k: tuple(sorted(v)) for k, v in who.items()}
 
 
+def _previous_cycle(db: Path, profile_id: str, end: datetime, days: int) -> str | None:
+    """지난번 이 보고가 나간 시각(UTC ISO). 기록이 없으면 None.
+
+    기간의 뜻은 달력 `days` 일이 아니라 **"지난 보고 이후 ~ 지금"** 이다(2026-09-19 지적).
+    주간 관리와 반응 반영은 스캔이 시작되기 **전**에 끝난다(`run_daily_scan.sh` 월요일 블록 →
+    `scan_and_digest` 0번 절 → `scan_profile` 이 `scan_runs` 를 남긴다). 그래서 지난 회차 **스캔 시작
+    시각**을 경계로 잡으면 그때 이미 보고한 변경이 다음 주에 다시 걸리지 않는다.
+
+    고정 창이 왜 모자란가: PC 가 자면 그날 스캔이 늦게 뜬다(2026-09-18 실측 — 05:00 을 건너뛰고
+    09:45 에 떴다). 지난주가 늦고 이번 주가 제때면 `end - 7일` 창이 지난주 변경을 그대로 삼킨다.
+    같은 날 두 번 돌았으면 마지막 회차가 실제로 나간 메일이므로 `MAX` 를 쓴다."""
+    target = (end.astimezone(KST) - timedelta(days=days)).date()
+    lo = datetime(target.year, target.month, target.day, tzinfo=KST)
+    rows = _rows(db, "SELECT MAX(started_at) AS m FROM scan_runs WHERE profile_id=? "
+                     "AND started_at>=? AND started_at<?",
+                 (profile_id, lo.astimezone(timezone.utc).isoformat(),
+                  (lo + timedelta(days=1)).astimezone(timezone.utc).isoformat()))
+    return rows[0]["m"] if rows and rows[0]["m"] else None
+
+
 def collect(db: Path, profile_id: str, days: int = 7,
             now: datetime | None = None) -> dict | None:
-    """지난 `days` 일 순변화. 바뀐 게 없으면 None — 호출부는 그때 절 자체를 넣지 않는다.
+    """지난 보고 이후의 순변화. 바뀐 게 없으면 None — 호출부는 그때 절 자체를 넣지 않는다.
+
+    기간은 `days` 일 전이 기본이고, 그 사이에 지난 회차 스캔이 있으면 **거기서부터** 센다
+    (`_previous_cycle`). 이번 새벽 주간 관리가 방금 바꾼 것은 스캔보다 앞서 일어나므로 이번 보고에
+    들어오고, 지난 보고에 실린 것은 다시 안 들어온다.
 
     "이번 주 변경 없음"을 매주 출력하는 것은 소음이다(`agent_maintenance.pending_report` 와 같은 철학).
     """
     end = now or datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-    start_iso, end_iso = start.isoformat(), end.isoformat()
+    if end.tzinfo is None:                 # 저장값은 오프셋이 붙어 있다 — 섞이면 문자열 비교가 깨진다
+        end = end.replace(tzinfo=timezone.utc)
+    start_iso, end_iso = (end - timedelta(days=days)).isoformat(), end.isoformat()
+    previous = _previous_cycle(db, profile_id, end, days)
+    if previous and previous > start_iso:
+        start_iso = previous               # 지난 보고 이후로 좁힌다 — 같은 변경을 두 번 싣지 않는다
 
     before = _snapshot_at(db, profile_id, start_iso)
     after = _latest_snapshot(db, profile_id)
