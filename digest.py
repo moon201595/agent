@@ -1303,7 +1303,6 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     lines += _agent_report_lines(scan_result)
     # ⑥ 주간 리뷰는 맨 아래에 붙는다(주 1회). **모든 갈래가 여기로 모인다** —
     # HTML 판도 같은 `weekly_review` 하나를 읽는다.
-    lines += _weekly_review_lines(scan_result)
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1732,9 +1731,18 @@ def narrative_source_label(scan_result: dict) -> str:
     "요약까지 봤다"고 하면 그게 거짓말이다.
     """
     n = int(scan_result.get("narrative_summaries") or 0)
-    if n <= 0:
-        return "LLM 이 제목·초록만 보고 쓴 것."
-    return f"LLM 이 제목·초록과, 그중 {n}편은 원문 요약의 결과까지 보고 쓴 것."
+    base = ("LLM 이 제목·초록만 보고 쓴 것." if n <= 0
+            else f"LLM 이 제목·초록과, 그중 {n}편은 원문 요약의 결과까지 보고 쓴 것.")
+    # 2026-09-18·19: 서술 입력이 넓어졌다. 라벨이 입력과 어긋나면 규칙 8 위반이라 실제로 들어간 것만 적는다.
+    extra = []
+    past_days = int(scan_result.get("narrative_past_days") or 0)
+    if past_days:
+        extra.append(f"지난 {past_days}일 동향 정리")
+    if scan_result.get("weekly_review_context"):
+        extra.append("지난 한 주 집계")
+    if extra:
+        base += f" 여기에 {' · '.join(extra)}를 함께 봤다."
+    return base
 
 
 def _narrative_line_html(line: str) -> str:
@@ -2053,7 +2061,6 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     body += _window_html(scan_result)
     body += details_body
     body += _agent_report_html(scan_result)
-    body += _weekly_review_html(scan_result)
 
     filtered = "" if empty else _filtered_line(scan_result)
     footer = ""

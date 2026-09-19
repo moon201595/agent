@@ -48,6 +48,17 @@ LOCKFILE="logs/daily_scan.lock"
     # 커서를 전진시키므로 **창이 영원히 안 넘어간다**. 2026-08-31 핵심
     # 키워드를 12→26 개로 넓히면서 후보 수가 상한을 넘길 여지가 생겨
     # 여유를 뒀다(후보가 적으면 페이지를 다 안 받으므로 비용은 그대로다).
+    # 월요일이면 **주간 관리(키워드 조정)를 먼저** 돌리고 바로 이어서 일일 스캔을 한다
+    # (2026-09-19 사용자 결정). 그전에는 금요일 17:00 에 따로 돌았다 — 그러면 금요일에 바꾼
+    # 키워드가 주말(arXiv 신규가 거의 없는 이틀)을 헛돌고 월요일에야 효과를 본다. 같은 락 안에서
+    # 순서대로 도니 두 작업이 겹칠 일도 없다. 실패해도 일일 스캔은 그대로 진행한다(규칙 6).
+    if [ "$(TZ=Asia/Seoul date +%u)" = "1" ]; then
+        echo "--- 월요일: 주간 관리 먼저"
+        .venv/bin/python db_retention.py --apply > logs/retention_last.json || echo "  [주간] DB 정리 실패(무시)"
+        .venv/bin/python agent_maintenance.py || echo "  [주간] 에이전트 실패(무시)"
+        echo "$(TZ=Asia/Seoul date +%G-W%V)" > logs/weekly_agent.stamp
+    fi
+
     .venv/bin/python run_profile_scan.py --all --send --max-pages 30
     status=$?
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 종료 (exit $status) ==="

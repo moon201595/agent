@@ -264,3 +264,69 @@ def test_mail_keeps_paper_toggles_without_historical_news_or_appendices(db, monk
         assert "이전에 보낸 논문" not in output
         assert "서술 근거 대조" not in output
         assert "수집 범위와 해석 한계" not in output
+
+
+def test_monday_narrative_prompt_carries_the_weekly_numbers(db, tmp_path, monkeypatch):
+    """월요일 글은 한 주 중 가장 두껍다 — 오늘 논문 + 지난 5일 서술 + **지난 한 주 집계**를 다 보고 쓴다
+    (2026-09-19 사용자 결정). 주간 집계를 메일에 별도 절로 싣지 않는 대신 여기로 들어간다.
+
+    이 테스트가 잡는 것: 월요일에 집계를 뽑고도 서술 프롬프트에 안 넣는 것(그러면 월요일 글이 평일과 똑같아진다) ·
+    모델에게 "새 수치를 만들지 말라"는 지시를 빠뜨리는 것 · 평일에 주간 집계가 새어 들어가는 것."""
+    import server
+    import summarize_engine as se
+    monkeypatch.setattr(server, "DB_PATH", db)
+    rows = [paper(aid, "Robot " + aid, abstract="Tactile sensing for control") for aid in ("a", "b", "c")]
+    source = tmp_path / "source.txt"
+    source.write_text("Robots use tactile sensing. Evaluation was indoors only.")
+    summary = tmp_path / "summary.md"
+    summary.write_text("### 결과\n- 실내 실험을 했다 [S0002]\n")
+    for row in rows:
+        rp.record_candidates(db, "team", [row], rp.OUTCOME_CONTENT)
+        with sqlite3.connect(db) as con:
+            con.execute("INSERT INTO papers(arxiv_id,title,text_path) VALUES (?,?,?)",
+                        (row["arxiv_id"], row["title"], str(source)))
+            con.execute("INSERT INTO summaries(arxiv_id,path,numbers_total,numbers_matched,"
+                        "coverage_ratio,coverage_kind,created_at) VALUES (?,?,1,1,1,'measured',?)",
+                        (row["arxiv_id"], str(summary), "2026-09-09T00:00:00+00:00"))
+
+    async def scan(*args):
+        return {"papers": rows, "candidates_found": 3, "run_status": "done"}
+
+    async def sweep():
+        return {"checked": 0, "resolved": 0, "retracted": 0, "remaining": 0}
+
+    async def process(client, aid, **kwargs):
+        return {"status": "done", "skipped": True, "arxiv_id": aid}
+
+    async def fake_build(dbp, profile, client=None, days=7, with_references=True,
+                         with_narrative=True, with_frontier=True):
+        assert with_narrative is False, "월요일 글은 하나로 모은다 — 리뷰가 따로 LLM 을 부르면 안 된다"
+        return "■ 주간 집계\n키워드 defect detection 5편 (지난주 2편)\n"
+
+    prompts = []
+
+    async def generate(client, prompt):
+        prompts.append(prompt)
+        return "■ 오늘 눈에 띄는 것\n실내 평가다 [P1:S0002]"
+
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", process)
+    monkeypatch.setattr(rps, "scan_profile", scan)
+    monkeypatch.setattr(rps, "_summary_exists", lambda aid: True)
+    monkeypatch.setattr(server, "sweep_retraction_status", sweep)
+    monkeypatch.setattr(rps.trend_report, "build", fake_build)
+    monkeypatch.setattr(se, "_post_gemini", generate)
+
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
+    result, text = asyncio.run(rps.scan_and_digest(db, "team", None))
+    assert len(prompts) == 1
+    assert "defect detection 5편" in prompts[0]              # 집계가 서술 입력으로 갔다
+    assert "새 수치를 만들지 않는다" in prompts[0]            # 지어내지 말라는 지시도 같이
+    assert "지난 한 주" in digest.narrative_source_label(result)   # 라벨이 그 사실을 말한다
+    for mail in (text, digest.generate_digest_html(result, "팀")):
+        assert "주간 동향 리뷰" not in mail                   # 별도 절로는 안 나간다
+
+    prompts.clear()
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: False)
+    _r2, _t2 = asyncio.run(rps.scan_and_digest(db, "team", None))
+    if prompts:                                              # 평일엔 주간 집계가 없어야 한다
+        assert "주간 집계" not in prompts[0]

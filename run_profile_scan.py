@@ -329,6 +329,24 @@ async def scan_and_digest(
     # 인용망 조회(주간 리뷰의 비싼 부분)는 여기 안 붙인다 — 그건 주 1회 그대로다.
     research_profile.attach_observation_dates(db_path, profile_id,
         list(result.get("papers") or []) + list(result.get("title_only_papers") or []))
+    # 월요일이면 주간 리뷰 수치를 **서술보다 먼저** 뽑는다(2026-09-19 사용자 결정).
+    # 서술 블록 **밖**에 두는 이유: 그날 내용 자리 논문이 0편이면 서술을 안 쓰는데, 그렇다고 한 주 집계까지
+    # 사라지면 그 주의 기록이 통째로 빈다. 계산·보관은 논문 유무와 무관하게 하고, 서술이 돌면 입력으로 넘긴다.
+    # `with_narrative=False` 라 리뷰 자체의 LLM 호출은 안 한다 — 월요일 글은 하나로 모은다(호출도 하나 준다).
+    weekly_ctx = None
+    if profile and is_weekly_review_day():
+        try:
+            weekly_ctx = await trend_report.build(db_path, profile, client=client,
+                                                  with_narrative=False)
+            result["weekly_review_context"] = weekly_ctx
+            print(f"  [동향] 주간 리뷰 수치를 서술 입력으로 넣는다 ({len(weekly_ctx):,}자)")
+            import narrative_store as _ns
+            _ns.save(db_path, profile_id, _ns.WEEKLY, weekly_ctx,
+                     scan_id=result.get("scan_id"), window_days=7)
+        except Exception as e:  # noqa: BLE001 — 주간 수치가 없어도 오늘 서술·메일은 나간다
+            weekly_ctx = None
+            print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
+
     if profile and result.get("papers"):
         try:
             shown = list(result["papers"]) + list(result.get("title_only_papers") or [])
@@ -387,9 +405,10 @@ async def scan_and_digest(
                 past = []
                 print(f"  [동향] 지난 서술 조회 실패(무시): {type(e).__name__}")
             if past:
+                result["narrative_past_days"] = len(past)      # 메일 라벨이 실제 입력을 말하려면 이 수가 필요하다
                 print(f"  [동향] 지난 서술 {len(past)}일치를 맥락으로 넣는다 ({past[-1]['reader_date']}~{past[0]['reader_date']})")
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
-                                                 movement=movement, past=past)
+                                                 movement=movement, past=past, weekly=weekly_ctx)
             if story:
                 text, ungrounded, enriched, engine = story
                 result["narrative_engine"] = engine
@@ -411,29 +430,8 @@ async def scan_and_digest(
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
 
-    # 주간 동향 리뷰는 **주 1회만** 붙인다(월요일). 매일 붙이면 어제와 거의
-    # 같은 표가 반복돼 읽히지 않고, 인용망 조회 비용도 매일 낼 이유가 없다.
-    # 실패해도 다이제스트를 막지 않는다 — 부가 정보다.
-    #
-    # 2026-09-07 §8-70 고침: 예전에는 여기서 `digest_text` 에 문자열로
-    # 이어붙였다. 그런데 _deliver 는 HTML 을 `result` 로 **다시 만들기**
-    # 때문에 HTML 메일에는 이 절이 통째로 빠져 있었다 — 메일은
-    # multipart/alternative 이고 Gmail 은 HTML 을 보여주므로, 2026-09-07 에
-    # 처음 돌아간 주간 리뷰는 실행은 됐지만 사용자 화면에 닿지 않았다.
-    # 이제 `result` 에 넣는다. 평문·HTML 두 렌더러가 같은 값을 읽으므로
-    # 렌더링 위치가 갈라져도 입력은 하나다(§8-67 의 교훈).
-    if profile and is_weekly_review_day():
-        try:
-            result["weekly_review"] = await trend_report.build(db_path, profile, client=client)
-            print("  [동향] 주간 리뷰를 다이제스트에 붙였다")
-            try:
-                import narrative_store
-                narrative_store.save(db_path, profile_id, narrative_store.WEEKLY,
-                                     result["weekly_review"], scan_id=result.get("scan_id"), window_days=7)
-            except Exception as e:  # noqa: BLE001
-                print(f"  [동향] 주간 리뷰 보관 실패(무시): {type(e).__name__}")
-        except Exception as e:  # noqa: BLE001
-            print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
+    # 주간 리뷰는 위 서술 블록에서 **서술의 입력으로** 먼저 뽑는다(2026-09-19). 여기서 따로 만들어
+    # 메일에 별도 절로 붙이던 것을 없앴다 — 같은 주 자료를 두 글이 따로 읽던 구조였다.
 
     # 2026-09-10: 과거 논문 재통지는 중단한다. 오늘 보낼 논문의 현재
     # 철회 상태만 점검하고 ⑦ 종료 결과는 위 처리 단계에서 이미 확보한다.
