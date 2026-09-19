@@ -285,20 +285,51 @@ def test_every_agent_op_has_a_kind():
     assert set(wpc.OP_KIND) == set(agent_maintenance.OPS)
 
 
-def test_heading_reports_the_real_window_not_the_argument(tmp_path):
-    """이 테스트가 잡는 것: 제목이 `days` 인자를 그대로 말해 실제 기간과 어긋나는 것.
-    경계가 "지난 보고 이후"라 한 주를 거르면 14일이 되는데 제목만 7일이면 거짓말이다."""
+def test_a_missed_week_widens_the_window_by_itself(tmp_path):
+    """이 테스트가 잡는 것: 지난 회차를 **정확히 `days` 일 전 하루**에서만 찾는 것(2026-09-20 지적).
+
+    production 은 늘 `collect(db, pid)` 즉 `days=7` 로 부른다. 한 주를 통째로 거르면 그 날짜에 회차가
+    없어 고정 7일로 물러나고, 그 사이 변경이 **어느 보고에도 안 실린 채** 사라진다. 이 보고가 나가는
+    요일의 가장 최근 회차를 찾으면 저절로 14일이 된다. 제목도 인자가 아니라 실제 창에서 재야 한다."""
     db = tmp_path / "p.db"
     utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
-    now = utc(2026, 9, 28, 5, 5)
-    _snap(db, "p1", 1, utc(2026, 9, 13, 5, 0), "user", [["X", "core", 1.0]])
-    _snap(db, "p1", 2, utc(2026, 9, 27, 5, 0), "feedback", [["X", "core", 1.4]])
-    with sqlite3.connect(db) as con:           # 지난 회차가 2주 전이다 — 한 주를 걸렀다
+    now = utc(2026, 10, 5, 5, 5)               # 월요일
+    _snap(db, "p1", 1, utc(2026, 9, 21, 5, 1), "agent", [["X", "core", 1.0]])
+    _snap(db, "p1", 2, utc(2026, 9, 24, 5, 0), "feedback", [["X", "core", 1.4]])
+    with sqlite3.connect(db) as con:
+        # 9/21 월요일에는 돌았고 9/28 월요일에는 아예 안 돌았다. 그 사이 평일 회차는 보고 회차가 아니다.
         con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
                     " policy_version) VALUES ('s1','p1',?,?,'test')",
-                    (utc(2026, 9, 14, 5, 2).isoformat(),
+                    (utc(2026, 9, 21, 5, 2).isoformat(),
                      json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.0}})))
-    out = wpc.collect(db, "p1", days=14, now=now)
-    scan = {"profile_changes": out}
-    assert "지난 14일 검색 기준 변화" in "\n".join(digest._profile_changes_section(scan))
-    assert "지난 14일 검색 기준 변화" in digest._profile_changes_html(scan)
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('s2','p1',?,?,'test')",
+                    (utc(2026, 9, 30, 5, 2).isoformat(),      # 수요일 — 건너뛴다
+                     json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.4}})))
+    out = wpc.collect(db, "p1", days=7, now=now)             # production 과 같은 인자
+    assert out["window"][0] == utc(2026, 9, 21, 5, 2).isoformat()
+    assert (out["weights"][0]["before"], out["weights"][0]["after"]) == (1.0, 1.4)
+    assert "지난 14일 검색 기준 변화" in "\n".join(digest._profile_changes_section({"profile_changes": out}))
+
+
+def test_an_empty_monday_shows_the_same_change_section_in_both_formats(tmp_path):
+    """이 테스트가 잡는 것: 논문 0편인 월요일에 평문만 검색 기준 변화를 빠뜨리는 것(§8-70 과 같은 병).
+
+    그날 논문이 없어도 그 새벽 주간 관리가 기준을 바꿨으면 알려야 한다 — 오히려 "왜 0편인가"의 답일 수 있다.
+    helper 를 직접 부르지 않고 **실제 다이제스트 두 판**을 만들어 본다. 갈라진 자리가 거기였다."""
+    db = tmp_path / "p.db"
+    _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["defect detection", "core", 1.0]])
+    _snap(db, "p1", 2, NOW - timedelta(days=1), "agent", [["defect detection", "core", 1.4]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, applied_json,"
+                    " base_revision, new_revision) VALUES (?,?,?,?,?,?,?)",
+                    ("p1", "2026-W38", (NOW - timedelta(days=1)).isoformat(), "applied",
+                     json.dumps([{"op": "set_weight", "term": "defect detection", "weight": 1.4,
+                                  "reason": "반응 두 건"}]), 1, 2))
+    out = wpc.collect(db, "p1", days=7, now=NOW)
+    scan = {"papers": [], "title_only_papers": [], "candidates_found": 0, "profile_changes": out}
+    text = digest.generate_digest(scan, "P")
+    html = digest.generate_digest_html(scan, "P")
+    for needle in ("검색 기준 변화", "defect detection", "반응 두 건"):
+        assert needle in text, f"평문: {needle}"
+        assert needle in html, f"HTML: {needle}"

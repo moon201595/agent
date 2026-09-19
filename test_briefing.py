@@ -323,6 +323,7 @@ def test_monday_narrative_prompt_carries_the_weekly_numbers(db, tmp_path, monkey
     # 계산·보관은 하되 모델에는 주지 않는다 — 기간 비교는 window_movement 몫이다.
     assert "defect detection 5편" not in prompts[0]
     assert "주간 집계" not in prompts[0]
+    asyncio.run(rps.record_weekly_diagnostics(db, "team", result))             # 발송 뒤 단계가 남긴다
     assert "defect detection 5편" in (result.get("weekly_diagnostics") or "")   # 진단용으로는 남는다
     assert "지난 한 주" not in digest.narrative_source_label(result)            # 라벨도 봤다고 하지 않는다
     for mail in (text, digest.generate_digest_html(result, "팀")):

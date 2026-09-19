@@ -341,45 +341,62 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
 
 
 # ---------------------------------------------------------------- 메일
-def test_agent_report_renders_in_both_mails_escaped(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: 보고가 평문·HTML 한쪽에만 실리는 것, 모델이 쓴 reason 을 HTML 이스케이프 없이 싣는 것,
-    보고가 없을 때 빈 제목만 남는 것."""
+def test_the_old_agent_report_never_renders_again(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 옛 `agent_report` 절을 메일에 다시 붙이는 것(2026-09-20).
+
+    주간 관리가 월요일 체인으로 옮겨 오면서(§8-163) 같은 변경이 `지난 7일 검색 기준 변화` 절과
+    **한 메일에 두 번** 실리게 됐다. 게다가 옛 경로는 `reported_at` 기준이라 월요일 발송이 한 명에게라도
+    실패하면 화요일 메일에 다시 붙었다. 에이전트 변경을 메일에 싣는 곳은 이제 한 곳뿐이다."""
     import server, storage
     store = tmp_path / "s.db"
     storage.init_storage(store)
     for mod in (server, storage):
         monkeypatch.setattr(mod, "DB_PATH", store)
     result = {"papers": [], "candidates_found": 0,
-              "agent_report": ["· 2026-W38 변경 (revision 4 → 5, 되돌릴 수 있음)", "   - 키워드 추가: tactile skin 0.7 — <b>반복</b>"]}
+              "agent_report": ["· 2026-W38 변경 (revision 4 → 5, 되돌릴 수 있음)"]}
     text = digest.generate_digest(result, "P")
     html = digest.generate_digest_html(result, "P")
-    assert "■ 이번 주 에이전트가 바꾼 것" in text and "키워드 추가: tactile skin 0.7" in text
-    assert "이번 주 에이전트가 바꾼 것" in html and "&lt;b&gt;반복&lt;/b&gt;" in html and "<b>반복</b>" not in html
-    result.pop("agent_report")
-    assert "에이전트" not in digest.generate_digest(result, "P") and "에이전트" not in digest.generate_digest_html(result, "P")
+    assert digest.AGENT_REPORT_TITLE not in text
+    assert digest.AGENT_REPORT_TITLE not in html
+    assert "2026-W38" not in text and "2026-W38" not in html
 
 
-def test_deliver_attaches_report_and_marks_it_only_after_a_send(world, monkeypatch, tmp_path):
-    """이 테스트가 잡는 것: 발송 루프가 보고를 안 싣는 것, 발송이 전부 실패했는데 보고를 '실림'으로 표시해 영영 못 보게 하는 것."""
+def test_agent_reason_is_escaped_in_the_change_section(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 모델이 쓴 사유를 HTML 이스케이프 없이 싣는 것. 사유는 LLM 출력이라
+    비신뢰 문자열로 다룬다 — 옛 `agent_report` 절이 지키던 계약을 새 절이 이어받는다."""
+    import server, storage
+    store = tmp_path / "s.db"
+    storage.init_storage(store)
+    for mod in (server, storage):
+        monkeypatch.setattr(mod, "DB_PATH", store)
+    changes = {"window": ("2026-09-14T00:00:00+00:00", "2026-09-21T00:00:00+00:00"), "days": 7,
+               "weights": [], "added": [], "removed": [], "by_actor": {}, "reactions_used": 0,
+               "agent": {"applied": [{"op": "add_keyword", "term": "tactile skin", "weight": 0.7,
+                                      "basis": "feedback", "reason": "<b>반복</b>"}],
+                         "impact": None, "shadow": None, "failed": None}}
+    result = {"papers": [], "candidates_found": 0, "profile_changes": changes}
+    html = digest.generate_digest_html(result, "P")
+    assert "&lt;b&gt;반복&lt;/b&gt;" in html and "<b>반복</b>" not in html
+    assert "[반응 근거]" in digest.generate_digest(result, "P")   # 근거 표시도 새 절이 이어받는다
+
+
+def test_deliver_no_longer_attaches_the_old_report(world, monkeypatch, tmp_path):
+    """이 테스트가 잡는 것: 발송 루프가 `pending_report` 를 다시 읽어 view 에 붙이는 것.
+    `pending_report` 자체는 남아 있지만(agent_runs 상태 해석의 기준 구현) **메일 경로에는 없다**."""
     import email_delivery, server, storage
     store = tmp_path / "s.db"
     storage.init_storage(store)
     for mod in (server, storage):
         monkeypatch.setattr(mod, "DB_PATH", store)
     b = am.build_brief(world, "p")
-    am.run_profile(world, "p", FakeRunner(None, {"reviews": [], "actions": [_act("add_keyword", "tactile skin", [_rid(b, "tactile")], 0.7, "반복")]}))
+    am.run_profile(world, "p", FakeRunner(None, {"reviews": [], "actions": [
+        _act("add_keyword", "tactile skin", [_rid(b, "tactile")], 0.7, "반복")]}))
     rp.add_recipient(world, "p", "alice@x.com")
-
-    def fail(*a, **k):
-        raise RuntimeError("smtp down")
-    monkeypatch.setattr(email_delivery, "send_digest_email", fail)
-    rps._deliver(world, "p", {"papers": [], "candidates_found": 0}, "")
-    assert am.pending_report(world, "p")[1]
     sent = []
     monkeypatch.setattr(email_delivery, "send_digest_email", lambda text, subject, to, html: sent.append(text))
     rps._deliver(world, "p", {"papers": [], "candidates_found": 0}, "")
-    assert "키워드 추가: tactile skin" in sent[0]
-    assert am.pending_report(world, "p") == ([], [])
+    assert sent and "tactile skin" not in sent[0]
+    assert am.pending_report(world, "p")[1]      # 표시도 안 한다 — 메일이 읽지 않으니 전진시킬 이유가 없다
 
 
 def test_agent_actor_keeps_agent_provenance(tmp_path):
@@ -497,29 +514,6 @@ def test_old_unreported_runs_expire(world):
     am.run_profile(world, "p", FakeRunner(None, {"reviews": [], "actions": [_act("add_keyword", "tactile skin", [_rid(b, "tactile")], 0.7)]}))
     assert am.pending_report(world, "p")[1]
     assert am.pending_report(world, "p", now=datetime.now(timezone.utc) + timedelta(days=15)) == ([], [])
-
-
-def test_partial_delivery_keeps_the_report_for_the_next_mail(world, monkeypatch, tmp_path):
-    """이 테스트가 잡는 것: 수신자 한 명에게만 나갔는데 보고를 '실림'으로 표시해, 못 받은 사람이 영영 못 보는 것."""
-    import email_delivery, server, storage
-    store = tmp_path / "s.db"
-    storage.init_storage(store)
-    for mod in (server, storage):
-        monkeypatch.setattr(mod, "DB_PATH", store)
-    b = am.build_brief(world, "p")
-    am.run_profile(world, "p", FakeRunner(None, {"reviews": [], "actions": [_act("add_keyword", "tactile skin", [_rid(b, "tactile")], 0.7)]}))
-    rp.add_recipient(world, "p", "alice@x.com")
-    rp.add_recipient(world, "p", "bob@x.com")
-
-    def half(text, subject, to, html):
-        if to[0].startswith("bob"):
-            raise RuntimeError("550 mailbox unavailable")
-    monkeypatch.setattr(email_delivery, "send_digest_email", half)
-    rps._deliver(world, "p", {"papers": [], "candidates_found": 0}, "")
-    assert am.pending_report(world, "p")[1]
-    monkeypatch.setattr(email_delivery, "send_digest_email", lambda *a, **k: None)
-    rps._deliver(world, "p", {"papers": [], "candidates_found": 0}, "")
-    assert am.pending_report(world, "p") == ([], [])
 
 
 def test_secret_detector_catches_env_style_names_but_not_long_terms():

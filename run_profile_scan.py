@@ -346,24 +346,6 @@ async def scan_and_digest(
         except Exception as e:  # noqa: BLE001 — 변화 보고가 실패해도 메일은 나간다
             print(f"  [주간] 검색 기준 변화 집계 실패(무시): {type(e).__name__}")
 
-    weekly_ctx = None
-    if profile and is_weekly_review_day():
-        try:
-            weekly_ctx = await trend_report.build(db_path, profile, client=client,
-                                                  with_narrative=False)
-            # **서술에는 넣지 않는다**(2026-09-19 오후 재검토). 실제로 뽑아 보니 5,471자 중 60% 넘게가
-            # 검색 지문·S2 시드 수율·탈락 사유·프로필 건강 같은 운영 진단이고, 그 안에 "한 시드에서만
-            # 반복된 말 : 검색 잡음 진단" 절이 있다(impedance spectroscopy·classroom action 따위).
-            # 그걸 동향 모델에 주면 잡음을 트렌드로 쓴다. 기간 비교는 이미 `window_movement` 가 한다.
-            # 계산·보관은 그대로 둔다 — 개발·운영 진단 자료로는 쓸모가 있다.
-            result["weekly_diagnostics"] = weekly_ctx
-            print(f"  [동향] 주간 진단 {len(weekly_ctx):,}자 보관(서술 입력 아님)")
-            import narrative_store as _ns
-            _ns.save(db_path, profile_id, _ns.WEEKLY, weekly_ctx,
-                     scan_id=result.get("scan_id"), window_days=7)
-        except Exception as e:  # noqa: BLE001 — 주간 수치가 없어도 오늘 서술·메일은 나간다
-            weekly_ctx = None
-            print(f"  [동향] 주간 리뷰 실패(무시): {type(e).__name__}")
 
     if profile and result.get("papers"):
         try:
@@ -492,6 +474,36 @@ async def scan_and_digest(
     return result, digest_text
 
 
+async def record_weekly_diagnostics(db_path: Path, profile_id: str, result: dict,
+                                    now: datetime | None = None) -> str | None:
+    """월요일 운영 진단(`trend_report.build`)을 계산해 남긴다. **발송 뒤에 부른다.**
+
+    이 글은 메일에 안 실린다(2026-09-19 — 기간 비교는 `window_movement` 와 겹치고 나머지는 운영 지표다).
+    그런데 스캔 한가운데 있는 동안은 **메일이 이걸 기다렸다**: 2026-09-20 실측으로 `client=None`(네트워크 없음)
+    으로도 프로필당 175초였고, 네 프로필이면 12분이 아침 메일 앞에 붙는다. client 를 주면 그 위에
+    S2 인용망 조회까지 붙는데 그 경로가 예전에 300초를 넘겨 timeout 났던 자리다.
+    **안 실리는 자료가 나가는 메일을 늦추면 안 된다**(규칙 6).
+
+    실패해도 조용히 넘어간다 — 이미 메일은 나갔고 이건 개발·운영용 기록이다.
+    """
+    if not is_weekly_review_day(now):
+        return None
+    try:
+        profile = research_profile.get_profile(db_path, profile_id)
+        if not profile:
+            return None
+        text = await trend_report.build(db_path, profile, client=None, with_narrative=False)
+        result["weekly_diagnostics"] = text
+        import narrative_store as _ns
+        _ns.save(db_path, profile_id, _ns.WEEKLY, text,
+                 scan_id=result.get("scan_id"), window_days=7)
+        print(f"  [동향] 주간 진단 {len(text):,}자 보관(메일 아님, 발송 뒤)")
+        return text
+    except Exception as e:  # noqa: BLE001 — 진단이 없어도 오늘 메일은 이미 나갔다
+        print(f"  [동향] 주간 진단 실패(무시): {type(e).__name__}")
+        return None
+
+
 async def scan_all_profiles(
     db_path: Path, client: httpx.AsyncClient, max_pages: int = 10,
     send: bool = False,
@@ -527,6 +539,8 @@ async def scan_all_profiles(
                 if delivery_reached_someone(message):
                     research_profile.mark_shown(
                         db_path, profile_id, result.get("papers") or [])
+            # 월요일 운영 진단은 **발송 뒤**다 — 메일에 안 실리는 자료가 메일을 기다리면 안 된다.
+            await record_weekly_diagnostics(db_path, profile_id, result)
             summary[profile_id] = entry
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
@@ -631,6 +645,8 @@ def main() -> int:
         # --all 경로와 같은 규칙 — 실제로 간 뒤에만 소비 처리한다(§8-77).
         if delivery_reached_someone(message):
             research_profile.mark_shown(db_path, args.profile_id, result.get("papers") or [])
+    # --all 경로와 같은 자리 — 발송 뒤에 진단을 남긴다(main 은 동기라 여기서 다시 루프를 연다).
+    asyncio.run(record_weekly_diagnostics(db_path, args.profile_id, result))
     return 0
 
 

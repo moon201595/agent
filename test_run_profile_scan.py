@@ -917,9 +917,13 @@ def test_weekly_diagnostics_are_kept_but_never_fed_to_the_model(tmp_path, monkey
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
 
     result, _text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    # **스캔 안에서는 안 뽑는다**(2026-09-20). 실측으로 네트워크 없이도 프로필당 175초라, 메일에 안 실리는
+    # 자료가 아침 메일을 12분 늦추고 있었다. 발송 뒤 단계가 뽑는다.
+    assert "weekly_diagnostics" not in result
+    assert asyncio.run(rps.record_weekly_diagnostics(db_path, "team_ai", result))
     assert seen["with_narrative"] is False          # 리뷰는 수치만 — 서술은 하나로 모은다
     # 이 픽스처는 내용 자리 논문이 0편이라 서술이 안 돈다. **그래도** 집계는 나와야 한다 —
-    # 논문 없는 월요일에 그 주 기록이 통째로 비면 안 되기 때문이다(서술 블록 밖에 둔 이유).
+    # 논문 없는 월요일에 그 주 기록이 통째로 비면 안 되기 때문이다.
     assert "defect detection 5편" in (result.get("weekly_diagnostics") or "")
     assert "weekly_review_context" not in result        # 옛 이름으로 되살리지 않는다
 
@@ -985,6 +989,7 @@ def test_old_weekly_review_block_is_gone_from_both_mail_formats(tmp_path, monkey
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
 
     result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    asyncio.run(rps.record_weekly_diagnostics(db_path, "team_ai", result))   # 발송 뒤 단계
 
     assert "처리한 논문 12편" in (result.get("weekly_diagnostics") or "")   # 진단으로는 남는데
     html = rps.digest.generate_digest_html(result, "team_ai")

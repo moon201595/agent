@@ -80,14 +80,10 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
     # FEEDBACK_WEBAPP_URL·FEEDBACK_HMAC_SECRET)이 없으면 빈 dict 라 메일은 예전 그대로다.
     import feedback_links
     issue_id = feedback_links.new_issue_id(profile_id)
-    # 주간 관리 에이전트 보고(2026-09-15): 금요일 실행 뒤 첫 메일에 한 번 싣는다. 못 읽어도 메일은 나간다(규칙 6).
-    agent_lines: list[str] = []
-    agent_keys: list[tuple[str, str]] = []
-    try:
-        import agent_maintenance
-        agent_lines, agent_keys = agent_maintenance.pending_report(db_path, profile_id)
-    except Exception as error:  # noqa: BLE001
-        print(f"  [에이전트] 보고 조회 실패(보고 없이 발송): {type(error).__name__}")
+    # 주간 관리 에이전트가 바꾼 것은 **`weekly_profile_changes` 한 곳**에서만 메일에 실린다(2026-09-20).
+    # 그전에는 여기서 `agent_maintenance.pending_report` 를 따로 읽어 붙였는데, 주간 관리가 월요일 체인으로
+    # 옮겨 오면서(§8-163) 같은 변경이 `지난 7일 검색 기준 변화` 절과 **한 메일에 두 번** 실리게 됐다.
+    # 게다가 이 경로는 `reported_at` 기준이라 월요일 발송이 한 명에게라도 실패하면 **화요일 메일에 다시** 붙었다.
     # 수신자 하나가 거절돼도 다른 수신자의 기준 상태를 함께 전진시키면 안 된다.
     # 기존 SMTP 함수에 한 명씩 넘기므로 부분 거절도 그 수신자의 실패로 드러난다.
     subject = mail_subject(name)
@@ -97,8 +93,6 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             states = result.get("_evidence_states")
             # 이전 수신 이력을 다음 메일 내용으로 다시 조립하지 않는다.
             view.pop("state_updates", None)
-            if agent_lines:
-                view["agent_report"] = agent_lines
             try:
                 links = feedback_links.issue_links(db_path, profile_id, issue_id, recipient, result.get("papers") or [])
             except Exception as error:  # noqa: BLE001 — 버튼을 못 만들어도 메일은 나가야 한다(CLAUDE.md 규칙 6)
@@ -126,13 +120,6 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
                                  len(recipients), sent)
     except Exception as error:  # noqa: BLE001
         print(f"  [발송 기록] 실패(무시): {type(error).__name__}")
-    # 모든 수신자에게 나갔을 때만 '실림'으로 표시한다 — 한 명이라도 실패하면 다음 메일에 다시 싣는다(받은 사람은 한 번 더 보지만
-    # 못 받은 사람이 영영 못 보는 것보다 낫다. 외부 검토 2026-09-15). 계속 거절되는 주소는 REPORT_TTL(14일)이 반복을 끊는다.
-    if agent_keys and sent == len(recipients):
-        try:
-            agent_maintenance.mark_reported(db_path, agent_keys)
-        except Exception as error:  # noqa: BLE001 — 표시 실패는 다음 메일에 한 번 더 실릴 뿐이다
-            print(f"  [에이전트] 보고 표시 실패: {type(error).__name__}")
     if failures:
         return f"{DELIVERY_FAILED_PREFIX}: {sent}/{len(recipients)}명 전송 수락 · " + " / ".join(failures)
     return f"{DELIVERY_SENT_PREFIX} → {sent}명"

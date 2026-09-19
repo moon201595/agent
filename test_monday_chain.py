@@ -24,15 +24,34 @@ def test_monday_runs_weekly_maintenance_before_the_scan():
     assert "|| echo" in sh[chain - 200:scan], "주간 관리가 실패해도 스캔은 이어져야 한다(규칙 6)"
 
 
-def test_weekly_numbers_go_into_the_narrative_not_a_separate_mail_block():
-    """이 테스트가 잡는 것: 주간 리뷰를 메일에 별도 절로 되살리는 것 · 서술 입력에서 빼는 것."""
+def test_the_weekly_table_reaches_neither_the_mail_nor_the_model():
+    """이 테스트가 잡는 것: 주간 운영 표를 메일 절로 되살리는 것 · **서술 입력으로 다시 넘기는 것**.
+
+    2026-09-19 오후에 뺐다 — `build()` 출력 5,471자 중 60% 넘게가 검색 지문·S2 수율·프로필 건강 같은
+    운영 진단이고 그 안에 검색 잡음 절이 있다(impedance spectroscopy 따위). 기간 비교는 `window_movement`
+    가 매일 한다. `narrative(weekly=...)` 자리는 아직 코드에 남아 있지만 **부르는 쪽이 안 준다** —
+    여기서 지키는 것은 그 사실이다."""
     body = (ROOT / "digest.py").read_text(encoding="utf-8")
     assert "lines += _weekly_review_lines(scan_result)" not in body
     assert "body += _weekly_review_html(scan_result)" not in body
-    ctx = trend_report._weekly_context("키워드 A 12편 (지난주 8)")
-    assert "12편" in ctx
-    assert "새 수치를 만들지 않는다" in ctx          # 모델이 수치를 지어내지 못하게
-    assert trend_report._weekly_context(None) == ""
+    scan = (ROOT / "run_profile_scan.py").read_text(encoding="utf-8")
+    call = scan[scan.index("story = await trend_report.narrative("):]
+    assert "weekly=" not in call[:call.index(")\n")]
+
+
+def test_weekly_diagnostics_run_after_the_mail_not_before_it():
+    """이 테스트가 잡는 것: 월요일 운영 진단을 다시 스캔 한가운데로 옮기는 것.
+
+    2026-09-20 실측 — `trend_report.build` 는 `client=None`(네트워크 없음)으로도 프로필당 175초다.
+    스캔 안에 있으면 네 프로필이면 12분이 아침 메일 **앞**에 붙는다. 메일에 안 실리는 자료가 나가는
+    메일을 늦추면 안 된다(규칙 6)."""
+    scan = (ROOT / "run_profile_scan.py").read_text(encoding="utf-8")
+    assert "trend_report.build" not in scan[scan.index("async def scan_and_digest"):
+                                            scan.index("async def record_weekly_diagnostics")]
+    loop = scan[scan.index("async def scan_all_profiles"):]
+    assert loop.index("_deliver(") < loop.index("record_weekly_diagnostics("), "진단은 발송 뒤다"
+    diag = scan[scan.index("async def record_weekly_diagnostics"):scan.index("async def scan_all_profiles")]
+    assert "client=None" in diag, "진단이 S2 인용망을 다시 기다리면 안 된다"
 
 
 def test_label_names_every_input_the_narrative_actually_had():

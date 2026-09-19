@@ -1137,6 +1137,32 @@ def _window_days(ch: dict) -> int:
         return int(ch.get("days") or 7)
 
 
+def _agent_labels() -> tuple[dict, dict]:
+    """op·실패 사유 라벨은 `agent_maintenance` 가 주인이다 — 여기 베껴 두면 op 을 늘린 날 두 이름으로 불린다.
+    늦은 import 인 이유는 `agent_maintenance` 가 무겁고(term_discovery 등) digest 를 부르는 쪽이 많아서다."""
+    try:
+        import agent_maintenance
+        return agent_maintenance.OP_LABELS, agent_maintenance.FAIL_LABELS
+    except Exception:      # noqa: BLE001 — 라벨을 못 읽어도 절은 나간다(규칙 6)
+        return {}, {}
+
+
+def _agent_action_line(action: dict, labels: dict) -> str:
+    op = labels.get(action.get("op"), action.get("op"))
+    weight = f" → {action['weight']}" if action.get("weight") is not None else ""
+    basis = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거",
+             "maintenance": "관측 근거"}.get(action.get("basis"), "")
+    return f"{op} : {action.get('term')}{weight}" + (f"  [{basis}]" if basis else "")
+
+
+def _shadow_line(shadow: dict) -> str:
+    """검색어를 바꾼 주에만 나온다. 격리 검색으로 **실제로 다시 찾아본** 결과이고 기록만 한다(차단 없음)."""
+    overlap = shadow.get("topk_overlap")
+    return (f"검색어 변경을 격리 검색으로 재 보면 : 적격 {shadow.get('eligible_before')} → "
+            f"{shadow.get('eligible_after')}편 (잃음 {shadow.get('eligible_lost')}편, "
+            f"상위 겹침 {overlap if overlap is not None else '미측정'})")
+
+
 def _profile_changes_html(scan_result: dict) -> str:
     """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
     ch = scan_result.get("profile_changes")
@@ -1176,19 +1202,21 @@ def _profile_changes_html(scan_result: dict) -> str:
     agent = ch.get("agent") or {}
     if agent.get("applied"):
         out += head("에이전트가 적용한 것과 그 이유")
+        op_labels, _fail = _agent_labels()
         for action in agent["applied"]:
-            op = {"set_weight": "가중치", "add_keyword": "키워드 추가", "add_seed": "검색어 추가",
-                  "remove_keyword": "키워드 삭제", "add_exclude": "제외어 추가"}.get(action.get("op"), action.get("op"))
-            weight = f' → {action["weight"]}' if action.get("weight") is not None else ""
-            out += row(f'{_esc(str(op))} : <b>{_esc(str(action.get("term")))}</b>{weight}')
+            out += row(_esc(_agent_action_line(action, op_labels)))
             if (action.get("reason") or "").strip():
                 out += row(f'<span style="color:{_MUTED};">{_esc(action["reason"].strip())}</span>', indent=24)
     impact = agent.get("impact")
     if impact:
         out += row(f'<span style="color:{_MUTED};">변경 전후 재채점 : 새로 걸린 논문 {impact.get("gained")}편 · '
                    f'빠진 논문 {impact.get("lost")}편 · 상위 자리 교체 {impact.get("topk_changed")}편</span>')
+    if agent.get("shadow"):
+        out += row(f'<span style="color:{_MUTED};">{_esc(_shadow_line(agent["shadow"]))}</span>')
     if agent.get("failed"):
-        out += row(f'⚠ 주간 관리 실패 : {_esc(str(agent["failed"]))}', colour=_FLAG_INK)
+        _ops, fail_labels = _agent_labels()
+        out += row(f'⚠ 주간 관리 실패 : {_esc(str(fail_labels.get(agent["failed"], agent["failed"])))}'
+                   ' — 키워드는 그대로입니다.', colour=_FLAG_INK)
 
     users = int((ch.get("by_actor") or {}).get("user") or 0)
     tail = []
@@ -1276,11 +1304,9 @@ def _profile_changes_section(scan_result: dict) -> list[str]:
     if applied:
         lines.append("")
         lines.append("   ▸ 에이전트가 적용한 것과 그 이유")
+        op_labels, _fail = _agent_labels()
         for action in applied:
-            op = {"set_weight": "가중치", "add_keyword": "키워드 추가", "add_seed": "검색어 추가",
-                  "remove_keyword": "키워드 삭제", "add_exclude": "제외어 추가"}.get(action.get("op"), action.get("op"))
-            weight = f" → {action['weight']}" if action.get("weight") is not None else ""
-            lines.append(f"      {op} : {action.get('term')}{weight}")
+            lines.append(f"      {_agent_action_line(action, op_labels)}")
             reason = (action.get("reason") or "").strip()
             if reason:
                 lines.append(f"        └ {reason}")
@@ -1288,8 +1314,12 @@ def _profile_changes_section(scan_result: dict) -> list[str]:
     if impact:
         lines.append(f"      변경 전후 재채점 : 새로 걸린 논문 {impact.get('gained')}편 · "
                      f"빠진 논문 {impact.get('lost')}편 · 상위 자리 교체 {impact.get('topk_changed')}편")
+    if agent.get("shadow"):
+        lines.append(f"      {_shadow_line(agent['shadow'])}")
     if agent.get("failed"):
-        lines.append(f"      ⚠ 주간 관리 실패 : {agent['failed']}")
+        _ops, fail_labels = _agent_labels()
+        lines.append(f"      ⚠ 주간 관리 실패 : {fail_labels.get(agent['failed'], agent['failed'])}"
+                     " — 키워드는 그대로입니다.")
 
     users = int((ch.get("by_actor") or {}).get("user") or 0)
     if users:
@@ -1419,7 +1449,10 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     if not empty:
         lines += _narrative_section(scan_result)
         lines += _window_section(scan_result)
-        lines += _profile_changes_section(scan_result)
+    # **빈 갈래도 받는다**(2026-09-20). 그날 논문이 0편이어도 그 새벽 주간 관리가 검색 기준을 바꿨으면
+    # 그건 알려야 할 사실이고, 오히려 "왜 0편인가"의 답일 수 있다. HTML 판은 처음부터 갈래 밖이라
+    # 평문만 빠져 두 판이 갈렸다 — §8-70 과 같은 병이다.
+    lines += _profile_changes_section(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -1455,8 +1488,6 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         if filtered:
             lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
 
-    # 주간 관리 에이전트가 바꾼 것(2026-09-15) — 금요일 실행 뒤 첫 메일에 한 번. 빈 갈래도 받는다.
-    lines += _agent_report_lines(scan_result)
     # ⑥ 주간 리뷰는 맨 아래에 붙는다(주 1회). **모든 갈래가 여기로 모인다** —
     # HTML 판도 같은 `weekly_review` 하나를 읽는다.
 
@@ -2075,27 +2106,9 @@ def _weekly_review_html(scan_result: dict) -> str:
     return "".join(out)
 
 
+# 옛 주간 보고 절 제목. 렌더러는 2026-09-20 에 지웠고(검색 기준 변화 절과 중복) 이름만 남긴다 —
+# 옛 메일을 찾는 테스트·검색이 이 상수를 기준으로 삼는다.
 AGENT_REPORT_TITLE = "이번 주 에이전트가 바꾼 것"
-
-
-def _agent_report_lines(scan_result: dict) -> list[str]:
-    """주간 관리 에이전트 보고(agent_maintenance.pending_report 의 줄). 없으면 빈 목록."""
-    report = [str(x) for x in scan_result.get("agent_report") or [] if str(x).strip()]
-    if not report:
-        return []
-    return ["", f"■ {AGENT_REPORT_TITLE}", *report]
-
-
-def _agent_report_html(scan_result: dict) -> str:
-    report = [str(x) for x in scan_result.get("agent_report") or [] if str(x).strip()]
-    if not report:
-        return ""
-    rows = "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK if not ln.startswith(" ") else _MUTED};'
-        f'font-size:13px;margin:{"2px 0 0 14px" if ln.startswith(" ") else "6px 0 0"};">{_esc(ln.strip())}</div>'
-        for ln in report)
-    return (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;font-weight:600;'
-            f'margin:18px 0 4px;border-top:1px solid {_LINE};padding-top:10px;">{AGENT_REPORT_TITLE}</p>{rows}')
 
 
 def _weekly_review_lines(scan_result: dict) -> list[str]:
@@ -2216,7 +2229,6 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     body += _window_html(scan_result)
     body += _profile_changes_html(scan_result)
     body += details_body
-    body += _agent_report_html(scan_result)
 
     filtered = "" if empty else _filtered_line(scan_result)
     footer = ""

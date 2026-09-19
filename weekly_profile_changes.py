@@ -147,19 +147,26 @@ def _previous_cycle(db: Path, profile_id: str, end: datetime,
     검색에 쓴 프로필**이다. revision 을 시각으로 되짚으면 `created_at` 과 `started_at` 의 동시각 경계를
     다시 따져야 하는데, 그 회차가 자기 스냅숏을 이미 들고 있으므로 그럴 이유가 없다. 같은 날 두 번 돌았으면
     마지막 회차가 실제로 나간 메일이다."""
-    target = (end.astimezone(KST) - timedelta(days=days)).date()
-    lo = datetime(target.year, target.month, target.day, tzinfo=KST)
-    rows = _rows(db, "SELECT started_at, profile_snapshot FROM scan_runs WHERE profile_id=? "
-                     "AND started_at>=? AND started_at<? ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                 (profile_id, lo.astimezone(timezone.utc).isoformat(),
-                  (lo + timedelta(days=1)).astimezone(timezone.utc).isoformat()))
-    if not rows:
-        return None
-    try:
-        snapshot = _keywords_of(json.loads(rows[0]["profile_snapshot"]) or {})
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        snapshot = None            # 모양이 깨졌으면 revision 쪽으로 물러난다
-    return rows[0]["started_at"], snapshot
+    here = end.astimezone(KST)
+    # **정확히 `days` 일 전 하루만 보지 않는다**(2026-09-20 지적). 한 주를 통째로 거른 달에는 그 날짜에
+    # 회차가 없어 고정 창으로 물러나고, 그 사이 변경이 **어느 보고에도 안 실린 채** 사라진다. 이 보고가
+    # 나가는 요일(월)의 **가장 최근 회차**를 찾는다 — 한 주를 걸렀으면 저절로 14일이 된다.
+    # 상한 400행은 프로필당 하루 1~2회 기준 1년치다. 그보다 오래 쉬었으면 폴백이 맞다.
+    rows = _rows(db, "SELECT started_at, profile_snapshot FROM scan_runs WHERE profile_id=? AND started_at<? "
+                     "ORDER BY started_at DESC, rowid DESC LIMIT 400", (profile_id, end.isoformat()))
+    for row in rows:
+        try:
+            moment = datetime.fromisoformat(row["started_at"]).astimezone(KST)
+        except ValueError:
+            continue
+        if moment.date() == here.date() or moment.weekday() != here.weekday():
+            continue
+        try:
+            snapshot = _keywords_of(json.loads(row["profile_snapshot"]) or {})
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            snapshot = None        # 모양이 깨졌으면 revision 쪽으로 물러난다
+        return row["started_at"], snapshot
+    return None
 
 
 def collect(db: Path, profile_id: str, days: int = 7,
@@ -228,7 +235,7 @@ def collect(db: Path, profile_id: str, days: int = 7,
 
 def _agent_summary(db: Path, profile_id: str, start_iso: str, end_iso: str) -> dict:
     """주간 관리 에이전트가 이번 창에서 한 일. 사유는 모델이 쓴 문장 그대로 옮기고 요약하지 않는다."""
-    out: dict = {"applied": [], "failed": None, "impact": None}
+    out: dict = {"applied": [], "failed": None, "impact": None, "shadow": None}
     rows = _rows(db, "SELECT status, error, applied_json, impact_json, base_revision, new_revision "
                      "FROM agent_runs WHERE profile_id=? AND started_at>=? AND started_at<? "
                      "ORDER BY started_at", (profile_id, start_iso, end_iso))
@@ -238,6 +245,7 @@ def _agent_summary(db: Path, profile_id: str, start_iso: str, end_iso: str) -> d
                 for action in json.loads(row["applied_json"] or "[]"):
                     out["applied"].append({"op": action.get("op"), "term": action.get("term"),
                                            "weight": action.get("weight"),
+                                           "basis": action.get("basis"),
                                            "reason": (action.get("reason") or "").strip()})
             except json.JSONDecodeError:
                 pass
@@ -249,6 +257,10 @@ def _agent_summary(db: Path, profile_id: str, start_iso: str, end_iso: str) -> d
             if isinstance(impact, dict) and impact.get("status") == "ok":
                 out["impact"] = {"gained": impact.get("gained"), "lost": impact.get("lost"),
                                  "topk_changed": impact.get("topk_changed")}
+                # 검색어를 바꾼 주에만 있다 — 격리 검색으로 실제로 다시 찾아본 결과다(기록만, 차단 없음).
+                shadow = impact.get("shadow")
+                if isinstance(shadow, dict) and shadow.get("status") in ("done", "partial"):
+                    out["shadow"] = shadow
         elif row["status"] and row["status"] not in ("applied", "skipped_no_signal"):
             # 건너뛴 주(반응·동향 근거 없음)는 실패가 아니다 — 싣지 않는다.
             out["failed"] = row["error"] or row["status"]
