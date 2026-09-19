@@ -241,7 +241,7 @@ NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
 # 이제 **논문 목록은 한 줄씩으로 줄었으므로 종합이 본체**다. 사용자 지적:
 # "논문별로는 간단하게, 맨 아래에 전체적인 동향 정리를 해줘야지."
 _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 제목과 초록이다.
-최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}{history}
+최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}{history}{weekly}
 일부 논문에는 `[원문 요약 · 결과]` 줄이 붙어 있다 — 그건 초록이 아니라
 **수치 대조와 실측 읽기 범위 조건을 충족한 요약의 결과 발췌**다.
 이 조건은 주장의 의미적 정확성을 보장하지 않는다. 붙어 있으면 그쪽을 우선해서 읽는다.
@@ -548,6 +548,26 @@ def narrative_topics(profile: dict, rows: list | None = None, limit: int = 12) -
     return ", ".join(ranked[:limit])
 
 
+def _weekly_context(weekly: str | None, max_chars: int = 2500) -> str:
+    """월요일에만 — 지난 주를 우리가 **센 수치**(주간 리뷰 표)를 서술에 준다.
+
+    2026-09-19 사용자 결정: 주간 리뷰를 메일의 별도 절로 보내지 말고, 월요일 동향 서술이 그것까지 보고
+    쓰게 한다. 그래서 월요일 글이 한 주 중 가장 두껍다 — 지난 5일 서술 + 오늘 논문 + 주간 수치.
+
+    수치는 이미 Python 이 센 것이므로 **그대로 인용**만 하게 하고, 새 수치를 만들지 말라고 못박는다(규칙 7).
+    표가 길어 잘라 넣는다 — 자른 사실을 밝혀 "이게 전부"로 읽지 않게 한다.
+    """
+    text = (weekly or "").strip()
+    if not text:
+        return ""
+    clipped = text[:max_chars]
+    tail = "\n…(표가 길어 뒤는 잘랐다)" if len(text) > max_chars else ""
+    return ("\n\n--- 지난 한 주를 우리가 센 수치(주간 리뷰) ---\n" + clipped + tail
+            + "\n--- 여기까지가 주간 수치다 ---\n"
+            "이 표는 우리가 DB 에서 센 값이다. 필요하면 **그대로** 인용하되 새 수치를 만들지 않는다.\n"
+            "오늘이 한 주의 시작이므로, 오늘 논문이 지난 주 흐름을 잇는지 꺾는지를 이 표에 비추어 말한다.\n")
+
+
 def _history_context(past: list[dict] | None, max_chars: int = 1200) -> str:
     """지난 며칠 동안 **우리가 뭐라고 썼는지**를 오늘 서술에 준다.
 
@@ -598,6 +618,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
                     summaries: dict[str, str] | None = None,
                     movement: dict | None = None,
                     past: list[dict] | None = None,
+                    weekly: str | None = None,
                     ) -> tuple[str, list[str], int, str] | None:
     """이번 주 논문과 관심 분야로 쓴 서술. (글, 검증 안 된 숫자들, 요약 붙인 편수, 쓴 엔진).
 
@@ -616,7 +637,8 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     topics = narrative_topics(profile or {}, rows) or "(지정 없음)"
     prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics,
                                       movement=_movement_context(movement),
-                                      history=_history_context(past))
+                                      history=_history_context(past),
+                                      weekly=_weekly_context(weekly))
     # 2026-09-18 사용자 결정: 서술은 구독 CLI(Codex)가 먼저 쓰고, 실패하면 Gemini·Groq 로 내려간다.
     # 입력이 오늘 논문 + 지난 5일 서술로 넓어져 종합 추론이 필요해졌기 때문이다. 폴백은 규칙 6 —
     # 2026-09-17 에 Codex 가 사용 한도로 세 번 연속 실패한 적이 있어 선택이 아니라 필수다.

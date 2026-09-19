@@ -906,34 +906,28 @@ _WEEKLY_SAMPLE = "\n".join([
 ]) + "\n"
 
 
-def test_weekly_review_reaches_the_html_mail():
-    """**§8-70 의 결함**: 주간 리뷰가 평문 판에만 있었다.
+def test_weekly_review_is_no_longer_a_separate_mail_block():
+    """**§8-70 의 뒤집힌 판**(2026-09-19 사용자 결정으로 구조가 바뀌었다).
 
-    run_profile_scan 이 digest_text 에 문자열로 이어붙였는데 _deliver 는 HTML 을
-    result 로 **다시 만든다** — result 에 그 값이 없으니 HTML 에는 절이 통째로
-    빠졌다. 메일은 multipart/alternative 고 Gmail 은 HTML 을 보여주므로,
-    2026-09-07 에 처음 돌아간 주간 리뷰는 실행됐지만 화면에 닿지 않았다.
-    """
-    scan = {"papers": [], "candidates_found": 3, "weekly_review": _WEEKLY_SAMPLE}
-    html = digest.generate_digest_html(scan, "t")
-    assert "주간 동향 리뷰" in html
-    assert "처리한 논문 12편" in html
-    assert "defect detection 5" in html
-    assert "결함 검출 쪽으로 무게가 옮겨 갔다." in html
-
-
-def test_weekly_review_plain_and_html_carry_the_same_content():
-    """평문/HTML 불일치가 이 코드베이스에서 반복된 결함이다(§8-57, §8-67, §8-70).
-
-    두 렌더러가 같은 `weekly_review` 하나를 읽는지 내용으로 확인한다.
+    그때의 결함은 "주간 리뷰가 평문에만 있고 HTML 에는 빠진 것"이었다. 지금은 주간 리뷰를 **어느 판에도
+    절로 싣지 않는다** — 월요일 동향 서술이 그 수치까지 보고 쓰기 때문이다(`_weekly_context`).
+    이 테스트가 잡는 것: 옛 절을 한쪽 판에만 되살려 두 판이 다시 갈라지는 것.
     """
     scan = {"papers": [], "candidates_found": 3, "weekly_review": _WEEKLY_SAMPLE}
     text = digest.generate_digest(scan, "t")
     html = digest.generate_digest_html(scan, "t")
-    for needle in ("주간 동향 리뷰", "처리한 논문 12편", "defect detection 5",
-                   "결함 검출 쪽으로 무게가 옮겨 갔다."):
-        assert needle in text, needle
-        assert needle in html, needle
+    for rendered in (text, html):
+        assert "주간 동향 리뷰" not in rendered
+        assert "처리한 논문 12편" not in rendered
+
+
+def test_monday_label_tells_the_reader_the_weekly_numbers_were_used():
+    """주간 수치를 절로 안 싣는 대신 **라벨이 그걸 봤다고 말해야** 한다 — 안 그러면 읽는 사람은
+    월요일 글이 왜 두꺼운지 알 수 없다(규칙 8: 라벨이 입력을 말한다).
+    이 테스트가 잡는 것: 입력이 들어갔는데 라벨이 침묵하는 것 · 안 들어갔는데 봤다고 적는 것."""
+    used = digest.narrative_source_label({"narrative_summaries": 1, "weekly_review_context": _WEEKLY_SAMPLE})
+    assert "지난 한 주" in used
+    assert "지난 한 주" not in digest.narrative_source_label({"narrative_summaries": 1})
 
 
 def test_weekly_review_absent_renders_nothing():

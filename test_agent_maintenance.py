@@ -34,6 +34,8 @@ DROPPED = [{"arxiv_id": f"d{i}", "title": f"spiking sensor study {i}", "abstract
 
 
 def _profile(db, freq="manual"):
+    import storage
+    storage.init_storage(db)
     rp.create_profile(db, "p", "로봇", core_topics=["robot manipulation"], core_weights={"robot manipulation": 1.0},
                       target_domain=["factory"], exclude=["banned"], max_items=5, s2_seeds=["robot manipulation"],
                       schedule_frequency=freq)
@@ -431,16 +433,16 @@ def test_unknown_or_missing_provenance_is_protected(world, monkeypatch):
     assert am.build_brief(world, "p").data["profile"]["core"][0]["origin"] == "user"   # 이벤트 없는 옛 프로필은 추정하지 않는다
 
 
-def test_missed_terms_alone_do_not_spend_model_quota(tmp_path, monkeypatch):
-    """이 테스트가 잡는 것: 반응 0건인 프로필(메일을 안 받는 manual 포함)에서 탈락 논문 반복어만 보고 모델을 부르는 것 —
-    그 주엔 키워드 추가가 검증을 통과할 수 없어 한도만 쓴다."""
+def test_no_reactions_with_trend_calls_both_models(tmp_path, monkeypatch):
+    """동향 자료가 있는 반응 없는 프로필에서 모델 호출을 막으면 실패한다."""
     db = tmp_path / "m.db"
     _profile(db)
     _scan(db, monkeypatch, HITS + DROPPED)
     b = am.build_brief(db, "p")
-    assert b.data["missed_terms"] and not b.data["reactions"] and not b.has_signal()
+    assert b.data["missed_terms"] and not b.data["reactions"] and b.has_signal()
     runner = FakeRunner({"actions": []}, {"reviews": [], "actions": []})
-    assert am.run_profile(db, "p", runner)["status"] == "skipped_no_signal" and runner.calls == []
+    assert am.run_profile(db, "p", runner)["status"] == "no_change"
+    assert [c[0] for c in runner.calls] == ["propose", "judge"]
 
 
 def test_record_failure_after_apply_is_still_reported_as_a_change(world, monkeypatch):
@@ -609,3 +611,77 @@ def test_shadow_search_runs_only_for_search_term_changes_and_is_recorded(world, 
     res2 = am.run_profile(world, "p", FakeRunner(claude, {"reviews": [], "actions": [_act("add_exclude", "medical imaging", [_rid(b, "medical"), _rid(b, "medical")])]}),
                           now=am._now() + timedelta(days=7), force=True)
     assert res2["status"] in ("applied", "no_change")
+
+
+def test_trend_only_change_revision_rollback_and_mail(tmp_path, monkeypatch):
+    """반응 없는 동향 제안·판정·revision 적용·되돌리기·메일 근거 표시 중 하나라도 끊으면 실패한다."""
+    db = tmp_path / 'trend.db'
+    _profile(db)
+    _scan(db, monkeypatch, HITS + DROPPED)
+    base = rp.current_revision(db, 'p')
+
+    def propose(data):
+        assert not data['reactions']
+        ev = next(r['id'] for r in data['trend']['records'] if 'tactile skin' in r['text'])
+        return {'actions': [_act('add_keyword', 'tactile skin', [ev], 0.7, 'related_direction')]}
+
+    runner = FakeRunner(propose, lambda p: {'reviews': [], 'actions': p['proposal']['actions']})
+    result = am.run_profile(db, 'p', runner)
+    assert result['status'] == 'applied' and result['revision'] > base
+    assert rp.get_profile(db, 'p')['core_weights']['tactile skin'] == 0.7
+    with sqlite3.connect(db) as con:
+        action = json.loads(con.execute('SELECT applied_json FROM agent_runs').fetchone()[0])[0]
+        assert con.execute('SELECT origin FROM profile_revisions ORDER BY revision DESC LIMIT 1').fetchone()[0] == 'agent'
+    assert action['basis'] == 'trend' and action['source_evidence']
+    assert action['reason_code'] == 'related_direction'
+    lines, _ = am.pending_report(db, 'p')
+    assert any('동향 근거' in line and '연구 방향' in line for line in lines)
+    rp.rollback_to_revision(db, 'p', base, '시험 되돌리기')
+    assert rp.get_profile(db, 'p')['core_topics'] == ['robot manipulation']
+
+
+def test_trend_guards_grounding_user_keyword_and_claims(world):
+    """동향 경로의 문자열 대조·사용자 삭제 보호·숫자 주장 차단을 빼면 실패한다."""
+    b = am.build_brief(world, 'p')
+    tid = next(r['id'] for r in b.data['trend']['records'] if 'tactile skin' in r['text'])
+    kid = next(r['id'] for r in b.data['trend']['records'] if 'robot manipulation' in r['text'])
+    cases = [(_act('add_keyword', 'invented molecule', [tid], 0.7, 'related_direction'), 'term_not_in_evidence'),
+             (_act('remove_keyword', 'robot manipulation', [kid], reason='reduce_noise'), 'user_keyword_protected')]
+    for reason in ('999편 증가', '지난주 세 배', '2주 연속', 'nine papers', 'related_direction 3', 'related_direction' + ' ' * 300 + '99편'):
+        cases.append((_act('add_keyword', 'tactile skin', [tid], 0.7, reason), 'unverified_trend_claim'))
+    a = _act('add_keyword', 'tactile skin', [tid], 0.7, 'related_direction')
+    cases.append(({**a, 'count': 123}, 'unverified_trend_claim'))
+    for action, error in cases:
+        ok, bad = am.validate([action], b)
+        assert not ok and bad[0]['reason'] == error
+    ok, bad = am.validate([_act('set_weight', 'robot manipulation', [kid], 1.2, 'priority_alignment')], b)
+    assert not bad and ok[0]['weight'] == 1.2
+
+
+def test_trend_sources_match_existing_python_collectors(world):
+    """기존 집계 값을 바꾸거나 comparable·저장 서술·입력 텍스트를 누락하면 실패한다."""
+    import narrative_store
+    import observation_signals
+    import trend_report
+    now = am._now()
+    narrative_store.save(world, 'p', 'daily', 'tactile skin은 센서 연구와 연결된다.', moment=now)
+    now = am._now()
+    b = am.build_brief(world, 'p', now)
+    records = b.data['trend']['records']
+    by_kind = {r['kind']: r for r in records}
+    prof = rp.get_profile(world, 'p')
+    assert by_kind['window_movement']['data'] == trend_report.window_movement(world, prof, days=7, end=now)
+    assert by_kind['window_movement']['data']['comparable'] is False
+    assert '주간 동향 리뷰' in by_kind['weekly_review']['data']['report']
+    assert by_kind['narrative']['data']['unverified_interpretation'] is True
+    assert all(b.texts[r['id']] == r['text'] for r in records)
+    assert by_kind.get('reserve_terms', {}).get('data') == observation_signals.reserve_terms(world, 'p')
+
+
+def test_prompts_have_no_feedback_only_contract():
+    """실제 CLI 프롬프트에 옛 반응 필수 공통 문안을 다시 붙이면 실패한다."""
+    for name in ('agent_propose_v1.md', 'agent_judge_v1.md'):
+        prompt = am._prompt(name)
+        assert '반응이 없어도' in prompt and 'comparable=false' in prompt
+        assert '반응이 없는 주에는 키워드를 늘리지 않는다' not in prompt
+        assert 'related_direction' in prompt

@@ -893,22 +893,31 @@ def test_budget_default_is_generous_enough_for_a_healthy_run(tmp_path, monkeypat
 # ------------------------------------------- 주간 동향 리뷰 (2026-09-02)
 
 
-def test_weekly_review_is_attached_only_on_the_review_day(tmp_path, monkeypatch):
-    """매일 붙이면 어제와 거의 같은 표가 반복돼 읽히지 않고, 인용망 조회
-    비용도 매일 낼 이유가 없다."""
+def test_weekly_numbers_feed_the_monday_narrative(tmp_path, monkeypatch):
+    """월요일에만 주간 수치를 뽑아 **서술의 입력으로** 넘긴다(2026-09-19 사용자 결정).
+
+    이 테스트가 잡는 것: 월요일에 주간 수치를 안 뽑는 것 · 뽑고도 서술에 안 넘기는 것 ·
+    리뷰 자체의 LLM 호출(with_narrative=True)을 되살려 호출을 두 번 하는 것."""
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     _seed_summary(monkeypatch, tmp_path, [])
     _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
 
-    async def fake_review(db, profile, client=None, days=7, with_references=True):
-        return "■ 주간 동향 리뷰\n(내용)\n"
+    seen = {}
+
+    async def fake_review(db, profile, client=None, days=7, with_references=True,
+                          with_narrative=True, with_frontier=True):
+        seen["with_narrative"] = with_narrative
+        return "■ 주간 집계\ndefect detection 5편 (지난주 2)\n"
 
     monkeypatch.setattr(rps.trend_report, "build", fake_review)
-
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
-    _r, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
-    assert "주간 동향 리뷰" in text
+
+    result, _text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+    assert seen["with_narrative"] is False          # 리뷰는 수치만 — 서술은 하나로 모은다
+    # 이 픽스처는 내용 자리 논문이 0편이라 서술이 안 돈다. **그래도** 집계는 나와야 한다 —
+    # 논문 없는 월요일에 그 주 기록이 통째로 비면 안 되기 때문이다(서술 블록 밖에 둔 이유).
+    assert "defect detection 5편" in (result.get("weekly_review_context") or "")
 
 
 def test_weekly_review_absent_on_other_days(tmp_path, monkeypatch):
@@ -917,7 +926,8 @@ def test_weekly_review_absent_on_other_days(tmp_path, monkeypatch):
     _seed_summary(monkeypatch, tmp_path, [])
     _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
 
-    async def fake_review(db, profile, client=None, days=7, with_references=True):
+    async def fake_review(db, profile, client=None, days=7, with_references=True,
+                          with_narrative=True, with_frontier=True):
         raise AssertionError("리뷰 요일이 아닌데 불렸다")
 
     monkeypatch.setattr(rps.trend_report, "build", fake_review)
@@ -948,33 +958,36 @@ def test_weekly_review_failure_does_not_break_the_digest(tmp_path, monkeypatch):
     assert "주간" not in text          # 실패한 부가 정보는 안 붙는다
 
 
-def test_weekly_review_lands_in_the_result_so_html_mail_gets_it(tmp_path, monkeypatch):
-    """**§8-70 회귀**(2026-09-07). 예전에는 주간 리뷰를 `digest_text` 에 문자열로
-    이어붙였는데, _deliver 는 HTML 을 `result` 로 **다시 만든다** — 그래서 절이
-    HTML 메일에만 통째로 없었다. 메일은 multipart/alternative 고 Gmail 은 HTML 을
-    보여주므로 사용자 화면에 닿은 적이 없다.
+def test_weekly_numbers_reach_the_narrative_and_neither_mail_gets_a_stray_block(tmp_path, monkeypatch):
+    """**§8-70 의 새 판**(2026-09-19 구조 변경).
 
-    이 테스트가 지키는 것은 "평문에 있다"가 아니라 **"배달되는 두 판 모두에
-    있다"** 이다 — 그게 그때 놓친 주장이다.
+    그때의 결함은 주간 리뷰가 평문에만 있고 HTML 에는 없던 것이었고, 그 테스트가 지키던 주장은
+    "배달되는 두 판 모두에 있다"였다. 이제 주간 리뷰는 **어느 판에도 절로 안 실린다** — 월요일 서술의
+    입력으로 들어간다. 그래서 지켜야 할 주장이 뒤집혔다: **두 판 모두에 없고, 서술 입력에는 있다.**
+
+    이 테스트가 잡는 것: 한쪽 판에만 옛 절을 되살려 두 판이 갈라지는 것 · 수치를 뽑고도 서술에 안 넘기는 것.
     """
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     _seed_summary(monkeypatch, tmp_path, [])
     _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
 
-    async def fake_review(db, profile, client=None, days=7, with_references=True):
-        return "■ 주간 동향 리뷰\n\n처리한 논문 12편 (지난주 9편)\n"
+    seen = {}
+
+    async def fake_review(db, profile, client=None, days=7, with_references=True,
+                          with_narrative=True, with_frontier=True):
+        return "■ 주간 집계\n\n처리한 논문 12편 (지난주 9편)\n"
 
     monkeypatch.setattr(rps.trend_report, "build", fake_review)
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
 
     result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
 
-    assert "처리한 논문 12편" in result.get("weekly_review", "")
-    assert "처리한 논문 12편" in text                       # 평문 판
+    assert "처리한 논문 12편" in (result.get("weekly_review_context") or "")   # 집계는 나왔는데
     html = rps.digest.generate_digest_html(result, "team_ai")
-    assert "처리한 논문 12편" in html                       # _deliver 가 보내는 판
-    assert "주간 동향 리뷰" in html
+    for rendered in (text, html):
+        assert "처리한 논문 12편" not in rendered                  # 두 판 어디에도 절은 없다
+        assert "주간 동향 리뷰" not in rendered
 
 
 def test_weekly_review_missing_leaves_both_renderers_clean(tmp_path, monkeypatch):

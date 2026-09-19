@@ -332,7 +332,7 @@ def test_prompt_carries_topics_but_never_our_measurements():
     # movement 는 2026-09-18 에 붙인 최근 창 맥락 자리다 — 여기서는 비워 두고,
     # 값이 들어갔을 때 수치가 새지 않는지는 아래에서 따로 본다.
     prompt = trend_report._NARRATIVE_PROMPT.format(
-        papers=corpus, topics=trend_report.narrative_topics(profile), movement="", history="")
+        papers=corpus, topics=trend_report.narrative_topics(profile), movement="", history="", weekly="")
 
     assert "defect detection" in prompt          # 관심 분야는 나간다
     # 우리 쪽 측정값은 하나도 안 나간다. ("편수"라는 낱말 자체는 프롬프트에
@@ -341,7 +341,7 @@ def test_prompt_carries_topics_but_never_our_measurements():
     with_ctx = trend_report._NARRATIVE_PROMPT.format(
         papers=corpus, topics=trend_report.narrative_topics(profile),
         movement=trend_report._movement_context(
-            {"comparable": True, "days": 7, "terms": [("agentic rl", 9, 3)]}), history="")
+            {"comparable": True, "days": 7, "terms": [("agentic rl", 9, 3)]}), history="", weekly="")
     assert "agentic rl" in with_ctx              # 늘어난 "말"은 맥락으로 나간다
     assert " 9" not in with_ctx.split("agentic rl")[1][:60]   # 그 말의 편수는 안 나간다
 

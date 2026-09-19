@@ -45,7 +45,14 @@ MAX_REACTED_PAPERS = 40                     # 입력 크기 상한(변경 개수
 MAX_TERM_CHARS = 80
 MAX_REASON_CHARS = 200
 PROMPTS = Path(__file__).resolve().parent / "prompts"
-PROMPT_VERSION = "agent-v1"
+PROMPT_VERSION = "agent-v2-trend"
+
+TREND_REASONS = {
+    "related_direction": "현재 관심 분야와 연결되는 연구 방향을 동향 자료에서 확인해 반영",
+    "search_coverage": "동향 자료의 관련 연구를 검색에 반영하도록 검색 범위를 조정",
+    "priority_alignment": "사용자 관심과 동향 자료의 관련성을 함께 판단해 우선순위를 조정",
+    "reduce_noise": "동향 자료와 사용자 관심을 대조해 관련성이 낮은 자동 설정을 정리",
+}
 
 OPS = ("add_keyword", "set_weight", "remove_keyword", "add_seed", "remove_seed", "add_exclude")
 OP_LABELS = {"add_keyword": "키워드 추가", "set_weight": "가중치 조정", "remove_keyword": "키워드 삭제",
@@ -163,12 +170,11 @@ class Brief:
         return set(self.texts) | set(self.keyword_ids)
 
     def has_signal(self) -> bool:
-        """모델을 부를 거리가 있는가 — 반응이 있거나, 적중 0편인 자동 키워드가 있을 때만(구독 한도를 빈 브리프에 쓰지 않는다).
-        탈락 논문 반복어만으로는 부르지 않는다: 키워드 추가는 좋다고 반응한 논문 근거가 있어야 통과하므로(validate),
-        반응 없는 주에 부르면 한도만 쓴다. 메일을 받지 않는 manual 프로필은 그래서 자연히 건너뛴다."""
+        """반응 또는 읽을 동향 자료가 있으면 모델이 변경 필요성을 판단한다."""
         prof = self.data["profile"]
         stale_auto = any(k["origin"] in AUTO_ORIGINS and k["hits_28d"] == 0 for k in prof["core"]) and prof["scans_28d"] >= 7
-        return bool(self.data["reactions"] or stale_auto)
+        return bool(self.data["reactions"] or stale_auto or self.data.get("trend", {}).get("records"))
+
 
 
 def _latest_reactions(rows: list[dict], since: str) -> dict[str, Counter]:
@@ -267,7 +273,7 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                 continue
             rid = f"R{i}"
             reaction_ids[rid] = counts[key]
-            texts[rid] = f"{row['title'] or ''}. {row['abstract']}"
+            texts[rid] = f"{row['title'] or ''}. {_clip(row['abstract'], ABSTRACT_CHARS)}"
             c = counts[key]
             reactions.append({"id": rid, "title": row["title"] or "", "abstract": _clip(row["abstract"], ABSTRACT_CHARS),
                               "more": c["more"], "useful": c["useful"], "out": c["out"],
@@ -292,13 +298,17 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
             if xid is None:
                 xid = missed_ids[e["key"]] = f"X{len(missed_ids) + 1}"
                 full = next((p for p in pool if p["_paper_key"] == e["key"]), None)
-                texts[xid] = f"{e['title']}. {(full or {}).get('abstract') or e['abstract']}"
+                texts[xid] = f"{e['title']}. {_clip(e['abstract'], ABSTRACT_CHARS)}"
                 missed_papers.append({"id": xid, "title": e["title"], "abstract": _clip(e["abstract"], ABSTRACT_CHARS)})
             ev.append(xid)
         missed_terms.append({"term": t["term"], "support": t["support"], "domain_papers": t["domain_papers"],
                              "evidence": ev})
 
+    import agent_trend_evidence
+    trend = agent_trend_evidence.collect(db, profile, now)
+    texts.update({r["id"]: r["text"] for r in trend["records"]})
     data = {
+        "trend": trend,
         "profile": {"id": profile_id, "name": profile["name"], "scans_28d": scans,
                     "papers_28d": len({k for k, _s, _r in obs}), "core": core,
                     "seeds": [{"term": s, "origin": origins.get((s.lower(), "s2_seed"), "user")} for s in profile["s2_seeds"]],
@@ -387,6 +397,22 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
             reject(a, "no_evidence"); continue
         if any(e not in brief.evidence_ids for e in ev):
             reject(a, "unknown_evidence"); continue
+        trend_records = {r["id"]: r for r in brief.data.get("trend", {}).get("records", [])}
+        trend_ev = [e for e in ev if e in trend_records]
+        if trend_ev:
+            # 자유 서술의 수치 참/거짓을 숫자 토큰 집합으로 판정하면 다른 항목의 편수를 도용할 수 있다.
+            # 동향 경로는 모델이 정성 사유 코드를 고르고 Python만 사람이 읽는 문장과 원 집계를 붙인다.
+            if raw.get("reason") not in TREND_REASONS or set(raw) - set(_ACTION_ITEM["properties"]):
+                reject(a, "unverified_trend_claim"); continue
+            if not any(_in_text(term, brief.texts[e]) for e in ev if e in brief.texts):
+                reject(a, "term_not_in_evidence"); continue
+            a["reason_code"] = raw["reason"]
+            a["reason"] = TREND_REASONS[raw["reason"]]
+            a["source_evidence"] = [trend_records[e] for e in trend_ev]
+        a["basis"] = ("feedback" if any(e in brief.reactions for e in ev) else
+                      "trend" if trend_ev else "maintenance")
+        if trend_ev and any(e in brief.reactions for e in ev):
+            a["basis"] = "feedback+trend"
         if op in ("add_keyword", "set_weight"):
             w = a["weight"]
             if isinstance(w, bool) or not isinstance(w, (int, float)) or not (WEIGHT_MIN <= float(w) <= WEIGHT_MAX):
@@ -407,9 +433,8 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                 reject(a, "overlaps_exclude"); continue
             if not any(e in brief.texts and _in_text(term, brief.texts[e]) for e in ev):
                 reject(a, "term_not_in_evidence"); continue
-            # 규칙 1 — 새 키워드는 **좋다고 반응한 논문**에 그 용어가 있을 때만. 2026-09-15 실측(운영 DB 복사본): 반응 0건인
-            # 주에 두 모델이 모두 탈락 논문 반복어 'communication overhead' 를 받아들였다. 탈락 논문(X)은 보조 근거일 뿐이다.
-            if not any(_liked(brief, e) and _in_text(term, brief.texts[e]) for e in ev):
+            # 2026-09-18 사용자 결정: 반응 우선은 유지하되, 명시적으로 인용한 동향 근거도 허용한다.
+            if not trend_ev and not any(_liked(brief, e) and _in_text(term, brief.texts[e]) for e in ev):
                 reject(a, "no_liked_evidence"); continue
             core[term] = {"weight": a["weight"], "origin": "agent"}
         elif op == "set_weight":
@@ -417,7 +442,7 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                 reject(a, "not_core"); continue
             if abs(core[known_core]["weight"] - a["weight"]) < 1e-9:
                 reject(a, "no_op"); continue
-            if a["weight"] > core[known_core]["weight"] and not any(
+            if a["weight"] > core[known_core]["weight"] and not trend_ev and not any(
                     _liked(brief, e) and _in_text(known_core, brief.texts[e]) for e in ev):
                 reject(a, "no_liked_evidence"); continue    # 올리는 것도 반응을 따른다. 내리는 것은 적중 0편(K)으로도 된다
             a["term"] = known_core
@@ -592,7 +617,7 @@ def _run(argv: list[str], stdin_text: str, timeout: int, cwd: str) -> tuple[int,
 
 
 def _prompt(name: str) -> str:
-    return (PROMPTS / name).read_text(encoding="utf-8") + "\n\n" + (PROMPTS / "agent_ops_v1.md").read_text(encoding="utf-8")
+    return (PROMPTS / name).read_text(encoding="utf-8")
 
 
 class HeadlessRunner:
@@ -794,7 +819,10 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
         for a in json.loads(applied or "[]"):
             w = f" {a['weight']:g}" if a.get("weight") is not None else ""
             why = reader_reason(a.get("reason") or "")
-            lines.append(f"   - {OP_LABELS.get(a['op'], a['op'])}: {a['term']}{w}" + (f" — {why}" if why else ""))
+            basis = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거",
+                     "maintenance": "관측 근거"}.get(a.get("basis"), "")
+            lines.append(f"   - {OP_LABELS.get(a['op'], a['op'])}: {a['term']}{w}" + (f" — {why}" if why else "")
+                         + (f" [{basis}]" if basis else ""))
         imp = json.loads(impact_raw) if impact_raw else None
         if imp and imp.get("status") == "ok":
             lines.append(f"   - 지난 4주 관측 {imp['snapshot_papers']}편에 이 변경을 대 보면: 새로 걸리는 논문 {imp['gained']}편 · "
