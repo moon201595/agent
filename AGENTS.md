@@ -39,12 +39,16 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 운영 화면: `.venv/bin/streamlit run review_app.py` → http://localhost:8501 — 운영 현황(기본)·논문 DB·시스템 세 페이지(2026-09-16 개편,
   옛 검색·요약·검토 탭 삭제). `.streamlit/config.toml` 이 127.0.0.1 로만 묶는다 — 되돌리기·가중치 저장 버튼이 있고 로그인이 없다.
 - 일일 스캔(cron 진입점): `./run_daily_scan.sh` — 매일 05:00 KST, 로그는 `logs/daily_scan.log`.
-- **Windows 작업 스케줄러에도 같은 두 작업이 있다**(`paper-harness\daily-scan` 매일 05:00, `paper-harness\weekly-agent` 금 17:00, XML 은
-  `%USERPROFILE%\paper-harness-tasks\`). PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시
-  실행(StartWhenAvailable)하고 꺼진 WSL 도 켠다. PC 를 깨우지는 않는다. 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
+- **Windows 작업 스케줄러에도 같은 작업이 있다**(`paper-harness\daily-scan` 매일 05:00, XML 은 `%USERPROFILE%\paper-harness-tasks\`).
+  PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시 실행(StartWhenAvailable)하고
+  꺼진 WSL 도 켠다. `WakeToRun=true` 를 켰다(2026-09-18, XML 로 확인). 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
-- 주간 작업(cron 진입점): `./run_weekly_agent.sh` — 금요일 17:00 KST, `db_retention`(백업 뒤 정리) → `agent_maintenance`(헤드리스 Claude 제안 →
-  Codex 판정 → Python 검증·적용). 로그는 `logs/weekly_agent.log`. 모델 없이 브리프만 보려면 `.venv/bin/python agent_maintenance.py --brief-only`.
+  옛 `paper-harness\weekly-agent`(금 17:00)는 **지워야 한다** — 주간 관리가 월요일 체인으로 옮겼는데 이게 살아 있으면 금요일에도
+  따로 돈다(2026-09-19 기준 미처리, interop 이 끊겨 WSL 에서 못 지운다. Windows cmd 에서 `schtasks /Delete /TN "paper-harness\weekly-agent" /F`).
+- 주간 작업에는 **따로 된 cron 이 없다**(2026-09-19). `db_retention`(백업 뒤 정리) → `agent_maintenance`(헤드리스 Claude 제안 →
+  Codex 판정 → Python 검증·적용)는 `run_daily_scan.sh` 가 **월요일(KST)에 일일 스캔보다 먼저** 같은 flock 안에서 돌린다 —
+  그래야 바꾼 키워드가 그날 아침 검색에 바로 쓰인다(금요일에 바꾸면 신규가 거의 없는 주말을 헛돈다). 실패해도 스캔은 이어진다(규칙 6).
+  `./run_weekly_agent.sh` 는 손으로 돌릴 때만 쓴다(로그 `logs/weekly_agent.log`). 모델 없이 브리프만: `.venv/bin/python agent_maintenance.py --brief-only`.
 - **DB 스키마 변경**: 각 모듈의 DDL 은 `schema_guard` 를 통해서만 돈다. 운영 DB(테이블이 있는 파일)에는
   코드 실행만으로 적용되지 않는다 — `.venv/bin/python migrate.py` 로 빠진 것을 보고
   `migrate.py --apply`(WAL 포함 일관 백업 자동)로 적용한다. 새 설치는 `--apply --scope all`. 평가 DB 는
