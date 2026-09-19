@@ -37,19 +37,20 @@ def test_weekly_numbers_go_into_the_narrative_not_a_separate_mail_block():
 
 def test_label_names_every_input_the_narrative_actually_had():
     """이 테스트가 잡는 것: 입력이 늘었는데 라벨이 옛 문장 그대로 나가는 것(규칙 8 — 라벨이 거짓이 된다) ·
-    반대로 안 들어간 입력을 봤다고 적는 것."""
-    full = digest.narrative_source_label(
-        {"narrative_summaries": 2, "narrative_past_days": 5, "weekly_review_context": "표"})
-    assert "2편" in full and "지난 5일" in full and "지난 한 주" in full
+    2026-09-19 오후에 서술 입력에서 뺀 주간 운영 표를 라벨이 계속 봤다고 적는 것."""
+    full = digest.narrative_source_label({"narrative_summaries": 2, "narrative_past_days": 6})
+    assert "2편" in full and "지난 6일" in full
     plain = digest.narrative_source_label({"narrative_summaries": 2})
-    assert "지난" not in plain and "한 주" not in plain
-    none = digest.narrative_source_label({})
-    assert none == "LLM 이 제목·초록만 보고 쓴 것."
+    assert "지난" not in plain
+    assert "지난 한 주" not in digest.narrative_source_label(
+        {"narrative_summaries": 2, "weekly_diagnostics": "표"})
+    assert digest.narrative_source_label({}) == "LLM 이 제목·초록만 보고 쓴 것."
 
 
 def test_monday_prompt_carries_all_three_inputs_without_leaking_counts():
-    """이 테스트가 잡는 것: 월요일 프롬프트에서 세 입력(오늘 논문·지난 서술·주간 수치) 중 하나가 빠지는 것 ·
-    창 집계의 편수가 모델에 새어 들어가 모델이 우리 수치를 자기 문장으로 옮기는 것."""
+    """이 테스트가 잡는 것: 프롬프트에서 입력(오늘 논문·지난 서술·늘어난 말) 중 하나가 빠지는 것 ·
+    창 집계의 편수가 모델에 새어 들어가 모델이 우리 수치를 자기 문장으로 옮기는 것.
+    주간 운영 표는 2026-09-19 오후에 입력에서 뺐다 — 여기서는 빈 자리로 둔다."""
     prompt = trend_report._NARRATIVE_PROMPT.format(
         papers="- [P1:T] 오늘 논문\n  [P1:A] 초록",
         topics="defect detection",

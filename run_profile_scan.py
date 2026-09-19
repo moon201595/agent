@@ -333,13 +333,31 @@ async def scan_and_digest(
     # 서술 블록 **밖**에 두는 이유: 그날 내용 자리 논문이 0편이면 서술을 안 쓰는데, 그렇다고 한 주 집계까지
     # 사라지면 그 주의 기록이 통째로 빈다. 계산·보관은 논문 유무와 무관하게 하고, 서술이 돌면 입력으로 넘긴다.
     # `with_narrative=False` 라 리뷰 자체의 LLM 호출은 안 한다 — 월요일 글은 하나로 모은다(호출도 하나 준다).
+    # 지난 한 주 **검색 기준 변화**(2026-09-19). 주간 관리가 같은 새벽 스캔 직전에 돌았으므로
+    # 여기서 잡히는 것은 방금 바뀐 것이고, 아래 실릴 논문은 그 기준으로 고른 것이다.
+    if profile and is_weekly_review_day():
+        try:
+            import weekly_profile_changes
+            changes = weekly_profile_changes.collect(db_path, profile_id)
+            if changes:
+                result["profile_changes"] = changes
+                n = len(changes["weights"]) + len(changes["added"]) + len(changes["removed"])
+                print(f"  [주간] 검색 기준 변화 {n}건을 메일에 싣는다")
+        except Exception as e:  # noqa: BLE001 — 변화 보고가 실패해도 메일은 나간다
+            print(f"  [주간] 검색 기준 변화 집계 실패(무시): {type(e).__name__}")
+
     weekly_ctx = None
     if profile and is_weekly_review_day():
         try:
             weekly_ctx = await trend_report.build(db_path, profile, client=client,
                                                   with_narrative=False)
-            result["weekly_review_context"] = weekly_ctx
-            print(f"  [동향] 주간 리뷰 수치를 서술 입력으로 넣는다 ({len(weekly_ctx):,}자)")
+            # **서술에는 넣지 않는다**(2026-09-19 오후 재검토). 실제로 뽑아 보니 5,471자 중 60% 넘게가
+            # 검색 지문·S2 시드 수율·탈락 사유·프로필 건강 같은 운영 진단이고, 그 안에 "한 시드에서만
+            # 반복된 말 : 검색 잡음 진단" 절이 있다(impedance spectroscopy·classroom action 따위).
+            # 그걸 동향 모델에 주면 잡음을 트렌드로 쓴다. 기간 비교는 이미 `window_movement` 가 한다.
+            # 계산·보관은 그대로 둔다 — 개발·운영 진단 자료로는 쓸모가 있다.
+            result["weekly_diagnostics"] = weekly_ctx
+            print(f"  [동향] 주간 진단 {len(weekly_ctx):,}자 보관(서술 입력 아님)")
             import narrative_store as _ns
             _ns.save(db_path, profile_id, _ns.WEEKLY, weekly_ctx,
                      scan_id=result.get("scan_id"), window_days=7)
@@ -399,8 +417,10 @@ async def scan_and_digest(
             # 지난 5일치 **동향 서술**을 맥락으로 준다(2026-09-18 사용자 결정 — 논문을 다시 읽히지 않는다).
             try:
                 import narrative_store
+                # 6일 + 오늘 = 7일. `window_movement` 의 7일 창과 **같은 기간**을 보게 맞췄다
+                # (2026-09-19: 그전엔 산문 5일 / 수치 7일로 어긋나 있었다).
                 past = narrative_store.recent(db_path, profile_id, narrative_store.DAILY,
-                                              days=5, before=narrative_store.reader_date())
+                                              days=6, before=narrative_store.reader_date())
             except Exception as e:  # noqa: BLE001 — 지난 글을 못 읽어도 오늘 글은 쓴다
                 past = []
                 print(f"  [동향] 지난 서술 조회 실패(무시): {type(e).__name__}")
@@ -408,7 +428,7 @@ async def scan_and_digest(
                 result["narrative_past_days"] = len(past)      # 메일 라벨이 실제 입력을 말하려면 이 수가 필요하다
                 print(f"  [동향] 지난 서술 {len(past)}일치를 맥락으로 넣는다 ({past[-1]['reader_date']}~{past[0]['reader_date']})")
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
-                                                 movement=movement, past=past, weekly=weekly_ctx)
+                                                 movement=movement, past=past)
             if story:
                 text, ungrounded, enriched, engine = story
                 result["narrative_engine"] = engine
