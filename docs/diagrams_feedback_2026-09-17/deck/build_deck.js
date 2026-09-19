@@ -8,7 +8,7 @@ const path = require("path");
 const DIAG = path.join(__dirname, "crops");           // crops/ 는 make_crops.py 가 만든다
 const SIZES = require(path.join(DIAG, "sizes.json"));
 const OUT = process.argv[2] ||
-  path.join(__dirname, "..", "피드백_반영_보고_2026-09-18.pptx");
+  path.join(__dirname, "..", "피드백_반영_보고_2026-09-19.pptx");
 
 // ── 레퍼런스 보고서에서 뽑은 토큰
 const NAVY = "1F3864", BLUE = "4472C4", BLUE2 = "2E75B6";
@@ -18,7 +18,7 @@ const GREEN = "1E7A46", ORANGE = "C55A11";
 const KO = "Malgun Gothic";
 const W = 13.333, H = 7.5;
 const META1 = "paper-harness · 최신 연구 동향 모니터링 에이전트";
-const META2 = "9/14 피드백 반영 보고 (2026-09-18)";
+const META2 = "9/14 피드백 반영 보고 (2026-09-19)";
 
 const pres = new pptxgen();
 pres.layout = "LAYOUT_WIDE";
@@ -90,8 +90,8 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
   const rows = [
     ["대 상", "관심 분야 프로필 4개 — 우리팀 · 로봇·피지컬 AI · AI 에이전트 · 비전 검사·VLM"],
     ["운 영", "매일 05:00 논문 5편 메일 · 금 17:00 주간 관리 — 9/16 부터 무인 운영"],
-    ["보고 범위", "9/14 피드백 6개의 반영 결과 · 9/18 재현 정리(디스크) 변경"],
-    ["작 성", "2026. 09. 18"],
+    ["보고 범위", "9/14 피드백 6개의 반영 결과 · 9/18~19 동향 심화와 재현 정리"],
+    ["작 성", "2026. 09. 19"],
   ];
   let y = 3.2;
   for (const [k, v] of rows) {
@@ -103,9 +103,9 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
     y += 0.56;
   }
   s.addShape(pres.ShapeType.line, { x: 0.9, y: 5.75, w: 11.55, h: 0, line: { color: LIGHT, width: 0.75 } });
-  s.addText("피드백 기반 가중치  ·  키워드 자동 조정  ·  코드 재현과 정리  ·  보안 상한",
+  s.addText("피드백 기반 가중치  ·  동향을 따라가는 서술  ·  키워드 자동 조정  ·  코드 재현과 정리",
     { x: 0.9, y: 5.95, w: 11.5, h: 0.32, fontFace: KO, fontSize: 12.5, bold: true, color: NAVY, isTextBox: true, margin: 0 });
-  s.addNotes("근거: docs/PROGRESS.md §8-121~160, docs/AGENT_PLAN_2026-09-14.md. 다이어그램 원본과 재생성 스크립트: docs/diagrams_feedback_2026-09-17/");
+  s.addNotes("근거: docs/PROGRESS.md §8-121~163, docs/AGENT_PLAN_2026-09-14.md. 다이어그램 원본과 재생성 스크립트: docs/diagrams_feedback_2026-09-17/");
 }
 
 // ══════════════════════════════════════════════════ 2. 피드백 → 반영 (표)
@@ -125,7 +125,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
 
   const rows = [
     [hdr("9/14 (월) 받은 피드백"), hdr("9/17~18 반영"), hdr("상태")],
-    [left("사용자 반응으로 업데이트 · UI"), mid("메일 논문마다 1클릭 반응 → 매일 가중치 자동 조정"), st("운영", GREEN)],
+    [left("사용자 반응으로 업데이트 · UI"), mid("메일 논문마다 1클릭 반응 → 매일 가중치 자동 조정 · 동향은 기간 비교까지"), st("운영", GREEN)],
     [left("메일 기준 ID 로 가중치 갱신"), mid("발송 회차 + 논문 번호를 서명한 토큰 → 논문 단위로 반응 수집"), st("운영", GREEN)],
     [left("규칙만 설정, 하네스로"), mid("규칙 15개 → 7개. 나머지는 문서가 아니라 코드가 강제"), st("운영", GREEN)],
     [left("메일 보안, 한 달 운영 가능하게"), mid("링크 허용 목록 · 내려받기 크기 상한 · 격리 실행 · 메일 부재 경보"), st("운영", GREEN)],
@@ -207,20 +207,42 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
   s.addNotes("feedback_weights.py — signal=(긍정−부정)/(긍정+부정+4), target=base+0.8·signal(0.35~2.0), 하루 |Δ|≤0.1, 반감기 90일, 최소 2편.");
 }
 
+// ══════════════════════════════════════════════════ 5. 동향 심화 (신규)
+{
+  const s = pres.addSlide();
+  head(s, "IV", "동향 서술", "무엇을 보고 쓰는가 — 하루치에서 벗어났다",
+       "9/18~19 — 그전엔 그날 논문 13편만 보고 썼다. \"오늘의 스냅숏\"이지 흐름이 아니었다");
+  diagram(s, "07-narrative-inputs.png", { y: 1.85, maxW: 12.2, maxH: 4.15 });
+
+  const facts = [
+    ["기간 비교", "최근 7일 vs 직전 7일을 Python 이 센다 — 직전 구간에 관측이 없으면 증감을 만들지 않는다"],
+    ["버리던 것", "자리에 못 든 후보 수백 편의 용어를 집계로 남긴다 (9/18 실측 team_agent 431편)"],
+    ["쌓이는 글", "서술을 프로필·날짜별로 보관 — 오늘 글이 내일의 입력이 된다"],
+  ];
+  let fy = 6.18;
+  for (const [k, v] of facts) {
+    s.addShape(pres.ShapeType.rect, { x: 0.55, y: fy + 0.07, w: 0.1, h: 0.1, fill: { color: BLUE }, line: { width: 0 } });
+    s.addText([{ text: k + "   ", options: { bold: true, color: NAVY } }, { text: v, options: { color: GRAY } }],
+      { x: 0.85, y: fy - 0.04, w: 11.3, h: 0.3, fontFace: KO, fontSize: 11, isTextBox: true, margin: 0, valign: "middle" });
+    fy += 0.34;
+  }
+  s.addNotes("trend_report.window_movement · observation_signals.reserve_terms · narrative_store(profile_narratives) · narrative_engine(codex→gemini→groq). 근거 §8-161·162·163. 월요일만 주간 집계까지 세 입력을 본다.");
+}
+
 // ══════════════════════════════════════════════════ 5. 주간 관리
 {
   const s = pres.addSlide();
-  head(s, "IV", "키워드 자동 조정 · DB 관리", "금요일 17:00 — 제안은 모델, 적용은 코드",
-       "Claude 가 제안하고 Codex 가 깎아낸 뒤, 코드가 근거를 확인해야 반영된다");
+  head(s, "V", "키워드 자동 조정 · DB 관리", "월요일 새벽 — 키워드를 먼저 고치고 그 키워드로 검색한다",
+       "9/19 이동 — 금요일에 바꾸면 주말(arXiv 신규 거의 없음)을 헛돌고 월요일에야 효과를 봤다");
   diagram(s, "05-weekly-agent.png", { y: 1.9, maxW: 12.2, maxH: 4.55 });
-  conclusion(s, "DB 정리는 백업 뒤에만 · 모델이 답을 못 주면 그 주는 건너뛰고 가중치는 반응대로 계속 움직인다");
+  conclusion(s, "같은 실행이 그대로 일일 스캔으로 이어진다 — 바뀐 키워드가 그날 아침 메일에 바로 쓰인다");
   s.addNotes("두 CLI 모두 도구를 끈 채 돌린다(저장소 파일을 못 읽는 것을 실측). 한 번 600초 상한. DB 보존: 후보 90일·관측/실행/논문 180일.");
 }
 
 // ══════════════════════════════════════════════════ 6. 코드 재현 ① 찾기
 {
   const s = pres.addSlide();
-  head(s, "V", "코드 재현 (1) 찾기", "없으면 한 칸 아래로 — 대신 어느 칸인지 밝힌다",
+  head(s, "VI", "코드 재현 (1) 찾기", "없으면 한 칸 아래로 — 대신 어느 칸인지 밝힌다",
        "공식 저장소가 없어도 비슷한 구현까지 찾아 보여 주되, 공식이라고 쓰지 않는다");
   diagram(s, "03-code-ladder.png", { y: 2.05, maxW: 12.2, maxH: 4.2 });
   conclusion(s, "유사 구현은 보여 주기만 한다 — 격리 실행에 태우지 않고, 한 달마다 다시 찾는다");
@@ -230,7 +252,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
 // ══════════════════════════════════════════════════ 7. 코드 재현 ② 실행·정리
 {
   const s = pres.addSlide();
-  head(s, "VI", "코드 재현 (2) 실행과 정리", "격리해서 돌리고, 판정 뒤에는 흔적을 남기지 않는다",
+  head(s, "VII", "코드 재현 (2) 실행과 정리", "격리해서 돌리고, 판정 뒤에는 흔적을 남기지 않는다",
        "9/18 변경 — 판정이 끝나면 이미지 · 빌더 · 컨테이너 · 복제본을 모두 지운다");
   diagram(s, "06-repro-isolation.png", { y: 2.05, maxW: 12.2, maxH: 4.2 });
   conclusion(s, "지운 뒤에도 판정과 실행 로그는 DB 에 남는다 — 사라지는 것은 다시 만들 수 있는 것뿐이다");
@@ -240,7 +262,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
 // ══════════════════════════════════════════════════ 8. 디스크 정리 실측
 {
   const s = pres.addSlide();
-  head(s, "VII", "디스크 문제와 처리", "재현이 쌓아 둔 것이 C 드라이브를 채웠다",
+  head(s, "VIII", "디스크 문제와 처리", "재현이 쌓아 둔 것이 C 드라이브를 채웠다",
        "원인은 지우지 않는 설계였다 — 코드를 고치고, 이미 쌓인 것은 확인하며 지웠다");
 
   label(s, "무엇이 쌓였나", 0.5, 2.0, 6);
@@ -290,7 +312,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
 // ══════════════════════════════════════════════════ 9. 보안
 {
   const s = pres.addSlide();
-  head(s, "VIII", "보안", "외부 입력이 지나는 다섯 관문",
+  head(s, "IX", "보안", "외부 입력이 지나는 다섯 관문",
        "논문 · 링크 · 저장소는 신뢰하지 않는 입력으로 다룬다 — 못 막는 것도 적어 두었다");
   diagram(s, "04-security-layers.png", { y: 1.95, maxW: 12.2, maxH: 4.5 });
   conclusion(s, "\"한 달 돌리기 전에 보안부터\" — 네 층을 9/16 에 붙였고, 격리 실행은 그전부터 있었다");
@@ -300,14 +322,14 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
 // ══════════════════════════════════════════════════ 10. 남은 것
 {
   const s = pres.addSlide();
-  head(s, "IX", "정리", "지금 상태와 남은 것",
+  head(s, "X", "정리", "지금 상태와 남은 것",
        "네 프로필이 무인으로 돌고 있고, 못 한 것은 못 했다고 적어 두었다");
 
   label(s, "돌아가고 있는 것", 0.5, 2.0, 6);
   const done = [
     ["프로필 4개 무인 운영", "9/16~ 매일 05:00 메일 5편 · 금 17:00 주간 관리"],
-    ["구조 정리와 외부 검토", "죽은 코드 삭제 · 모듈 분할 · Codex 검토가 잡은 회귀 1건 수정"],
-    ["전체 테스트 1,086 통과", "완료 조건은 초록불이다 — 테스트를 고쳐서 맞추지 않는다"],
+    ["동향이 기간을 보기 시작했다", "9/18~19 — 기간 비교 · 지난 5일 서술 · 월요일엔 한 주 집계까지"],
+    ["전체 테스트 1,144 통과", "완료 조건은 초록불이다 — 테스트를 고쳐서 맞추지 않는다"],
   ];
   let y = 2.4;
   for (const [k, v] of done) {
@@ -323,7 +345,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
   const todo = [
     ["분야별 SOTA 순위 추적", "공개 리더보드 자료원이 닫혔다 — 논문 자체 주장만 싣는 중"],
     ["사설 IP 판정 · 인젝션 차단", "미구현으로 보안 점검표에 적었다. 만든 척하지 않는다"],
-    ["호스트 디스크 회수", "WSL 안은 정리했고 VHDX 압축은 아직 — C 여유 약 21 GB"],
+    ["절전 중 05:00 자동 실행", "작업은 깨우기로 바꿨으나 아직 안 먹었다 — 일요일 결과를 본다"],
   ];
   let ty = 2.4;
   for (const [k, v] of todo) {
@@ -336,7 +358,7 @@ function diagram(slide, file, { x, y, maxW = 12.2, maxH = 4.6 } = {}) {
     ty += 0.92;
   }
 
-  s.addText("근거 기록 : docs/PROGRESS.md §8-121~160  ·  다이어그램과 재생성 스크립트 : docs/diagrams_feedback_2026-09-17/",
+  s.addText("근거 기록 : docs/PROGRESS.md §8-121~163  ·  다이어그램과 재생성 스크립트 : docs/diagrams_feedback_2026-09-17/",
     { x: 0.5, y: 5.6, w: 12.3, h: 0.3, fontFace: KO, fontSize: 10, color: GRAY, isTextBox: true, margin: 0 });
   conclusion(s, "실측하지 않은 값은 \"미실측\", 실패는 실패로 적는다 — 그래야 다음 판단을 이 기록 위에서 할 수 있다");
   s.addNotes("다음 주 확인 예정: 반응이 쌓이면 가중치가 실제로 분야를 따라가는지 수치로 본다.");
