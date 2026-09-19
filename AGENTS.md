@@ -45,6 +45,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
+- **주간 관리는 모든 프로필에, 일일 스캔은 `schedule='daily'` 프로필에만 돈다.** `agent_maintenance.run_week` 는
+  `list_profiles(db)`(전체), `scan_all_profiles` 는 `list_profiles(db, schedule="daily")` 다 — 지금 네 프로필이 전부 daily 라
+  차이가 안 보이지만, `manual` 프로필을 만들면 **메일은 안 가는데 키워드는 매주 자동으로 바뀐다**(2026-09-20 확인).
 - 주간 작업에는 **따로 된 cron 이 없다**(2026-09-19). `db_retention`(백업 뒤 정리) → `agent_maintenance`(헤드리스 Claude 제안 →
   Codex 판정 → Python 검증·적용)는 `run_daily_scan.sh` 가 **월요일(KST)에 일일 스캔보다 먼저** 같은 flock 안에서 돌린다 —
   그래야 바꾼 키워드가 그날 아침 검색에 바로 쓰인다(금요일에 바꾸면 신규가 거의 없는 주말을 헛돈다). 실패해도 스캔은 이어진다(규칙 6).

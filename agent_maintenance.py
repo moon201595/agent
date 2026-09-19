@@ -796,7 +796,13 @@ REPORT_TTL = timedelta(days=14)   # 이보다 오래된 보고는 싣지 않는�
 
 
 def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tuple[list[str], list[tuple[str, str]]]:
-    """다음 메일에 실을 줄과 (profile_id, week) 키. 바꾼 것과 실패만 싣는다 — '바꿀 것 없음'·'기각만 있음'은 소음이다(기각 사유는
+    """agent_runs 를 사람이 읽을 줄로. **2026-09-20 부터 메일은 이 함수를 쓰지 않는다** —
+    주간 관리가 월요일 체인으로 옮겨 오면서(§8-163) 같은 변경이 `지난 7일 검색 기준 변화` 절
+    (`weekly_profile_changes`)과 한 메일에 두 번 실렸다. 여기 남겨 둔 이유는 'applying' 복구와
+    TTL 해석이 이 함수에만 있어서다(운영 화면이 쓸 수 있다). 메일이 안 부르므로 `mark_reported` 도
+    안 불리고 `reported_at` 은 NULL 로 남는다 — 다시 메일에 붙이려면 그 사실부터 보라.
+
+    다음 메일에 실을 줄과 (profile_id, week) 키. 바꾼 것과 실패만 싣는다 — '바꿀 것 없음'·'기각만 있음'은 소음이다(기각 사유는
     agent_runs.rejected_json 에 남는다). 'applying' 으로 멈춘 행은 run_tag 로 revision 을 찾아 적용됐으면 변경으로, 아니면 실패로 싣는다."""
     init_db(db)
     cutoff = ((now or _now()) - REPORT_TTL).isoformat()
