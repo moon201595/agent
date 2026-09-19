@@ -148,8 +148,11 @@ def test_last_reports_changes_do_not_come_back_next_week(tmp_path):
                     " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,2)",
                     ("p1", "2026-09-24", utc(2026, 9, 24, 5, 0).isoformat(), 3,
                      json.dumps([{"keyword": "Y", "before": 1.0, "after": 1.3}])))
+        # 지난 회차가 실제로 검색에 쓴 프로필 — 이것이 이번 보고의 baseline 이다
         con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
-                    " policy_version) VALUES ('s1','p1',?,'{}','test')", (last_scan.isoformat(),))
+                    " policy_version) VALUES ('s1','p1',?,?,'test')",
+                    (last_scan.isoformat(),
+                     json.dumps({"core_topics": ["X", "Y"], "core_weights": {"X": 1.5, "Y": 1.0}})))
 
     out = wpc.collect(db, "p1", days=7, now=now)
     assert [(w["keyword"], w["before"], w["after"]) for w in out["weights"]] == [("Y", 1.0, 1.3)]
@@ -187,3 +190,115 @@ def test_origins_name_who_touched_it_not_how_much_each_moved(tmp_path):
     assert w["delta"] == 1.1                       # 전체 기간 순변화 하나
     assert w["origins"] == ("agent", "feedback")   # 건드린 주체들 — 몫이 아니다
     assert set(w) == {"keyword", "kind", "before", "after", "delta", "origins"}
+
+
+def test_baseline_is_the_profile_last_cycle_actually_searched_with(tmp_path):
+    """이 테스트가 잡는 것: baseline 을 시각으로 되짚어 **지난 메일이 쓰지 않은 프로필**과 견주는 것.
+
+    `scan_runs.profile_snapshot` 은 그 회차가 실제로 검색에 쓴 프로필이다. revision 을 `created_at <
+    start` 으로 되짚으면 같은 시각 경계에서 한 칸 어긋날 수 있는데, 그 회차가 자기 스냅숏을 들고 있으므로
+    되짚을 이유가 없다. 여기서는 스캔 이후에 남은 revision 을 일부러 넣어 둘이 갈리게 만든다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    now = utc(2026, 9, 28, 5, 5)
+    last_scan = utc(2026, 9, 21, 5, 2)
+    _snap(db, "p1", 1, utc(2026, 9, 21, 5, 1), "agent", [["X", "core", 1.5]])
+    _snap(db, "p1", 2, utc(2026, 9, 27, 5, 0), "feedback", [["X", "core", 1.8]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('s1','p1',?,?,'test')",
+                    (last_scan.isoformat(),
+                     json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.5}})))
+    out = wpc.collect(db, "p1", days=7, now=now)
+    assert (out["weights"][0]["before"], out["weights"][0]["after"]) == (1.5, 1.8)
+    assert out["window"][0] == last_scan.isoformat()      # 경계는 달력이 아니라 지난 회차
+
+
+def test_previous_cycle_is_used_even_when_it_started_earlier_than_the_fixed_window(tmp_path):
+    """이 테스트가 잡는 것: 경계를 `max(고정 창, 지난 회차)` 로 섞는 것(2026-09-19 지적).
+
+    지난 회차가 이번 회차보다 **이른** 시각에 돌았으면 `end - 7일` 이 더 늦다. 거기서 `max` 를 쓰면
+    그 사이(지난 메일 이후 ~ 고정 경계)의 변경이 **어느 주에도 안 실린 채** 사라진다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    now = utc(2026, 9, 28, 5, 25)             # 이번 회차는 05:25 에 집계
+    last_scan = utc(2026, 9, 21, 5, 2)        # 지난 회차는 05:02 — 고정 경계(05:25)보다 이르다
+    gap = utc(2026, 9, 21, 5, 10)             # 그 사이에 일어난 변경
+    _snap(db, "p1", 1, utc(2026, 9, 21, 5, 1), "agent", [["X", "core", 1.0]])
+    _snap(db, "p1", 2, gap, "user", [["X", "core", 1.0], ["gap keyword", "core", 1.0]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('s1','p1',?,?,'test')",
+                    (last_scan.isoformat(),
+                     json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.0}})))
+    out = wpc.collect(db, "p1", days=7, now=now)
+    assert [a["keyword"] for a in out["added"]] == ["gap keyword"]   # max() 였으면 사라졌다
+
+
+def test_attribution_does_not_leak_between_core_and_seed(tmp_path):
+    """이 테스트가 잡는 것: 귀속을 키워드만으로 잡아 core 와 s2_seed 의 주체가 서로 번지는 것.
+    순변화 쪽에서 (키워드, 종류)로 가른 것이 provenance 에서 도로 합쳐지면 의미가 없다."""
+    db = tmp_path / "p.db"
+    _snap(db, "p1", 1, NOW - timedelta(days=8), "user",
+          [["defect detection", "core", 1.0], ["defect detection", "s2_seed", 1.0]])
+    _snap(db, "p1", 2, NOW - timedelta(days=1), "agent",
+          [["defect detection", "core", 1.4], ["defect detection", "s2_seed", 1.0],
+           ["surface defect", "s2_seed", 1.0]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,3)",
+                    ("p1", "2026-09-18", (NOW - timedelta(days=2)).isoformat(), 2,
+                     json.dumps([{"keyword": "defect detection", "after": 1.4}])))
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, applied_json,"
+                    " base_revision, new_revision) VALUES (?,?,?,?,?,?,?)",
+                    ("p1", "2026-W38", (NOW - timedelta(days=1)).isoformat(), "applied",
+                     json.dumps([{"op": "add_seed", "term": "surface defect", "weight": 1.0,
+                                  "reason": "시드만 늘렸다"}]), 1, 2))
+    out = wpc.collect(db, "p1", days=7, now=NOW)
+    weight = next(w for w in out["weights"] if w["kind"] == "core")
+    seed = next(a for a in out["added"] if a["kind"] == "s2_seed")
+    assert weight["origins"] == ("feedback",)      # core 가중치는 반응만 건드렸다
+    assert seed["origins"] == ("agent",)           # 시드는 에이전트만 — 서로 번지지 않는다
+
+
+def test_uppercase_keywords_keep_their_provenance(tmp_path):
+    """이 테스트가 잡는 것: 이벤트 표(소문자 정규화)와 스냅숏(표기 그대로)을 그냥 맞춰
+    **대문자가 섞인 키워드의 출처가 통째로 사라지는 것**(2026-09-19 실측: 이벤트 `llm agent` · 스냅숏 `LLM agent`)."""
+    db = tmp_path / "p.db"
+    _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["MVTec AD", "core", 1.0]])
+    _snap(db, "p1", 2, NOW - timedelta(days=1), "agent",
+          [["MVTec AD", "core", 1.0], ["LLM agent", "core", 1.2]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO profile_keyword_events (profile_id, revision, created_at, keyword,"
+                    " kind, change, actor_origin) VALUES (?,?,?,?,?,?,?)",
+                    ("p1", 2, (NOW - timedelta(days=1)).isoformat(), "llm agent", "core",
+                     "added", "agent"))
+    out = wpc.collect(db, "p1", days=7, now=NOW)
+    assert out["added"][0]["keyword"] == "LLM agent"
+    assert out["added"][0]["origins"] == ("agent",)
+
+
+def test_every_agent_op_has_a_kind():
+    """이 테스트가 잡는 것: `agent_maintenance.OPS` 에 op 을 늘리고 `OP_KIND` 를 안 늘리는 것.
+    빠진 op 의 변경은 귀속 없이 조용히 지나간다 — 조용한 손실이라 눈으로는 안 보인다."""
+    import agent_maintenance
+    assert set(wpc.OP_KIND) == set(agent_maintenance.OPS)
+
+
+def test_heading_reports_the_real_window_not_the_argument(tmp_path):
+    """이 테스트가 잡는 것: 제목이 `days` 인자를 그대로 말해 실제 기간과 어긋나는 것.
+    경계가 "지난 보고 이후"라 한 주를 거르면 14일이 되는데 제목만 7일이면 거짓말이다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    now = utc(2026, 9, 28, 5, 5)
+    _snap(db, "p1", 1, utc(2026, 9, 13, 5, 0), "user", [["X", "core", 1.0]])
+    _snap(db, "p1", 2, utc(2026, 9, 27, 5, 0), "feedback", [["X", "core", 1.4]])
+    with sqlite3.connect(db) as con:           # 지난 회차가 2주 전이다 — 한 주를 걸렀다
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('s1','p1',?,?,'test')",
+                    (utc(2026, 9, 14, 5, 2).isoformat(),
+                     json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.0}})))
+    out = wpc.collect(db, "p1", days=14, now=now)
+    scan = {"profile_changes": out}
+    assert "지난 14일 검색 기준 변화" in "\n".join(digest._profile_changes_section(scan))
+    assert "지난 14일 검색 기준 변화" in digest._profile_changes_html(scan)

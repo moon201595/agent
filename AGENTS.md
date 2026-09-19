@@ -43,8 +43,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시 실행(StartWhenAvailable)하고
   꺼진 WSL 도 켠다. `WakeToRun=true` 를 켰다(2026-09-18, XML 로 확인). 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
-  옛 `paper-harness\weekly-agent`(금 17:00)는 **지워야 한다** — 주간 관리가 월요일 체인으로 옮겼는데 이게 살아 있으면 금요일에도
-  따로 돈다(2026-09-19 기준 미처리, interop 이 끊겨 WSL 에서 못 지운다. Windows cmd 에서 `schtasks /Delete /TN "paper-harness\weekly-agent" /F`).
+  옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
+  금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
 - 주간 작업에는 **따로 된 cron 이 없다**(2026-09-19). `db_retention`(백업 뒤 정리) → `agent_maintenance`(헤드리스 Claude 제안 →
   Codex 판정 → Python 검증·적용)는 `run_daily_scan.sh` 가 **월요일(KST)에 일일 스캔보다 먼저** 같은 flock 안에서 돌린다 —
   그래야 바꾼 키워드가 그날 아침 검색에 바로 쓰인다(금요일에 바꾸면 신규가 거의 없는 주말을 헛돈다). 실패해도 스캔은 이어진다(규칙 6).
