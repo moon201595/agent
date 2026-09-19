@@ -1127,12 +1127,22 @@ def _window_html(scan_result: dict) -> str:
     return out + _reserve_html(scan_result)
 
 
+def _window_days(ch: dict) -> int:
+    """절 제목에 쓸 기간. `days` **인자**가 아니라 실제 창에서 잰다 — 경계가 "지난 보고 이후"라
+    (2026-09-19) 회차가 밀리면 6일, 한 주를 거르면 14일이 된다. 인자를 그대로 쓰면 제목이 거짓말을 한다."""
+    try:
+        start, end = (datetime.fromisoformat(t) for t in ch["window"])
+        return max(1, round((end - start).total_seconds() / 86400))
+    except (KeyError, TypeError, ValueError):
+        return int(ch.get("days") or 7)
+
+
 def _profile_changes_html(scan_result: dict) -> str:
     """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
     ch = scan_result.get("profile_changes")
     if not ch:
         return ""
-    days = ch.get("days", 7)
+    days = _window_days(ch)
 
     def row(text: str, indent: int = 10, colour: str = None) -> str:
         return (f'<div style="background-color:{_PAPER_BG};color:{colour or _INK};font-size:12px;'
@@ -1233,7 +1243,7 @@ def _profile_changes_section(scan_result: dict) -> list[str]:
     ch = scan_result.get("profile_changes")
     if not ch:
         return []
-    days = ch.get("days", 7)
+    days = _window_days(ch)
     lines = ["", "─" * 62, f"■ 지난 {days}일 검색 기준 변화"]
 
     def auto(items, key):
