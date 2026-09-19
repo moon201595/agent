@@ -39,19 +39,37 @@ def test_the_weekly_table_reaches_neither_the_mail_nor_the_model():
     assert "weekly=" not in call[:call.index(")\n")]
 
 
-def test_weekly_diagnostics_run_after_the_mail_not_before_it():
-    """이 테스트가 잡는 것: 월요일 운영 진단을 다시 스캔 한가운데로 옮기는 것.
+def test_weekly_diagnostics_run_after_every_mail_not_between_them(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 월요일 운영 진단을 프로필 루프 **안**에 두는 것.
 
     2026-09-20 실측 — `trend_report.build` 는 `client=None`(네트워크 없음)으로도 프로필당 175초다.
-    스캔 안에 있으면 네 프로필이면 12분이 아침 메일 **앞**에 붙는다. 메일에 안 실리는 자료가 나가는
-    메일을 늦추면 안 된다(규칙 6)."""
-    scan = (ROOT / "run_profile_scan.py").read_text(encoding="utf-8")
-    assert "trend_report.build" not in scan[scan.index("async def scan_and_digest"):
-                                            scan.index("async def record_weekly_diagnostics")]
-    loop = scan[scan.index("async def scan_all_profiles"):]
-    assert loop.index("_deliver(") < loop.index("record_weekly_diagnostics("), "진단은 발송 뒤다"
-    diag = scan[scan.index("async def record_weekly_diagnostics"):scan.index("async def scan_all_profiles")]
-    assert "client=None" in diag, "진단이 S2 인용망을 다시 기다리면 안 된다"
+    루프 안에 있으면 첫 메일만 안 기다리고 **둘째부터는 앞 프로필 진단을 기다린다**(네 번째 메일이
+    8분 45초를 더 기다렸다). 메일에 안 실리는 자료가 나가는 메일을 늦추면 안 된다(규칙 6).
+
+    문자열 위치가 아니라 **실제 호출 순서**를 본다 — `메일1 → 진단1 → 메일2` 도 위치 비교는 통과한다."""
+    import asyncio
+
+    import research_profile as rp
+    import run_profile_scan as rps
+
+    db = tmp_path / "t.db"
+    for pid in ("a", "b"):
+        rp.create_profile(db, pid, pid.upper(), ["alpha"])
+    events: list[str] = []
+
+    async def scan(db_path, profile_id, client, max_pages=10):
+        events.append(f"scan:{profile_id}")
+        return ({"run_status": "done", "candidates_found": 0, "scored_count": 0}, "본문")
+
+    async def diag(db_path, profile_id, result, now=None):
+        events.append(f"diag:{profile_id}")
+
+    monkeypatch.setattr(rps, "scan_and_digest", scan)
+    monkeypatch.setattr(rps, "record_weekly_diagnostics", diag)
+    monkeypatch.setattr(rps, "_deliver", lambda d, pid, r, t: events.append(f"mail:{pid}"))
+    asyncio.run(rps.scan_all_profiles(db, None, send=True))
+
+    assert events == ["scan:a", "mail:a", "scan:b", "mail:b", "diag:a", "diag:b"], events
 
 
 def test_label_names_every_input_the_narrative_actually_had():

@@ -131,6 +131,22 @@ def _keywords_of(profile_like: dict) -> dict[tuple[str, str], float]:
     return out
 
 
+def _scan_snapshot(db: Path, scan_id: str) -> dict[tuple[str, str], float] | None:
+    """그 스캔이 실제로 검색에 쓴 프로필. `_previous_cycle` 이 지난 회차에서 읽는 것과 **같은 자료원**이다.
+
+    왜 끝 스냅숏도 이걸 쓰는가(2026-09-20 지적): `_latest_snapshot`(가장 최근 revision)으로 잡으면
+    스캔이 시작된 뒤 사람이 화면에서 고친 것까지 "이번 논문을 고른 기준"처럼 보인다. 더 중요한 것은
+    **다음 주 보고의 시작점이 이 회차의 스캔 스냅숏**이라는 점이다 — 끝과 시작이 다른 자료원이면 그
+    사이 변경이 두 번 실리거나 한 번도 안 실린다. 둘을 같은 것으로 두면 연속한 두 보고가 정확히 이어붙는다."""
+    rows = _rows(db, "SELECT profile_snapshot FROM scan_runs WHERE scan_id=?", (scan_id,))
+    if not rows:
+        return None
+    try:
+        return _keywords_of(json.loads(rows[0]["profile_snapshot"]) or {})
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return None
+
+
 def _previous_cycle(db: Path, profile_id: str, end: datetime,
                     days: int) -> tuple[str, dict[tuple[str, str], float] | None] | None:
     """지난번 이 보고가 나간 회차 — (스캔 시작 시각, 그 스캔이 실제 쓴 프로필). 기록이 없으면 None.
@@ -170,7 +186,7 @@ def _previous_cycle(db: Path, profile_id: str, end: datetime,
 
 
 def collect(db: Path, profile_id: str, days: int = 7,
-            now: datetime | None = None) -> dict | None:
+            now: datetime | None = None, scan_id: str | None = None) -> dict | None:
     """지난 보고 이후의 순변화. 바뀐 게 없으면 None — 호출부는 그때 절 자체를 넣지 않는다.
 
     기간은 **지난 회차 스캔부터 지금까지**이고(`_previous_cycle`), 그 기록이 없을 때만 `days` 일로
@@ -189,7 +205,11 @@ def collect(db: Path, profile_id: str, days: int = 7,
     start_iso, before = previous if previous else ((end - timedelta(days=days)).isoformat(), None)
     if before is None:
         before = _snapshot_at(db, profile_id, start_iso)
-    after = _latest_snapshot(db, profile_id)
+    # 끝 스냅숏도 **이번 회차가 검색에 쓴 것**으로 잡는다(`_scan_snapshot` 설명 참고). 스캔 기록이 없는
+    # 호출(테스트·수동 조회)에서는 가장 최근 revision 으로 물러난다.
+    after = _scan_snapshot(db, scan_id) if scan_id else None
+    if after is None:
+        after = _latest_snapshot(db, profile_id)
     if before is None or after is None:
         return None            # 비교할 스냅숏이 없다 — 0 으로 채우지 않는다
 
