@@ -338,7 +338,10 @@ async def scan_and_digest(
     if profile and is_weekly_review_day():
         try:
             import weekly_profile_changes
-            changes = weekly_profile_changes.collect(db_path, profile_id)
+            # `scan_id` 를 준다 — 끝 스냅숏이 **이번 회차가 실제로 검색에 쓴 프로필**이어야
+            # 다음 주 보고의 시작점(같은 스냅숏)과 정확히 이어붙는다.
+            changes = weekly_profile_changes.collect(db_path, profile_id,
+                                                     scan_id=result.get("scan_id"))
             if changes:
                 result["profile_changes"] = changes
                 n = len(changes["weights"]) + len(changes["added"]) + len(changes["removed"])
@@ -520,6 +523,7 @@ async def scan_all_profiles(
     returns {profile_id: {"status": "ok"|"error", ...}} — cron 로그에서
     무슨 일이 있었는지 한눈에 보이는 형태."""
     summary: dict[str, dict] = {}
+    pending_diagnostics: list[tuple[str, dict]] = []
     # 매일 도는 프로필만(2026-09-15) — schedule_frequency='manual' 프로필은 cron 이 건드리지 않는다.
     for profile_id in research_profile.list_profiles(db_path, schedule="daily"):
         try:
@@ -539,11 +543,16 @@ async def scan_all_profiles(
                 if delivery_reached_someone(message):
                     research_profile.mark_shown(
                         db_path, profile_id, result.get("papers") or [])
-            # 월요일 운영 진단은 **발송 뒤**다 — 메일에 안 실리는 자료가 메일을 기다리면 안 된다.
-            await record_weekly_diagnostics(db_path, profile_id, result)
             summary[profile_id] = entry
+            pending_diagnostics.append((profile_id, result))
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
             summary[profile_id] = {"status": "error", "detail": str(e)}
+
+    # **모든 메일이 나간 뒤에 한 번**(2026-09-20 2차 지적). 프로필 루프 안에 두면 첫 메일만 안 기다리고
+    # 둘째부터는 앞 프로필 진단을 기다린다 — 프로필당 175초라 네 번째 메일은 8분 45초를 더 기다렸다.
+    # 메일 업무를 다 끝낸 다음에 진단을 몰아서 남긴다.
+    for profile_id, result in pending_diagnostics:
+        await record_weekly_diagnostics(db_path, profile_id, result)
 
     # 옛 주간 프로필 개선기(`profile_advisor.run_weekly`, 월요일·proposal_only)는 2026-09-17 에 지웠다 — 금요일 17:00 의
     # `agent_maintenance`(Claude 제안 → Codex 판정 → Python 검증·적용)가 같은 역할을 맡는다(운영 이력 1회, 제안 0건이었다).
@@ -640,12 +649,14 @@ def main() -> int:
         # 곳에 모은 것과 같은 이유).
         message = _deliver(db_path, args.profile_id, result, digest_text)
         print(message)
-        if delivery_failed(message):
-            return 1
         # --all 경로와 같은 규칙 — 실제로 간 뒤에만 소비 처리한다(§8-77).
         if delivery_reached_someone(message):
             research_profile.mark_shown(db_path, args.profile_id, result.get("papers") or [])
-    # --all 경로와 같은 자리 — 발송 뒤에 진단을 남긴다(main 은 동기라 여기서 다시 루프를 연다).
+        if delivery_failed(message):
+            # 발송 실패도 그날 기록은 남긴다 — `--all` 이 그렇게 한다(그쪽은 실패를 summary 에 담고 계속 간다).
+            asyncio.run(record_weekly_diagnostics(db_path, args.profile_id, result))
+            return 1
+    # --all 경로와 같은 자리 — 메일 업무가 끝난 뒤 진단(main 은 동기라 여기서 다시 루프를 연다).
     asyncio.run(record_weekly_diagnostics(db_path, args.profile_id, result))
     return 0
 
