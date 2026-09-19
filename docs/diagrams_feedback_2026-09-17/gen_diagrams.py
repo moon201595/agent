@@ -411,8 +411,8 @@ def diagram_weekly():
         b.append(mono(lx - 16, y + 28, name, size=9, fill=INK, anchor="end", spacing="0.14em"))
         b.append(text(lx - 16, y + 48, role, size=12, weight=500, fill=MUTED, anchor="end"))
     b.append(f'<line x1="{lx}" y1="{ly0+3*lh}" x2="{lx+lw}" y2="{ly0+3*lh}" stroke="{RULE}" stroke-width="1"/>')
-    b.append(text(lx, 52, "금요일 17:00 · cron", size=12, weight=600, fill=MUTED))
-    b.append(text(lx + lw, 52, "세션을 안 열어도 돈다 · 모델이 답을 못 주면 그 주는 건너뛴다", size=12, weight=500, fill=MUTED, anchor="end"))
+    b.append(text(lx, 52, "월요일 새벽 · 일일 스캔 바로 앞 (2026-09-19 이동)", size=12, weight=600, fill=MUTED))
+    b.append(text(lx + lw, 52, "끝나면 같은 실행이 그대로 일일 스캔으로 이어진다 — 바뀐 키워드가 그날 바로 쓰인다", size=12, weight=500, fill=MUTED, anchor="end"))
     # 단계 (x, lane, name, sub)  — 폭 176, 높이 64
     bw, bh = 176, 64
     def cy_of(lane):
@@ -422,7 +422,7 @@ def diagram_weekly():
         (408, 2, "브리프", "28일 반응·적중·반복어", False),
         (616, 0, "키워드 제안", "추가·가중치·제외어 JSON", False),
         (824, 1, "판정", "근거 없는 제안은 뺀다", False),
-        (1032, 2, "검증·적용", "revision · 다음 메일에 표시", True),
+        (1032, 2, "검증·적용", "revision → 곧바로 오늘 스캔", True),
     ]
     rects = [(x, cy_of(l) - bh / 2) for x, l, *_ in steps]
     # 화살표 먼저
@@ -465,9 +465,9 @@ def diagram_weekly():
     b.append(mono(40, lyy + 10, "LEGEND", size=8, fill=MUTED, spacing="0.14em"))
     b.append(f'<rect x="120" y="{lyy-3}" width="24" height="14" rx="3" fill="{ACCENT_TINT}" stroke="{ACCENT}" stroke-width="1"/>')
     b.append(text(154, lyy + 10, "실제로 DB 를 바꾸는 유일한 단계", size=12, weight=500, fill=MUTED))
-    b.append(text(1240, lyy + 10, "매일 05:00 가중치 조정은 Python 만 — 모델 없이 반응대로 (feedback_weights)", size=12, weight=500, fill=MUTED, anchor="end"))
-    return svg("weekly-agent", "주간 관리 — 제안은 모델, 적용은 코드",
-               "금요일 17:00 에 Python 이 DB 를 정리하고 브리프를 만들면 Claude 가 키워드 변경을 제안하고 Codex 가 판정하며 Python 이 규칙으로 검증해 revision 으로 적용하는 흐름을 보여 준다.",
+    b.append(text(1240, lyy + 10, "그전엔 금요일 17:00 — 바꾼 키워드가 주말(arXiv 신규 거의 없음)을 헛돌았다", size=12, weight=500, fill=MUTED, anchor="end"))
+    return svg("weekly-agent", "월요일 새벽 — 키워드를 먼저 고치고 그 키워드로 검색한다",
+               "월요일 새벽 일일 스캔 직전에 Python 이 DB 를 정리하고 브리프를 만들면 Claude 가 키워드 변경을 제안하고 Codex 가 판정하며 Python 이 검증해 revision 으로 적용한 뒤, 그 키워드로 곧바로 그날 스캔이 이어지는 흐름을 보여 준다.",
                "\n".join(b))
 
 
@@ -518,6 +518,93 @@ def diagram_repro():
                "\n".join(b))
 
 
+# ════════════════════════════════════════════════════════════════════
+# ⑦ 동향 서술이 무엇을 보고 쓰나 — 입력 셋 → 서술 → 저장 → 내일의 입력
+# ════════════════════════════════════════════════════════════════════
+def diagram_narrative_inputs():
+    b = []
+    # 왼쪽 입력 셋
+    ix, iw, ih = 72, 300, 92
+    inputs = [
+        ("오늘 신규 논문", "내용 5편 + 각주 8편", "초록 · 원문 요약의 결과 절", False),
+        ("지난 5일 동향 정리", "우리가 쓴 글 그대로", "논문을 다시 읽지 않는다", True),
+        ("지난 한 주 집계", "월요일에만", "편수·증감은 Python 이 센 값", False),
+    ]
+    ys = [176, 300, 424]
+    for (name, s1, s2, focal), y in zip(inputs, ys):
+        b.append(box(ix, y, iw, ih, fill=ACCENT_TINT if focal else PAPER,
+                     stroke=ACCENT if focal else INK, sw=1.2 if focal else 1))
+        b.append(text(ix + 20, y + 34, name, size=16, weight=600, fill=ACCENT if focal else INK))
+        b.append(text(ix + 20, y + 58, s1, size=12, weight=400, fill=MUTED))
+        b.append(text(ix + 20, y + 78, s2, size=12, weight=400, fill=SOFT))
+
+    # 가운데 — 서술 엔진
+    ex, ey, ew, eh = 512, 268, 256, 156
+    # 입력 → 엔진 (둥근 직각)
+    for y in ys:
+        sy = y + ih / 2
+        ty = ey + eh / 2
+        if abs(sy - ty) < 2:
+            b.append(f'<line x1="{ix+iw}" y1="{sy}" x2="{ex-1}" y2="{ty}" stroke="{MUTED}" stroke-width="1.2" marker-end="url(#arrow)"/>')
+        else:
+            midx = ix + iw + 56
+            r = 8
+            down = ty > sy
+            sweep = 1 if down else 0
+            sweep2 = 0 if down else 1
+            vy = ty - r if down else ty + r
+            b.append(f'<path d="M{ix+iw} {sy} H{midx-r} A{r} {r} 0 0 {sweep} {midx} {sy + (r if down else -r)} '
+                     f'V{vy} A{r} {r} 0 0 {sweep2} {midx+r} {ty} H{ex-1}" fill="none" '
+                     f'stroke="{MUTED}" stroke-width="1.2" marker-end="url(#arrow)"/>')
+    b.append(box(ex, ey, ew, eh, fill=PAPER2, stroke=INK))
+    b.append(text(ex + ew / 2, ey + 40, "동향 서술", size=16, weight=600, anchor="middle"))
+    b.append(text(ex + ew / 2, ey + 66, "Codex → Gemini → Groq", size=12, weight=500, fill=ACCENT, anchor="middle"))
+    b.append(text(ex + ew / 2, ey + 88, "앞이 실패하면 다음으로", size=12, weight=400, fill=MUTED, anchor="middle"))
+    b.append(text(ex + ew / 2, ey + 118, "수치는 그대로 인용만", size=12, weight=400, fill=MUTED, anchor="middle"))
+    b.append(text(ex + ew / 2, ey + 138, "새 숫자를 만들지 않는다", size=12, weight=400, fill=MUTED, anchor="middle"))
+
+    # 오른쪽 — 메일과 보관
+    mx, mw, mh = 856, 300, 92
+    b.append(f'<line x1="{ex+ew}" y1="{ey+eh/2}" x2="{mx-1}" y2="{ey+eh/2}" stroke="{MUTED}" stroke-width="1.2" marker-end="url(#arrow)"/>')
+    b.append(box(mx, ey + 8, mw, mh, stroke=INK))
+    b.append(text(mx + 20, ey + 42, "아침 메일", size=16, weight=600))
+    b.append(text(mx + 20, ey + 66, "무엇을 보고 썼는지 라벨에 적는다", size=12, weight=400, fill=MUTED))
+
+    sx, sy2 = mx, ey + 8 + mh + 44
+    b.append(f'<path d="M{mx+mw/2} {ey+8+mh} V{sy2-8} A8 8 0 0 0 {mx+mw/2-8} {sy2} H{mx+mw/2}" fill="none" stroke="{SOFT}" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>')
+    b.append(box(sx, sy2, mw, 76, fill=ACCENT_TINT, stroke=ACCENT, sw=1.2))
+    b.append(text(sx + 20, sy2 + 32, "서술 보관", size=16, weight=600, fill=ACCENT))
+    b.append(text(sx + 20, sy2 + 56, "profile_narratives — 프로필·날짜별", size=12, weight=400, fill=MUTED))
+
+    # 보관 → 내일의 입력(되돌아가는 점선). **모든 상자 바깥**으로 돌린다 — 가운데로 질러가면
+    # 서술 상자 뒤를 지나며 입력선과 겹친다(첫 판이 그랬다).
+    rx0, ry0 = sx + mw / 2, sy2 + 76          # 보관 상자 아래 가운데
+    band = 568                                  # 아래로 빠지는 가로 띠
+    left = 40                                   # 왼쪽 세로 통로(입력 상자 x=72 보다 바깥)
+    ty = ys[1] + ih / 2                          # 지난 5일 상자 왼쪽 가장자리 높이
+    b.append(f'<path d="M{rx0} {ry0} V{band-8} A8 8 0 0 1 {rx0-8} {band} H{left+8} '
+             f'A8 8 0 0 1 {left} {band-8} V{ty+8} A8 8 0 0 1 {left+8} {ty} H{ix-1}" '
+             f'fill="none" stroke="{SOFT}" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>')
+    lab = "내일은 이 글이 \"지난 5일\" 이 된다"
+    wl = 4 * math.ceil((len(lab) * 12 * 0.85 + 8) / 4)
+    b.append(f'<rect x="{rx0-wl-28}" y="{band-26}" width="{wl}" height="16" rx="2" fill="{PAPER}"/>')
+    b.append(text(rx0 - 28 - wl / 2, band - 14, lab, size=12, weight=500, fill=SOFT, anchor="middle"))
+
+    b.append(text(72, 136, "그전엔 그날 논문 13편만 보고 썼다 — \"오늘의 스냅숏\"이지 흐름이 아니었다 (2026-09-18·19)",
+                  size=12, weight=600, fill=MUTED))
+    b.append(text(640, 604, "월요일은 셋을 다 본다 — 그래서 한 주 중 가장 두껍다. 평일은 위 둘만 본다.",
+                  size=14, weight=400, fill=MUTED, anchor="middle", font=SERIF))
+    lyy = 656
+    b.append(f'<line x1="40" y1="{lyy-8}" x2="1240" y2="{lyy-8}" stroke="{RULE}" stroke-width="0.8"/>')
+    b.append(mono(40, lyy + 10, "LEGEND", size=8, fill=MUTED, spacing="0.14em"))
+    b.append(f'<rect x="120" y="{lyy-3}" width="24" height="14" rx="3" fill="{ACCENT_TINT}" stroke="{ACCENT}" stroke-width="1"/>')
+    b.append(text(154, lyy + 10, "2026-09-18·19 새로 붙인 것", size=12, weight=500, fill=MUTED))
+    b.append(text(1240, lyy + 10, "주간 집계는 메일에 따로 싣지 않는다 — 서술이 그것까지 보고 쓴다", size=12, weight=500, fill=MUTED, anchor="end"))
+    return svg("narrative-inputs", "동향 서술은 무엇을 보고 쓰나",
+               "오늘 신규 논문과 지난 5일 동안 우리가 쓴 동향 정리, 그리고 월요일에는 지난 한 주 집계까지 읽어 서술을 쓰고, 그 글이 다시 보관되어 다음 날의 입력이 되는 순환을 보여 준다.",
+               "\n".join(b))
+
+
 PAGES = [
     ("01-feedback-map", "Feedback → Change · paper-harness", "9/14 피드백 6개 → 9/17 반영",
      "월요일 피드백 한 줄씩, 지금 어디에 어떻게 들어갔는지", diagram_mapping),
@@ -528,9 +615,11 @@ PAGES = [
     ("04-security-layers", "Layer stack · paper-harness", "보안 층 — 외부 입력이 지나는 다섯 관문",
      "한 달 무인 운영 전에 붙인 상한과 그래도 남는 것", diagram_layers),
     ("05-weekly-agent", "Swimlane · paper-harness", "주간 관리 — 제안은 모델, 적용은 코드",
-     "DB 정리 → 브리프 → Claude 제안 → Codex 판정 → Python 검증·적용", diagram_weekly),
+     "DB 정리 → 브리프 → Claude 제안 → Codex 판정 → Python 검증·적용 → 그대로 일일 스캔", diagram_weekly),
     ("06-repro-isolation", "Process · paper-harness", "코드 재현 — 격리 컨테이너에서 exit code 로만 판정",
      "찾은 저장소 → 설치 → 격리 실행 → 판정 → 메일 라벨, 최대 3회", diagram_repro),
+    ("07-narrative-inputs", "Data flow · paper-harness", "동향 서술은 무엇을 보고 쓰나",
+     "오늘 논문 + 지난 5일 서술 + (월) 지난 한 주 집계 → 서술 → 보관 → 내일의 입력", diagram_narrative_inputs),
 ]
 
 if __name__ == "__main__":

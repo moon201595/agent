@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>동향 서술은 무엇을 보고 쓰나</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --color-paper: #FFFFFF; --color-ink: #1F3864; --color-muted: #595959; --color-accent: #2E75B6;
+            --font-sans: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; --font-serif: 'Malgun Gothic', 'Noto Sans KR', sans-serif; --font-mono: 'Geist Mono', ui-monospace, monospace; }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase;
+               color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.01em;
+         line-height: 1.2; color: var(--color-ink); margin-bottom: 0.5rem; }
+    .sub { color: var(--color-muted); font-size: 0.95rem; margin-bottom: 1.25rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Data flow · paper-harness</p>
+    <h1>동향 서술은 무엇을 보고 쓰나</h1>
+    <p class="sub">오늘 논문 + 지난 5일 서술 + (월) 지난 한 주 집계 → 서술 → 보관 → 내일의 입력</p>
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="narrative-inputs-title narrative-inputs-desc">
+  <title id="narrative-inputs-title">동향 서술은 무엇을 보고 쓰나</title>
+  <desc id="narrative-inputs-desc">오늘 신규 논문과 지난 5일 동안 우리가 쓴 동향 정리, 그리고 월요일에는 지난 한 주 집계까지 읽어 서술을 쓰고, 그 글이 다시 보관되어 다음 날의 입력이 되는 순환을 보여 준다.</desc>
+  <defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#595959"/></marker>
+  <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2E75B6"/></marker>
+  <marker id="arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#8C99AD"/></marker>
+</defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+<rect x="72" y="176" width="300" height="92" rx="6" fill="#FFFFFF"/><rect x="72" y="176" width="300" height="92" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="92" y="210" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">오늘 신규 논문</text>
+<text x="92" y="234" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">내용 5편 + 각주 8편</text>
+<text x="92" y="254" fill="#8C99AD" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">초록 · 원문 요약의 결과 절</text>
+<rect x="72" y="300" width="300" height="92" rx="6" fill="#FFFFFF"/><rect x="72" y="300" width="300" height="92" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="92" y="334" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">지난 5일 동향 정리</text>
+<text x="92" y="358" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">우리가 쓴 글 그대로</text>
+<text x="92" y="378" fill="#8C99AD" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">논문을 다시 읽지 않는다</text>
+<rect x="72" y="424" width="300" height="92" rx="6" fill="#FFFFFF"/><rect x="72" y="424" width="300" height="92" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="92" y="458" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">지난 한 주 집계</text>
+<text x="92" y="482" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">월요일에만</text>
+<text x="92" y="502" fill="#8C99AD" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">편수·증감은 Python 이 센 값</text>
+<path d="M372 222.0 H420 A8 8 0 0 1 428 230.0 V338.0 A8 8 0 0 0 436 346.0 H511" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="372" y1="346.0" x2="511" y2="346.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M372 470.0 H420 A8 8 0 0 0 428 462.0 V354.0 A8 8 0 0 1 436 346.0 H511" fill="none" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="512" y="268" width="256" height="156" rx="6" fill="#FFFFFF"/><rect x="512" y="268" width="256" height="156" rx="6" fill="#F7F9FC" stroke="#1F3864" stroke-width="1"/>
+<text x="640.0" y="308" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">동향 서술</text>
+<text x="640.0" y="334" fill="#2E75B6" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">Codex → Gemini → Groq</text>
+<text x="640.0" y="356" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">앞이 실패하면 다음으로</text>
+<text x="640.0" y="386" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">수치는 그대로 인용만</text>
+<text x="640.0" y="406" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">새 숫자를 만들지 않는다</text>
+<line x1="768" y1="346.0" x2="855" y2="346.0" stroke="#595959" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="856" y="276" width="300" height="92" rx="6" fill="#FFFFFF"/><rect x="856" y="276" width="300" height="92" rx="6" fill="#FFFFFF" stroke="#1F3864" stroke-width="1"/>
+<text x="876" y="310" fill="#1F3864" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">아침 메일</text>
+<text x="876" y="334" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">무엇을 보고 썼는지 라벨에 적는다</text>
+<path d="M1006.0 368 V404 A8 8 0 0 0 998.0 412 H1006.0" fill="none" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="856" y="412" width="300" height="76" rx="6" fill="#FFFFFF"/><rect x="856" y="412" width="300" height="76" rx="6" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1.2"/>
+<text x="876" y="444" fill="#2E75B6" font-size="16" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">서술 보관</text>
+<text x="876" y="468" fill="#595959" font-size="12" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">profile_narratives — 프로필·날짜별</text>
+<path d="M1006.0 488 V560 A8 8 0 0 1 998.0 568 H48 A8 8 0 0 1 40 560 V354.0 A8 8 0 0 1 48 346.0 H71" fill="none" stroke="#8C99AD" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow-soft)"/>
+<rect x="754.0" y="542" width="224" height="16" rx="2" fill="#FFFFFF"/>
+<text x="866.0" y="554" fill="#8C99AD" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="middle">내일은 이 글이 "지난 5일" 이 된다</text>
+<text x="72" y="136" fill="#595959" font-size="12" font-weight="600" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">그전엔 그날 논문 13편만 보고 썼다 — "오늘의 스냅숏"이지 흐름이 아니었다 (2026-09-18·19)</text>
+<text x="640" y="604" fill="#595959" font-size="14" font-weight="400" font-family="'Malgun Gothic', 'Noto Sans KR', sans-serif" text-anchor="middle">월요일은 셋을 다 본다 — 그래서 한 주 중 가장 두껍다. 평일은 위 둘만 본다.</text>
+<line x1="40" y1="648" x2="1240" y2="648" stroke="rgba(31,56,100,0.14)" stroke-width="0.8"/>
+<text x="40" y="666" fill="#595959" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="653" width="24" height="14" rx="3" fill="#E9F0F8" stroke="#2E75B6" stroke-width="1"/>
+<text x="154" y="666" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="start">2026-09-18·19 새로 붙인 것</text>
+<text x="1240" y="666" fill="#595959" font-size="12" font-weight="500" font-family="'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" text-anchor="end">주간 집계는 메일에 따로 싣지 않는다 — 서술이 그것까지 보고 쓴다</text>
+</svg>
+  </div>
+</body>
+</html>
