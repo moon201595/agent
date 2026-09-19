@@ -319,14 +319,11 @@ def test_monday_narrative_prompt_carries_the_weekly_numbers(db, tmp_path, monkey
     monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: True)
     result, text = asyncio.run(rps.scan_and_digest(db, "team", None))
     assert len(prompts) == 1
-    assert "defect detection 5편" in prompts[0]              # 집계가 서술 입력으로 갔다
-    assert "새 수치를 만들지 않는다" in prompts[0]            # 지어내지 말라는 지시도 같이
-    assert "지난 한 주" in digest.narrative_source_label(result)   # 라벨이 그 사실을 말한다
+    # 2026-09-19 오후 재검토: 운영 표는 **서술에 안 넣는다**(60%가 검색 잡음·건강 지표였다).
+    # 계산·보관은 하되 모델에는 주지 않는다 — 기간 비교는 window_movement 몫이다.
+    assert "defect detection 5편" not in prompts[0]
+    assert "주간 집계" not in prompts[0]
+    assert "defect detection 5편" in (result.get("weekly_diagnostics") or "")   # 진단용으로는 남는다
+    assert "지난 한 주" not in digest.narrative_source_label(result)            # 라벨도 봤다고 하지 않는다
     for mail in (text, digest.generate_digest_html(result, "팀")):
-        assert "주간 동향 리뷰" not in mail                   # 별도 절로는 안 나간다
-
-    prompts.clear()
-    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: False)
-    _r2, _t2 = asyncio.run(rps.scan_and_digest(db, "team", None))
-    if prompts:                                              # 평일엔 주간 집계가 없어야 한다
-        assert "주간 집계" not in prompts[0]
+        assert "주간 동향 리뷰" not in mail                   # 메일에도 안 나간다

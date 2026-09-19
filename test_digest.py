@@ -921,13 +921,14 @@ def test_weekly_review_is_no_longer_a_separate_mail_block():
         assert "처리한 논문 12편" not in rendered
 
 
-def test_monday_label_tells_the_reader_the_weekly_numbers_were_used():
-    """주간 수치를 절로 안 싣는 대신 **라벨이 그걸 봤다고 말해야** 한다 — 안 그러면 읽는 사람은
-    월요일 글이 왜 두꺼운지 알 수 없다(규칙 8: 라벨이 입력을 말한다).
-    이 테스트가 잡는 것: 입력이 들어갔는데 라벨이 침묵하는 것 · 안 들어갔는데 봤다고 적는 것."""
-    used = digest.narrative_source_label({"narrative_summaries": 1, "weekly_review_context": _WEEKLY_SAMPLE})
-    assert "지난 한 주" in used
-    assert "지난 한 주" not in digest.narrative_source_label({"narrative_summaries": 1})
+def test_label_never_claims_an_input_the_narrative_did_not_get():
+    """라벨은 **실제로 들어간 것만** 말한다(규칙 8). 2026-09-19 오후에 주간 운영 표를 서술 입력에서
+    뺐으므로 라벨도 그것을 봤다고 하면 안 된다 — 절반은 검색 잡음이라 모델에 주지 않기로 했다.
+    이 테스트가 잡는 것: 입력에서 뺀 자료를 라벨이 계속 봤다고 적는 것 · 실제로 들어간 지난 서술을 빠뜨리는 것."""
+    got_past = digest.narrative_source_label({"narrative_summaries": 1, "narrative_past_days": 6})
+    assert "지난 6일" in got_past
+    diag_only = digest.narrative_source_label({"narrative_summaries": 1, "weekly_diagnostics": _WEEKLY_SAMPLE})
+    assert "지난 한 주" not in diag_only        # 진단용으로만 보관한 것은 라벨에 없다
 
 
 def test_weekly_review_absent_renders_nothing():

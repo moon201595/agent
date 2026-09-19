@@ -893,10 +893,13 @@ def test_budget_default_is_generous_enough_for_a_healthy_run(tmp_path, monkeypat
 # ------------------------------------------- 주간 동향 리뷰 (2026-09-02)
 
 
-def test_weekly_numbers_feed_the_monday_narrative(tmp_path, monkeypatch):
-    """월요일에만 주간 수치를 뽑아 **서술의 입력으로** 넘긴다(2026-09-19 사용자 결정).
+def test_weekly_diagnostics_are_kept_but_never_fed_to_the_model(tmp_path, monkeypatch):
+    """월요일에만 주간 진단을 뽑아 **보관만** 한다(2026-09-19 오후 확정).
 
-    이 테스트가 잡는 것: 월요일에 주간 수치를 안 뽑는 것 · 뽑고도 서술에 안 넘기는 것 ·
+    오전에는 이 값을 서술 입력으로 넘겼는데, 실제로 뽑아 보니 `build()` 출력 5,471자 중 60% 넘게가
+    검색 지문·S2 수율·탈락 사유·프로필 건강 같은 운영 진단이었고 기간 비교는 `window_movement` 와
+    겹쳤다. 그래서 모델에는 주지 않고 진단용으로만 남긴다.
+    이 테스트가 잡는 것: 진단을 안 뽑는 것 · 그걸 다시 모델 입력으로 넘기는 것 ·
     리뷰 자체의 LLM 호출(with_narrative=True)을 되살려 호출을 두 번 하는 것."""
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
@@ -917,7 +920,8 @@ def test_weekly_numbers_feed_the_monday_narrative(tmp_path, monkeypatch):
     assert seen["with_narrative"] is False          # 리뷰는 수치만 — 서술은 하나로 모은다
     # 이 픽스처는 내용 자리 논문이 0편이라 서술이 안 돈다. **그래도** 집계는 나와야 한다 —
     # 논문 없는 월요일에 그 주 기록이 통째로 비면 안 되기 때문이다(서술 블록 밖에 둔 이유).
-    assert "defect detection 5편" in (result.get("weekly_review_context") or "")
+    assert "defect detection 5편" in (result.get("weekly_diagnostics") or "")
+    assert "weekly_review_context" not in result        # 옛 이름으로 되살리지 않는다
 
 
 def test_weekly_review_absent_on_other_days(tmp_path, monkeypatch):
@@ -958,15 +962,14 @@ def test_weekly_review_failure_does_not_break_the_digest(tmp_path, monkeypatch):
     assert "주간" not in text          # 실패한 부가 정보는 안 붙는다
 
 
-def test_weekly_numbers_reach_the_narrative_and_neither_mail_gets_a_stray_block(tmp_path, monkeypatch):
-    """**§8-70 의 새 판**(2026-09-19 구조 변경).
+def test_old_weekly_review_block_is_gone_from_both_mail_formats(tmp_path, monkeypatch):
+    """**§8-70 의 새 판**(2026-09-19).
 
     그때의 결함은 주간 리뷰가 평문에만 있고 HTML 에는 없던 것이었고, 그 테스트가 지키던 주장은
-    "배달되는 두 판 모두에 있다"였다. 이제 주간 리뷰는 **어느 판에도 절로 안 실린다** — 월요일 서술의
-    입력으로 들어간다. 그래서 지켜야 할 주장이 뒤집혔다: **두 판 모두에 없고, 서술 입력에는 있다.**
+    "배달되는 두 판 모두에 있다"였다. 이제 그 절은 **어느 판에도 없다** — 그 자리는 "검색 기준 변화"가
+    대신하고, 운영 진단은 DB·화면에만 남는다. 지켜야 할 주장이 뒤집혔다: **두 판 모두에 없다.**
 
-    이 테스트가 잡는 것: 한쪽 판에만 옛 절을 되살려 두 판이 갈라지는 것 · 수치를 뽑고도 서술에 안 넘기는 것.
-    """
+    이 테스트가 잡는 것: 한쪽 판에만 옛 절을 되살려 두 판이 갈라지는 것."""
     db_path = tmp_path / "t.db"
     _setup_profile(db_path)
     _seed_summary(monkeypatch, tmp_path, [])
@@ -983,7 +986,7 @@ def test_weekly_numbers_reach_the_narrative_and_neither_mail_gets_a_stray_block(
 
     result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
 
-    assert "처리한 논문 12편" in (result.get("weekly_review_context") or "")   # 집계는 나왔는데
+    assert "처리한 논문 12편" in (result.get("weekly_diagnostics") or "")   # 진단으로는 남는데
     html = rps.digest.generate_digest_html(result, "team_ai")
     for rendered in (text, html):
         assert "처리한 논문 12편" not in rendered                  # 두 판 어디에도 절은 없다

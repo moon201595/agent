@@ -1127,6 +1127,71 @@ def _window_html(scan_result: dict) -> str:
     return out + _reserve_html(scan_result)
 
 
+def _profile_changes_html(scan_result: dict) -> str:
+    """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
+    ch = scan_result.get("profile_changes")
+    if not ch:
+        return ""
+    days = ch.get("days", 7)
+
+    def row(text: str, indent: int = 10, colour: str = None) -> str:
+        return (f'<div style="background-color:{_PAPER_BG};color:{colour or _INK};font-size:12px;'
+                f'margin:2px 0;padding-left:{indent}px;">{text}</div>')
+
+    def head(text: str) -> str:
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:8px 0 2px;">{_esc(text)}</div>')
+
+    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+           f'font-weight:600;margin:18px 0 4px;">지난 {days}일 검색 기준 변화</p>')
+    auto = lambda items: [x for x in items if any(o in ("feedback", "agent") for o in (x.get("origins") or ()))]
+
+    moved = auto([w for w in (ch.get("weights") or []) if w["origins"]])
+    if moved:
+        out += head("자동으로 움직인 가중치 (한 주 순이동)")
+        for w in moved:
+            sign = "+" if w["delta"] > 0 else ""
+            out += row(f'<b>{_esc(w["keyword"])}</b> {w["before"]} → {w["after"]} '
+                       f'<span style="color:{_MUTED};">({sign}{w["delta"]}) · {_esc(_origins_text(w["origins"]))}</span>')
+    added, removed = auto(ch.get("added") or []), auto(ch.get("removed") or [])
+    if added or removed:
+        out += head("자동으로 바뀐 키워드·검색어")
+        for a in added:
+            out += row(f'+ <b>{_esc(a["keyword"])}</b> <span style="color:{_MUTED};">'
+                       f'({_esc(a["kind"])}, {a["weight"]}) · {_esc(_origins_text(a["origins"]))}</span>')
+        for r in removed:
+            out += row(f'− <b>{_esc(r["keyword"])}</b> <span style="color:{_MUTED};">'
+                       f'({_esc(r["kind"])}) · {_esc(_origins_text(r["origins"]))}</span>')
+
+    agent = ch.get("agent") or {}
+    if agent.get("applied"):
+        out += head("에이전트가 적용한 것과 그 이유")
+        for action in agent["applied"]:
+            op = {"set_weight": "가중치", "add_keyword": "키워드 추가", "add_seed": "검색어 추가",
+                  "remove_keyword": "키워드 삭제", "add_exclude": "제외어 추가"}.get(action.get("op"), action.get("op"))
+            weight = f' → {action["weight"]}' if action.get("weight") is not None else ""
+            out += row(f'{_esc(str(op))} : <b>{_esc(str(action.get("term")))}</b>{weight}')
+            if (action.get("reason") or "").strip():
+                out += row(f'<span style="color:{_MUTED};">{_esc(action["reason"].strip())}</span>', indent=24)
+    impact = agent.get("impact")
+    if impact:
+        out += row(f'<span style="color:{_MUTED};">변경 전후 재채점 : 새로 걸린 논문 {impact.get("gained")}편 · '
+                   f'빠진 논문 {impact.get("lost")}편 · 상위 자리 교체 {impact.get("topk_changed")}편</span>')
+    if agent.get("failed"):
+        out += row(f'⚠ 주간 관리 실패 : {_esc(str(agent["failed"]))}', colour=_FLAG_INK)
+
+    users = int((ch.get("by_actor") or {}).get("user") or 0)
+    tail = []
+    if users:
+        tail.append(f"사용자가 직접 바꾼 것 : revision {users}건 — 자세한 내용은 운영 화면에서")
+    if ch.get("reactions_used"):
+        tail.append(f"이 기간에 쓰인 반응 : {ch['reactions_used']}건")
+    for t in tail:
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:6px 0 0;">{_esc(t)}</div>')
+    return out
+
+
 def _reserve_html(scan_result: dict) -> str:
     """자리 밖 후보 집계의 HTML 판. 값은 평문판과 같은 dict 하나에서 나온다."""
     rv = scan_result.get("reserve_terms")
@@ -1143,6 +1208,86 @@ def _reserve_html(scan_result: dict) -> str:
             f'자리에 못 든 후보 <b>{rv["count"]}편</b>에서 자주 나온 말</div>{body}'
             f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
             f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
+
+
+_ORIGIN_LABEL = {"feedback": "반응", "agent": "에이전트", "user": "사용자", "rollback": "되돌리기"}
+
+
+def _origins_text(origins) -> str:
+    """누가 건드렸나. 여럿이면 함께 적는다 — 하나만 적으면 나머지 기여가 사라진다."""
+    names = [_ORIGIN_LABEL.get(o, o) for o in (origins or ())]
+    return "·".join(names)
+
+
+def _profile_changes_section(scan_result: dict) -> list[str]:
+    """지난 한 주 **검색 기준**이 어떻게 바뀌었나. 동향(분야가 어떻게 움직였나)과 다른 질문이다.
+
+    2026-09-19 사용자 결정으로 월요일 메일의 `주간 동향 리뷰` 자리를 이 절이 대신한다. 그 절은 기간
+    비교가 `window_movement` 와 겹쳤고 나머지는 운영 지표였다. 여기서 답하는 것은 **"그래서 내 에이전트가
+    무엇을 배워 기준을 바꿨나"** 다. 주간 관리가 같은 새벽 스캔 **직전**에 돌기 때문에(§8-163) 이 절은
+    회고가 아니라 아래 논문을 고른 근거다.
+
+    자동 변경(반응·에이전트)은 상세히, 사용자가 직접 한 변경은 건수만 — 이 절의 주인공은 시스템이
+    배운 것이다. **바뀐 게 없으면 절 자체가 없다**(`pending_report` 와 같은 철학).
+    """
+    ch = scan_result.get("profile_changes")
+    if not ch:
+        return []
+    days = ch.get("days", 7)
+    lines = ["", "─" * 62, f"■ 지난 {days}일 검색 기준 변화"]
+
+    def auto(items, key):
+        return [x for x in items if any(o in ("feedback", "agent") for o in (x.get("origins") or ()))]
+
+    moved = [w for w in (ch.get("weights") or []) if w["origins"]]
+    auto_moved = auto(moved, "weights")
+    if auto_moved:
+        lines.append("")
+        lines.append("   ▸ 자동으로 움직인 가중치 (한 주 순이동)")
+        for w in auto_moved:
+            sign = "+" if w["delta"] > 0 else ""
+            lines.append(f"      {w['keyword']} : {w['before']} → {w['after']} ({sign}{w['delta']}) "
+                         f"· {_origins_text(w['origins'])}")
+
+    auto_added = auto(ch.get("added") or [], "added")
+    auto_removed = auto(ch.get("removed") or [], "removed")
+    if auto_added or auto_removed:
+        lines.append("")
+        lines.append("   ▸ 자동으로 바뀐 키워드·검색어")
+        for a in auto_added:
+            lines.append(f"      + {a['keyword']} ({a['kind']}, {a['weight']}) · {_origins_text(a['origins'])}")
+        for r in auto_removed:
+            lines.append(f"      − {r['keyword']} ({r['kind']}) · {_origins_text(r['origins'])}")
+
+    # 에이전트 사유는 **따로** 낸다 — 위 목록 아래에 붙이면 어느 항목의 이유인지 어긋난다
+    # (한 용어에 가중치 변경과 시드 추가가 함께 적용되는 주가 있다).
+    agent = ch.get("agent") or {}
+    applied = agent.get("applied") or []
+    if applied:
+        lines.append("")
+        lines.append("   ▸ 에이전트가 적용한 것과 그 이유")
+        for action in applied:
+            op = {"set_weight": "가중치", "add_keyword": "키워드 추가", "add_seed": "검색어 추가",
+                  "remove_keyword": "키워드 삭제", "add_exclude": "제외어 추가"}.get(action.get("op"), action.get("op"))
+            weight = f" → {action['weight']}" if action.get("weight") is not None else ""
+            lines.append(f"      {op} : {action.get('term')}{weight}")
+            reason = (action.get("reason") or "").strip()
+            if reason:
+                lines.append(f"        └ {reason}")
+    impact = agent.get("impact")
+    if impact:
+        lines.append(f"      변경 전후 재채점 : 새로 걸린 논문 {impact.get('gained')}편 · "
+                     f"빠진 논문 {impact.get('lost')}편 · 상위 자리 교체 {impact.get('topk_changed')}편")
+    if agent.get("failed"):
+        lines.append(f"      ⚠ 주간 관리 실패 : {agent['failed']}")
+
+    users = int((ch.get("by_actor") or {}).get("user") or 0)
+    if users:
+        lines.append("")
+        lines.append(f"   ▸ 사용자가 직접 바꾼 것 : revision {users}건 — 자세한 내용은 운영 화면에서")
+    if ch.get("reactions_used"):
+        lines.append(f"   ▸ 이 기간에 쓰인 반응 : {ch['reactions_used']}건")
+    return lines
 
 
 def _window_section(scan_result: dict) -> list[str]:
@@ -1264,6 +1409,7 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     if not empty:
         lines += _narrative_section(scan_result)
         lines += _window_section(scan_result)
+        lines += _profile_changes_section(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -1738,8 +1884,7 @@ def narrative_source_label(scan_result: dict) -> str:
     past_days = int(scan_result.get("narrative_past_days") or 0)
     if past_days:
         extra.append(f"지난 {past_days}일 동향 정리")
-    if scan_result.get("weekly_review_context"):
-        extra.append("지난 한 주 집계")
+    # 주간 운영 표는 2026-09-19 오후에 서술 입력에서 뺐다 — 라벨이 "봤다"고 말하면 거짓이 된다(규칙 8).
     if extra:
         base += f" 여기에 {' · '.join(extra)}를 함께 봤다."
     return base
@@ -2059,6 +2204,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         )
 
     body += _window_html(scan_result)
+    body += _profile_changes_html(scan_result)
     body += details_body
     body += _agent_report_html(scan_result)
 
