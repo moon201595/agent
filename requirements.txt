@@ -3,3 +3,4 @@ httpx>=0.27.0
 pypdf>=5.0.0
 beautifulsoup4>=4.12.0   # ③ arXiv HTML 우선 경로
 streamlit>=1.60.0        # ⑥ 사람 판단 UI (review_app.py). Apache-2.0
+holidays>=0.100          # ⑨ 주말·공휴일 휴무 판정(work_calendar). 음력 명절·대체공휴일 포함, 네트워크 미사용

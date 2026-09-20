@@ -12,11 +12,15 @@ import trend_report
 ROOT = Path(__file__).resolve().parent
 
 
-def test_monday_runs_weekly_maintenance_before_the_scan():
-    """이 테스트가 잡는 것: 월요일 체인을 빼거나 일일 스캔 **뒤로** 옮기는 것
-    (그러면 바뀐 키워드가 그날 스캔에 반영되지 않아 하루 늦는다) · 금요일 cron 을 되살리는 것."""
+def test_weekly_maintenance_runs_before_the_scan_on_the_weeks_first_working_day():
+    """이 테스트가 잡는 것: 주간 체인을 빼거나 일일 스캔 **뒤로** 옮기는 것
+    (그러면 바뀐 키워드가 그날 스캔에 반영되지 않아 한 주 늦는다).
+
+    2026-09-20: 요일 판정이 셸에서 `work_calendar` 로 옮겨 갔다 — 셸에서 세면 그 판정을 테스트가
+    실행해 볼 수 없다. 날짜 판정 자체는 `test_work_calendar.py` 가 **실제로 실행해서** 지킨다.
+    여기서는 순서와 실패 내성만 본다."""
     sh = (ROOT / "run_daily_scan.sh").read_text(encoding="utf-8")
-    assert "date +%u" in sh and '= "1" ]' in sh          # 월요일 판정(KST)
+    assert 'if [ "$DAY_KIND" = "weekly" ]' in sh         # 그 주 첫 근무일에만
     # 주석에도 같은 문자열이 있어 **실제 명령줄**로 찾는다(파일 첫머리 설명이 먼저 걸렸다)
     chain = sh.index(".venv/bin/python agent_maintenance.py")
     scan = sh.index(".venv/bin/python run_profile_scan.py --all")
