@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from time_policy import KST
@@ -152,6 +152,15 @@ def _scan_snapshot(db: Path, scan_id: str) -> dict[tuple[str, str], float] | Non
         return None
 
 
+def _is_report_day(day: date, fallback_weekday: int) -> bool:
+    """그날이 주간 보고가 나가는 날인가 — `work_calendar` 의 "그 주 첫 근무일"."""
+    try:
+        import work_calendar
+        return work_calendar.is_weekly_day(day)
+    except Exception:      # noqa: BLE001
+        return day.weekday() == fallback_weekday
+
+
 def _scan_started(db: Path, scan_id: str) -> str | None:
     """그 스캔이 시작된 시각. 끝 스냅숏과 이벤트 창의 끝을 같은 자리로 맞추는 데 쓴다."""
     rows = _rows(db, "SELECT started_at FROM scan_runs WHERE scan_id=?", (scan_id,))
@@ -186,7 +195,10 @@ def _previous_cycle(db: Path, profile_id: str, end: datetime,
             moment = datetime.fromisoformat(row["started_at"]).astimezone(KST)
         except ValueError:
             continue
-        if moment.date() == here.date() or moment.weekday() != here.weekday():
+        # **같은 요일이 아니라 "주간 보고가 나가는 날"을 찾는다**(2026-09-20 Codex 재검토 A).
+        # 보고일이 공휴일 때문에 화요일로 밀리면, 요일로 찾을 경우 지난주 **화요일 일일 스캔**을
+        # 지난 보고로 착각한다 — 그러면 그 사이 변경이 창에서 빠진다. 달력을 못 읽으면 예전처럼 요일로 본다.
+        if moment.date() == here.date() or not _is_report_day(moment.date(), here.weekday()):
             continue
         try:
             snapshot = _keywords_of(json.loads(row["profile_snapshot"]) or {})
