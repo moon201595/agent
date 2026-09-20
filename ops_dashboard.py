@@ -88,8 +88,10 @@ def system_status(db: Path, root: Path, now: datetime | None = None) -> dict:
     next_daily = kst_now.replace(hour=5, minute=0, second=0, microsecond=0)
     if next_daily <= kst_now:
         next_daily += timedelta(days=1)
-    days_ahead = (4 - kst_now.weekday()) % 7          # 금요일
-    next_weekly = (kst_now + timedelta(days=days_ahead)).replace(hour=17, minute=0, second=0, microsecond=0)
+    # 주간 관리는 2026-09-19 에 **월요일 새벽**으로 옮겼다(§8-163) — 일일 스캔 바로 앞에서 돈다.
+    # 화면만 금요일 17:00 을 계속 계산하고 있었다(2026-09-20 지적): 실행은 맞는데 표시가 거짓이었다.
+    days_ahead = (0 - kst_now.weekday()) % 7          # 월요일
+    next_weekly = (kst_now + timedelta(days=days_ahead)).replace(hour=5, minute=0, second=0, microsecond=0)
     if next_weekly <= kst_now:
         next_weekly += timedelta(days=7)
     weekly = None

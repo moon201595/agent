@@ -196,6 +196,24 @@ def _previous_cycle(db: Path, profile_id: str, end: datetime,
     return None
 
 
+def _earliest_snapshot(db: Path, profile_id: str) -> tuple[str, dict[tuple[str, str], float]] | None:
+    """그 프로필의 **첫** revision — (시각, 키워드 표). 창이 프로필보다 앞설 때 쓴다.
+
+    9/16 에 만든 프로필의 첫 월요일이 그렇다(2026-09-20 실측: `team_agent`·`team_robot`·`team_vision`
+    의 첫 revision 이 9/15 라 9/14 baseline 이 없다). 그때 None 을 돌려주면 그날 주간 관리가 실제로
+    기준을 바꿨는데도 절이 통째로 빠져 **"변경 없음"으로 읽힌다** — 가장 위험한 조용한 손실이다.
+    사용자가 처음 정한 키워드는 `_auto` 가 걸러 내므로 프로필 생성분이 소음이 되지는 않는다."""
+    rows = _rows(db, "SELECT created_at, snapshot FROM profile_revisions WHERE profile_id=? "
+                     "ORDER BY revision ASC LIMIT 1", (profile_id,))
+    if not rows:
+        return None
+    try:
+        kws = (json.loads(rows[0]["snapshot"]) or {}).get("keywords") or []
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return rows[0]["created_at"], {(k, kind): float(w) for k, kind, w in kws}
+
+
 def collect(db: Path, profile_id: str, days: int = 7,
             now: datetime | None = None, scan_id: str | None = None) -> dict | None:
     """지난 보고 이후의 순변화. 바뀐 게 없으면 None — 호출부는 그때 절 자체를 넣지 않는다.
@@ -210,24 +228,28 @@ def collect(db: Path, profile_id: str, days: int = 7,
     end = now or datetime.now(timezone.utc)
     if end.tzinfo is None:                 # 저장값은 오프셋이 붙어 있다 — 섞이면 문자열 비교가 깨진다
         end = end.replace(tzinfo=timezone.utc)
+    # **끝을 먼저 정한다.** 끝 스냅숏은 이번 회차가 검색에 쓴 것이고, 사유·반응 창의 끝도 같은 자리여야
+    # 한다(2026-09-20 Codex 검토 #3) — 그전에는 끝 스냅숏은 스캔 시작, 이벤트는 집계 시각이라 그 사이
+    # 변경의 사유가 이번 주에도 다음 주에도 실렸다. 스캔 기록이 없는 호출(테스트·수동 조회)에서는
+    # 가장 최근 revision 과 호출 시각으로 물러난다.
     end_iso = end.isoformat()
-    previous = _previous_cycle(db, profile_id, end, days)
-    # 지난 회차가 있으면 **그 회차가 경계**다. 달력 `days` 일은 지난 회차 기록이 없을 때의 폴백이다.
-    start_iso, before = previous if previous else ((end - timedelta(days=days)).isoformat(), None)
-    if before is None:
-        before = _snapshot_at(db, profile_id, start_iso)
-    # 끝 스냅숏도 **이번 회차가 검색에 쓴 것**으로 잡는다(`_scan_snapshot` 설명 참고). 스캔 기록이 없는
-    # 호출(테스트·수동 조회)에서는 가장 최근 revision 으로 물러난다.
     after = _scan_snapshot(db, scan_id) if scan_id else None
     if after is None:
         after = _latest_snapshot(db, profile_id)
     else:
-        # **끝 스냅숏과 이벤트 창의 끝을 같은 자리로**(2026-09-20 Codex 검토 #3). 끝 스냅숏은 이번 회차
-        # 스캔 시작 시점인데 사유·반응은 집계 시각까지 읽고 있었다 — 그 사이에 적용된 변경은 이번 순이동에
-        # 없는데 사유만 실리고, 다음 주 창(이번 스캔 시작부터)에 또 실렸다.
-        started = _scan_started(db, scan_id)
-        if started:
-            end_iso = started
+        end_iso = _scan_started(db, scan_id) or end_iso
+
+    previous = _previous_cycle(db, profile_id, end, days)
+    if previous:
+        start_iso, before = previous      # 지난 회차가 있으면 **그 회차가 경계**다
+    else:
+        # 폴백 창도 **끝에서부터** 잰다 — `end` 에서 재면 집계까지 걸린 시간만큼(실측 30분 안팎) 짧아진다.
+        start_iso = (datetime.fromisoformat(end_iso) - timedelta(days=days)).isoformat()
+        before = _snapshot_at(db, profile_id, start_iso)
+        if before is None:
+            first = _earliest_snapshot(db, profile_id)
+            if first:
+                start_iso, before = first
     if before is None or after is None:
         return None            # 비교할 스냅숏이 없다 — 0 으로 채우지 않는다
 

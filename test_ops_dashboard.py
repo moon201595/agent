@@ -175,7 +175,9 @@ def test_system_status_reads_last_daily_run_and_next_times(tmp_path):
     s = od.system_status(db, tmp_path, now=now)
     assert s["daily"]["started_at"] == "2026-09-15T20:00:01+00:00" and s["daily"]["finished_at"] is None
     assert s["daily_ran_today"] is True
-    assert s["next_daily_kst"] == "09-17 05:00" and s["next_weekly_kst"].startswith("09-18")
+    # 주간 관리는 2026-09-19 에 월요일 새벽으로 옮겼다(§8-163). 화면이 금요일 17:00 을 계속 계산하고
+    # 있었다 — 실행은 맞는데 표시가 거짓이었다(2026-09-20 지적). KST 9/16(수) 다음 월요일은 9/21 이다.
+    assert s["next_daily_kst"] == "09-17 05:00" and s["next_weekly_kst"].startswith("09-21")
     earlier = od.system_status(db, tmp_path, now=datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc))
     assert earlier["daily_ran_today"] is False       # 로그 마지막 실행은 9/16 이지만 now 가 9/15 인 경우 — 순서가 뒤집혀도 오늘로 안 센다
 
