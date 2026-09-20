@@ -1071,7 +1071,13 @@ def _narrative_section(scan_result: dict) -> list[str]:
     # 근거 ID 경고는 2026-09-20 사용자 요청으로 뺐다 — 거의 매일 떠서 경고로서 힘이 없었다.
     # `citation_audit` 은 그대로 재서 `narrative_store.audit_json` 에 남는다.
     # **"원문에 없는 숫자" 경고는 그대로 둔다** — 그건 지어낸 값이라 성격이 다르다(규칙 7).
-    lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
+    for ln in text.strip().splitlines():
+        flat = _plain(ln)
+        if not flat:
+            continue
+        # 갈래 아래 한국어 제목 줄은 더 들여쓴다 — 제목에 딸린 것이지 새 항목이 아니다.
+        lines.append(f"        {flat[len(title_ko.CONT):].strip()}" if flat.startswith(title_ko.CONT)
+                     else f"   {flat}")
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
 
@@ -1085,6 +1091,16 @@ def _narrative_section(scan_result: dict) -> list[str]:
     return lines
 
 
+def _window_moves(mv: dict) -> tuple[list, list]:
+    """(상승, 하락). 직전 구간 관측이 없으면 둘 다 비운다 — 0→N 을 급증으로 읽으면 안 된다."""
+    if not mv.get("comparable"):
+        return [], []
+    rows = [(kw, now, now - prev) for kw, now, prev in (mv.get("keywords") or [])]
+    up = sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])
+    down = sorted([r for r in rows if r[2] < 0], key=lambda r: r[2])
+    return up, down
+
+
 def _window_html(scan_result: dict) -> str:
     """최근 창 셈의 HTML 판. 값은 평문판(`_window_section`)과 같은 dict 하나에서 나온다 —
     두 판이 갈라지면 같은 메일 안에서 숫자가 달라진다(§8-70 이 그 사고였다)."""
@@ -1095,39 +1111,54 @@ def _window_html(scan_result: dict) -> str:
     now_n, prev_n = mv.get("papers", (0, 0))
     d_now, d_prev = mv.get("days_covered", (0, 0))
     comparable = bool(mv.get("comparable"))
+    up, down = _window_moves(mv)
+
+    def head(text: str) -> str:
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:12px 0 4px;">{_esc(text)}</div>')
+
+    def move_row(kw: str, now: int, delta: int) -> str:
+        colour, arrow = (_RISE_INK, "▲") if delta > 0 else (_FALL_INK, "▼")
+        sign = "+" if delta > 0 else "−"
+        return (f'<div style="background-color:{_PAPER_BG};font-size:13px;margin:2px 0;padding-left:10px;">'
+                f'<span style="color:{colour};">{arrow}</span> '
+                f'<span style="color:{_INK};">{_esc(kw)}</span> '
+                f'<span style="color:{_MUTED};">· {now}편</span> '
+                f'<span style="color:{colour};">{sign}{abs(delta)}</span></div>')
+
+    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
+           f'font-weight:700;margin:18px 0 4px;">최근 {days}일 흐름</p>')
     if comparable:
-        head = (f"관련 논문 <b>{now_n}편</b> (직전 {days}일 {prev_n}편) · 관측일 {d_now}일 / 직전 {d_prev}일")
-        note = "우리가 DB 에서 센 값이다. 발표량 증감이 아니라 이 프로필이 발견한 편수다."
+        out += (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;margin:0;">'
+                f'관련 논문 <b>{now_n}편</b> <span style="color:{_MUTED};">(직전 {prev_n}편)</span></p>'
+                f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;">'
+                f'관측일 {d_now}일 / 직전 {d_prev}일</p>')
     else:
-        head = f"관련 논문 <b>{now_n}편</b> · 관측일 {d_now}일"
-        note = f"직전 {days}일에는 관측이 없어 증감을 내지 않았다 — 수집을 시작한 지 얼마 안 됐다."
-    rows = ""
-    for kw, now, prev in (mv.get("keywords") or []):
-        if comparable:
-            delta = now - prev
-            colour = _INK if delta >= 0 else _MUTED
-            sign = "+" if delta > 0 else ""
-            cell = (f'<span style="color:{colour};">{now}</span> '
-                    f'<span style="color:{_MUTED};">← {prev} ({sign}{delta})</span>')
-        else:
-            cell = f'<span style="color:{_INK};">{now}편</span>'
-        rows += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
-                 f'<span style="color:{_INK};">{_esc(kw)}</span> · {cell}</div>')
-    terms = ""
-    for term, now, prev in (mv.get("terms") or []):
-        tail = f' <span style="color:{_MUTED};">(직전 {prev})</span>' if comparable else ""
-        terms += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
-                  f'<span style="color:{_INK};">{_esc(term)}</span> · {now}편{tail}</div>')
-    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-           f'font-weight:600;margin:18px 0 4px;">최근 {days}일 흐름</p>'
-           f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0 0 2px;">{head}</p>'
-           f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0 0 6px;">{_esc(note)}</p>')
-    if rows:
-        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:6px 0 2px;">'
-                f'키워드{" (이번 ← 직전)" if comparable else " (이번 창 편수)"}</div>{rows}')
+        out += (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;margin:0;">'
+                f'관련 논문 <b>{now_n}편</b> <span style="color:{_MUTED};">· 관측일 {d_now}일</span></p>'
+                f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;">'
+                f'직전 {days}일에는 관측이 없어 증감을 내지 않았다.</p>')
+    if up:
+        out += head("상승") + "".join(move_row(kw, n, d) for kw, n, d in up)
+    if down:
+        out += head("하락") + "".join(move_row(kw, n, d) for kw, n, d in down)
+    if not comparable:
+        rows = "".join(
+            f'<div style="background-color:{_PAPER_BG};font-size:13px;margin:2px 0;padding-left:10px;">'
+            f'<span style="color:{_INK};">{_esc(kw)}</span> '
+            f'<span style="color:{_MUTED};">· {now}편</span></div>'
+            for kw, now, _prev in (mv.get("keywords") or []))
+        if rows:
+            out += head("키워드 (이번 창 편수)") + rows
+    terms = "".join(
+        f'<div style="background-color:{_PAPER_BG};font-size:13px;margin:2px 0;padding-left:10px;">'
+        f'<span style="color:{_MUTED};">{_esc(term)} · {now}편</span></div>'
+        for term, now, _prev in (mv.get("terms") or []))
     if terms:
-        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
-                f'핵심 키워드 밖인데 자주 나온 말</div>{terms}')
+        out += head("핵심 키워드 밖 반복 관측") + terms
+    # 매주 같은 설명을 반복하지 않는다(2026-09-20) — 한 줄 주석으로 줄였다.
+    out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
+            f'margin:8px 0 0;">※ 이 프로필의 검색 관측 기준 — 분야 전체 발표량이 아니다</div>')
     return out + _reserve_html(scan_result)
 
 
@@ -1240,10 +1271,59 @@ def _move_facts(w: dict) -> str:
     return f"{w['before']:.2f} → {w['after']:.2f} ({sign}{abs(w['delta']):.2f})"
 
 
+_BASIS_LABEL = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거",
+                "maintenance": "관측 근거"}
+
+
+def _reason_groups(applied: list) -> list[tuple[str, str, list[str]]]:
+    """[(키워드, 근거 딱지, [사유…])]. 한 주에 같은 말에 가중치와 검색어가 함께 적용되는데
+    (실측 `defect detection`), 행동마다 줄을 나누면 같은 이름이 두 번 나오고 이유가 쪼개진다.
+    사유 문장은 모델이 쓴 그대로 옮긴다. 근거 딱지는 **무엇을 보고 정했나**라 사유와 다른 정보다."""
+    groups: dict[str, list[str]] = {}
+    basis: dict[str, str] = {}
+    for action in applied or []:
+        reason = (action.get("reason") or "").strip()
+        if action.get("term") and reason:
+            groups.setdefault(action["term"], []).append(reason)
+            label = _BASIS_LABEL.get(action.get("basis"))
+            if label:
+                basis.setdefault(action["term"], label)
+    return [(term, basis.get(term, ""), reasons) for term, reasons in groups.items()]
+
+
+def _impact_rows(agent: dict) -> list[tuple[str, str]]:
+    """[(이름, 값)]. 라벨과 값을 가르면 눈이 값 열만 따라 내려간다 — 한 줄에 이어 붙이면 그게 안 된다."""
+    rows: list[tuple[str, str]] = []
+    shadow, impact = agent.get("shadow"), agent.get("impact")
+    if shadow:
+        rows.append(("적격 논문", f"{shadow.get('eligible_before')} → {shadow.get('eligible_after')}"))
+        rows.append(("잃은 논문", str(shadow.get("eligible_lost"))))
+        overlap = shadow.get("topk_overlap")
+        rows.append(("상위 겹침", f"{overlap:.2f}" if isinstance(overlap, (int, float)) else "미측정"))
+    if impact:
+        rows.append(("새로 걸린 논문", str(impact.get("gained"))))
+        rows.append(("빠진 논문", str(impact.get("lost"))))
+        rows.append(("Top-K 교체", str(impact.get("topk_changed"))))
+    return rows
+
+
+def _has_auto_change(ch: dict) -> bool:
+    """자동으로 일어난 것이 하나라도 있나. **없으면 절 자체를 넣지 않는다.**
+
+    2026-09-20: 사용자 revision 줄을 뺀 뒤, 그 주에 사람이 직접 고친 것만 있으면 `collect` 는 값을
+    돌려주는데 이 절에는 실을 게 없어 **머리말만 남았다**. 빈 제목은 "뭔가 있나" 하고 눈을 끌고
+    아무것도 주지 않는다 — `pending_report` 와 같은 철학으로 통째로 뺀다.
+    """
+    up, down, _hidden = _split_moves(ch)
+    agent = ch.get("agent") or {}
+    return bool(up or down or _auto(ch.get("added")) or _auto(ch.get("removed"))
+                or _reason_groups(agent.get("applied")) or _impact_rows(agent) or agent.get("failed"))
+
+
 def _profile_changes_html(scan_result: dict) -> str:
     """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
     ch = scan_result.get("profile_changes")
-    if not ch:
+    if not ch or not _has_auto_change(ch):
         return ""
     days = _window_days(ch)
     up, down, hidden = _split_moves(ch)
@@ -1251,77 +1331,78 @@ def _profile_changes_html(scan_result: dict) -> str:
 
     def head(text: str) -> str:
         return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:12px 0 4px;">{_esc(text)}</div>')
+                f'margin:14px 0 6px;">{_esc(text)}</div>')
 
-    def move_row(w: dict, colour: str, arrow: str) -> str:
+    def move_row(w: dict) -> str:
+        rising = w["delta"] > 0
+        colour, arrow = (_RISE_INK, "▲") if rising else (_FALL_INK, "▼")
         width = int(100 * _bar(w["delta"], biggest) / BAR_BLOCKS)
+        sign = "+" if rising else "−"
         return (
-            f'<div style="background-color:{_PAPER_BG};margin:4px 0 6px 10px;">'
-            f'<div style="color:{_INK};font-size:14px;">{arrow} <b>{_esc(w["keyword"])}</b>'
+            f'<div style="background-color:{_PAPER_BG};margin:0 0 10px 10px;">'
+            f'<div style="color:{_INK};font-size:14px;"><span style="color:{colour};">{arrow}</span> '
+            f'<b>{_esc(w["keyword"])}</b>'
             f'<span style="color:{_MUTED};font-size:12px;"> {_esc(_origin_tags(w["origins"]))}</span></div>'
             # 막대는 이미지 없이 배경색 div 하나다 — Gmail·Outlook 이 지우지 않는다.
-            f'<div style="background-color:{_LINE};height:6px;width:100%;max-width:320px;'
-            f'border-radius:3px;margin:3px 0 2px;">'
+            f'<div style="background-color:{_LINE};height:6px;width:100%;max-width:300px;'
+            f'border-radius:3px;margin:4px 0 3px;">'
             f'<div style="background-color:{colour};height:6px;width:{width}%;border-radius:3px;'
             f'font-size:1px;line-height:6px;">&nbsp;</div></div>'
-            f'<div style="color:{_MUTED};font-size:12px;">{_esc(_move_facts(w))}</div></div>')
+            f'<div style="color:{_MUTED};font-size:12px;">{w["before"]:.2f} → {w["after"]:.2f}'
+            f'<span style="color:{colour};"> {sign}{abs(w["delta"]):.2f}</span></div></div>')
 
     out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
            f'font-weight:700;margin:18px 0 4px;">지난 {days}일 검색 기준 변화</p>')
-    if up:
-        out += head("관심이 올라갔다")
-        out += "".join(move_row(w, _RISE_INK, "▲") for w in up)
-    if down:
-        out += head("관심이 내려갔다")
-        out += "".join(move_row(w, _FALL_INK, "▼") for w in down)
+    if up or down:
+        out += head("가중치 변화")
+        out += "".join(move_row(w) for w in up + down)
 
     added, removed = _auto(ch.get("added")), _auto(ch.get("removed"))
     if added:
-        out += head("새로 들어왔다")
+        out += head("신규")
         for a in added:
-            out += (f'<div style="background-color:{_PAPER_BG};margin:4px 0 4px 10px;">'
+            out += (f'<div style="background-color:{_PAPER_BG};margin:0 0 6px 10px;">'
                     f'<span style="background-color:#E7F4EC;color:{_NEW_INK};font-size:11px;'
                     f'font-weight:700;padding:1px 6px;border-radius:3px;">NEW</span> '
                     f'<b style="color:{_INK};font-size:14px;">{_esc(a["keyword"])}</b>'
                     f'<span style="color:{_MUTED};font-size:12px;"> '
                     f'{_esc(_KIND_LABEL.get(a["kind"], a["kind"]))} · {_esc(_origins_text(a["origins"]))}</span></div>')
     if removed:
-        out += head("빠졌다")
+        out += head("삭제")
         for r in removed:
             out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
-                    f'margin:2px 0 2px 10px;">− {_esc(r["keyword"])} '
-                    f'({_esc(_KIND_LABEL.get(r["kind"], r["kind"]))}) · {_esc(_origins_text(r["origins"]))}</div>')
+                    f'margin:0 0 4px 10px;">▪ {_esc(r["keyword"])} '
+                    f'({_esc(_KIND_LABEL.get(r["kind"], r["kind"]))} · {_esc(_origins_text(r["origins"]))})</div>')
 
     agent = ch.get("agent") or {}
-    if agent.get("applied"):
-        out += head("왜 바뀌었나")
-        op_labels, _fail = _agent_labels()
-        for action in agent["applied"]:
+    groups = _reason_groups(agent.get("applied"))
+    if groups:
+        out += head("이유")
+        for term, basis, reasons in groups:
+            tag = (f'<span style="color:{_MUTED};font-size:11px;font-weight:400;"> [{_esc(basis)}]</span>'
+                   if basis else "")
             out += (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-                    f'margin:4px 0 0 10px;">{_esc(_agent_action_line(action, op_labels))}</div>')
-            if (action.get("reason") or "").strip():
-                out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                        f'margin:0 0 2px 24px;line-height:1.5;">{_esc(action["reason"].strip())}</div>')
-    impact, shadow = agent.get("impact"), agent.get("shadow")
-    if impact or shadow:
+                    f'font-weight:600;margin:0 0 2px 10px;">{_esc(term)}{tag}</div>'
+                    f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                    f'margin:0 0 8px 10px;line-height:1.55;">{_esc(" ".join(reasons))}</div>')
+    rows = _impact_rows(agent)
+    if rows:
         out += head("검색 영향")
-        bits = []
-        if shadow:
-            bits.append(_shadow_line(shadow))
-        if impact:
-            bits.append(f'새로 걸린 논문 {impact.get("gained")}편 · 빠진 논문 {impact.get("lost")}편 · '
-                        f'상위 자리 교체 {impact.get("topk_changed")}편')
-        out += (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-                f'margin:2px 0 2px 10px;">{_esc(" · ".join(bits))}</div>')
+        out += f'<table style="border-collapse:collapse;margin-left:10px;">'
+        for name, value in rows:
+            out += (f'<tr><td style="color:{_MUTED};font-size:12px;padding:1px 14px 1px 0;">{_esc(name)}</td>'
+                    f'<td style="color:{_INK};font-size:13px;padding:1px 0;">{_esc(value)}</td></tr>')
+        out += "</table>"
     if agent.get("failed"):
         _ops, fail_labels = _agent_labels()
         out += (f'<div style="background-color:{_PAPER_BG};color:{_FLAG_INK};font-size:13px;'
-                f'margin:6px 0 0 10px;">⚠ 주간 관리 실패 : '
+                f'margin:8px 0 0 10px;">⚠ 주간 관리 실패 : '
                 f'{_esc(str(fail_labels.get(agent["failed"], agent["failed"])))} — 키워드는 그대로입니다.</div>')
 
-    for tail in _changes_tail(ch, hidden):
-        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:6px 0 0 10px;">{_esc(tail)}</div>')
+    tail = _changes_tail(ch, hidden)
+    if tail:
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
+                f'margin:10px 0 0 10px;">{_esc(" · ".join(tail))}</div>')
     return out
 
 
@@ -1333,12 +1414,11 @@ def _changes_tail(ch: dict, hidden: int) -> list[str]:
     """
     out = []
     if hidden:
-        out.append(f"그 밖에 작게 움직인 가중치 {hidden}건 — 값은 운영 화면에서")
-    users = int((ch.get("by_actor") or {}).get("user") or 0)
-    if users:
-        out.append(f"사용자가 직접 바꾼 것 revision {users}건 — 자세한 내용은 운영 화면에서")
+        out.append(f"그 밖에 작게 움직인 가중치 {hidden}건")
     if ch.get("reactions_used"):
-        out.append(f"이 기간에 쓰인 반응 {ch['reactions_used']}건")
+        out.append(f"반영된 사용자 반응 {ch['reactions_used']}건")
+    # 사용자가 직접 바꾼 revision 건수는 뺐다(2026-09-20) — 메일에서 아무 행동도 유도하지 못하고,
+    # 이 절의 주인공(시스템이 스스로 바꾼 것)과 같은 무게로 보였다. 이력은 운영 화면에 그대로 있다.
     return out
 
 
@@ -1349,66 +1429,66 @@ def _profile_changes_section(scan_result: dict) -> list[str]:
     **"그래서 내 에이전트가 무엇을 배워 기준을 바꿨나"** 다. 주간 관리가 같은 새벽 스캔 **직전**에 돌기
     때문에(§8-163) 이 절은 회고가 아니라 아래 논문을 고른 근거다.
 
-    2026-09-20 개편: 방향(▲▼)과 상대 크기(막대)를 먼저 보이고 정확한 값은 그 아래 작게 둔다.
-    작게 움직인 것과 사용자 변경은 건수만 — **바뀐 게 없으면 절 자체가 없다**(`pending_report` 와 같은 철학).
+    2026-09-20 개편: 라벨을 문장에서 **이름**으로 줄였다(`관심이 올라갔다` → `가중치 변화`,
+    `새로 들어왔다` → `신규`, `왜 바뀌었나` → `이유`). `▲`·막대·`NEW` 를 보면 이미 아는 것을 문장으로
+    다시 말하고 있었고, 설명문이 정작 바뀐 값과 같은 무게로 보였다.
     """
     ch = scan_result.get("profile_changes")
-    if not ch:
+    if not ch or not _has_auto_change(ch):
         return []
     days = _window_days(ch)
     up, down, hidden = _split_moves(ch)
     biggest = max([abs(w["delta"]) for w in up + down] or [0])
     lines = ["", "─" * 62, f"■ 지난 {days}일 검색 기준 변화"]
 
-    def move_line(w: dict, arrow: str) -> str:
-        name = w["keyword"] if len(w["keyword"]) <= 24 else w["keyword"][:23] + "…"
-        bar = "█" * _bar(w["delta"], biggest)
-        return f"      {arrow} {name:<25}{bar:<11}{_move_facts(w)}  {_origin_tags(w['origins'])}"
-
-    if up:
-        lines += ["", "   관심이 올라갔다"] + [move_line(w, "▲") for w in up]
-    if down:
-        lines += ["", "   관심이 내려갔다"] + [move_line(w, "▼") for w in down]
+    if up or down:
+        lines += ["", "   가중치 변화"]
+        for w in up + down:
+            arrow = "▲" if w["delta"] > 0 else "▼"
+            sign = "+" if w["delta"] > 0 else "−"
+            tags = _origin_tags(w["origins"])
+            lines.append(f"      {arrow} {w['keyword']}" + (f"   {tags}" if tags else ""))
+            bar = "━" * _bar(w["delta"], biggest)
+            lines.append(f"        {w['before']:.2f} {bar} {w['after']:.2f}   {sign}{abs(w['delta']):.2f}")
+            lines.append("")
 
     added, removed = _auto(ch.get("added")), _auto(ch.get("removed"))
     if added:
-        lines += ["", "   새로 들어왔다"]
+        lines += ["   신규"]
         for a in added:
-            lines.append(f"      NEW  {a['keyword']}  "
-                         f"({_KIND_LABEL.get(a['kind'], a['kind'])} · {_origins_text(a['origins'])})")
+            lines.append(f"      NEW  {a['keyword']}   "
+                         f"{_KIND_LABEL.get(a['kind'], a['kind'])} · {_origins_text(a['origins'])}")
+        lines.append("")
     if removed:
-        lines += ["", "   빠졌다"]
+        lines += ["   삭제"]
         for r in removed:
-            lines.append(f"      −  {r['keyword']}  "
-                         f"({_KIND_LABEL.get(r['kind'], r['kind'])} · {_origins_text(r['origins'])})")
+            lines.append(f"      ▪  {r['keyword']}   "
+                         f"{_KIND_LABEL.get(r['kind'], r['kind'])} · {_origins_text(r['origins'])}")
+        lines.append("")
 
     agent = ch.get("agent") or {}
-    applied = agent.get("applied") or []
-    if applied:
-        lines += ["", "   왜 바뀌었나"]
-        op_labels, _fail = _agent_labels()
-        for action in applied:
-            lines.append(f"      {_agent_action_line(action, op_labels)}")
-            reason = (action.get("reason") or "").strip()
-            if reason:
-                lines.append(f"        └ {reason}")
-    impact, shadow = agent.get("impact"), agent.get("shadow")
-    if impact or shadow:
-        bits = []
-        if shadow:
-            bits.append(_shadow_line(shadow))
-        if impact:
-            bits.append(f"새로 걸린 논문 {impact.get('gained')}편 · 빠진 논문 {impact.get('lost')}편 · "
-                        f"상위 자리 교체 {impact.get('topk_changed')}편")
-        lines += ["", "   검색 영향", f"      {' · '.join(bits)}"]
+    groups = _reason_groups(agent.get("applied"))
+    if groups:
+        lines += ["   이유"]
+        for term, basis, reasons in groups:
+            lines.append(f"      {term}" + (f"   [{basis}]" if basis else ""))
+            lines.append(f"        {' '.join(reasons)}")
+            lines.append("")
+    rows = _impact_rows(agent)
+    if rows:
+        lines += ["   검색 영향"]
+        width = max(len(name) for name, _ in rows)
+        lines += [f"      {name:<{width}}   {value}" for name, value in rows]
+        lines.append("")
     if agent.get("failed"):
         _ops, fail_labels = _agent_labels()
         lines.append(f"      ⚠ 주간 관리 실패 : {fail_labels.get(agent['failed'], agent['failed'])}"
                      " — 키워드는 그대로입니다.")
+        lines.append("")
 
     tail = _changes_tail(ch, hidden)
     if tail:
-        lines += [""] + [f"   · {t}" for t in tail]
+        lines.append(f"   {' · '.join(tail)}")
     return lines
 
 
@@ -1418,6 +1498,9 @@ def _window_section(scan_result: dict) -> list[str]:
     2026-09-18 사용자 지적: 매일 메일의 동향은 그날 5편만 보고 쓴 스냅숏이라 "무엇이 늘었나"가 없다.
     수치는 `trend_report.window_movement` 가 DB 에서 세고 여기는 그리기만 한다. 직전 구간에 관측이
     없으면 증감을 만들지 않고 그 사실을 적는다 — 수집을 막 시작한 프로필에서 0→N 이 급증으로 보이면 안 된다.
+
+    2026-09-20 개편: 숫자 덩어리 하나였던 키워드 목록을 **상승/하락으로 가르고** `▲▼` 를 붙였다.
+    색만으로 뜻을 나르지 않는다 — 다크 모드나 색을 지우는 클라이언트에서도 화살표는 남는다.
     """
     mv = scan_result.get("trend_window")
     reserve = _reserve_lines(scan_result)
@@ -1428,31 +1511,39 @@ def _window_section(scan_result: dict) -> list[str]:
     days = mv.get("days", 7)
     now_n, prev_n = mv.get("papers", (0, 0))
     d_now, d_prev = mv.get("days_covered", (0, 0))
-    lines = ["", "─" * 62, f"■ 최근 {days}일 흐름"]
-    if mv.get("comparable"):
-        lines.append(f"   관련 논문 {now_n}편 (직전 {days}일 {prev_n}편) · 관측일 {d_now}일 / 직전 {d_prev}일")
-        lines.append("   우리가 DB 에서 센 값이다. 발표량 증감이 아니라 이 프로필이 발견한 편수다.")
+    comparable = bool(mv.get("comparable"))
+    up, down = _window_moves(mv)
+    lines = ["", "─" * 62, f"■ 최근 {days}일 흐름", ""]
+    if comparable:
+        lines.append(f"   관련 논문 {now_n}편 (직전 {prev_n}편)")
+        lines.append(f"   관측일 {d_now}일 / 직전 {d_prev}일")
     else:
         lines.append(f"   관련 논문 {now_n}편 · 관측일 {d_now}일")
-        lines.append(f"   직전 {days}일에는 관측이 없어 증감을 내지 않았다 — 수집을 시작한 지 얼마 안 됐다.")
-    keywords = mv.get("keywords") or []
-    if keywords:
-        lines.append("")
-        lines.append("   ▸ 키워드" + (" (이번 → 직전)" if mv.get("comparable") else " (이번 창 편수)"))
-        for kw, now, prev in keywords:
-            if mv.get("comparable"):
-                delta = now - prev
-                sign = "+" if delta > 0 else ""
-                lines.append(f"      {kw} : {now} → 직전 {prev} ({sign}{delta})")
-            else:
-                lines.append(f"      {kw} : {now}편")
+        lines.append(f"   직전 {days}일에는 관측이 없어 증감을 내지 않았다.")
+
+    def move_lines(rows: list, arrow: str) -> list[str]:
+        width = max((len(kw) for kw, _n, _d in rows), default=0)
+        out = []
+        for kw, now, delta in rows:
+            sign = "+" if delta > 0 else "−"
+            out.append(f"      {arrow} {kw:<{width}}   {now:>4}   {sign}{abs(delta)}")
+        return out
+
+    if up:
+        lines += ["", "   상승"] + move_lines(up, "▲")
+    if down:
+        lines += ["", "   하락"] + move_lines(down, "▼")
+    if not comparable and (mv.get("keywords") or []):
+        lines += ["", "   키워드 (이번 창 편수)"]
+        width = max(len(kw) for kw, _n, _p in mv["keywords"])
+        lines += [f"      {kw:<{width}}   {now:>4}" for kw, now, _p in mv["keywords"]]
     terms = mv.get("terms") or []
     if terms:
-        lines.append("")
-        lines.append("   ▸ 핵심 키워드 밖인데 자주 나온 말")
-        for term, now, prev in terms:
-            tail = f" (직전 {prev})" if mv.get("comparable") else ""
-            lines.append(f"      {term} : {now}편{tail}")
+        lines += ["", "   핵심 키워드 밖 반복 관측"]
+        width = max(len(t) for t, _n, _p in terms)
+        lines += [f"      {term:<{width}}   {now:>4}" for term, now, _p in terms]
+    # 매주 같은 설명을 반복하지 않는다(2026-09-20) — 한 줄 주석으로 줄였다.
+    lines += ["", "   ※ 이 프로필의 검색 관측 기준 — 분야 전체 발표량이 아니다"]
     lines += reserve
     return lines
 
@@ -2029,6 +2120,10 @@ def _narrative_line_html(line: str) -> str:
     # **정규화한 뒤 판정한다**(2026-09-08 정정). 원래 줄로 보면 `**갈래**` 가
     # 화면엔 "갈래"로 나오는데 소제목 강조만 빠졌다 — 주간 렌더러는 정규화
     # 뒤에 보고 있어 같은 글이 두 곳에서 다르게 보였다.
+    # 갈래 목록 아래 한국어 제목 줄 — 제목보다 한 단계 작고 흐리게, 더 들여쓴다.
+    if text.startswith(title_ko.CONT):
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
+                f'margin:0 0 6px 32px;line-height:1.5;">{_esc(text[len(title_ko.CONT):].strip())}</div>')
     if _is_narrative_heading(text):
         return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:16px;'
                 f'font-weight:700;margin:16px 0 4px;">{_esc(text)}</div>')

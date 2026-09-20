@@ -92,17 +92,20 @@ def test_no_change_means_no_section(tmp_path):
     assert digest._profile_changes_html({}) == ""
 
 
-def test_user_only_changes_are_summarised_not_listed(tmp_path):
-    """이 테스트가 잡는 것: 사용자가 직접 한 변경을 전부 펼쳐 이 절의 주인공(시스템이 배운 것)을 묻는 것.
-    실측 한 주에 사용자 revision 이 19건이었다 — 다 펼치면 자동 변경이 안 보인다."""
+def test_a_user_only_week_gets_no_section_at_all(tmp_path):
+    """이 테스트가 잡는 것: 사람이 직접 고친 것만 있는 주에 **머리말만 남은 빈 절**이 나가는 것.
+
+    2026-09-20 에 사용자 revision 줄을 뺐다(메일에서 아무 행동도 유도하지 못한다 — 이력은 운영 화면에 있다).
+    그러면 `collect` 는 값을 돌려주는데 이 절에 실을 게 없다. 빈 제목은 눈을 끌고 아무것도 주지 않는다."""
     db = tmp_path / "p.db"
     _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["a", "core", 1.0]])
     _snap(db, "p1", 2, NOW - timedelta(days=2), "user",
           [["a", "core", 1.0], ["b", "core", 1.0], ["c", "core", 1.0]])
     out = wpc.collect(db, "p1", days=7, now=NOW)
-    text = "\n".join(digest._profile_changes_section({"profile_changes": out}))
-    assert "revision 1건" in text                 # 건수만
-    assert "\n      + b" not in text              # 항목을 펼치지 않는다
+    assert out is not None                        # 기록으로는 남는다
+    scan = {"profile_changes": out}
+    assert digest._profile_changes_section(scan) == []
+    assert digest._profile_changes_html(scan) == ""
 
 
 def test_plain_and_html_carry_the_same_facts(tmp_path):
@@ -297,6 +300,11 @@ def test_a_missed_week_widens_the_window_by_itself(tmp_path):
     _snap(db, "p1", 1, utc(2026, 9, 21, 5, 1), "agent", [["X", "core", 1.0]])
     _snap(db, "p1", 2, utc(2026, 9, 24, 5, 0), "feedback", [["X", "core", 1.4]])
     with sqlite3.connect(db) as con:
+        # 귀속이 있어야 자동 변경으로 잡힌다 — 사람이 고친 것만 있는 주에는 절 자체가 없다.
+        con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,2)",
+                    ("p1", "2026-09-24", utc(2026, 9, 24, 5, 0).isoformat(), 2,
+                     json.dumps([{"keyword": "X", "before": 1.0, "after": 1.4}])))
         # 9/21 월요일에는 돌았고 9/28 월요일에는 아예 안 돌았다. 그 사이 평일 회차는 보고 회차가 아니다.
         con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
                     " policy_version) VALUES ('s1','p1',?,?,'test')",
