@@ -48,7 +48,11 @@ LOCKFILE="logs/daily_scan.lock"
     #
     # **판정이 실패하면 돌린다.** 달력을 못 읽어서 메일이 안 가는 것보다 한 번 더 가는 게 낫다(규칙 6).
     # 그래서 `|| echo run` 으로 받는다 — 파이썬이 죽어도 "run" 이 된다.
-    DAY_KIND="$(.venv/bin/python -m work_calendar 2>/dev/null || echo run)"
+    # 판정이 실패하면 **옛 규칙**으로 물러난다(2026-09-20 Codex 재검토): 그냥 `run` 으로 떨어뜨리면
+    # 달력이 죽은 월요일에 주간 관리가 통째로 생략된다 — 메일은 나가지만 키워드는 한 주 안 바뀐다.
+    # 폴백에서만 셸이 요일을 센다. 정상 경로는 `work_calendar` 하나이고 테스트가 그걸 실행한다.
+    DAY_KIND="$(.venv/bin/python -m work_calendar 2>/dev/null || \
+        { [ "$(TZ=Asia/Seoul date +%u)" = "1" ] && echo weekly || echo run; })"
     if [ "$DAY_KIND" = "skip" ]; then
         WHY="$(.venv/bin/python -c 'import work_calendar as w; print(w.skip_reason() or "")' 2>/dev/null || true)"
         echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 건너뜀 — ${WHY:-쉬는 날} ==="

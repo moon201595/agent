@@ -174,3 +174,34 @@ def test_a_shortened_bullet_title_still_gets_korean():
     assert out.splitlines()[1] == "↳ 태양광 전계발광 결함 검출을 위한 그리드 라인 인식 웨이블릿 게이트 RT-DETR"
     # 짧은 조각은 우연히 겹치므로 안 붙인다
     assert title_ko.annotate("- NWG-DETR [P5:A]", papers).count("↳") == 0
+
+
+def test_a_failed_retry_keeps_what_the_first_call_already_returned(monkeypatch):
+    """이 테스트가 잡는 것: 누락분 재요청이 실패할 때 **이미 받은 번역까지 버리는 것**
+    (2026-09-20 Codex 재검토 B).
+
+    재요청을 붙이면서 생긴 자리다 — 한 번만 부르던 때에는 첫 응답이 그대로 남았다.
+    한도·API 오류는 흔하므로 이 경로는 실제로 밟힌다."""
+    calls = []
+
+    async def fake(client, prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "1. 첫 번역"
+        raise RuntimeError("429 한도")
+
+    monkeypatch.setattr(title_ko.summarize_engine, "complete", fake)
+    got = _run(title_ko.translate(object(), ["First Long Enough Title Here",
+                                             "Second Long Enough Title Here"]))
+    assert got == {"First Long Enough Title Here": "첫 번역"}
+    assert len(calls) == 2
+
+    async def dead(client, prompt):
+        raise RuntimeError("첫 호출부터 실패")
+
+    monkeypatch.setattr(title_ko.summarize_engine, "complete", dead)
+    try:                      # 첫 호출이 죽으면 예전처럼 예외 — 조정기가 삼켜 원제로 나간다
+        _run(title_ko.translate(object(), ["Only One Long Enough Title"]))
+        raise AssertionError("첫 호출 실패는 호출자에게 알려야 한다")
+    except RuntimeError:
+        pass

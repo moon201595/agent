@@ -471,3 +471,23 @@ def test_the_fallback_window_is_measured_from_the_scan_not_from_the_call(tmp_pat
     assert end == scan_at                       # 끝은 집계 시각이 아니라 스캔 시작
     assert end - start == timedelta(days=7)     # 폴백 창은 정확히 7일
     assert out["weights"][0]["origins"] == ("feedback",)
+
+
+def test_the_previous_cycle_is_a_report_day_not_merely_the_same_weekday(tmp_path):
+    """이 테스트가 잡는 것: 지난 회차를 **같은 요일**로 찾는 것(2026-09-20 Codex 재검토 A).
+
+    보고일이 공휴일 때문에 화요일로 밀리면(10/5 개천절 대체), 요일로 찾으면 지난주 **화요일 일일 스캔**을
+    지난 보고로 착각한다 — 그러면 지난 월요일 보고 이후 그 화요일 스캔까지의 변경이 창에서 빠진다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    monday = utc(2026, 9, 28, 5, 2)          # 지난 보고 회차
+    tuesday = utc(2026, 9, 29, 5, 2)         # 그냥 다음 날 일일 스캔
+    _snap(db, "p1", 1, utc(2026, 9, 28, 5, 0), "user", [["X", "core", 1.0]])
+    with sqlite3.connect(db) as con:
+        for sid, when, w in (("mon", monday, 1.0), ("tue", tuesday, 1.2)):
+            con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                        " policy_version) VALUES (?,'p1',?,?,'test')",
+                        (sid, when.isoformat(),
+                         json.dumps({"core_topics": ["X"], "core_weights": {"X": w}})))
+    got = wpc._previous_cycle(db, "p1", utc(2026, 10, 6, 5, 5), 7)     # 10/5 가 휴일이라 화요일이 보고일
+    assert got and got[0] == monday.isoformat(), "지난 보고는 월요일 회차다 — 화요일 일일 스캔이 아니다"

@@ -73,8 +73,16 @@ async def translate(client: httpx.AsyncClient | None, titles: list[str]) -> dict
     selected = seen[:MAX_TITLES]
     pending = selected
     out: dict[str, str] = {}
-    for _attempt in range(2):
-        reply = await summarize_engine.complete(client, _prompt(pending))
+    for attempt in range(2):
+        try:
+            reply = await summarize_engine.complete(client, _prompt(pending))
+        except Exception:      # noqa: BLE001
+            # **이미 받은 번역은 버리지 않는다**(2026-09-20 Codex 재검토 B). 누락분 재요청이 한도·오류로
+            # 실패하면 첫 응답까지 예외에 쓸려 나갔다 — 한 번만 부르던 때보다 나빠진 자리다.
+            # 첫 호출이 실패하면 out 이 비어 있으므로 예전처럼 원제만 나간다.
+            if attempt == 0:
+                raise
+            break
         out.update(_parse(reply, pending))
         pending = [title for title in selected if title not in out]
         if not pending:

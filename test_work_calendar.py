@@ -70,8 +70,10 @@ def test_the_shell_reads_one_word_and_falls_back_to_run():
     assert out.stdout.strip() in ("skip", "weekly", "run")
 
     sh = (ROOT / "run_daily_scan.sh").read_text(encoding="utf-8")
-    line = next(ln for ln in sh.splitlines() if "DAY_KIND=" in ln and "python" in ln)
-    assert "|| echo run" in line, "판정이 실패하면 돌려야 한다 — 안 돌리는 쪽으로 물러나면 안 된다"
+    # 판정이 실패하면 **옛 규칙**으로 물러난다 — 그냥 run 이면 달력이 죽은 월요일에 주간 관리가
+    # 통째로 생략된다(2026-09-20 Codex 재검토). 어느 쪽이든 "안 돌린다"로는 물러나지 않는다.
+    block = sh[sh.index("DAY_KIND="):sh.index("DAY_KIND=") + 260]
+    assert "echo weekly" in block and "echo run" in block and "skip" not in block.split("\n")[0]
     assert 'if [ "$DAY_KIND" = "skip" ]' in sh and 'if [ "$DAY_KIND" = "weekly" ]' in sh
 
 
@@ -96,3 +98,20 @@ def test_the_mail_watchdog_stays_quiet_on_days_off(tmp_path, capsys):
                      "--lock", str(tmp_path / "l")], now=saturday)
     assert rc == 0
     assert "발송하지 않는 날" in capsys.readouterr().out
+
+
+def test_the_mail_report_day_follows_the_same_calendar_as_the_shell():
+    """이 테스트가 잡는 것: 셸과 메일이 **다른 달력**을 보는 것(2026-09-20 Codex 재검토 A).
+
+    셸은 "그 주 첫 근무일"에 주간 관리를 돌리는데 메일 쪽이 KST 월요일만 보고 있었다 — 월요일이
+    공휴일인 주(10/5)에는 **기준은 바뀌는데 그 변경이 메일에 안 실린다.** 실측으로 10/6 에
+    `day_kind=weekly` 인데 `is_weekly_review_day=False` 였다."""
+    from datetime import datetime, timezone
+    import run_profile_scan as rps
+    from time_policy import KST
+    for day in (date(2026, 9, 21), date(2026, 10, 6)):               # 보통 주의 월요일 · 휴일 밀린 화요일
+        moment = datetime(day.year, day.month, day.day, 5, 5, tzinfo=KST).astimezone(timezone.utc)
+        assert wc.day_kind(day) == "weekly"
+        assert rps.is_weekly_review_day(moment), f"{day} 는 셸이 weekly 인데 메일이 아니라고 한다"
+    ordinary = datetime(2026, 10, 7, 5, 5, tzinfo=KST).astimezone(timezone.utc)
+    assert not rps.is_weekly_review_day(ordinary)                    # 그 주에 두 번 싣지 않는다

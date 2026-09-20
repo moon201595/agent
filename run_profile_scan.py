@@ -72,22 +72,27 @@ from time_policy import KST as READER_TZ   # 2026-09-17: 시각 정책 통합
 
 
 def is_weekly_review_day(now: datetime | None = None) -> bool:
-    """오늘이 주간 리뷰를 붙이는 날인가. 함수로 뺀 이유는 테스트가
-    이것만 바꿀 수 있게 하기 위해서다 — datetime.now 전체를 갈아끼우면
-    record_run 등 다른 시각 사용까지 깨진다(실제로 한 번 깨뜨렸다)."""
-    # **읽는 사람의 요일로 센다**(2026-09-08, §8-71). 그전에는 UTC 였는데
-    # 배달은 05:00 KST = **전날 20:00 UTC** 에 일어난다. 그래서 의도한 월요일
-    # 아침 메일에는 안 붙고(그때 UTC 로는 일요일) **화요일 아침 메일에 붙었다.**
-    # 여태 아무도 못 본 이유는 §8-70 ① 때문이다 — 주간 리뷰가 HTML 메일에
-    # 아예 닿지 않아서 요일이 어긋난 것도 드러나지 않았다.
-    #
-    # 요일은 읽는 사람 기준이고, 읽는 사람은 KST 로 산다 — `READER_TZ` 로 명시
-    # 변환한다. 인자 없는 `astimezone()` 은 **이 컴퓨터**의 시간대라 KST 머신에서만
-    # 우연히 맞았다(§8-93 ①). naive 값이 오면 이 컴퓨터 시각으로 본다.
+    """오늘이 주간 보고(검색 기준 변화·주간 진단)를 붙이는 날인가.
+
+    **판정은 `work_calendar.is_weekly_day` 하나다**(2026-09-20 Codex 재검토 A). 그전에는 여기서 KST
+    월요일을 직접 셌는데, 셸은 이미 "그 주 첫 근무일"로 옮겨 가 있었다 — 월요일이 공휴일인 주
+    (2026-10-05 개천절 대체)에는 **주간 관리는 화요일에 돌고 그 변경이 메일에는 안 실린다.**
+    실측으로 10/6 화요일에 `day_kind=weekly` 인데 이 함수는 False 였다.
+
+    요일은 **읽는 사람의 요일로 센다**(2026-09-08, §8-93 ①). 배달은 05:00 KST = 전날 20:00 UTC 라
+    UTC 로 세면 하루가 밀린다. naive 값이 오면 이 컴퓨터 시각으로 본다.
+
+    함수로 남겨 둔 이유는 테스트가 이것만 갈아끼울 수 있게 하기 위해서다 — `datetime.now` 전체를
+    바꾸면 `record_run` 등 다른 시각 사용까지 깨진다(실제로 한 번 깨뜨렸다).
+    """
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.astimezone()
-    return moment.astimezone(READER_TZ).weekday() == WEEKLY_REVIEW_WEEKDAY
+    try:
+        import work_calendar
+        return work_calendar.is_weekly_day(moment.astimezone(READER_TZ).date())
+    except Exception:      # noqa: BLE001 — 달력을 못 읽으면 예전 규칙(월요일)으로 물러난다
+        return moment.astimezone(READER_TZ).weekday() == WEEKLY_REVIEW_WEEKDAY
 
 
 def _primary_keyword(paper: dict) -> str:
