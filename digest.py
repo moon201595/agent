@@ -391,19 +391,22 @@ def coverage_label(arxiv_id: str) -> str:
 # 멀리 갔지만, 실제로 코드를 돌려본 run 보다는 정보량이 적다.
 _STAGE_DEPTH = {"clone": 0, "no_target": 1, "build": 2, "install_only": 3, "run": 4}
 
-# (stage, fail_detail) → 라벨. ✗ 와 – 의 구분이 이 표의 핵심이다:
-#   ✗ = 코드를 실제로 돌렸는데 실패했다        → 저자 코드에 대한 판정
-#   ◐ = 의존성 설치까지는 됐으나 실행 대상이 없다 → 판정 불가, 다만 "설치되는
-#       진짜 코드"라는 약한 신호는 있다(2026-09-02)
-#   – = 돌려보지도 못했다                      → 저자 코드에 대한 판정이 아님
-# 2026-09-01 이전에는 둘 다 [재현 ✗] 였고, 그래서 "저자가 코드를 안 올렸다(404)"가
+# (stage, fail_detail) → 라벨. **실패 / 부분 / – 의 구분이 이 표의 핵심이다**:
+#   실패 = 코드를 실제로 돌렸는데 실패했다        → 저자 코드에 대한 판정
+#   부분 = 의존성 설치까지는 됐으나 실행 대상이 없다 → 판정 불가, 다만 "설치되는
+#          진짜 코드"라는 약한 신호는 있다(2026-09-02)
+#   –    = 돌려보지도 못했다                      → 저자 코드에 대한 판정이 아님
+# 2026-09-01 이전에는 앞의 둘이 한 라벨이었고, 그래서 "저자가 코드를 안 올렸다(404)"가
 # "저자 코드가 안 돈다"로 읽혔다(실측: 2608.25176).
+#
+# 2026-09-20 사용자 요청으로 기호(✓·✗·◐)를 글자로 바꿨다 — 성공만 글자로 두면 한 메일 안에서
+# "재현 성공" 과 "재현 ✗" 가 섞여 더 어색하다. 판정의 구분은 그대로 유지한다.
 _REPRO_LABELS = {
-    ("run", "run_network_suspected"): "[재현 ✗ 네트워크 차단 의심]",
-    ("run", "run_timeout"): "[재현 ✗ 시간 초과]",
-    ("run", "run_nonzero_exit"): "[재현 ✗ 실행 실패]",
-    ("build", "build_failed"): "[재현 ✗ 설치 실패]",
-    ("install_only", "install_only_no_run_target"): "[재현 ◐ 설치만 확인]",
+    ("run", "run_network_suspected"): "[재현 실패 · 네트워크 차단 의심]",
+    ("run", "run_timeout"): "[재현 실패 · 시간 초과]",
+    ("run", "run_nonzero_exit"): "[재현 실패 · 실행 오류]",
+    ("build", "build_failed"): "[재현 실패 · 설치]",
+    ("install_only", "install_only_no_run_target"): "[재현 부분 · 설치만 확인]",
     ("no_target", "no_install_target"): "[재현 – 실행 대상 없음]",
     ("clone", "repo_not_found"): "[재현 – 저장소 없음(404)]",
     ("clone", "clone_timeout"): "[재현 – 클론 시간 초과]",
@@ -416,9 +419,9 @@ _REPRO_LABELS = {
 # 데이터가 없는 것을 아는 척하지 않되, 그렇다고 전부 [재현 ✗] 로 되돌리지도
 # 않는다 — stage 만으로도 "돌려봤는가"는 알 수 있기 때문이다.
 _REPRO_LABELS_BY_STAGE = {
-    "run": "[재현 ✗ 실행 실패]",
-    "install_only": "[재현 ◐ 설치만 확인]",
-    "build": "[재현 ✗ 설치 실패]",
+    "run": "[재현 실패 · 실행 오류]",
+    "install_only": "[재현 부분 · 설치만 확인]",
+    "build": "[재현 실패 · 설치]",
     "no_target": "[재현 – 실행 대상 없음]",
     "clone": "[재현 – 클론 실패]",
 }
@@ -504,9 +507,10 @@ def repro_label(arxiv_id: str) -> str:
     if not rows:
         return "[재현 –]"
     if any(r["success"] for r in rows):
-        # **무엇을 확인했는지까지 말한다.** 맨 `✓` 는 "결과가 재현됐다"로 읽힌다.
+        # 기호보다 단어가 빨리 읽힌다는 2026-09-20 사용자 피드백에 따라 성공을 글자로 쓴다.
+        # **무엇을 확인했는지까지 말한다.** 성공만 쓰면 논문 성능 수치까지 재현한 것으로 읽힐 수 있다.
         kind = _verified_kind(arxiv_id)
-        return f"[재현 ✓ {kind}]" if kind else "[재현 ✓]"
+        return f"[재현 성공 · {kind}]" if kind else "[재현 성공]"
 
     deepest = max(rows, key=lambda r: _STAGE_DEPTH.get(r["stage"], -1))
     stage, detail = deepest["stage"], deepest["fail_detail"]
@@ -514,7 +518,7 @@ def repro_label(arxiv_id: str) -> str:
         label = _REPRO_LABELS.get((stage, detail))
         if label:
             return label
-    return _REPRO_LABELS_BY_STAGE.get(stage, "[재현 ✗]")
+    return _REPRO_LABELS_BY_STAGE.get(stage, "[재현 실패]")
 
 
 def _repro_label_legacy(arxiv_id: str) -> str:
@@ -529,8 +533,8 @@ def _repro_label_legacy(arxiv_id: str) -> str:
     if not rows:
         return "[재현 –]"
     if any(r["success"] for r in rows):
-        return "[재현 ✓]"
-    return "[재현 ✗]"
+        return "[재현 성공]"
+    return "[재현 실패]"
 
 
 def sota_claim_line(paper: dict) -> str:

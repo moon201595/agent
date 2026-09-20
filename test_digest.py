@@ -160,7 +160,7 @@ def test_repro_label_success_when_any_attempt_succeeded(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/failed", success=False)
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/ok", success=True)
     text = _digest_for(_scored_paper("p1", "성공 논문", 1.0))
-    assert "[재현 ✓]" in text
+    assert "[재현 성공]" in text
 
 
 def test_repro_label_failed_when_all_attempts_failed(isolated_db):
@@ -169,14 +169,14 @@ def test_repro_label_failed_when_all_attempts_failed(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/one", success=False)
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False)
     text = _digest_for(_scored_paper("p1", "실패 논문", 1.0))
-    assert "[재현 ✗]" in text
+    assert "[재현 실패]" in text
 
 
 def test_repro_label_none_when_no_record(isolated_db):
     """(a-4) 기록 자체가 없음 — 실패(✗)와 절대 같게 표시하면 안 된다."""
     text = _digest_for(_scored_paper("p1", "기록없음 논문", 1.0))
     assert "[재현 –]" in text
-    assert "[재현 ✗]" not in text
+    assert "[재현 실패]" not in text
 
 
 def test_verification_label_shows_flag_count(isolated_db):
@@ -462,11 +462,11 @@ def test_tldr_not_used_for_successfully_processed_paper(isolated_db):
 
 
 @pytest.mark.parametrize("stage,detail,expected", [
-    ("run", "run_network_suspected", "[재현 ✗ 네트워크 차단 의심]"),
-    ("run", "run_timeout", "[재현 ✗ 시간 초과]"),
-    ("run", "run_nonzero_exit", "[재현 ✗ 실행 실패]"),
-    ("build", "build_failed", "[재현 ✗ 설치 실패]"),
-    ("install_only", "install_only_no_run_target", "[재현 ◐ 설치만 확인]"),
+    ("run", "run_network_suspected", "[재현 실패 · 네트워크 차단 의심]"),
+    ("run", "run_timeout", "[재현 실패 · 시간 초과]"),
+    ("run", "run_nonzero_exit", "[재현 실패 · 실행 오류]"),
+    ("build", "build_failed", "[재현 실패 · 설치]"),
+    ("install_only", "install_only_no_run_target", "[재현 부분 · 설치만 확인]"),
     ("no_target", "no_install_target", "[재현 – 실행 대상 없음]"),
     ("clone", "repo_not_found", "[재현 – 저장소 없음(404)]"),
     ("clone", "clone_timeout", "[재현 – 클론 시간 초과]"),
@@ -496,7 +496,7 @@ def test_deepest_attempt_decides_the_label(isolated_db):
                 stage="clone", attempt=1, fail_detail="repo_not_found")
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
                 stage="run", attempt=2, fail_detail="run_nonzero_exit")
-    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 실패 · 실행 오류]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_success_still_wins_over_any_failure_detail(isolated_db):
@@ -504,7 +504,7 @@ def test_success_still_wins_over_any_failure_detail(isolated_db):
                 stage="run", attempt=1, fail_detail="run_network_suspected")
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=True,
                 stage="run", attempt=2, fail_detail="")
-    assert "[재현 ✓]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 성공]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_old_rows_without_fail_detail_still_render(isolated_db):
@@ -512,7 +512,7 @@ def test_old_rows_without_fail_detail_still_render(isolated_db):
     "돌려봤는가"는 알 수 있으므로 그만큼은 말해준다."""
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage="run", fail_detail=None)
-    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 실패 · 실행 오류]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_old_rows_with_no_stage_fall_back_to_plain_failure(isolated_db):
@@ -520,7 +520,7 @@ def test_old_rows_with_no_stage_fall_back_to_plain_failure(isolated_db):
     아는 척하지 않는다."""
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage=None, fail_detail=None)
-    assert "[재현 ✗]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_network_suspected_label_is_flagged_in_html(isolated_db):
@@ -550,7 +550,7 @@ def test_install_only_is_not_collapsed_into_no_target(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage="install_only", fail_detail="install_only_no_run_target")
     text = _digest_for(_scored_paper("p1", "논문", 1.0))
-    assert "[재현 ◐ 설치만 확인]" in text
+    assert "[재현 부분 · 설치만 확인]" in text
     assert "실행 대상 없음" not in text
 
 
@@ -560,7 +560,7 @@ def test_actually_running_beats_install_only_in_depth(isolated_db):
                 stage="install_only", attempt=1, fail_detail="install_only_no_run_target")
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
                 stage="run", attempt=2, fail_detail="run_nonzero_exit")
-    assert "[재현 ✗ 실행 실패]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 실패 · 실행 오류]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_install_only_beats_build_failure_in_depth(isolated_db):
@@ -569,13 +569,13 @@ def test_install_only_beats_build_failure_in_depth(isolated_db):
                 stage="build", attempt=1, fail_detail="build_failed")
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/two", success=False,
                 stage="install_only", attempt=2, fail_detail="install_only_no_run_target")
-    assert "[재현 ◐ 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 부분 · 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 def test_old_install_only_row_without_detail_still_renders(isolated_db):
     _seed_repro(isolated_db["db"], "p1", "https://github.com/a/x", success=False,
                 stage="install_only", fail_detail=None)
-    assert "[재현 ◐ 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
+    assert "[재현 부분 · 설치만 확인]" in _digest_for(_scored_paper("p1", "논문", 1.0))
 
 
 # ---------------------------------------------------------------- 본문 비공개 논문 (2026-09-03)
