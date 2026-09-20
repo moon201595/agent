@@ -1,5 +1,6 @@
 #!/bin/bash
-# run_weekly_agent.sh — 금요일 17:00 KST cron 진입점(2026-09-15, 사용자 결정).
+# run_weekly_agent.sh — 손으로 돌릴 때만 쓰는 진입점. 정규 실행은 2026-09-19 부터
+# run_daily_scan.sh 의 월요일 블록이다(§8-163) — 일일 스캔 바로 앞에서 돈다.
 #
 # 1) db_retention — 보존표(계획 v2 §9)대로 오래된 관측·실행 기록·캐시를 **백업 뒤** 정리한다.
 # 2) agent_maintenance — 프로필마다 브리프 → Claude 제안 → Codex 판정(의견이 갈리면 Codex) → Python 검증·적용.

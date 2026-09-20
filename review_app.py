@@ -348,7 +348,7 @@ def _render_status_strip(status: dict) -> None:
     c2.caption(f"주간 관리 {status['next_weekly_kst']}")
     w = status["weekly"]
     c3.metric("주간 에이전트", ops_dashboard.agent_status_label(w) if w else "아직 실행 없음")
-    c3.caption("금요일 17:00 · Claude 제안 → Codex 판정")
+    c3.caption("월요일 05:00 · 일일 스캔 직전 · Claude 제안 → Codex 판정")
     c4.metric("반응 버튼", "활성" if status["buttons_configured"] else "비활성")
     c4.caption("메일에 버튼이 붙습니다" if status["buttons_configured"] else "FEEDBACK_* 설정 없음")
 
@@ -572,7 +572,7 @@ def _render_history(db_path, pid: str) -> None:
 def _render_agent(db_path, pid: str) -> None:
     runs = ops_dashboard.agent_history(db_path, pid)
     if not runs:
-        st.caption("아직 주간 에이전트 실행 기록이 없습니다. 금요일 17:00 에 돌고, 반응이 없는 주는 모델을 부르지 않습니다.")
+        st.caption("아직 주간 에이전트 실행 기록이 없습니다. 월요일 새벽 일일 스캔 직전에 돌고, 볼 자료가 없는 주는 모델을 부르지 않습니다.")
         return
     for run in runs:
         with st.expander(f"{ops_dashboard.agent_status_label(run)} · {run['when']}", expanded=run is runs[0]):
@@ -838,7 +838,7 @@ def render_system_page() -> None:
     c.caption(f"보관 {len(dbs['backups'])}개 · 최신 {ops_dashboard.fmt_bytes(dbs['backups'][0]['bytes'])}" if dbs["backups"] else "")
     r = dbs["retention"]
     d.metric("마지막 DB 정리", r["when"] if r else "아직 없음")
-    d.caption((f"행 {r['rows_deleted']} · 파일 {r['files_deleted']} 삭제" + (f" · 오류 {r['error']}" if r["error"] else "")) if r else "금요일 17:00 에 돕니다")
+    d.caption((f"행 {r['rows_deleted']} · 파일 {r['files_deleted']} 삭제" + (f" · 오류 {r['error']}" if r["error"] else "")) if r else "월요일 새벽 일일 스캔 직전에 돕니다")
 
     st.markdown("#### 새벽 실행 기록")
     runs = ops_dashboard.recent_runs(ROOT, limit=14)
@@ -861,7 +861,7 @@ def render_system_page() -> None:
     if agent_rows:
         st.dataframe(pd.DataFrame(sorted(agent_rows, key=lambda x: (x["주차"], x["프로필"]), reverse=True)), hide_index=True, width="stretch")
     else:
-        st.caption("아직 실행 없음 — 금요일 17:00 첫 실행. 반응이 없는 프로필은 모델을 부르지 않습니다.")
+        st.caption("아직 실행 없음 — 월요일 새벽 첫 실행. 볼 자료가 없는 프로필은 모델을 부르지 않습니다.")
 
     left, right = st.columns([3, 2])
     with left:

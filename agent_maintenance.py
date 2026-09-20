@@ -1,7 +1,7 @@
 """② 선별 — 주간 관리 에이전트. 브리프는 Python, 제안은 Claude, 판정은 Codex, 검증·적용은 Python.
 
 왜 이 모양인가(2026-09-15, 사용자 결정 — PROGRESS §8-127):
-- 사용자가 세션을 열지 않아도 키워드·가중치·검색어가 반응을 따라가야 한다. 그래서 cron(금 17:00 KST)이
+- 사용자가 세션을 열지 않아도 키워드·가중치·검색어가 반응을 따라가야 한다. 그래서 cron(월요일 새벽, 일일 스캔 직전)이
   구독 CLI 를 헤드리스로 부른다(`claude -p` · `codex exec`). API 결제를 붙이지 않는다(규칙 6).
 - 둘의 의견이 갈리면 **Codex 판정이 이긴다**(사용자 결정). Codex 가 돌려준 최종 목록만 적용 후보다 —
   Claude 가 낸 것이라도 Codex 목록에 없으면 적용하지 않는다.
@@ -855,7 +855,7 @@ def mark_reported(db: Path, keys: list[tuple[str, str]], when: datetime | None =
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="주간 관리 에이전트(금 17:00 KST cron)")
+    ap = argparse.ArgumentParser(description="주간 관리 에이전트(월요일 새벽, run_daily_scan.sh 가 일일 스캔 직전에 부른다)")
     ap.add_argument("--db", default=str(Path(__file__).resolve().parent / "data" / "papers.db"))
     ap.add_argument("--profile", action="append", help="이 프로필만(여러 번 가능). 생략하면 전체")
     ap.add_argument("--force", action="store_true", help="이번 주에 이미 돌았어도 다시")

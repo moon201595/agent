@@ -411,3 +411,63 @@ def test_events_after_this_cycles_scan_wait_for_the_next_report(tmp_path):
                                   "basis": "feedback", "reason": "스캔 뒤에 적용됐다"}])))
     out = wpc.collect(db, "p1", days=7, now=utc(2026, 9, 21, 5, 20), scan_id="now")
     assert out is None or "스캔 뒤에 적용됐다" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_a_profile_younger_than_the_window_still_reports_its_first_change(tmp_path):
+    """이 테스트가 잡는 것: 창이 프로필보다 앞설 때 **절이 통째로 사라지는 것**(2026-09-20 지적).
+
+    9/16 에 만든 프로필의 첫 월요일이 그렇다(실측: team_agent·robot·vision 의 첫 revision 이 9/15 라
+    9/14 baseline 이 없다). 그때 `_snapshot_at` 이 None 이라 `collect` 가 통째로 None 을 돌려줬다 —
+    그날 주간 관리가 실제로 기준을 바꿨는데도 메일에는 "변경 없음"으로 보인다. 가장 위험한 조용한 손실이다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    now = utc(2026, 9, 21, 5, 35)               # 집계는 스캔보다 30분 뒤
+    born = utc(2026, 9, 16, 10, 0)              # 창(9/14)보다 **뒤**에 생긴 프로필
+    _snap(db, "p1", 1, born, "user", [["robot manipulation", "core", 1.0]])
+    _snap(db, "p1", 2, utc(2026, 9, 21, 5, 1), "agent",
+          [["robot manipulation", "core", 1.0], ["tactile skin", "core", 0.7]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('now','p1',?,?,'test')",
+                    (utc(2026, 9, 21, 5, 5).isoformat(),
+                     json.dumps({"core_topics": ["robot manipulation", "tactile skin"],
+                                 "core_weights": {"robot manipulation": 1.0, "tactile skin": 0.7}})))
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, applied_json,"
+                    " base_revision, new_revision) VALUES (?,?,?,'applied',?,1,2)",
+                    ("p1", "2026-W39", utc(2026, 9, 21, 5, 1).isoformat(),
+                     json.dumps([{"op": "add_keyword", "term": "tactile skin", "weight": 0.7,
+                                  "basis": "trend", "reason": "동향에서 반복 관측됐다"}])))
+    out = wpc.collect(db, "p1", days=7, now=now, scan_id="now")
+    assert out, "프로필이 창보다 어려도 그날의 자동 변경은 보고해야 한다"
+    assert out["window"][0] == born.isoformat()          # 프로필이 생긴 시점부터 센다
+    added = [a for a in out["added"] if a["keyword"] == "tactile skin"]
+    assert added and added[0]["origins"] == ("agent",)
+    text = "\n".join(digest._profile_changes_section({"profile_changes": out}))
+    assert "tactile skin" in text and "동향에서 반복 관측됐다" in text
+    assert "robot manipulation" not in text              # 사용자가 만든 것은 싣지 않는다
+
+
+def test_the_fallback_window_is_measured_from_the_scan_not_from_the_call(tmp_path):
+    """이 테스트가 잡는 것: 폴백 창을 **집계 시각**에서 재는 것.
+
+    끝은 이번 회차 스캔 시작인데 시작을 호출 시각에서 재면, 집계까지 걸린 시간(실측 30분 안팎)만큼
+    창이 짧아진다. 지난 회차 기록이 없는 주에만 생기던 어긋남이다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    scan_at = utc(2026, 9, 21, 5, 5)
+    _snap(db, "p1", 1, utc(2026, 9, 1, 5, 0), "user", [["X", "core", 1.0]])
+    _snap(db, "p1", 2, utc(2026, 9, 18, 5, 0), "feedback", [["X", "core", 1.4]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,2)",
+                    ("p1", "2026-09-18", utc(2026, 9, 18, 5, 0).isoformat(), 2,
+                     json.dumps([{"keyword": "X", "before": 1.0, "after": 1.4}])))
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('now','p1',?,?,'test')",
+                    (scan_at.isoformat(), json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.4}})))
+    out = wpc.collect(db, "p1", days=7, now=utc(2026, 9, 21, 5, 35), scan_id="now")
+    assert out, "이 픽스처는 반응으로 움직인 가중치를 내놔야 한다"
+    start, end = (datetime.fromisoformat(t) for t in out["window"])
+    assert end == scan_at                       # 끝은 집계 시각이 아니라 스캔 시작
+    assert end - start == timedelta(days=7)     # 폴백 창은 정확히 7일
+    assert out["weights"][0]["origins"] == ("feedback",)
