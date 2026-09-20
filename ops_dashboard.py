@@ -10,7 +10,7 @@ import json
 import re
 import sqlite3
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import agent_maintenance
@@ -85,15 +85,21 @@ def system_status(db: Path, root: Path, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     kst_now = now.astimezone(KST)
     daily = _parse_daily_log(root / "logs" / "daily_scan.log")
+    # 주말·공휴일은 건너뛴다(2026-09-20) — 화면이 "내일 05:00"이라고 적었는데 실제로는 안 도는 날이면
+    # 그 표시가 거짓이다. 달력을 못 읽으면 예전처럼 다음 날로 둔다(돌리는 쪽으로 물러난다).
+    import work_calendar
     next_daily = kst_now.replace(hour=5, minute=0, second=0, microsecond=0)
-    if next_daily <= kst_now:
-        next_daily += timedelta(days=1)
+    if next_daily <= kst_now or not work_calendar.is_work_day(next_daily.date()):
+        next_daily = datetime.combine(work_calendar.next_work_day(
+            kst_now.date() if next_daily <= kst_now else kst_now.date() - timedelta(days=1)),
+            time(5, 0), tzinfo=KST)
     # 주간 관리는 2026-09-19 에 **월요일 새벽**으로 옮겼다(§8-163) — 일일 스캔 바로 앞에서 돈다.
     # 화면만 금요일 17:00 을 계속 계산하고 있었다(2026-09-20 지적): 실행은 맞는데 표시가 거짓이었다.
-    days_ahead = (0 - kst_now.weekday()) % 7          # 월요일
-    next_weekly = (kst_now + timedelta(days=days_ahead)).replace(hour=5, minute=0, second=0, microsecond=0)
+    # 주간 관리는 **그 주 첫 근무일** 새벽이다 — 월요일이 공휴일이면 화요일이 그 자리를 받는다.
+    next_weekly = datetime.combine(work_calendar.next_weekly_day(kst_now.date() - timedelta(days=1)),
+                                   time(5, 0), tzinfo=KST)
     if next_weekly <= kst_now:
-        next_weekly += timedelta(days=7)
+        next_weekly = datetime.combine(work_calendar.next_weekly_day(kst_now.date()), time(5, 0), tzinfo=KST)
     weekly = None
     with sqlite3.connect(db) as con:
         con.row_factory = sqlite3.Row

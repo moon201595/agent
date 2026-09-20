@@ -38,13 +38,18 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - MCP 서버: `.venv/bin/python server.py` (stdio). 클라이언트가 띄운다.
 - 운영 화면: `.venv/bin/streamlit run review_app.py` → http://localhost:8501 — 운영 현황(기본)·논문 DB·시스템 세 페이지(2026-09-16 개편,
   옛 검색·요약·검토 탭 삭제). `.streamlit/config.toml` 이 127.0.0.1 로만 묶는다 — 되돌리기·가중치 저장 버튼이 있고 로그인이 없다.
-- 일일 스캔(cron 진입점): `./run_daily_scan.sh` — 매일 05:00 KST, 로그는 `logs/daily_scan.log`.
+- 일일 스캔(cron 진입점): `./run_daily_scan.sh` — **월~금 05:00 KST, 주말·한국 공휴일은 쉰다**(2026-09-20 사용자 결정).
+  판정은 `work_calendar.day_kind()` 하나이고 셸은 그 한 낱말(`skip`·`weekly`·`run`)만 읽는다 — 셸에서 요일을 세면
+  그 판정을 테스트가 실행해 볼 수 없다. **판정이 실패하면 돌린다**(`|| echo run`) — 달력을 못 읽어 메일이 안 가는 것보다
+  한 번 더 가는 게 낫다. 건너뛴 날의 논문은 안 사라진다: 검색 창이 달력이 아니라 `next_since` 델타다. 로그는 `logs/daily_scan.log`.
 - **Windows 작업 스케줄러에도 같은 작업이 있다**(`paper-harness\daily-scan` 매일 05:00, XML 은 `%USERPROFILE%\paper-harness-tasks\`).
   PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시 실행(StartWhenAvailable)하고
   꺼진 WSL 도 켠다. `WakeToRun=true` 를 켰다(2026-09-18, XML 로 확인). 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
+- **주간 관리는 "월요일"이 아니라 그 주 첫 근무일**(`work_calendar.is_weekly_day`)이다 — 월요일이 공휴일인 주가
+  실제로 있다(2026-10-05 개천절 대체 휴일). 고정이면 그 주 키워드 조정이 통째로 건너뛴다.
 - **주간 관리는 모든 프로필에, 일일 스캔은 `schedule='daily'` 프로필에만 돈다.** `agent_maintenance.run_week` 는
   `list_profiles(db)`(전체), `scan_all_profiles` 는 `list_profiles(db, schedule="daily")` 다 — 지금 네 프로필이 전부 daily 라
   차이가 안 보이지만, `manual` 프로필을 만들면 **메일은 안 가는데 키워드는 매주 자동으로 바뀐다**(2026-09-20 확인).

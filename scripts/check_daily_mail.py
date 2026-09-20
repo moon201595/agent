@@ -196,6 +196,17 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
 
     current = (now or datetime.now(UTC)).astimezone(UTC)
     today, boundary = _operational_day(current)
+    # 쉬는 날에는 메일이 안 나가는 게 정상이다(2026-09-20). 이 검사가 그걸 모르면 토·일·연휴마다
+    # "브리핑이 안 왔다"고 알리고, 경보가 늑대소년이 되면 **정말 고장난 날을 못 알아챈다**.
+    # 달력을 못 읽으면 예전처럼 검사한다 — 놓치는 것보다 한 번 더 보는 게 낫다.
+    try:
+        import work_calendar
+        skip = work_calendar.skip_reason(today)
+    except Exception:      # noqa: BLE001
+        skip = None
+    if skip:
+        print(f"보류: {today.isoformat()} 은 {skip} — 발송하지 않는 날이다")
+        return 0
     try:
         recipients, profile_ids, reasons = _database_state(args.db, today)
         reasons.extend(_check_run(args.log, profile_ids, boundary, current))
