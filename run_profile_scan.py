@@ -452,6 +452,21 @@ async def scan_and_digest(
             paper.pop("_delivered_state", None)
         print(f"  [근거 상태] 관측 실패: {type(error).__name__}")
 
+    # 제목 한국어 병기(2026-09-20 사용자 요청) — 원제 옆 괄호에 붙인다. 한 번에 한 호출이고,
+    # 실패하면 원제만 나간다(규칙 6). 서술 안 갈래 목록도 같은 번역을 쓴다.
+    try:
+        import title_ko
+        shown_papers = list(result.get("papers") or []) + list(result.get("title_only_papers") or [])
+        korean = await title_ko.translate(client, [p.get("title") or "" for p in shown_papers])
+        for paper in shown_papers:
+            hit = korean.get(" ".join(str(paper.get("title") or "").split()))
+            if hit:
+                paper["title_ko"] = hit
+        if korean:
+            print(f"  [제목] 한국어 병기 {len(korean)}건")
+    except Exception as e:  # noqa: BLE001 — 번역이 없어도 메일은 원제로 나간다
+        print(f"  [제목] 한국어 병기 실패(무시): {type(e).__name__}")
+
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     research_profile.save_digest(db_path, profile_id, digest_text)
 

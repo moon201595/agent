@@ -759,9 +759,15 @@ def test_daily_digest_carries_a_narrative_not_just_counts():
     assert "키워드별 적중 편수" in text
 
 
-def test_narrative_is_labelled_as_llm_written_and_separated_from_counts():
+def test_narrative_comes_first_and_carries_no_boilerplate_header():
+    """2026-09-20 사용자 요청으로 머리말 두 줄(출처 라벨 · "기간 비교 없는 수집 표본…")을 뺐다 —
+    매일 같은 문장이 글 앞을 막아 정작 동향이 두 줄 아래에서 시작했다.
+    이 테스트가 잡는 것: 그 문장들을 메일에 되살리는 것 · 브리핑이 편수표 뒤로 밀리는 것."""
     text = digest.generate_digest(_scan_with_story(), "t")
-    assert "제목·초록만 보고 쓴 것" in text
+    html_head = digest.generate_digest_html(_scan_with_story(), "t")
+    for boilerplate in ("제목·초록만 보고 쓴 것", "기간 비교 없는 수집 표본"):
+        assert boilerplate not in text
+        assert boilerplate not in html_head
     # 2026-09-09 사용자 요청: 브리핑을 첫 화면에 둔다. 검증 라벨은 위에서
     # 계속 검사하고, 새 순서 계약은 평문·HTML 모두 잠근다(검증 완화 아님).
     assert text.index("오늘의 동향 정리") < text.index("키워드별 적중 편수")
@@ -1158,25 +1164,23 @@ def test_narrative_label_says_what_it_actually_read():
     붙었는지를 말해야 한다."""
     base = {"papers": [], "candidates_found": 3, "narrative": ("갈래\n첫째, 흐름이다.", [])}
 
-    none_used = digest.generate_digest_html(base, "t")
-    assert "제목·초록만 보고 쓴 것" in none_used
-    assert "원문 요약" not in none_used
+    # 메일에는 2026-09-20 부터 안 찍지만 **계산은 계속 맞아야 한다** — `narrative_store` 가 이 값을 남기고,
+    # 다시 화면에 붙일 때 이 함수를 쓴다. 라벨이 입력과 어긋나면 그때 거짓이 된다.
+    assert digest.narrative_source_label(base) == "LLM 이 제목·초록만 보고 쓴 것."
+    assert "그중 6편은 원문 요약의 결과까지 보고 쓴 것" in \
+        digest.narrative_source_label({**base, "narrative_summaries": 6})
+    assert "제목·초록만 보고 쓴 것" not in digest.generate_digest_html(base, "t")
 
-    with_summaries = digest.generate_digest_html({**base, "narrative_summaries": 6}, "t")
-    assert "그중 6편은 원문 요약의 결과까지 보고 쓴 것" in with_summaries
-    assert "제목·초록만 보고 쓴 것" not in with_summaries
 
-
-def test_narrative_label_is_the_same_in_both_renderers():
-    """평문/HTML 불일치가 이 코드베이스에서 반복된 결함이다(§8-57·67·70)."""
-    # 논문이 0편이면 평문은 꼬리 절을 통째로 안 찍는다(빈 다이제스트 설계).
-    # 실제로 서술은 papers 가 있을 때만 만들어지므로 그 모양으로 시험한다.
+def test_neither_renderer_prints_the_source_label():
+    """평문/HTML 불일치가 이 코드베이스에서 반복된 결함이다(§8-57·67·70) — **빼는 것도 양쪽 같이** 뺀다.
+    2026-09-20 사용자 요청으로 라벨을 메일에서 뺐다. 한쪽에만 남으면 같은 병이다."""
     scan = {"papers": [_ZETA], "candidates_found": 3, "narrative_summaries": 4,
             "narrative": ("갈래\n첫째, 흐름이다.", [])}
     label = digest.narrative_source_label(scan)
-    assert "4편" in label
-    assert label in digest.generate_digest(scan, "t")
-    assert label in digest.generate_digest_html(scan, "t")
+    assert "4편" in label                      # 계산은 그대로다
+    assert label not in digest.generate_digest(scan, "t")
+    assert label not in digest.generate_digest_html(scan, "t")
 
 
 def test_zero_summaries_falls_back_to_the_old_sentence():
@@ -1420,7 +1424,7 @@ def test_narrative_bullet_lines_render_as_indented_list_items():
     """2026-09-12 사용자 요청: 갈래의 논문은 문장 속 나열이 아니라 한 줄에 하나.
     이 테스트가 잡는 것: "- 제목" 줄이 일반 문단과 같은 모양으로 나가는 것, 글머리 기호가 두 번 붙는 것."""
     html = digest._narrative_line_html("- BenchShield: Formal Model-Backed Instrumentation [P4:A]")
-    assert "• BenchShield" in html and "margin:2px 0 2px 18px" in html and "- BenchShield" not in html
+    assert "• BenchShield" in html and "margin:3px 0 3px 18px" in html and "- BenchShield" not in html
     html2 = digest._narrative_line_html("첫째, 검증 및 런타임 제어 기술이다.")
     assert "<strong>첫째,</strong>" in html2 and "18px" not in html2
 

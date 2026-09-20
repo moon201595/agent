@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import research_profile
+import title_ko
 import storage
 
 _ABSTRACT_EXCERPT_CHARS = 220
@@ -762,8 +763,9 @@ def _evidence_lines(result: dict) -> list[str]:
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
+    korean = title_ko.label(paper)          # 원제는 지우지 않는다 — 번역은 해석이고 원제가 사실이다
     lines = [
-        f"{idx}. {paper.get('title') or '(제목 없음)'}",
+        f"{idx}. {paper.get('title') or '(제목 없음)'}" + (f" ({korean})" if korean else ""),
     ]
     # 경고는 제목 바로 밑, 다른 어떤 정보보다 먼저 보여준다(M5 철회 / M7 인젝션).
     for warning in (_paper_retraction_label(paper), injection_label(arxiv_id)):
@@ -1056,17 +1058,19 @@ def _narrative_section(scan_result: dict) -> list[str]:
     if not story:
         return []
     text, ungrounded = story
-    lines = ["", "─" * 62,
-             "■ 오늘의 동향 정리",
-             f"   ({narrative_source_label(scan_result)})",
-             "   기간 비교 없는 수집 표본의 관찰이며, 분야 전체의 변화는 판단하지 않았다.",
-             ""]
+    # 머리말 두 줄(출처 라벨 · "기간 비교 없는 수집 표본…")은 2026-09-20 사용자 요청으로 뺐다.
+    # 매일 같은 문장이 글 앞을 막아 정작 동향이 두 줄 아래에서 시작했다. 라벨 계산(`narrative_source_label`)
+    # 과 감사 결과는 그대로 돌고 `narrative_store` 에 남는다 — 화면에서 안 보일 뿐 기록은 있다.
+    lines = ["", "─" * 62, "■ 오늘의 동향 정리", ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
     text = annotate_numbers(reflow_branch_lists(normalise_interpretation_marks(text)), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
-    audit = scan_result.get("citation_audit") or {}
-    if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
-        lines.append("   ⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것")
+    # 갈래 목록은 제목으로만 이뤄져 있어 실제로 읽기 어려운 자리다 — 한국어 제목을 처음 부른 자리에만 붙인다.
+    text = title_ko.annotate(text, list(scan_result.get("papers") or [])
+                             + list(scan_result.get("title_only_papers") or []))
+    # 근거 ID 경고는 2026-09-20 사용자 요청으로 뺐다 — 거의 매일 떠서 경고로서 힘이 없었다.
+    # `citation_audit` 은 그대로 재서 `narrative_store.audit_json` 에 남는다.
+    # **"원문에 없는 숫자" 경고는 그대로 둔다** — 그건 지어낸 값이라 성격이 다르다(규칙 7).
     lines += [f"   {_plain(ln)}" for ln in text.strip().splitlines() if _plain(ln)]
     if ungrounded:
         lines.append(f"   ⚠ 원문에 없는 숫자가 섞여 있다: {', '.join(ungrounded)} — 믿지 말 것")
@@ -1703,6 +1707,9 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     # **텍스트 판과 같은 조건을 쓴다.** `== "ok"` 로 좁혔더니 deep_status 가
     # 비어 있는 구형 결과에서 평문에는 요약이 실리고 HTML 에는 안 실렸다 —
     # "HTML 을 차단한 사람만 다른 메일을 받는" 상황의 정반대 버전이다.
+    korean = title_ko.label(paper)          # 원제는 지우지 않는다 — 번역은 해석이고 원제가 사실이다
+    korean_html = (f'<span style="color:{_MUTED};font-weight:400;"> ({_esc(korean)})</span>'
+                   if korean else "")
     sections = {} if deep_status == "abstract_only" else summary_sections(arxiv_id)
     gist = _one_line_gist(paper, sections)
     gist_html = (f'<div style="color:{_MUTED};font-size:13px;font-weight:400;'
@@ -1711,7 +1718,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         f'<details{open_attr} style="background-color:{_PAPER_BG};color:{_INK};'
         f'border:1px solid {_LINE};border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
         f'<summary style="color:{_INK};font-size:15px;font-weight:600;cursor:pointer;">'
-        f'{idx}. {_esc(title)}'
+        f'{idx}. {_esc(title)}{korean_html}'
         # **접힌 상태에서 보이는 한 줄**(2026-09-05). 제목만으로는 무슨 논문인지
         # 모르고, 절을 다 펼쳐 두면 목록을 훑을 수가 없다. 제목 + 한 줄이
         # 목록이고, 펼치면 요약본 전체가 나온다.
@@ -1910,7 +1917,10 @@ def annotate_numbers(text: str, mentions: list[tuple[str, int]], total: int | No
 
 
 def narrative_source_label(scan_result: dict) -> str:
-    """서술이 **무엇을 보고 쓴 것인지** 한 줄로. 라벨이 입력과 어긋나면 규칙 8 위반이다.
+    """**메일에는 2026-09-20 부터 안 찍는다**(사용자 요청 — 매일 같은 문장이 글 앞을 막았다).
+    무엇을 보고 썼는지는 계속 계산하고 `narrative_store` 가 보관한다. 다시 화면에 붙일 때 이 함수를 쓴다.
+
+    서술이 **무엇을 보고 쓴 것인지** 한 줄로. 라벨이 입력과 어긋나면 규칙 8 위반이다.
 
     2026-09-08 이전에는 언제나 "제목·초록만 보고 쓴 것"이었다. 이제 내용 자리
     논문에 한해 원문 요약의 결과 절까지 넣으므로(§8-73), **실제로 몇 편에
@@ -1942,17 +1952,17 @@ def _narrative_line_html(line: str) -> str:
     # 화면엔 "갈래"로 나오는데 소제목 강조만 빠졌다 — 주간 렌더러는 정규화
     # 뒤에 보고 있어 같은 글이 두 곳에서 다르게 보였다.
     if _is_narrative_heading(text):
-        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:14px;'
-                f'font-weight:700;margin:14px 0 4px;">{_esc(text)}</div>')
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:16px;'
+                f'font-weight:700;margin:16px 0 4px;">{_esc(text)}</div>')
     # 갈래의 논문 목록 — "- 제목 [P3:A]" 한 줄에 하나(2026-09-12). 들여쓰고 글머리를 단다.
     if re.match(r"^[-•]\s+", text):
-        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-                f'margin:2px 0 2px 18px;line-height:1.55;">• {_esc(re.sub(r"^[-•]\s+", "", text))}</div>')
+        return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
+                f'margin:3px 0 3px 18px;line-height:1.6;">• {_esc(re.sub(r"^[-•]\s+", "", text))}</div>')
     # 같은 줄에 나열된 갈래도 문단으로 분리해 항목 사이 한 줄 여백을 둔다.
     parts = re.split(r"(?<=[.!?。])\s+(?=(?:첫|둘|셋|넷|다섯|여섯|일곱)\s*째|(?:첫|두|세|네)\s*번째)", text)
     return "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-        f'margin:{"14px" if _ENUM_RE.match(part) else "3px"} 0;line-height:1.6;">'
+        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
+        f'margin:{"14px" if _ENUM_RE.match(part) else "4px"} 0;line-height:1.7;">'
         f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
 
 
@@ -2191,6 +2201,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     if story:
         text, ungrounded = story
         text = annotate_numbers(reflow_branch_lists(normalise_interpretation_marks(text)), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
+        # 갈래 목록은 제목으로만 이뤄져 있어 실제로 읽기 어려운 자리다 — 한국어 제목을 처음 부른 자리에만 붙인다.
+        text = title_ko.annotate(text, list(scan_result.get("papers") or [])
+                                 + list(scan_result.get("title_only_papers") or []))
         paras = "".join(_narrative_line_html(ln)
                         for ln in text.strip().splitlines() if _plain(ln))
         warn = ""
@@ -2198,9 +2211,6 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
                     f'margin-top:4px;">⚠ 원문에 없는 숫자가 섞여 있다: '
                     f'{_esc(", ".join(ungrounded))} — 믿지 말 것</div>')
-        audit = scan_result.get("citation_audit") or {}
-        if audit.get("unknown") or audit.get("title_only") or audit.get("cited_lines", 0) < audit.get("lines", 0):
-            warn += f'<p style="color:{_FLAG_INK};">⚠ 일부 주장에 내용 근거 ID가 없거나 유효하지 않다 — 인용한 원문을 확인할 것</p>'
         # 서술이 이름으로 부른 논문에 링크를 붙인다(2026-09-07, §8-68 이 만든
         # 결함). 목록을 되살리는 게 아니라 **부른 것만** 붙인다 — 평문 판과
         # 같은 판정(mentioned_papers)을 쓰므로 두 판이 갈라지지 않는다.
@@ -2208,8 +2218,11 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         for paper in mentioned_papers(scan_result):
             url = paper_link(paper)
             title = _esc((paper.get("title") or "").strip())
+            korean = title_ko.label(paper)
             label = (f'<a href="{_esc(url)}" style="color:{_NAVY};">{title}</a>'
                      if url else title)
+            if korean:
+                label += f'<span style="color:{_MUTED};"> ({_esc(korean)})</span>'
             named += (f'<div style="background-color:{_PAPER_BG};color:{_INK};'
                       f'font-size:12px;margin:2px 0;padding-left:10px;">· {label}</div>')
         if named:
@@ -2218,11 +2231,10 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
                      f'{named}')
 
         body += (
-            f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'font-weight:600;margin:18px 0 4px;">오늘의 동향 정리</p>'
-            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'margin:0 0 6px;">{_esc(narrative_source_label(scan_result))}</p>'
-            f'<p style="color:{_MUTED};font-size:12px;">기간 비교 없는 수집 표본의 관찰이며, 분야 전체의 변화는 판단하지 않았다.</p>'
+            # 제목·본문을 한 단계씩 키웠다(2026-09-20 사용자 요청) — 이 절이 메일의 본론인데
+            # 다른 절과 같은 크기라 눈에 먼저 들어오지 않았다.
+            f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:18px;'
+            f'font-weight:700;margin:18px 0 8px;">오늘의 동향 정리</p>'
             f'{paras}{warn}{named}'
         )
 

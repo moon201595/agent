@@ -437,6 +437,15 @@ async def translate_ko(client: httpx.AsyncClient, text: str) -> str:
         "정확히 그대로 옮기고, 부연 설명 없이 번역문만 출력하라.\n\n"
         f"{text}"
     )
+    return await complete(client, prompt)
+
+
+async def complete(client: httpx.AsyncClient, prompt: str) -> str:
+    """Gemini 우선(짧은 503 재시도) → Groq 폴백으로 프롬프트 하나를 돌린다.
+
+    `translate_ko` 가 쓰던 경로를 그대로 꺼낸 것이다(2026-09-20) — 제목 번역(`title_ko`)이 같은
+    폴백을 필요로 하는데, 두 번째 사본을 만들면 한쪽만 고치는 사고가 난다(⑦ 트리거를 한 곳에 모은 것과 같은 이유).
+    """
     gemini_exc: Exception | None = None
     for attempt in range(_TRANSLATE_RETRIES):
         try:

@@ -38,7 +38,8 @@ def test_briefing_precedes_details_in_both_formats(db):
     for render in (digest.generate_digest, digest.generate_digest_html):
         text = render(result, "팀")
         assert text.index("먼저 읽을 관찰") < text.index("Robot control")
-        assert "기간 비교 없는 수집 표본" in text
+        # 머리말 두 줄은 2026-09-20 사용자 요청으로 뺐다 — 매일 같은 문장이 글 앞을 막았다.
+        assert "기간 비교 없는 수집 표본" not in text
         assert "수집 범위와 해석 한계" not in text
         assert "발표 미기록" not in text and "최초 발견 미기록" not in text
 
@@ -108,9 +109,11 @@ def test_unknown_citations_and_source_text_survive_both_renderers(db):
                                                 "url": "https://example.org/paper"}}}
     for render in (digest.generate_digest, digest.generate_digest_html):
         out = render(result, "팀")
-        assert "일부 주장에 내용 근거 ID가 없거나 유효하지 않다" in out
-        assert "인용한 원문을 확인할 것" in out
+        # 근거 ID 경고는 2026-09-20 사용자 요청으로 메일에서 뺐다(거의 매일 떠서 경고로서 힘이 없었다).
+        # **감사 자체는 계속 돈다** — 아래에서 그 결과를 직접 본다. 메일에만 안 실린다.
+        assert "일부 주장에 내용 근거 ID가 없거나 유효하지 않다" not in out
         assert "서술 근거 대조" not in out
+    assert result["citation_audit"]["unknown"] == ["[P9:R]"]
     evidence = "\n".join(digest._evidence_lines(result))
     assert "제공 자료에 없는 근거 ID: [P9:R]" in evidence
     assert "주장 지지 여부는 미평가" in evidence
