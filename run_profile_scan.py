@@ -452,8 +452,9 @@ async def scan_and_digest(
             paper.pop("_delivered_state", None)
         print(f"  [근거 상태] 관측 실패: {type(error).__name__}")
 
-    # 제목 한국어 병기(2026-09-20 사용자 요청) — 원제 옆 괄호에 붙인다. 한 번에 한 호출이고,
-    # 실패하면 원제만 나간다(규칙 6). 서술 안 갈래 목록도 같은 번역을 쓴다.
+    # 제목 한국어 병기(2026-09-20 사용자 요청) — 원제 옆 괄호에 붙인다. 먼저 한 묶음으로 부르고
+    # 일부 번호가 빠졌을 때만 누락 묶음을 한 번 재요청한다. 실패하면 원제만 나간다(규칙 6).
+    # 서술 안 갈래 목록도 같은 번역을 쓴다.
     try:
         import title_ko
         shown_papers = list(result.get("papers") or []) + list(result.get("title_only_papers") or [])

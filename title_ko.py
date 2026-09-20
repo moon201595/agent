@@ -6,8 +6,8 @@
 원제를 **대체하지 않는다.** 번역은 LLM 이 만든 해석이고 원제는 사실이다 — 인용할 때 쓰는 것은
 언제나 원제다(규칙 7). 그래서 `제목 (한국어)` 형태로 나란히 둔다.
 
-한 번에 한 호출이다. 제목 열 몇 개를 한 줄씩 매겨 보내고 같은 번호로 받는다 — 제목마다 호출하면
-무료 한도의 분당 제한에 바로 걸린다(④ 요약이 이미 그 한도를 쓴다).
+먼저 한 번에 묶어 호출하고, 모델이 일부 번호를 빠뜨렸을 때만 빠진 제목을 한 번 더 묶어 요청한다.
+제목마다 따로 호출하면 무료 한도의 분당 제한에 바로 걸리므로 재시도도 한 묶음으로 끝낸다.
 
 **논문 제목은 비신뢰 입력이다**(규칙 4). 제목 안의 명령문은 데이터로만 다루라고 프롬프트에 박고,
 돌아온 값은 Python 이 검사한다 — 번호가 범위 안인지, 비어 있지 않은지, 원문보다 터무니없이 길지
@@ -70,8 +70,16 @@ async def translate(client: httpx.AsyncClient | None, titles: list[str]) -> dict
             seen.append(text)
     if not seen:
         return {}
-    reply = await summarize_engine.complete(client, _prompt(seen[:MAX_TITLES]))
-    return _parse(reply, seen[:MAX_TITLES])
+    selected = seen[:MAX_TITLES]
+    pending = selected
+    out: dict[str, str] = {}
+    for _attempt in range(2):
+        reply = await summarize_engine.complete(client, _prompt(pending))
+        out.update(_parse(reply, pending))
+        pending = [title for title in selected if title not in out]
+        if not pending:
+            break
+    return out
 
 
 def label(paper: dict) -> str:

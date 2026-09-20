@@ -1,7 +1,7 @@
 """⑨ 제목 한국어 병기 — 원제를 지우지 않고 옆에 괄호로 붙인다.
 
 2026-09-20 사용자 요청("논문 제목들 영어니까 보기 힘들잖아"). 여기서 지키는 계약:
-원제는 그대로 남고, 번역은 한 번에 한 호출이며, 검사에 걸린 줄은 **번역이 없는 것으로 둔다**.
+원제는 그대로 남고, 번역은 묶어서 호출하며, 일부 번호가 빠졌을 때만 누락 묶음을 한 번 재요청한다.
 """
 import asyncio
 
@@ -27,6 +27,31 @@ def test_one_call_carries_every_title_and_numbers_come_back_matched(monkeypatch)
     assert len(calls) == 1                       # 한 번에 한 호출
     assert got["ZETA: Zero-shot Transfer for Anomaly detection"] == "결함 탐지를 위한 제로샷 전이"
     assert "TacBPM" in "\n".join(calls[0].splitlines())
+
+
+def test_missing_batch_lines_are_retried_once_and_reach_branch_titles(monkeypatch):
+    """첫 배치가 뒤쪽 번호를 빠뜨려도 갈래 논문만 영문으로 남지 않으며 제목별 호출로 늘어나지 않아야 한다."""
+    calls = []
+
+    async def fake(client, prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "1. 첫 번째 번역\n3. 세 번째 번역"
+        return "1. 두 번째 번역\n2. 네 번째 번역"
+
+    monkeypatch.setattr(title_ko.summarize_engine, "complete", fake)
+    titles = ["First Paper With A Long Title", "Second Paper With A Long Title",
+              "Third Paper With A Long Title", "Fourth Paper With A Long Title"]
+    got = _run(title_ko.translate(object(), titles))
+    assert got == dict(zip(titles, ["첫 번째 번역", "두 번째 번역", "세 번째 번역", "네 번째 번역"]))
+    assert len(calls) == 2
+    assert "Second Paper" in calls[1] and "Fourth Paper" in calls[1]
+    assert "First Paper" not in calls[1] and "Third Paper" not in calls[1]
+
+    papers = [{"title": title, "title_ko": got[title]} for title in titles]
+    branch = "\n".join(f"- {title} [P{i}:A]" for i, title in enumerate(titles, start=1))
+    rendered = title_ko.annotate(branch, papers)
+    assert all(korean in rendered for korean in got.values())
 
 
 def test_titles_are_data_not_instructions(monkeypatch):
