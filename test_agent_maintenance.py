@@ -679,3 +679,23 @@ def test_prompts_have_no_feedback_only_contract():
         assert '반응이 없어도' in prompt and 'comparable=false' in prompt
         assert '반응이 없는 주에는 키워드를 늘리지 않는다' not in prompt
         assert 'related_direction' in prompt
+
+
+def test_a_trend_id_does_not_launder_a_term_found_only_in_other_evidence(world):
+    """이 테스트가 잡는 것: 무관한 동향 id 하나를 끼워 **좋아요 요건을 면제받는 것**(2026-09-20 Codex 검토 #5).
+
+    동향 예외는 "그 말이 실제로 동향 자료에 있다"는 근거로 주는 것이다. 그전에는 T 근거가 하나라도 있으면
+    면제였고 용어 존재는 `ev` **전체**에서 찾았다 — 탈락 후보(X1)에만 있는 말에 무관한 T1 을 끼우면
+    좋아요도 없고 그 말을 담은 동향 자료도 없는데 "동향 근거"로 통과했다."""
+    b = am.build_brief(world, "p")
+    assert "spiking sensor" in b.texts["X1"] and "spiking sensor" not in b.texts["T1"]
+
+    laundered = _act("add_keyword", "spiking sensor", ["X1", "T1"], 0.7, "related_direction")
+    ok, bad = am.validate([laundered], b)
+    assert not ok and bad[0]["reason"] == "no_liked_evidence"
+
+    # 그 말을 실제로 담은 동향 자료를 인용하면 통과하고, **그 자료만** 근거로 기록된다.
+    assert "tactile skin" in b.texts["T3"] and "tactile skin" not in b.texts["T1"]
+    ok, bad = am.validate([_act("add_keyword", "tactile skin", ["T1", "T3"], 0.7, "related_direction")], b)
+    assert ok and not bad
+    assert [r["id"] for r in ok[0]["source_evidence"]] == ["T3"]

@@ -406,6 +406,10 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                 reject(a, "unverified_trend_claim"); continue
             if not any(_in_text(term, brief.texts[e]) for e in ev if e in brief.texts):
                 reject(a, "term_not_in_evidence"); continue
+            # **그 용어가 실제로 들어 있는 동향 자료만** 근거로 인정한다(2026-09-20 Codex 검토 #5).
+            # 그전에는 T 근거가 하나라도 있으면 좋아요 요건이 면제됐는데, 용어 존재는 `ev` 전체에서
+            # 찾았다 — 탈락 후보에만 있는 말에 무관한 T id 하나를 끼우면 "동향 근거"로 통과했다.
+            trend_ev = [e for e in trend_ev if e in brief.texts and _in_text(term, brief.texts[e])]
             a["reason_code"] = raw["reason"]
             a["reason"] = TREND_REASONS[raw["reason"]]
             a["source_evidence"] = [trend_records[e] for e in trend_ev]

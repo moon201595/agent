@@ -1087,7 +1087,11 @@ def _narrative_section(scan_result: dict) -> list[str]:
         for paper in named:
             url = paper_link(paper)
             title = (paper.get("title") or "").strip()
-            lines.append(f"      · {title}" + (f" — {url}" if url else ""))
+            # HTML 판과 같은 판정을 쓴다(2026-09-20 Codex 검토 #6) — 약칭으로만 부른 각주 논문은
+            # 이 목록이 번역을 볼 유일한 자리인데 평문에만 빠져 있었다. §8-70 과 같은 병이다.
+            korean = title_ko.label(paper)
+            lines.append(f"      · {title}" + (f" ({korean})" if korean else "")
+                         + (f" — {url}" if url else ""))
     return lines
 
 
@@ -1328,9 +1332,12 @@ def _has_auto_change(ch: dict) -> bool:
     돌려주는데 이 절에는 실을 게 없어 **머리말만 남았다**. 빈 제목은 "뭔가 있나" 하고 눈을 끌고
     아무것도 주지 않는다 — `pending_report` 와 같은 철학으로 통째로 뺀다.
     """
-    up, down, _hidden = _split_moves(ch)
+    up, down, hidden = _split_moves(ch)
     agent = ch.get("agent") or {}
-    return bool(up or down or _auto(ch.get("added")) or _auto(ch.get("removed"))
+    # **감춘 것도 있는 것이다**(2026-09-20 Codex 검토 #4). 그 주 자동 변화가 전부 `MIN_DELTA` 아래면
+    # `up`·`down` 이 비는데, 여기서 `hidden` 을 안 보면 꼬리 줄("그 밖에 작게 움직인 가중치 N건")까지
+    # 통째로 사라져 "이번 주엔 아무 일도 없었다"로 읽힌다 — §8-170 에서 세운 계약과 정반대다.
+    return bool(up or down or hidden or _auto(ch.get("added")) or _auto(ch.get("removed"))
                 or _reason_groups(agent.get("applied")) or _impact_rows(agent) or agent.get("failed"))
 
 
