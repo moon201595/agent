@@ -1987,3 +1987,39 @@ def test_exit_message_names_the_dead_source_on_a_degraded_day():
     msg = rps._exit_message(summary, 2)
     assert "team_a" in msg and "arXiv failed" in msg and "team_b" not in msg and "등록된 프로필 없음" not in msg
     assert rps._exit_message({}, 1) == "[실패] 등록된 프로필 없음 — 종료코드 1"
+
+
+def test_paper_titles_get_korean_before_the_digest_is_built(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 번역을 불러 놓고 논문에 안 붙이는 것 · 다이제스트를 만든 **뒤**에 붙여
+    메일에는 원제만 나가는 것(2026-09-20 사용자 요청 — 제목 옆 괄호에 한국어)."""
+    import title_ko
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    seen = {}
+
+    async def fake(client, titles):
+        seen["titles"] = list(titles)
+        return {t: f"한국어:{t}" for t in titles}
+
+    monkeypatch.setattr(title_ko, "translate", fake)
+
+    # **다이제스트를 만드는 순간** 논문이 이미 번역을 들고 있어야 한다. 뒤에 붙이면 dict 에는 남지만
+    # 메일 본문에는 원제만 나간다 — 이 픽스처는 내용 자리 논문이 0편이라 본문만 봐서는 안 잡힌다.
+    at_render = {}
+    real_digest = rps.digest.generate_digest
+
+    def spy(result, name):
+        at_render["ko"] = [p.get("title_ko") for p in (result.get("papers") or [])
+                           + (result.get("title_only_papers") or [])]
+        return real_digest(result, name)
+
+    monkeypatch.setattr(rps.digest, "generate_digest", spy)
+    result, _text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+
+    shown = list(result.get("papers") or []) + list(result.get("title_only_papers") or [])
+    assert shown, "이 픽스처는 논문을 한 편은 내놔야 한다"
+    assert seen["titles"] == [p.get("title") or "" for p in shown]
+    assert at_render["ko"] and all(str(k).startswith("한국어:") for k in at_render["ko"])
