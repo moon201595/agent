@@ -89,17 +89,40 @@ def test_bullets_always_get_korean_but_prose_only_once():
     assert out[5] == "↳ 빠르고 효과적인 자율주행"                   # 목록은 **매번**
 
 
-def test_a_failed_translation_still_sends_the_mail(monkeypatch):
-    """이 테스트가 잡는 것: 번역 실패가 메일을 막는 것(규칙 6 — 에이전트 단계가 실패해도 메일은 나간다)."""
-    async def boom(client, prompt):
-        raise RuntimeError("429")
+def test_no_client_means_no_call_and_no_translation(monkeypatch):
+    """이 테스트가 잡는 것: client 가 없는 실행(테스트·수동 조회)에서 호출을 시도하는 것.
 
-    monkeypatch.setattr(title_ko.summarize_engine, "complete", boom)
-    try:
-        _run(title_ko.translate(object(), ["A Title"]))
-    except RuntimeError:
-        pass                                     # 부르는 쪽(run_profile_scan)이 삼킨다
-    assert _run(title_ko.translate(None, ["A Title"])) == {}   # client 가 없으면 조용히 빈 값
+    **번역 실패가 메일을 막지 않는다**는 계약은 여기가 아니라 조정기에서 지킨다 —
+    `test_run_profile_scan.py::test_a_failed_translation_does_not_stop_the_digest` 가 실제로
+    실패하는 번역을 조정기에 주고 다이제스트가 그대로 만들어지는지 본다(2026-09-20 Codex 지적).
+    """
+    called = []
+
+    async def fake(client, prompt):
+        called.append(1)
+        return "1. 무시"
+
+    monkeypatch.setattr(title_ko.summarize_engine, "complete", fake)
+    assert _run(title_ko.translate(None, ["A Title"])) == {}
+    assert _run(title_ko.translate(object(), [])) == {}
+    assert not called
+
+
+def test_a_paper_named_only_in_the_narrative_gets_korean_in_both_formats():
+    """이 테스트가 잡는 것: 약칭으로만 부른 각주 논문의 한국어가 **평문에서만 빠지는 것**
+    (2026-09-20 Codex 검토 #6).
+
+    약칭은 `mentioned_papers` 에는 잡히지만 전체 제목을 찾는 `annotate` 에는 안 잡힌다. 그래서
+    "위에서 이름으로 부른 논문" 목록이 그 번역을 볼 유일한 자리인데 HTML 에만 있었다 — §8-70 과 같은 병이다."""
+    paper = {"title": "ZETA: Zero-shot Transfer for Anomaly Detection",
+             "title_ko": "이상 탐지를 위한 제로샷 전이", "arxiv_id": "2609.9"}
+    scan = {"papers": [], "title_only_papers": [paper], "candidates_found": 3,
+            "narrative": ("ZETA 를 살펴본다.", [])}
+    assert digest.mentioned_papers(scan), "이 픽스처는 약칭으로 부른 논문을 잡아야 한다"
+    text = "\n".join(digest._narrative_section(scan))
+    html = digest.generate_digest_html(scan, "t")
+    assert "이상 탐지를 위한 제로샷 전이" in text
+    assert "이상 탐지를 위한 제로샷 전이" in html
 
 
 def test_a_repeated_acronym_prefix_is_dropped_inside_the_parentheses():

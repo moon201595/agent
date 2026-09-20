@@ -2023,3 +2023,34 @@ def test_paper_titles_get_korean_before_the_digest_is_built(tmp_path, monkeypatc
     assert shown, "이 픽스처는 논문을 한 편은 내놔야 한다"
     assert seen["titles"] == [p.get("title") or "" for p in shown]
     assert at_render["ko"] and all(str(k).startswith("한국어:") for k in at_render["ko"])
+
+
+def test_a_failed_translation_does_not_stop_the_digest(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 제목 번역이 실패하면 메일 생성이 멈추는 것(규칙 6).
+
+    2026-09-20 Codex 지적 — 예전 테스트는 예외를 **테스트 자신이 삼켜서**, 조정기의 예외 처리를
+    지워도 통과했다. 여기서는 실패하는 번역을 실제 조정기에 주고 다이제스트까지 도달하는지 본다."""
+    import title_ko
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    _seed_summary(monkeypatch, tmp_path, [])
+    _mock_arxiv_pages(monkeypatch, [_agent_paper("p1", 1)])
+
+    async def boom(client, titles):
+        raise RuntimeError("429 — 무료 한도")
+
+    monkeypatch.setattr(title_ko, "translate", boom)
+    built = {}
+    real_digest = rps.digest.generate_digest
+
+    def spy(result, name):
+        built["ok"] = True
+        return real_digest(result, name)
+
+    monkeypatch.setattr(rps.digest, "generate_digest", spy)
+    result, text = asyncio.run(rps.scan_and_digest(db_path, "team_ai", None, max_pages=2))
+
+    assert built.get("ok"), "번역이 실패해도 다이제스트는 만들어져야 한다"
+    assert text.strip()
+    shown = list(result.get("papers") or []) + list(result.get("title_only_papers") or [])
+    assert all("title_ko" not in p for p in shown)      # 번역은 없고, 원제만 나간다

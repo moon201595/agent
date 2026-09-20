@@ -25,6 +25,11 @@ from time_policy import KST
 # 자동으로 일어난 변경은 상세히, 사람이 직접 한 변경은 건수만 — 이 절의 주인공은 "시스템이 무엇을 배웠나"다.
 AUTO_ORIGINS = ("feedback", "agent")
 
+# 주간 관리가 **정상으로 끝난** 상태들. `no_change` 는 "볼 건 봤는데 바꿀 게 없다"는 판단이지 실패가
+# 아니다(2026-09-20 Codex 검토 #1) — 그전에는 이것이 "⚠ 주간 관리 실패 : no_change" 로 메일에 나갔다.
+# 남는 것(`failed`·`running`·`applying`)만 실패로 싣는다.
+NORMAL_STATUS = ("applied", "no_change", "skipped_no_signal")
+
 # 에이전트 행동이 **어느 종류**를 건드리는지. `agent_maintenance.OPS` 와 짝이고, 그 목록이 늘면 여기도 늘려야
 # 한다 — `test_every_agent_op_has_a_kind` 가 짝이 어긋나면 깨진다. 판정 근거는 `agent_maintenance.apply_actions`.
 OP_KIND = {"add_keyword": "core", "set_weight": "core", "remove_keyword": "core",
@@ -147,6 +152,12 @@ def _scan_snapshot(db: Path, scan_id: str) -> dict[tuple[str, str], float] | Non
         return None
 
 
+def _scan_started(db: Path, scan_id: str) -> str | None:
+    """그 스캔이 시작된 시각. 끝 스냅숏과 이벤트 창의 끝을 같은 자리로 맞추는 데 쓴다."""
+    rows = _rows(db, "SELECT started_at FROM scan_runs WHERE scan_id=?", (scan_id,))
+    return rows[0]["started_at"] if rows else None
+
+
 def _previous_cycle(db: Path, profile_id: str, end: datetime,
                     days: int) -> tuple[str, dict[tuple[str, str], float] | None] | None:
     """지난번 이 보고가 나간 회차 — (스캔 시작 시각, 그 스캔이 실제 쓴 프로필). 기록이 없으면 None.
@@ -210,6 +221,13 @@ def collect(db: Path, profile_id: str, days: int = 7,
     after = _scan_snapshot(db, scan_id) if scan_id else None
     if after is None:
         after = _latest_snapshot(db, profile_id)
+    else:
+        # **끝 스냅숏과 이벤트 창의 끝을 같은 자리로**(2026-09-20 Codex 검토 #3). 끝 스냅숏은 이번 회차
+        # 스캔 시작 시점인데 사유·반응은 집계 시각까지 읽고 있었다 — 그 사이에 적용된 변경은 이번 순이동에
+        # 없는데 사유만 실리고, 다음 주 창(이번 스캔 시작부터)에 또 실렸다.
+        started = _scan_started(db, scan_id)
+        if started:
+            end_iso = started
     if before is None or after is None:
         return None            # 비교할 스냅숏이 없다 — 0 으로 채우지 않는다
 
@@ -281,7 +299,7 @@ def _agent_summary(db: Path, profile_id: str, start_iso: str, end_iso: str) -> d
                 shadow = impact.get("shadow")
                 if isinstance(shadow, dict) and shadow.get("status") in ("done", "partial"):
                     out["shadow"] = shadow
-        elif row["status"] and row["status"] not in ("applied", "skipped_no_signal"):
-            # 건너뛴 주(반응·동향 근거 없음)는 실패가 아니다 — 싣지 않는다.
+        elif row["status"] and row["status"] not in NORMAL_STATUS:
+            # 건너뛴 주(반응·동향 근거 없음)도, 바꿀 게 없던 주도 실패가 아니다 — 싣지 않는다.
             out["failed"] = row["error"] or row["status"]
     return out

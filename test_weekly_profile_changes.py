@@ -341,3 +341,73 @@ def test_an_empty_monday_shows_the_same_change_section_in_both_formats(tmp_path)
     for needle in ("검색 기준 변화", "defect detection", "반응 두 건"):
         assert needle in text, f"평문: {needle}"
         assert needle in html, f"HTML: {needle}"
+
+
+def test_a_no_change_week_is_not_reported_as_a_failure(tmp_path):
+    """이 테스트가 잡는 것: 주간 관리의 정상 결과 `no_change` 를 **실패로 메일에 싣는 것**
+    (2026-09-20 Codex 검토 #1).
+
+    `agent_maintenance` 는 행동이 없거나 전부 기각되면 `no_change` 로 끝낸다 — "볼 건 봤는데 바꿀 게
+    없다"는 판단이지 고장이 아니다. 그런데 메일에는 "⚠ 주간 관리 실패 : no_change" 로 나갔다."""
+    db = tmp_path / "p.db"
+    _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["defect detection", "core", 1.0]])
+    _snap(db, "p1", 2, NOW - timedelta(days=1), "feedback", [["defect detection", "core", 1.4]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,2)",
+                    ("p1", "2026-09-18", (NOW - timedelta(days=1)).isoformat(), 2,
+                     json.dumps([{"keyword": "defect detection", "after": 1.4}])))
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, applied_json,"
+                    " base_revision) VALUES (?,?,?,'no_change','[]',1)",
+                    ("p1", "2026-W38", (NOW - timedelta(days=1)).isoformat()))
+    out = wpc.collect(db, "p1", days=7, now=NOW)
+    assert out["agent"]["failed"] is None
+    scan = {"profile_changes": out}
+    for rendered in ("\n".join(digest._profile_changes_section(scan)), digest._profile_changes_html(scan)):
+        assert "주간 관리 실패" not in rendered
+        assert "no_change" not in rendered
+
+
+def test_a_week_of_only_small_moves_still_says_so(tmp_path):
+    """이 테스트가 잡는 것: 자동 변화가 전부 문턱(`MIN_DELTA`) 아래면 **절 전체가 사라지는 것**
+    (2026-09-20 Codex 검토 #4).
+
+    §8-170 에서 "감춘 것을 말없이 버리지 않는다"고 정해 꼬리 줄을 만들었는데, `_has_auto_change` 가
+    감춘 수를 안 봐서 그 꼬리까지 통째로 날아갔다 — "이번 주엔 아무 일도 없었다"로 읽힌다."""
+    db = tmp_path / "p.db"
+    _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["defect detection", "core", 1.0]])
+    _snap(db, "p1", 2, NOW - timedelta(days=1), "feedback", [["defect detection", "core", 1.05]])
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,3)",
+                    ("p1", "2026-09-18", (NOW - timedelta(days=1)).isoformat(), 2,
+                     json.dumps([{"keyword": "defect detection", "after": 1.05}])))
+    out = wpc.collect(db, "p1", days=7, now=NOW)
+    assert digest._split_moves(out)[2] == 1          # 감춘 것 한 건
+    text = "\n".join(digest._profile_changes_section(out and {"profile_changes": out}))
+    assert "그 밖에 작게 움직인 가중치 1건" in text
+    assert "그 밖에 작게 움직인 가중치 1건" in digest._profile_changes_html({"profile_changes": out})
+
+
+def test_events_after_this_cycles_scan_wait_for_the_next_report(tmp_path):
+    """이 테스트가 잡는 것: 끝 스냅숏은 **이번 회차 스캔 시작**인데 사유·반응은 **집계 시각**까지 읽어
+    연속한 두 보고가 겹치는 것(2026-09-20 Codex 검토 #3).
+
+    스캔이 시작된 뒤에 적용된 변경은 이번 순이동에 없다. 그런데 사유만 실리면, 다음 주 창(이번 스캔
+    시작부터)에서 같은 사유가 또 실린다."""
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    scan_at = utc(2026, 9, 21, 5, 2)
+    _snap(db, "p1", 1, utc(2026, 9, 14, 5, 0), "user", [["X", "core", 1.0]])
+    _snap(db, "p1", 2, utc(2026, 9, 21, 5, 10), "agent", [["X", "core", 1.5]])   # 스캔 **뒤** 적용
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot,"
+                    " policy_version) VALUES ('now','p1',?,?,'test')",
+                    (scan_at.isoformat(), json.dumps({"core_topics": ["X"], "core_weights": {"X": 1.0}})))
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, applied_json,"
+                    " base_revision, new_revision) VALUES (?,?,?,'applied',?,1,2)",
+                    ("p1", "2026-W39", utc(2026, 9, 21, 5, 10).isoformat(),
+                     json.dumps([{"op": "set_weight", "term": "X", "weight": 1.5,
+                                  "basis": "feedback", "reason": "스캔 뒤에 적용됐다"}])))
+    out = wpc.collect(db, "p1", days=7, now=utc(2026, 9, 21, 5, 20), scan_id="now")
+    assert out is None or "스캔 뒤에 적용됐다" not in json.dumps(out, ensure_ascii=False)
