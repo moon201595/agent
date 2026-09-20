@@ -1091,6 +1091,24 @@ def _narrative_section(scan_result: dict) -> list[str]:
     return lines
 
 
+def _h1(text: str, note: str = "") -> str:
+    """메일의 **절 제목**. 한 통 안에서 크기·굵기가 같아야 계층이 보인다(2026-09-20 사용자 지적 —
+    절마다 제각각이라 어디가 새 절인지 안 보였다). `오늘의 동향 정리` 만 18px 로 한 단계 위다(머리 절)."""
+    tail = (f'<span style="color:{_MUTED};font-size:12px;font-weight:400;"> {_esc(note)}</span>'
+            if note else "")
+    return (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:16px;font-weight:700;'
+            f'margin:20px 0 6px;">{_esc(text)}{tail}</p>')
+
+
+def _h2(text: str) -> str:
+    """절 **안**의 소제목(상승·하락·가중치 변화·신규·이유·검색 영향…).
+
+    굵게, 그리고 회색이 아니라 `_INK` 다 — 회색 평체로 두면 바로 아래 목록에 묻혀서
+    제목인지 항목인지 구별이 안 된다."""
+    return (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;font-weight:700;'
+            f'margin:14px 0 4px;">{_esc(text)}</div>')
+
+
 def _window_moves(mv: dict) -> tuple[list, list]:
     """(상승, 하락). 직전 구간 관측이 없으면 둘 다 비운다 — 0→N 을 급증으로 읽으면 안 된다."""
     if not mv.get("comparable"):
@@ -1113,9 +1131,7 @@ def _window_html(scan_result: dict) -> str:
     comparable = bool(mv.get("comparable"))
     up, down = _window_moves(mv)
 
-    def head(text: str) -> str:
-        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:12px 0 4px;">{_esc(text)}</div>')
+    head = _h2
 
     def move_row(kw: str, now: int, delta: int) -> str:
         colour, arrow = (_RISE_INK, "▲") if delta > 0 else (_FALL_INK, "▼")
@@ -1126,8 +1142,7 @@ def _window_html(scan_result: dict) -> str:
                 f'<span style="color:{_MUTED};">· {now}편</span> '
                 f'<span style="color:{colour};">{sign}{abs(delta)}</span></div>')
 
-    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
-           f'font-weight:700;margin:18px 0 4px;">최근 {days}일 흐름</p>')
+    out = _h1(f"최근 {days}일 흐름")
     if comparable:
         out += (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;margin:0;">'
                 f'관련 논문 <b>{now_n}편</b> <span style="color:{_MUTED};">(직전 {prev_n}편)</span></p>'
@@ -1174,10 +1189,9 @@ def _reserve_html(scan_result: dict) -> str:
     if not body:
         body = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
                 f'margin:2px 0;padding-left:10px;">여러 편에 겹치는 말이 없었다</div>')
-    return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
-            f'자리에 못 든 후보 <b>{rv["count"]}편</b>에서 자주 나온 말</div>{body}'
-            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
-            f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
+    return (_h2(f'자리에 못 든 후보 {rv["count"]}편에서 자주 나온 말') + body
+            + f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
+              f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
 
 
 def _window_days(ch: dict) -> int:
@@ -1329,9 +1343,7 @@ def _profile_changes_html(scan_result: dict) -> str:
     up, down, hidden = _split_moves(ch)
     biggest = max([abs(w["delta"]) for w in up + down] or [0])
 
-    def head(text: str) -> str:
-        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:14px 0 6px;">{_esc(text)}</div>')
+    head = _h2
 
     def move_row(w: dict) -> str:
         rising = w["delta"] > 0
@@ -1351,8 +1363,7 @@ def _profile_changes_html(scan_result: dict) -> str:
             f'<div style="color:{_MUTED};font-size:12px;">{w["before"]:.2f} → {w["after"]:.2f}'
             f'<span style="color:{colour};"> {sign}{abs(w["delta"]):.2f}</span></div></div>')
 
-    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
-           f'font-weight:700;margin:18px 0 4px;">지난 {days}일 검색 기준 변화</p>')
+    out = _h1(f"지난 {days}일 검색 기준 변화")
     if up or down:
         out += head("가중치 변화")
         out += "".join(move_row(w) for w in up + down)
@@ -2343,9 +2354,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             _paper_entry_html(i, p) for i, p in enumerate(papers, start=1)
         )
         body = (
-            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
-            f'margin:14px 0 10px;">오늘의 신규 논문 {len(papers)}편 '
-            f'(전체 후보 {candidates}건 중)</p>{entries}'
+            _h1(f"오늘의 신규 논문 {len(papers)}편", f"(전체 후보 {candidates}건 중)") + entries
         )
     else:
         body = (
@@ -2360,10 +2369,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     trend = "" if empty else _trend_line(scan_result)
     if trend:
         body += (
-            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'border-top:1px solid {_LINE};padding-top:10px;margin-top:14px;">'
-            f'<span style="color:{_INK};font-weight:600;">이번 창의 키워드별 적중 편수</span> '
-            f'(후보 {candidates}건 기준)<br>{_esc(trend)}</p>'
+            _h1("이번 창의 키워드별 적중 편수", f"(후보 {candidates}건 기준)")
+            + f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;">'
+              f'{_esc(trend)}</p>'
         )
 
     details_body = body
