@@ -69,7 +69,11 @@ def test_delta_is_reported_when_both_windows_have_observations(tmp_path):
     assert moved["defect detection"] == (5, 0)     # 이번 창에만 있다
     assert moved["anomaly detection"] == (0, 3)    # 직전 창에만 있다 — 줄어든 것도 보여 준다
     text = "\n".join(digest._window_section({"trend_window": mv}))
-    assert "+5" in text and "(-3)" in text
+    # 2026-09-20 개편: 숫자 덩어리를 상승/하락으로 가르고 `▲▼` 를 붙였다. 색만으로 뜻을 나르지 않는다 —
+    # 다크 모드나 색을 지우는 클라이언트에서도 화살표는 남는다.
+    assert "▲ defect detection" in text and "+5" in text
+    assert "▼ anomaly detection" in text and "−3" in text     # 빼기는 U+2212
+    assert text.index("상승") < text.index("하락")
 
 
 def test_narrative_context_carries_terms_but_never_numbers(tmp_path):

@@ -71,16 +71,22 @@ def test_no_translation_means_no_parentheses():
     assert "()" not in entry
 
 
-def test_narrative_titles_get_korean_once_and_after_the_number():
-    """이 테스트가 잡는 것: 갈래 목록에 한국어가 안 붙는 것 · 같은 제목에 문단마다 도배되는 것 ·
-    `(요약 논문 5/5)` 와 제목 사이에 끼어들어 번호와 제목을 갈라놓는 것."""
+def test_bullets_always_get_korean_but_prose_only_once():
+    """이 테스트가 잡는 것: 글 전체에서 **처음 한 번만** 붙이는 규칙(2026-09-20 지적으로 폐기).
+
+    그 규칙이면 앞 문단에서 이미 부른 논문이 **정작 제목을 훑는 자리인 갈래 목록에서는** 번역 없이
+    나온다. 읽는 순서로 보면 정반대다. 목록 줄은 매번, 본문 문장은 처음 한 번만."""
     papers = [{"title": "FIVE-VLA: Fast and Effective Autonomous Driving",
                "title_ko": "빠르고 효과적인 자율주행"}]
-    text = ("• FIVE-VLA: Fast and Effective Autonomous Driving (요약 논문 5/5) [P5:A]\n"
-            "다시 FIVE-VLA: Fast and Effective Autonomous Driving 를 부른다")
-    out = title_ko.annotate(text, papers)
-    assert out.count("(빠르고 효과적인 자율주행)") == 1
-    assert "(요약 논문 5/5) (빠르고 효과적인 자율주행)" in out
+    text = ("본문에서 FIVE-VLA: Fast and Effective Autonomous Driving (요약 논문 5/5) 를 부른다\n"
+            "본문에서 FIVE-VLA: Fast and Effective Autonomous Driving 를 또 부른다\n"
+            "• FIVE-VLA: Fast and Effective Autonomous Driving [P5:A]\n"
+            "• FIVE-VLA: Fast and Effective Autonomous Driving [P5:B]")
+    out = title_ko.annotate(text, papers).splitlines()
+    assert out[0].endswith("(빠르고 효과적인 자율주행) 를 부른다")   # 번호 뒤에 붙는다
+    assert "빠르고" not in out[1]                                   # 본문 두 번째는 안 붙는다
+    assert out[2].startswith("•") and out[3] == "↳ 빠르고 효과적인 자율주행"
+    assert out[5] == "↳ 빠르고 효과적인 자율주행"                   # 목록은 **매번**
 
 
 def test_a_failed_translation_still_sends_the_mail(monkeypatch):
@@ -106,3 +112,17 @@ def test_a_repeated_acronym_prefix_is_dropped_inside_the_parentheses():
     assert title_ko.label({"title": "A Comprehensive Review of Generative Physical AI",
                            "title_ko": "생성형 물리 인공지능에 대한 종합적 고찰"}) \
         == "생성형 물리 인공지능에 대한 종합적 고찰"
+
+
+def test_a_shortened_bullet_title_still_gets_korean():
+    """이 테스트가 잡는 것: 갈래 목록에서 **전체 제목 일치**만 보는 것(2026-09-20 실측).
+
+    모델은 목록에서 제목을 줄여 쓴다 — `NWG-DETR: grid-line-aware wavelet-gated RT-DETR` 은 전체 제목의
+    앞부분이다. 전체 일치만 보면 정작 번역이 필요한 자리에서 하나도 안 붙는다."""
+    papers = [{"title": "NWG-DETR: grid-line-aware wavelet-gated RT-DETR for photovoltaic "
+                        "electroluminescence defect detection",
+               "title_ko": "태양광 전계발광 결함 검출을 위한 그리드 라인 인식 웨이블릿 게이트 RT-DETR"}]
+    out = title_ko.annotate("- NWG-DETR: grid-line-aware wavelet-gated RT-DETR [P5:A]", papers)
+    assert out.splitlines()[1] == "↳ 태양광 전계발광 결함 검출을 위한 그리드 라인 인식 웨이블릿 게이트 RT-DETR"
+    # 짧은 조각은 우연히 겹치므로 안 붙인다
+    assert title_ko.annotate("- NWG-DETR [P5:A]", papers).count("↳") == 0

@@ -91,22 +91,69 @@ def label(paper: dict) -> str:
     return korean
 
 
-def annotate(text: str, papers: list[dict]) -> str:
-    """서술 안에서 제목을 **처음 부른 자리에만** 한국어를 붙인다.
+CONT = "↳"      # 갈래 목록에서 한국어 제목을 다음 줄에 둘 때 쓰는 머리. 두 판이 같은 것을 본다.
 
-    갈래 목록이 제목으로만 이뤄져 있어(`• FIVE-VLA: Fast and …`) 거기가 실제로 읽기 어려운 자리다.
-    `annotate_numbers` 가 이미 붙인 `(요약 논문 5/5)` **뒤**에 놓는다 — 사이에 끼우면 번호와 제목이 갈라진다.
+
+def _bullet_match(line: str, pairs: list[tuple[str, str]]) -> str:
+    """글머리 줄이 가리키는 논문의 한국어 제목. 못 찾으면 빈 문자열.
+
+    **앞부분만 맞아도 같은 논문으로 본다**(2026-09-20 실측). 모델이 갈래 목록에서는 제목을 줄여 쓴다 —
+    `NWG-DETR: grid-line-aware wavelet-gated RT-DETR` 은 전체 제목
+    `… RT-DETR for photovoltaic electroluminescence defect detection` 의 앞부분이다. 전체 일치만 보면
+    정작 번역이 필요한 자리에서 하나도 안 붙는다. 긴 제목부터 보므로 겹치면 더 긴 쪽이 이긴다.
+    """
+    text = re.sub(r"^[-•]\s+", "", line)
+    text = re.sub(r"\s*\[[^\]]*\]\s*$", "", text)              # 끝의 근거 ID
+    text = re.sub(r"\s*\((?:요약 )?논문[^)]*\)\s*$", "", text)   # 끝의 번호 주석
+    text = " ".join(text.split()).strip(" .·")
+    if len(text) < 16:
+        return ""                                      # 짧은 조각은 우연히 겹친다
+    low = text.casefold()
+    for title, korean in pairs:
+        head = title.casefold()
+        if head.startswith(low) or low.startswith(head):
+            return korean
+    return ""
+
+
+def annotate(text: str, papers: list[dict]) -> str:
+    """서술 안 제목에 한국어를 붙인다. **글머리 줄에는 항상, 본문 문장에는 처음 한 번만.**
+
+    2026-09-20 사용자 지적으로 규칙을 갈랐다. 그전에는 글 전체에서 처음 한 번만 붙였는데, 그러면
+    앞 문단(`오늘 눈에 띄는 것`)에서 이미 부른 논문이 **정작 제목을 훑는 자리인 갈래 목록에서는
+    번역 없이** 나왔다. 읽는 순서로 보면 정반대다 — 갈래가 제목만 죽 늘어선 자리다.
+
+    글머리 줄에서는 제목 뒤에 괄호를 붙이지 않고 **다음 줄**에 `↳ 한국어` 로 내린다. 한 줄에 다 넣으면
+    영어 제목이 길어 두 언어가 뒤엉킨다. 본문 문장에서는 흐름이 끊기므로 그대로 괄호를 쓴다.
     짧은 제목은 건드리지 않는다: 본문 낱말과 우연히 겹치면 엉뚱한 자리에 붙는다(§8-68 이 그 사고였다).
     """
     if not text:
         return text
+    pairs = []
     for paper in sorted(papers, key=lambda p: -len(str(p.get("title") or ""))):
-        korean = label(paper)
-        title = " ".join(str(paper.get("title") or "").split())
-        if not korean or len(title) < 16 or f"({korean})" in text:
+        korean, title = label(paper), " ".join(str(paper.get("title") or "").split())
+        if korean and len(title) >= 16:
+            pairs.append((title, korean))
+    if not pairs:
+        return text
+
+    out: list[str] = []
+    seen_inline: set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^[-•]\s+", stripped):
+            out.append(line)
+            korean = _bullet_match(stripped, pairs)     # 목록 줄은 **매번** 붙인다
+            if korean:
+                out.append(f"{CONT} {korean}")
             continue
-        pattern = re.escape(title) + r"(\s*\((?:요약 )?논문[^)]*\))?"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            text = text[:match.end()] + f" ({korean})" + text[match.end():]
-    return text
+        for title, korean in pairs:                     # 본문 문장은 처음 한 번만
+            if title in seen_inline or f"({korean})" in line:
+                continue
+            pattern = re.escape(title) + r"(\s*\((?:요약 )?논문[^)]*\))?"
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                line = line[:match.end()] + f" ({korean})" + line[match.end():]
+                seen_inline.add(title)
+        out.append(line)
+    return "\n".join(out)
