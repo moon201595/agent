@@ -1131,6 +1131,24 @@ def _window_html(scan_result: dict) -> str:
     return out + _reserve_html(scan_result)
 
 
+def _reserve_html(scan_result: dict) -> str:
+    """자리 밖 후보 집계의 HTML 판. 값은 평문판과 같은 dict 하나에서 나온다."""
+    rv = scan_result.get("reserve_terms")
+    if not rv or not rv.get("count"):
+        return ""
+    body = ""
+    for term, n in (rv.get("terms") or []):
+        body += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
+                 f'<span style="color:{_INK};">{_esc(term)}</span> · {n}편</div>')
+    if not body:
+        body = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:2px 0;padding-left:10px;">여러 편에 겹치는 말이 없었다</div>')
+    return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
+            f'자리에 못 든 후보 <b>{rv["count"]}편</b>에서 자주 나온 말</div>{body}'
+            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
+            f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
+
+
 def _window_days(ch: dict) -> int:
     """절 제목에 쓸 기간. `days` **인자**가 아니라 실제 창에서 잰다 — 경계가 "지난 보고 이후"라
     (2026-09-19) 회차가 밀리면 6일, 한 주를 거르면 14일이 된다. 인자를 그대로 쓰면 제목이 거짓말을 한다."""
@@ -1167,91 +1185,19 @@ def _shadow_line(shadow: dict) -> str:
             f"상위 겹침 {overlap if overlap is not None else '미측정'})")
 
 
-def _profile_changes_html(scan_result: dict) -> str:
-    """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
-    ch = scan_result.get("profile_changes")
-    if not ch:
-        return ""
-    days = _window_days(ch)
+# 눈으로 훑는 절이다(2026-09-20 사용자 요청). 그전에는 모든 변화를 문장으로 죽 늘어놨는데,
+# "무엇이 올라갔고 뭐가 새로 생겼나"를 알려면 한 줄씩 읽어야 했다. 방향과 상대 크기를 먼저 보이고
+# 정확한 값은 옆에 작게 둔다 — 전부는 운영 화면과 DB 에 그대로 있다.
+MIN_DELTA = 0.1          # 이보다 작게 움직인 것은 건수만. 주간 메일에서 `1.0 → 1.05` 는 읽을 값이 아니다
+TOP_MOVES = 3            # 방향마다 큰 것 몇 개까지. 나머지는 "그 밖에 N건"
+BAR_BLOCKS = 10
 
-    def row(text: str, indent: int = 10, colour: str = None) -> str:
-        return (f'<div style="background-color:{_PAPER_BG};color:{colour or _INK};font-size:12px;'
-                f'margin:2px 0;padding-left:{indent}px;">{text}</div>')
-
-    def head(text: str) -> str:
-        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:8px 0 2px;">{_esc(text)}</div>')
-
-    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-           f'font-weight:600;margin:18px 0 4px;">지난 {days}일 검색 기준 변화</p>')
-    auto = lambda items: [x for x in items if any(o in ("feedback", "agent") for o in (x.get("origins") or ()))]
-
-    moved = auto([w for w in (ch.get("weights") or []) if w["origins"]])
-    if moved:
-        out += head("자동으로 움직인 가중치 (한 주 순이동)")
-        for w in moved:
-            sign = "+" if w["delta"] > 0 else ""
-            out += row(f'<b>{_esc(w["keyword"])}</b> {w["before"]} → {w["after"]} '
-                       f'<span style="color:{_MUTED};">({sign}{w["delta"]}) · {_esc(_origins_text(w["origins"]))}</span>')
-    added, removed = auto(ch.get("added") or []), auto(ch.get("removed") or [])
-    if added or removed:
-        out += head("자동으로 바뀐 키워드·검색어")
-        for a in added:
-            out += row(f'+ <b>{_esc(a["keyword"])}</b> <span style="color:{_MUTED};">'
-                       f'({_esc(a["kind"])}, {a["weight"]}) · {_esc(_origins_text(a["origins"]))}</span>')
-        for r in removed:
-            out += row(f'− <b>{_esc(r["keyword"])}</b> <span style="color:{_MUTED};">'
-                       f'({_esc(r["kind"])}) · {_esc(_origins_text(r["origins"]))}</span>')
-
-    agent = ch.get("agent") or {}
-    if agent.get("applied"):
-        out += head("에이전트가 적용한 것과 그 이유")
-        op_labels, _fail = _agent_labels()
-        for action in agent["applied"]:
-            out += row(_esc(_agent_action_line(action, op_labels)))
-            if (action.get("reason") or "").strip():
-                out += row(f'<span style="color:{_MUTED};">{_esc(action["reason"].strip())}</span>', indent=24)
-    impact = agent.get("impact")
-    if impact:
-        out += row(f'<span style="color:{_MUTED};">변경 전후 재채점 : 새로 걸린 논문 {impact.get("gained")}편 · '
-                   f'빠진 논문 {impact.get("lost")}편 · 상위 자리 교체 {impact.get("topk_changed")}편</span>')
-    if agent.get("shadow"):
-        out += row(f'<span style="color:{_MUTED};">{_esc(_shadow_line(agent["shadow"]))}</span>')
-    if agent.get("failed"):
-        _ops, fail_labels = _agent_labels()
-        out += row(f'⚠ 주간 관리 실패 : {_esc(str(fail_labels.get(agent["failed"], agent["failed"])))}'
-                   ' — 키워드는 그대로입니다.', colour=_FLAG_INK)
-
-    users = int((ch.get("by_actor") or {}).get("user") or 0)
-    tail = []
-    if users:
-        tail.append(f"사용자가 직접 바꾼 것 : revision {users}건 — 자세한 내용은 운영 화면에서")
-    if ch.get("reactions_used"):
-        tail.append(f"이 기간에 쓰인 반응 : {ch['reactions_used']}건")
-    for t in tail:
-        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:6px 0 0;">{_esc(t)}</div>')
-    return out
-
-
-def _reserve_html(scan_result: dict) -> str:
-    """자리 밖 후보 집계의 HTML 판. 값은 평문판과 같은 dict 하나에서 나온다."""
-    rv = scan_result.get("reserve_terms")
-    if not rv or not rv.get("count"):
-        return ""
-    body = ""
-    for term, n in (rv.get("terms") or []):
-        body += (f'<div style="background-color:{_PAPER_BG};font-size:12px;margin:2px 0;padding-left:10px;">'
-                 f'<span style="color:{_INK};">{_esc(term)}</span> · {n}편</div>')
-    if not body:
-        body = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                f'margin:2px 0;padding-left:10px;">여러 편에 겹치는 말이 없었다</div>')
-    return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 2px;">'
-            f'자리에 못 든 후보 <b>{rv["count"]}편</b>에서 자주 나온 말</div>{body}'
-            f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;margin:2px 0 0;">'
-            f'순위 안에는 들었으나 자리가 없어 이번 메일에 싣지 못한 논문들이다.</div>')
-
-
+_KIND_LABEL = {"core": "핵심어", "s2_seed": "검색어", "exclude": "제외어", "target": "도메인"}
+# 색은 뜻이다. 아래 `_UP_COLOR`·`_NAVY`·`_FLAG_INK` 와 같은 값인데, 팔레트가 이 절보다 아래에 정의돼 있어
+# 여기서는 값으로 적는다(팔레트를 위로 옮기면 이 절 말고도 딸려 오는 게 많다).
+_NEW_INK = "#0B7A3B"     # 새로 들어온 것 — 이 절에서 가장 먼저 봐야 할 것이라 초록
+_RISE_INK = "#12266B"    # 올라감 — 기존 본문 파랑
+_FALL_INK = "#8A4B00"    # 내려감 — 빨강은 "고장"으로 읽힌다. 가중치 하락은 고장이 아니다
 _ORIGIN_LABEL = {"feedback": "반응", "agent": "에이전트", "user": "사용자", "rollback": "되돌리기"}
 
 
@@ -1261,76 +1207,208 @@ def _origins_text(origins) -> str:
     return "·".join(names)
 
 
+def _origin_tags(origins) -> str:
+    return "".join(f"[{_ORIGIN_LABEL.get(o, o)}]" for o in (origins or ()))
+
+
+def _auto(items) -> list:
+    """자동으로 일어난 것만. 사용자가 직접 한 것은 건수로만 적는다 — 이 절의 주인공은 시스템이 배운 것이다."""
+    return [x for x in (items or []) if any(o in ("feedback", "agent") for o in (x.get("origins") or ()))]
+
+
+def _split_moves(ch: dict) -> tuple[list, list, int]:
+    """(올라간 것, 내려간 것, 작게 움직여 감춘 수). 큰 것부터 `TOP_MOVES` 개씩."""
+    moved = _auto([w for w in (ch.get("weights") or []) if w.get("origins")])
+    big = [w for w in moved if abs(w["delta"]) >= MIN_DELTA]
+    up = sorted([w for w in big if w["delta"] > 0], key=lambda w: -w["delta"])
+    down = sorted([w for w in big if w["delta"] < 0], key=lambda w: w["delta"])
+    hidden = len(moved) - len(up[:TOP_MOVES]) - len(down[:TOP_MOVES])
+    return up[:TOP_MOVES], down[:TOP_MOVES], max(0, hidden)
+
+
+def _bar(delta: float, biggest: float) -> int:
+    """막대 칸 수. **가장 큰 변화를 기준으로 한 상대 길이**다 — 절대 눈금이 아니다."""
+    if biggest <= 0:
+        return 1
+    return max(1, min(BAR_BLOCKS, round(BAR_BLOCKS * abs(delta) / biggest)))
+
+
+def _move_facts(w: dict) -> str:
+    """정확한 값은 **보조 정보**다 — 막대 아래에 작게 둔다. 소수 둘째 자리까지 고정한다:
+    `:g` 는 1.0 을 `1` 로 줄여 `1 → 1.8` 처럼 자리수가 들쭉날쭉해진다."""
+    sign = "+" if w["delta"] > 0 else "−"
+    return f"{w['before']:.2f} → {w['after']:.2f} ({sign}{abs(w['delta']):.2f})"
+
+
+def _profile_changes_html(scan_result: dict) -> str:
+    """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
+    ch = scan_result.get("profile_changes")
+    if not ch:
+        return ""
+    days = _window_days(ch)
+    up, down, hidden = _split_moves(ch)
+    biggest = max([abs(w["delta"]) for w in up + down] or [0])
+
+    def head(text: str) -> str:
+        return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:12px 0 4px;">{_esc(text)}</div>')
+
+    def move_row(w: dict, colour: str, arrow: str) -> str:
+        width = int(100 * _bar(w["delta"], biggest) / BAR_BLOCKS)
+        return (
+            f'<div style="background-color:{_PAPER_BG};margin:4px 0 6px 10px;">'
+            f'<div style="color:{_INK};font-size:14px;">{arrow} <b>{_esc(w["keyword"])}</b>'
+            f'<span style="color:{_MUTED};font-size:12px;"> {_esc(_origin_tags(w["origins"]))}</span></div>'
+            # 막대는 이미지 없이 배경색 div 하나다 — Gmail·Outlook 이 지우지 않는다.
+            f'<div style="background-color:{_LINE};height:6px;width:100%;max-width:320px;'
+            f'border-radius:3px;margin:3px 0 2px;">'
+            f'<div style="background-color:{colour};height:6px;width:{width}%;border-radius:3px;'
+            f'font-size:1px;line-height:6px;">&nbsp;</div></div>'
+            f'<div style="color:{_MUTED};font-size:12px;">{_esc(_move_facts(w))}</div></div>')
+
+    out = (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
+           f'font-weight:700;margin:18px 0 4px;">지난 {days}일 검색 기준 변화</p>')
+    if up:
+        out += head("관심이 올라갔다")
+        out += "".join(move_row(w, _RISE_INK, "▲") for w in up)
+    if down:
+        out += head("관심이 내려갔다")
+        out += "".join(move_row(w, _FALL_INK, "▼") for w in down)
+
+    added, removed = _auto(ch.get("added")), _auto(ch.get("removed"))
+    if added:
+        out += head("새로 들어왔다")
+        for a in added:
+            out += (f'<div style="background-color:{_PAPER_BG};margin:4px 0 4px 10px;">'
+                    f'<span style="background-color:#E7F4EC;color:{_NEW_INK};font-size:11px;'
+                    f'font-weight:700;padding:1px 6px;border-radius:3px;">NEW</span> '
+                    f'<b style="color:{_INK};font-size:14px;">{_esc(a["keyword"])}</b>'
+                    f'<span style="color:{_MUTED};font-size:12px;"> '
+                    f'{_esc(_KIND_LABEL.get(a["kind"], a["kind"]))} · {_esc(_origins_text(a["origins"]))}</span></div>')
+    if removed:
+        out += head("빠졌다")
+        for r in removed:
+            out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
+                    f'margin:2px 0 2px 10px;">− {_esc(r["keyword"])} '
+                    f'({_esc(_KIND_LABEL.get(r["kind"], r["kind"]))}) · {_esc(_origins_text(r["origins"]))}</div>')
+
+    agent = ch.get("agent") or {}
+    if agent.get("applied"):
+        out += head("왜 바뀌었나")
+        op_labels, _fail = _agent_labels()
+        for action in agent["applied"]:
+            out += (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                    f'margin:4px 0 0 10px;">{_esc(_agent_action_line(action, op_labels))}</div>')
+            if (action.get("reason") or "").strip():
+                out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                        f'margin:0 0 2px 24px;line-height:1.5;">{_esc(action["reason"].strip())}</div>')
+    impact, shadow = agent.get("impact"), agent.get("shadow")
+    if impact or shadow:
+        out += head("검색 영향")
+        bits = []
+        if shadow:
+            bits.append(_shadow_line(shadow))
+        if impact:
+            bits.append(f'새로 걸린 논문 {impact.get("gained")}편 · 빠진 논문 {impact.get("lost")}편 · '
+                        f'상위 자리 교체 {impact.get("topk_changed")}편')
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
+                f'margin:2px 0 2px 10px;">{_esc(" · ".join(bits))}</div>')
+    if agent.get("failed"):
+        _ops, fail_labels = _agent_labels()
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_FLAG_INK};font-size:13px;'
+                f'margin:6px 0 0 10px;">⚠ 주간 관리 실패 : '
+                f'{_esc(str(fail_labels.get(agent["failed"], agent["failed"])))} — 키워드는 그대로입니다.</div>')
+
+    for tail in _changes_tail(ch, hidden):
+        out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+                f'margin:6px 0 0 10px;">{_esc(tail)}</div>')
+    return out
+
+
+def _changes_tail(ch: dict, hidden: int) -> list[str]:
+    """꼬리 한두 줄 — 감춘 작은 변화, 사용자 변경 건수, 쓰인 반응 수.
+
+    **감춘 것을 말없이 버리지 않는다.** 그 주의 변화가 전부 `MIN_DELTA` 아래였다면 위 목록이 비는데,
+    그때 이 줄까지 없으면 "이번 주엔 아무 일도 없었다"로 읽힌다 — 실제로는 움직였다.
+    """
+    out = []
+    if hidden:
+        out.append(f"그 밖에 작게 움직인 가중치 {hidden}건 — 값은 운영 화면에서")
+    users = int((ch.get("by_actor") or {}).get("user") or 0)
+    if users:
+        out.append(f"사용자가 직접 바꾼 것 revision {users}건 — 자세한 내용은 운영 화면에서")
+    if ch.get("reactions_used"):
+        out.append(f"이 기간에 쓰인 반응 {ch['reactions_used']}건")
+    return out
+
+
 def _profile_changes_section(scan_result: dict) -> list[str]:
-    """지난 한 주 **검색 기준**이 어떻게 바뀌었나. 동향(분야가 어떻게 움직였나)과 다른 질문이다.
+    """월요일 메일의 "지난 N일 검색 기준 변화" — 동향(분야가 어떻게 움직였나)과 **다른 질문**에 답한다.
 
-    2026-09-19 사용자 결정으로 월요일 메일의 `주간 동향 리뷰` 자리를 이 절이 대신한다. 그 절은 기간
-    비교가 `window_movement` 와 겹쳤고 나머지는 운영 지표였다. 여기서 답하는 것은 **"그래서 내 에이전트가
-    무엇을 배워 기준을 바꿨나"** 다. 주간 관리가 같은 새벽 스캔 **직전**에 돌기 때문에(§8-163) 이 절은
-    회고가 아니라 아래 논문을 고른 근거다.
+    2026-09-19 사용자 결정으로 월요일 메일의 `주간 동향 리뷰` 자리를 이 절이 대신한다. 여기서 답하는 것은
+    **"그래서 내 에이전트가 무엇을 배워 기준을 바꿨나"** 다. 주간 관리가 같은 새벽 스캔 **직전**에 돌기
+    때문에(§8-163) 이 절은 회고가 아니라 아래 논문을 고른 근거다.
 
-    자동 변경(반응·에이전트)은 상세히, 사용자가 직접 한 변경은 건수만 — 이 절의 주인공은 시스템이
-    배운 것이다. **바뀐 게 없으면 절 자체가 없다**(`pending_report` 와 같은 철학).
+    2026-09-20 개편: 방향(▲▼)과 상대 크기(막대)를 먼저 보이고 정확한 값은 그 아래 작게 둔다.
+    작게 움직인 것과 사용자 변경은 건수만 — **바뀐 게 없으면 절 자체가 없다**(`pending_report` 와 같은 철학).
     """
     ch = scan_result.get("profile_changes")
     if not ch:
         return []
     days = _window_days(ch)
+    up, down, hidden = _split_moves(ch)
+    biggest = max([abs(w["delta"]) for w in up + down] or [0])
     lines = ["", "─" * 62, f"■ 지난 {days}일 검색 기준 변화"]
 
-    def auto(items, key):
-        return [x for x in items if any(o in ("feedback", "agent") for o in (x.get("origins") or ()))]
+    def move_line(w: dict, arrow: str) -> str:
+        name = w["keyword"] if len(w["keyword"]) <= 24 else w["keyword"][:23] + "…"
+        bar = "█" * _bar(w["delta"], biggest)
+        return f"      {arrow} {name:<25}{bar:<11}{_move_facts(w)}  {_origin_tags(w['origins'])}"
 
-    moved = [w for w in (ch.get("weights") or []) if w["origins"]]
-    auto_moved = auto(moved, "weights")
-    if auto_moved:
-        lines.append("")
-        lines.append("   ▸ 자동으로 움직인 가중치 (한 주 순이동)")
-        for w in auto_moved:
-            sign = "+" if w["delta"] > 0 else ""
-            lines.append(f"      {w['keyword']} : {w['before']} → {w['after']} ({sign}{w['delta']}) "
-                         f"· {_origins_text(w['origins'])}")
+    if up:
+        lines += ["", "   관심이 올라갔다"] + [move_line(w, "▲") for w in up]
+    if down:
+        lines += ["", "   관심이 내려갔다"] + [move_line(w, "▼") for w in down]
 
-    auto_added = auto(ch.get("added") or [], "added")
-    auto_removed = auto(ch.get("removed") or [], "removed")
-    if auto_added or auto_removed:
-        lines.append("")
-        lines.append("   ▸ 자동으로 바뀐 키워드·검색어")
-        for a in auto_added:
-            lines.append(f"      + {a['keyword']} ({a['kind']}, {a['weight']}) · {_origins_text(a['origins'])}")
-        for r in auto_removed:
-            lines.append(f"      − {r['keyword']} ({r['kind']}) · {_origins_text(r['origins'])}")
+    added, removed = _auto(ch.get("added")), _auto(ch.get("removed"))
+    if added:
+        lines += ["", "   새로 들어왔다"]
+        for a in added:
+            lines.append(f"      NEW  {a['keyword']}  "
+                         f"({_KIND_LABEL.get(a['kind'], a['kind'])} · {_origins_text(a['origins'])})")
+    if removed:
+        lines += ["", "   빠졌다"]
+        for r in removed:
+            lines.append(f"      −  {r['keyword']}  "
+                         f"({_KIND_LABEL.get(r['kind'], r['kind'])} · {_origins_text(r['origins'])})")
 
-    # 에이전트 사유는 **따로** 낸다 — 위 목록 아래에 붙이면 어느 항목의 이유인지 어긋난다
-    # (한 용어에 가중치 변경과 시드 추가가 함께 적용되는 주가 있다).
     agent = ch.get("agent") or {}
     applied = agent.get("applied") or []
     if applied:
-        lines.append("")
-        lines.append("   ▸ 에이전트가 적용한 것과 그 이유")
+        lines += ["", "   왜 바뀌었나"]
         op_labels, _fail = _agent_labels()
         for action in applied:
             lines.append(f"      {_agent_action_line(action, op_labels)}")
             reason = (action.get("reason") or "").strip()
             if reason:
                 lines.append(f"        └ {reason}")
-    impact = agent.get("impact")
-    if impact:
-        lines.append(f"      변경 전후 재채점 : 새로 걸린 논문 {impact.get('gained')}편 · "
-                     f"빠진 논문 {impact.get('lost')}편 · 상위 자리 교체 {impact.get('topk_changed')}편")
-    if agent.get("shadow"):
-        lines.append(f"      {_shadow_line(agent['shadow'])}")
+    impact, shadow = agent.get("impact"), agent.get("shadow")
+    if impact or shadow:
+        bits = []
+        if shadow:
+            bits.append(_shadow_line(shadow))
+        if impact:
+            bits.append(f"새로 걸린 논문 {impact.get('gained')}편 · 빠진 논문 {impact.get('lost')}편 · "
+                        f"상위 자리 교체 {impact.get('topk_changed')}편")
+        lines += ["", "   검색 영향", f"      {' · '.join(bits)}"]
     if agent.get("failed"):
         _ops, fail_labels = _agent_labels()
         lines.append(f"      ⚠ 주간 관리 실패 : {fail_labels.get(agent['failed'], agent['failed'])}"
                      " — 키워드는 그대로입니다.")
 
-    users = int((ch.get("by_actor") or {}).get("user") or 0)
-    if users:
-        lines.append("")
-        lines.append(f"   ▸ 사용자가 직접 바꾼 것 : revision {users}건 — 자세한 내용은 운영 화면에서")
-    if ch.get("reactions_used"):
-        lines.append(f"   ▸ 이 기간에 쓰인 반응 : {ch['reactions_used']}건")
+    tail = _changes_tail(ch, hidden)
+    if tail:
+        lines += [""] + [f"   · {t}" for t in tail]
     return lines
 
 
@@ -1964,7 +2042,6 @@ def _narrative_line_html(line: str) -> str:
         f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
         f'margin:{"14px" if _ENUM_RE.match(part) else "4px"} 0;line-height:1.7;">'
         f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
-
 
 
 # ---------------------------------------------------------------- ⑥ 주간 리뷰

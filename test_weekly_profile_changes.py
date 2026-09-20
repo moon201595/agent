@@ -77,7 +77,7 @@ def test_every_actor_that_touched_a_keyword_is_named(tmp_path):
     out = wpc.collect(db, "p1", days=7, now=NOW)
     assert set(out["weights"][0]["origins"]) == {"agent", "feedback"}
     text = "\n".join(digest._profile_changes_section({"profile_changes": out}))
-    assert "에이전트·반응" in text
+    assert "[에이전트][반응]" in text                          # 태그로 둘 다 붙는다(2026-09-20 개편)
     assert "좋다고 반응한 논문 두 편에 걸렸다" in text          # 사유를 요약하지 않고 그대로
 
 
