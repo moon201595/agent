@@ -1605,3 +1605,39 @@ def test_empty_digest_html_matches_plain_sections():
     text, html = digest.generate_digest(scan, "t"), digest.generate_digest_html(scan, "t")
     assert ("키워드별 적중 편수" in text) == ("키워드별 적중 편수" in html)
     assert text.count("걸러진 것") == html.count("걸러진 것")
+
+
+def test_every_section_heading_is_bold_in_the_html_mail():
+    """이 테스트가 잡는 것: 절·소제목을 회색 평체로 두어 **어디가 새 절인지 안 보이게** 하는 것.
+
+    2026-09-20 사용자 지적 — 절마다 제목 스타일이 제각각이었다(15px 700 / 13px 600 / 12px 회색 평체).
+    새 절이나 소제목을 붙일 때는 `_h1`·`_h2` 를 쓴다. 직접 `<p style=…>` 를 쓰면 여기서 걸린다.
+    """
+    import re
+    scan = {
+        "candidates_found": 9, "narrative_summaries": 1,
+        "narrative": ("■ 오늘 눈에 띄는 것\n관찰이다.", []),
+        "papers": [{"title": "A Paper Title That Is Long Enough", "arxiv_id": "2609.1", "_score": {}}],
+        "trend_window": {"days": 7, "papers": (5, 3), "days_covered": (1, 1), "comparable": True,
+                         "keywords": [("defect detection", 5, 0), ("world model", 0, 3)],
+                         "terms": [("ground truth", 4, 1)]},
+        "profile_changes": {"window": ("2026-09-14T00:00:00+00:00", "2026-09-21T00:00:00+00:00"),
+                            "days": 7, "by_actor": {}, "reactions_used": 2,
+                            "weights": [{"keyword": "defect detection", "kind": "core", "before": 1.0,
+                                         "after": 1.8, "delta": 0.8, "origins": ("agent",)}],
+                            "added": [{"keyword": "surface defect", "kind": "s2_seed", "weight": 1.0,
+                                       "origins": ("agent",)}],
+                            "removed": [],
+                            "agent": {"applied": [{"op": "set_weight", "term": "defect detection",
+                                                   "weight": 1.8, "basis": "feedback",
+                                                   "reason": "반응 두 건"}],
+                                      "impact": {"gained": 1, "lost": 0, "topk_changed": 0},
+                                      "shadow": None, "failed": None}},
+    }
+    html = digest.generate_digest_html(scan, "t")
+    headings = ["오늘의 동향 정리", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 신규 논문",
+                "상승", "하락", "핵심 키워드 밖 반복 관측", "가중치 변화", "신규", "이유", "검색 영향"]
+    for heading in headings:
+        m = re.search(r"<(?:p|div)[^>]*>[^<]*" + re.escape(heading) + r"[^<]*<", html)
+        assert m, f"{heading} 이 메일에 없다"
+        assert "font-weight:700" in m.group(0), f"{heading} 이 굵지 않다: {m.group(0)[:120]}"
