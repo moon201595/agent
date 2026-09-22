@@ -199,6 +199,16 @@ DOMAIN_HITS_CAP = 2
 #                    사용자 결정: "최신 우선이긴 한데 2~3일 차이는 동일 점수로".
 #                    기준은 **그 스캔의 가장 최신 후보** — 절대 달력 구간(월·수·토)을
 #                    쓰면 하루 차이가 띠 경계에 걸려 갈린다. 날짜 없음은 큰 띠(뒤로).
+#                    **2026-09-21 개정(anchor-support-3)**: 앵커를 "최신 1편"으로 잡으니
+#                    **논문 한 편이 나머지 전체의 띠를 밀었다.** 실측(9/21 스캔): team_ai_advance 는
+#                    9/20 자 1편·9/19 자 1편 뒤에 9/17 자가 68편인데, 그 1편이 앵커를 9/20 으로
+#                    올려 68편을 통째로 띠 1 로 내보냈다 — 내용 5자리가 전부 저널로 넘어갔고
+#                    본문을 못 받아 초록 정리만 나갔다(§8-184). 기록된 38스캔 중 **19건**에서
+#                    앵커를 1~2편이 정하고 있었다. 그래서 앵커는 **그 날짜 이후(포함)에 적격 후보가
+#                    ANCHOR_MIN_SUPPORT 편 이상 있는 가장 최신 날**로 잡는다.
+#                    출처를 보지 않는다 — arXiv 를 우대하거나 저널을 깎지 않는다(그건 2026-09-11 에
+#                    걷어낸 문지기다). 적격 후보가 그보다 적으면 규칙을 적용하지 않는다(표본이
+#                    작으면 꼬리를 말할 수 없다).
 #   -core_breadth    띠 안에서 서로 다른 **개념** 적중 수(상한 2). 문자열이 아니라
 #                    개념으로 세는 이유: 9/16 키워드 개정에서 'robot manipulation'/
 #                    'robotic manipulation', 'LLM agent'/'LLM-based agent' 같은 표기
@@ -269,8 +279,54 @@ def tier_rank(profile: dict, core_hits: list[str]) -> int | None:
     return table.index(best)
 
 
+
+
+
 DATE_BAND_DAYS = 3        # 띠 폭 3일 = 이틀 차이까지 같은 점수, 사흘 차이부터 다음 띠(사용자 "2~3일 차이는 같은 점수" 를 이렇게 굳혔다 — 18회 재생 값)
+ANCHOR_MIN_SUPPORT = 3   # 앵커는 최소 이만큼의 적격 후보가 받쳐야 한다(2026-09-21, 위 계약 주석)
 _NO_DATE_BAND = 10 ** 6   # 날짜 없는 논문은 어떤 띠보다 뒤 — 계층은 넘지 않는다
+
+
+def band_anchor(scored: list[dict], min_support: int = ANCHOR_MIN_SUPPORT) -> int | None:
+    """날짜 띠의 기준일 — **최신에서 한 띠 안쪽까지만 물러나며, 적격 후보 `min_support` 편이 받치는 가장 최신 날**.
+
+    왜 최신 1편이 아닌가(2026-09-21, §8-184): 앵커가 최댓값이면 **꼬리 한 편이 전체를 민다.**
+    9/21 team_ai_advance 실측 — 9/20 자 1편, 9/19 자 1편, 9/18 자 4편, 그리고 9/17 자가 68편.
+    그 1편 때문에 앵커가 9/20 이 되고 68편이 `(20-17)//3 = 1` 로 띠 밖으로 나갔다. 계층 다음이
+    띠라 아래 항목은 볼 것도 없이 밀린다. 기록된 38스캔 중 19건이 이 상태였다.
+
+    **물러나는 거리에 상한이 있다**(2026-09-21 Codex 검토 A4). 처음엔 "셋째로 최신인 날" 로 짰는데,
+    후보가 정확히 세 편이면 그 셋째가 **가장 오래된 날**이라 앵커가 거기까지 끌려갔다. 실측: 9/21 한 편과
+    9/11 한 편만 있을 때는 순서가 `new → old` 인데, **무관한 하위 계층 한 편(9/10)을 넣자 앵커가 11일
+    당겨지며 모든 띠가 0 이 되어 `old → new` 로 뒤집혔다.** 무관한 후보가 상위 두 편의 순서를 바꾸면
+    안 된다 — §8-150 에서 무적중 후보를 앵커에서 뺀 것과 같은 이유다. 그래서 **최신일에서
+    `DATE_BAND_DAYS - 1` 일보다 더 뒤로는 가지 않는다.** 그 안에서 지지가 없으면 최신일을 쓴다.
+    이 상한 때문에 띠 0 이 최대 `2 × DATE_BAND_DAYS - 1` 일까지 넓어질 수 있다 — 그 값이 이 개정의 비용이다.
+
+    **출처를 보지 않는다.** arXiv 라서 올리거나 저널이라서 내리지 않는다 — 본문 확보 가능성으로
+    자리를 가르던 문지기는 2026-09-11 에 걷어냈고(§8-86) 그것을 되살리지 않는다. 여기서 고치는
+    것은 "앵커가 표본 한 점에 흔들린다" 는 것뿐이고, 그 결과가 마침 arXiv 에 유리하게 보이는 것은
+    오늘 꼬리가 저널이었기 때문이다. 꼬리가 arXiv 인 날에는 반대로 작동한다.
+
+    날짜 없는(결측·연도만) 후보는 애초에 앵커에 들어가지 않는다 — 띠 뒤로 간다.
+    """
+    days = sorted((d for d in (publication_day(p.get("published"))[0] for p in scored) if d), reverse=True)
+    if not days:
+        return None
+    newest = days[0]
+    floor = newest - (DATE_BAND_DAYS - 1)      # 여기보다 더 뒤로는 물러나지 않는다
+    support = 0
+    anchor = newest
+    for day in days:
+        if day < floor:
+            break
+        support += 1
+        anchor = day
+        if support >= min_support:
+            return anchor
+    return newest        # 한 띠 안에서 지지를 못 찾으면 최신일 그대로
+
+
 
 # 표기 변형 접기 — 개념 폭을 셀 때만 쓴다(채점·적중 표시는 그대로). 실제로 프로필에 넣은 변형 쌍만 적는다(짐작으로 늘리지 않는다).
 _CONCEPT_FOLDS = (
@@ -296,7 +352,8 @@ def concept_breadth(hits: list[str]) -> int:
 def rank_key(paper: dict, result: dict, profile: dict, newest_day: int | None = None) -> tuple:
     """선별 순서 계약(위 주석). 오름차순 정렬에 그대로 쓴다.
     적중이 없는 논문은 애초에 순위 대상이 아니므로 호출부가 먼저 거른다.
-    `newest_day` 는 정렬 대상 후보 중 가장 최신 공개일(ordinal) — `score_and_rank` 가 넘긴다. None 이면 이 논문의 날짜를 기준으로
+    `newest_day` 는 `band_anchor` 가 정한 띠 기준일(ordinal) — `score_and_rank` 가 넘긴다.
+    단순 최댓값이 아니다(2026-09-21 `anchor3`). None 이면 이 논문의 날짜를 기준으로
     삼아 띠가 0 이 된다(단독 호출 호환)."""
     from research_profile import paper_key  # 순환 없음 — research_profile 은 이 모듈을 안 부른다
     hits = result.get("core_hits") or []
@@ -565,8 +622,9 @@ def score_and_rank(
         scored.append({**p, "_score": result})
 
     # 가중합이 아니라 튜플 계약으로 정렬한다(2026-09-11, 위 주석). 오름차순.
-    # 날짜 띠의 기준은 **적격(핵심 적중) 후보 중 가장 최신 공개일** — 절대 달력도, 무적중 후보도 아니다(위 계약 주석).
-    newest = max((publication_day(p.get("published"))[0] or 0 for p in scored), default=0) or None
+    # 날짜 띠의 기준은 **적격(핵심 적중) 후보 중** 지지가 있는 가장 최신 공개일 — 절대 달력도,
+    # 무적중 후보도, 외따로 떨어진 한 편도 아니다(위 계약 주석).
+    newest = band_anchor(scored)
     scored.sort(key=lambda p: rank_key(p, p["_score"], profile, newest_day=newest))
     if top_k is not None:
         scored = scored[:top_k]

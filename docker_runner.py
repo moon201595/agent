@@ -52,7 +52,16 @@ RUN_TIMEOUT = 120       # 스모크 테스트 자체는 짧아야 정상
 MEM_LIMIT = "2g"
 CPUS = "2"
 MAX_ATTEMPTS = 3
-MAX_REPO_KB = 500 * 1024
+# **크기로 거부하지 않는다**(2026-09-21 사용자 결정). 예전엔 500MB 를 넘으면 clone 전에 거절하고,
+# clone 뒤 du 가 넘어도 지우고 포기했다. 그런데 **크기는 재현 가능성이 아니다** — 되는지는 돌려 봐야
+# 안다. 그리고 판정이 끝나면 작업 트리는 어차피 지운다(`_remove_clone`, 성공·실패 모두).
+# 실측으로 막혔던 넷: kevinzakka/mink(185MB)·tc39/proposal-temporal(260MB)·SANIS-HITSZ/LAESim(240MB)·
+# mixxxdj/mixxx(641MB). **앞의 셋은 GitHub 크기가 500MB 밑인데도 clone 뒤 du 에 걸렸다** — GitHub 가
+# 말하는 크기(압축본)와 체크아웃 크기가 다르기 때문이다. 즉 사전 검사는 예측도 못 하면서 시도를 막았다.
+# 실제 상한 노릇을 하는 것은 **시간**이다: clone 120초 · 설치 900초 · 실행 120초. 거기에 `--depth 1`,
+# `--filter=blob:limit=20m`, `GIT_LFS_SKIP_SMUDGE=1` 이 걸려 있어 120초 안에 받을 수 있는 양이 곧 상한이다.
+# 크기는 **재되 막지 않는다** — injection_scan 이 인젝션 의심을 표시만 하고 차단하지 않는 것과 같은 결.
+LARGE_REPO_KB = 500 * 1024   # 이보다 크면 로그에 남긴다(거부하지 않는다)
 
 # 시스템 패키지가 아닌 것 같은 최상위 디렉터리 이름 — 임포트 대상 추정 시 제외.
 # "services"·"common"·"utils" 류는 __init__.py 를 갖고 있어도 알파벳 순으로
@@ -610,8 +619,9 @@ def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
     slug = _github_repo_slug(url)
     if slug:
         github_size = _github_repo_size_kb(slug)
-        if github_size is not None and github_size > MAX_REPO_KB:
-            return None, "repo_too_large"
+        if github_size is not None and github_size > LARGE_REPO_KB:
+            # 받아 본다. 크기는 재현 가능성이 아니다(위 주석) — 기록만 남긴다.
+            print(f"  [재현] 큰 저장소({github_size // 1024}MB) — 그래도 받아 본다: {url}")
     clone_cmd = ["git", "clone", "--depth", "1", "--no-recurse-submodules"]
     if _git_supports_blob_filter():
         clone_cmd.append("--filter=blob:limit=20m")
@@ -632,9 +642,9 @@ def _clone(url: str, dest_parent: Path) -> tuple[Path | None, str]:
             return None, "repo_not_found"
         return None, "clone_failed"
     size_kb = _du_size_kb(dest)
-    if size_kb is not None and size_kb > MAX_REPO_KB:
-        _remove_clone(dest)
-        return None, "repo_too_large"
+    if size_kb is not None and size_kb > LARGE_REPO_KB:
+        # 여기까지 왔으면 디스크 비용은 이미 치렀다. 지우고 포기하면 그 비용만 버리는 셈이다.
+        print(f"  [재현] 받은 작업 트리 {size_kb // 1024}MB — 상한 없이 진행한다: {dest.name}")
     return dest, ""
 
 

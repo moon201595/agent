@@ -259,6 +259,9 @@ def test_paper_without_pdf_link_still_reaches_the_abstract_brief(monkeypatch):
         raise AssertionError("링크가 없으면 PDF 수집을 시도하면 안 된다")
 
     monkeypatch.setattr(bs.server, "fetch_pdf_from_url", boom)
+    # Unpaywall 을 꺼 둔다 — 켜져 있으면 링크가 없어도 사본을 받으러 가는 것이 **맞는** 동작이라
+    # `boom` 이 그 정당한 호출에 걸린다. 이 테스트가 보는 것은 "링크 없이 원 URL 을 받지 않는다" 다.
+    monkeypatch.setattr(bs.server, "UNPAYWALL_EMAIL", "")
     monkeypatch.setattr(bs.server, "resolve_openalex_abstract", lambda doi: _text(""))
     monkeypatch.setattr(bs.engine, "summarize_abstract",
                         lambda c, t, a: _text("- 무엇을 하려 했는가 : 결함을 검출한다."))
@@ -271,12 +274,63 @@ def test_paper_without_pdf_link_still_reaches_the_abstract_brief(monkeypatch):
 
 
 def test_no_link_no_abstract_anywhere_is_still_an_honest_failure(monkeypatch):
-    """초록을 어디서도 못 구하면 정리를 만들지 않는다 — 지어내지 않는다."""
+    """초록을 어디서도 못 구하면 정리를 만들지 않는다 — 지어내지 않는다.
+
+    2026-09-21: `detail` 이 **왜 못 받았는지**를 담는지도 같이 본다. 예전엔 이유가
+    버려져 로그만으로는 링크가 없었는지·받다 실패했는지·Unpaywall 이 꺼져 있었는지
+    구분할 수 없었다(§8-184). 문구가 아니라 **갈래가 드러나는지**를 본다."""
+    monkeypatch.setattr(bs.server, "UNPAYWALL_EMAIL", "")
     monkeypatch.setattr(bs.server, "resolve_openalex_abstract", lambda doi: _text(""))
     out = asyncio.run(bs._process_paper(
         None, "", paper={"doi": "10.1/x", "title": "T", "abstract": ""}))
     assert out["status"] == "fetch_failed"
-    assert "초록도 없음" in out["detail"]
+    assert "링크가 없음" in out["detail"]
+    assert "Unpaywall" in out["detail"]        # 꺼져 있다는 사실이 이유에 남는다
+
+
+def test_unpaywall_is_asked_even_when_there_was_no_link_at_all(monkeypatch):
+    """이 테스트가 잡는 것: **회수 시도를 한 갈래에만 두는 것.**
+
+    Unpaywall 폴백이 `except` 안에만 배선돼 있어서 "링크가 처음부터 없음" 갈래는
+    DOI 를 쥐고도 묻지 않고 초록으로 갔다(2026-09-21 실측, §8-184). 이 배선을 떼면
+    `asked` 가 비어 실패한다."""
+    asked: list[str] = []
+
+    async def _unpaywall(doi):
+        asked.append(doi)
+        return {"url": "https://repo.example/paper.pdf", "title": "T"}
+
+    async def _fetch(url, title, source_note=""):
+        assert url == "https://repo.example/paper.pdf"
+        return {"arxiv_id": "pdf-deadbeef01", "text_chars": 12345}
+
+    monkeypatch.setattr(bs.server, "UNPAYWALL_EMAIL", "x@example.org")
+    monkeypatch.setattr(bs.server, "resolve_unpaywall_pdf", _unpaywall)
+    monkeypatch.setattr(bs.server, "fetch_pdf_from_url", _fetch)
+    fetched, why = asyncio.run(bs._fetch_open_access(None, "", "T", "10.1/x"))
+    assert asked == ["10.1/x"], "링크가 없어도 DOI 로 Unpaywall 에 물어야 한다"
+    assert fetched and fetched["arxiv_id"] == "pdf-deadbeef01"
+    assert why == ""
+
+
+def test_unpaywall_off_is_said_out_loud_not_swallowed(monkeypatch):
+    """이 테스트가 잡는 것: **설정이 빠져 폴백이 안 도는데 조용한 것.**
+
+    `UNPAYWALL_EMAIL` 이 없으면 `resolve_unpaywall_pdf` 가 즉시 None 을 돌려준다 —
+    그 침묵 때문에 이 경로가 한 번도 안 돈 것을 몇 주 동안 못 봤다. 이유 문자열에
+    그 사실이 남지 않으면 실패한다."""
+    called = {"n": 0}
+
+    async def _unpaywall(doi):
+        called["n"] += 1
+        return None
+
+    monkeypatch.setattr(bs.server, "UNPAYWALL_EMAIL", "")
+    monkeypatch.setattr(bs.server, "resolve_unpaywall_pdf", _unpaywall)
+    fetched, why = asyncio.run(bs._fetch_open_access(None, "", "T", "10.1/x"))
+    assert fetched is None
+    assert "UNPAYWALL_EMAIL" in why
+    assert called["n"] == 0, "꺼져 있으면 무의미한 호출을 하지 않는다"
 
 
 def test_open_access_paper_is_not_resummarized(tmp_path, monkeypatch):
