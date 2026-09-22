@@ -232,28 +232,40 @@ def test_safe_link_preserves_allowed_url_and_subdomain():
     assert link_policy.safe_link(url) == url
 
 
-def test_clone_rejects_github_repo_before_git_when_api_size_is_too_large(monkeypatch, tmp_path):
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: GitHub size 사전 검사를 빼서 큰
-    저장소에 git clone을 시작하면 실패한다."""
+def test_clone_does_not_refuse_a_big_repo_on_size_alone(monkeypatch, tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: **크기만 보고 clone 을 거부하는 코드를
+    되살리면** 실패한다(2026-09-21 사용자 결정).
+
+    크기는 재현 가능성이 아니다 — 되는지는 돌려 봐야 안다. 판정이 끝나면 작업 트리는 어차피
+    지운다. 실측으로 막혔던 셋(mink 185MB·proposal-temporal 260MB·LAESim 240MB)은 GitHub 크기가
+    상한 밑인데도 clone 뒤 du 에 걸렸다 — 사전 검사는 예측도 못 하면서 시도를 막고 있었다."""
     calls = []
 
     def fake_run(cmd, *args, **kwargs):
-        calls.append((cmd, kwargs))
+        calls.append(cmd)
         if cmd[:2] == ["gh", "api"]:
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps({"size": dr.MAX_REPO_KB + 1}), stderr=""
-            )
-        raise AssertionError(f"큰 저장소에서 실행되면 안 되는 명령: {cmd}")
+                cmd, 0, stdout=json.dumps({"size": dr.LARGE_REPO_KB * 4}), stderr="")
+        if cmd[:2] == ["git", "--version"] or cmd[:2] == ["git", "version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0", stderr="")
+        if cmd[:2] == ["git", "clone"]:
+            Path(cmd[-1]).mkdir()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["du", "-sk"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{dr.LARGE_REPO_KB * 4}\t{cmd[-1]}", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(dr.subprocess, "run", fake_run)
     path, detail = dr._clone("https://github.com/example/large", tmp_path)
-    assert (path, detail) == (None, "repo_too_large")
-    assert [call[0][:2] for call in calls] == [["gh", "api"]]
+    assert detail == "", f"크기만으로 거부했다: {detail}"
+    assert path is not None and path.exists(), "큰 저장소도 받아 봐야 한다"
+    assert any(c[:2] == ["git", "clone"] for c in calls), "clone 을 아예 시도하지 않았다"
 
 
 def test_clone_uses_filter_lfs_skip_and_post_clone_du(monkeypatch, tmp_path):
     """이 테스트가 무엇을 망가뜨리면 실패하는가: partial clone·submodule 차단·LFS
-    smudge 억제·clone 후 디스크 검사를 빠뜨리면 실패한다."""
+    smudge 억제를 빠뜨리면 실패한다. **크기는 재되 거부하지 않는다**(2026-09-21) —
+    clone 뒤 du 가 상한을 넘어도 작업 트리를 지우거나 포기하지 않는다."""
     calls = []
     clone_dest = {}
 
@@ -284,9 +296,11 @@ def test_clone_uses_filter_lfs_skip_and_post_clone_du(monkeypatch, tmp_path):
     assert any(cmd[:2] == ["du", "-sk"] for cmd, _ in calls)
 
 
-def test_clone_removes_post_clone_repo_when_du_exceeds_limit(monkeypatch, tmp_path):
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: gh를 쓰지 못하는 환경에서 clone
-    후 실제 디스크 사용량 상한과 초과 디렉터리 삭제를 빼면 실패한다."""
+def test_clone_keeps_a_big_working_tree_instead_of_giving_up(monkeypatch, tmp_path):
+    """크기만으로 재현을 포기하던 동작을 되살리면 실패한다.
+
+    gh를 쓰지 못해도 clone 뒤 큰 작업 트리를 유지해야 한다(2026-09-22 설명 정정).
+    2026-09-21에 바뀐 assert와 달리 남아 있던 옛 삭제 요구를 바로잡는다."""
     clone_dest = {}
 
     def fake_run(cmd, *args, **kwargs):
@@ -299,14 +313,14 @@ def test_clone_removes_post_clone_repo_when_du_exceeds_limit(monkeypatch, tmp_pa
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["du", "-sk"]:
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=f"{dr.MAX_REPO_KB + 1}\t{cmd[-1]}", stderr=""
+                cmd, 0, stdout=f"{dr.LARGE_REPO_KB + 1}\t{cmd[-1]}", stderr=""
             )
         raise AssertionError(f"예상 밖 명령: {cmd}")
 
     monkeypatch.setattr(dr.subprocess, "run", fake_run)
     path, detail = dr._clone("https://gitlab.com/example/large", tmp_path)
-    assert (path, detail) == (None, "repo_too_large")
-    assert not clone_dest["path"].exists()
+    assert detail == "", f"크기만으로 거부했다: {detail}"
+    assert path == clone_dest["path"] and path.exists(), "받아 놓고 크기 때문에 지웠다"
 
 
 def test_reproduce_preserves_repo_too_large_in_attempt_log_and_fail_detail(monkeypatch, tmp_path):

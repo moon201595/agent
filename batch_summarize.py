@@ -76,8 +76,14 @@ async def _abstract_only_outcome(client, paper: dict | None, title: str,
             print(f"  [초록] OpenAlex 에서 보강 ({len(abstract):,}자) — {title[:40]}")
     brief = await engine.summarize_abstract(client, title, abstract) if abstract else ""
     if brief:
+        # **왜 초록만인지를 남긴다**(2026-09-21). 예전엔 `why` 를 여기서 버리고 detail 을
+        # "본문 비공개" 로 덮었다. 그래서 로그만 봐서는 링크가 없었는지 · 받다 실패했는지 ·
+        # Unpaywall 이 조용히 꺼져 있었는지 **구분할 수 없었다** — 원인을 찾으려고 운영 밖에서
+        # 논문을 손으로 다시 받아 봐야 했다(§8-184). 한 줄이면 다음엔 로그로 끝난다.
+        print(f"  [초록만] {title[:44]} — {why}")
         return {"arxiv_id": "", "status": "abstract_only", "brief": brief,
-                "detail": "본문 비공개 — 초록만 확인"}
+                "detail": f"본문 비공개 — 초록만 확인 ({why})"}
+    print(f"  [본문 실패] {title[:44]} — {why}")
     return {"arxiv_id": "", "status": "fetch_failed", "detail": why}
 
 
@@ -146,6 +152,63 @@ async def _wait_reproduction(arxiv_id: str) -> dict:
             "reason": "작업 종료 후 결과 기록을 확인하지 못함"}
 
 
+async def _fetch_open_access(client, pdf_url: str, title: str, doi: str) -> tuple[dict | None, str]:
+    """arXiv 밖 논문의 본문을 받아 본다. 못 받으면 `(None, 왜)` 를 돌려준다.
+
+    **S2 의 openAccessPdf 는 못 믿는다.** 2026-09-04 실측: 그 링크를 가진 5편 중 1편은 403,
+    4편은 PDF 가 아니라 초록·로그인 HTML 이 왔다. 링크가 있다는 것과 받을 수 있다는 건 다르다.
+    2026-09-21 실측도 같다 — MDPI 는 403(브라우저 UA 로도 동일), nature.com 은 3KB 봇월을 200 으로 준다.
+
+    **Unpaywall 을 링크가 없을 때도 묻는다**(2026-09-21). 예전엔 이 폴백이 `except` 안에만
+    배선돼 있어서 **"링크가 처음부터 없음" 갈래는 DOI 를 쥐고도 바로 초록으로 갔다.** 본문을 못 받는
+    갈래가 셋(링크 없음 / 수집 실패 / Unpaywall 도 실패)인데 회수 시도는 한 곳에만 있었다 —
+    `_abstract_only_outcome` 과 같은 교훈이고, 이번엔 **시도하는 쪽**을 모은다.
+
+    **회수율을 과장하지 않는다.** 2026-09-04 정정: Unpaywall 이 URL 을 돌려준다는 것만 보고 20% 라고
+    썼는데 그 URL 이 실제로 PDF 를 주는지는 안 봤다 — 끝까지 받아보니 5편 중 0편이었다.
+    2026-09-21 실측도 낮다: 그날 저널 13편 중 OpenAlex 기준 PDF 직링크가 있는 건 2편이고 그 2편도
+    실제로 받으면 실패했다. 그래도 남겨 둔다 — 저장소(PMC·기관 리포지터리)에 사본이 있는 논문에는
+    실제로 듣는다. 다만 "이걸 넣었으니 해결됐다"고 세지 않는다.
+    """
+    tried: set[str] = set()
+    why = "본문을 받을 링크가 없음"
+    if pdf_url:
+        tried.add(pdf_url)
+        try:
+            return await server.fetch_pdf_from_url(
+                pdf_url, title, source_note=f"open-access: {doi or pdf_url}"), ""
+        except Exception as e:  # noqa: BLE001 — 링크가 초록·로그인 페이지인 경우가 흔하다
+            why = f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}"
+    if not doi:
+        return None, why
+    # **주소가 없으면 Unpaywall 은 조용히 꺼진다**(server.py 의 UNPAYWALL_EMAIL 가드).
+    # 그 침묵 때문에 이 폴백이 한 번도 안 돈 것을 몇 주 동안 못 봤다(2026-09-21, §8-184).
+    # 그래서 꺼져 있다는 것을 **이유 문자열에 남긴다** — server 의 계약은 그대로 둔다.
+    if not getattr(server, "UNPAYWALL_EMAIL", ""):
+        return None, f"{why} · Unpaywall 미설정(UNPAYWALL_EMAIL)"
+    try:
+        alt = await server.resolve_unpaywall_pdf(doi)
+    except Exception as alt_err:  # noqa: BLE001 — 원래 실패로 되돌린다
+        # 왜 실패했는지는 남긴다. 조용히 삼키니 "폴백이 왜 안 걸렸나"를 로그만으로는 알 수 없었다.
+        return None, f"{why} · Unpaywall 조회 실패({type(alt_err).__name__})"
+    url = (alt or {}).get("url") or ""
+    if url and url in tried:
+        # **"이미 실패한 그 URL" 과 "사본이 없음" 은 다르다**(2026-09-21 Codex 검토 B3).
+        # 둘을 한 문구로 합치면 로그를 근거로 "이 논문은 OA 가 아니다" 라고 잘못 읽는다.
+        return None, f"{why} · Unpaywall 도 같은 URL 만 알고 있음"
+    if not url:
+        # resolver 는 best_oa_location 하나만 본다 — 모든 사본의 부재를 증명하지 않는다.
+        return None, f"{why} · Unpaywall 의 대표 사본 없음"
+    try:
+        got = await server.fetch_pdf_from_url(
+            url, title or (alt or {}).get("title") or "",
+            source_note=f"open-access(unpaywall): {doi}")
+    except Exception as e:  # noqa: BLE001
+        return None, f"{why} · Unpaywall 사본도 수집 실패({type(e).__name__})"
+    print(f"  [본문] Unpaywall 로 복구 — {title[:40]}")
+    return got, ""
+
+
 async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=None,
                           paper: dict | None = None, wait_for_repro: bool = False,
                           skip_arxiv_fetch: bool = False) -> dict:
@@ -167,51 +230,10 @@ async def _process_paper(client: httpx.AsyncClient, arxiv_id: str, on_progress=N
         pdf_url = (paper or {}).get("open_access_pdf")
         title = (paper or {}).get("title") or ""
         doi = (paper or {}).get("doi") or ""
-        if not pdf_url:
-            # 링크가 아예 없어도 초록은 볼 수 있다 — 여기서 튕기지 않는다.
-            return await _abstract_only_outcome(
-                client, paper, title, doi, "본문을 받을 링크도 초록도 없음")
-        try:
-            fetched = await server.fetch_pdf_from_url(
-                pdf_url, title, source_note=f"open-access: {doi or pdf_url}")
-        except Exception as e:  # noqa: BLE001 — 링크가 초록·로그인 페이지인 경우가 흔하다
-            # **S2 의 openAccessPdf 는 못 믿는다.** 2026-09-04 실측: 그 링크를 가진
-            # 5편 중 1편은 403, 4편은 PDF 가 아니라 초록·로그인 HTML 이 왔다.
-            # 링크가 있다는 것과 받을 수 있다는 건 다르다.
-            #
-            # 그래서 DOI 로 Unpaywall 에 한 번 더 묻는다. `resolve_unpaywall_pdf`
-            # 는 이미 있는데 이 경로에서만 배선이 빠져 있었다.
-            #
-            # **회수율을 처음에 20% 라고 썼는데 틀렸다(같은 날 정정).** Unpaywall 이
-            # URL 을 *돌려준다*는 것만 확인하고 그 URL 이 실제로 PDF 를 주는지는
-            # 안 봤다 — S2 필드에서 지적한 바로 그 실수를 한 층 위에서 반복한
-            # 것이다. 끝까지 받아보니 nature.com 이 그 직링크에도 HTML 을 준다
-            # (봇 차단). `oa_locations` 도 그 하나뿐이라 다른 경로가 없다.
-            # **실측 회수율은 5편 중 0편.**
-            #
-            # 그래도 남겨 둔다: 실패한 경로에서 무료 호출 하나를 더 쓸 뿐이고,
-            # 저장소(PMC·기관 리포지터리)에 사본이 있는 논문에는 실제로 듣는다.
-            # 다만 "이걸 넣었으니 해결됐다"고 세지 않는다.
-            fetched = None
-            if doi:
-                try:
-                    alt = await server.resolve_unpaywall_pdf(doi)
-                    if alt and alt.get("url") and alt["url"] != pdf_url:
-                        fetched = await server.fetch_pdf_from_url(
-                            alt["url"], title or alt.get("title") or "",
-                            source_note=f"open-access(unpaywall): {doi}")
-                        print(f"  [본문] Unpaywall 로 복구 — {title[:40]}")
-                except Exception as alt_err:  # noqa: BLE001 — 원래 실패로 되돌린다
-                    # 왜 실패했는지는 남긴다. 조용히 삼키니 "폴백이 왜 안 걸렸나"를
-                    # 로그만으로는 알 수 없었다(2026-09-04 실측 중 실제로 겪음).
-                    print(f"  [본문] Unpaywall 폴백도 실패({type(alt_err).__name__}) — "
-                          f"초록으로 간다")
-                    fetched = None
-            if fetched is None:
-                # Unpaywall 로도 안 되면 이 논문은 앞으로도 초록밖에 못 본다.
-                return await _abstract_only_outcome(
-                    client, paper, title, doi,
-                    f"오픈액세스 PDF 수집 실패: {type(e).__name__} {str(e)[:120]}")
+        fetched, why = await _fetch_open_access(client, pdf_url, title, doi)
+        if fetched is None:
+            # 본문을 못 받아도 초록은 볼 수 있다 — 여기서 튕기지 않는다.
+            return await _abstract_only_outcome(client, paper, title, doi, why)
         arxiv_id = fetched["arxiv_id"]
         print(f"[{arxiv_id}] 오픈액세스 PDF 수집됨 ({fetched.get('text_chars', 0):,}자) — {title[:40]}")
         fetch_result = fetched

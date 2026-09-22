@@ -243,3 +243,56 @@ def test_개념_접기는_실제_변형_쌍만_접는다():
     """Codex 검토(2026-09-16). 이 테스트가 잡는 것: 모든 '-based' 를 접어 'model-based control' 과 'model control' 을 한 개념으로 만드는 것."""
     assert ps.concept_key("model-based control") != ps.concept_key("model control")
     assert ps.concept_key("LLM-based agent") == ps.concept_key("LLM agent")
+
+
+def test_앵커는_외따로_떨어진_한_편이_정하지_않는다():
+    """이 테스트가 잡는 것: **띠 앵커를 "최신 1편"으로 되돌리는 것.**
+
+    2026-09-21 실측(§8-184) 그대로의 모양이다 — team_ai_advance 후보가
+    9/20 **1편** · 9/19 **1편** · 9/18 4편 · 9/17 68편이었는데, 맨 앞 1편이 앵커를 9/20 으로 올려
+    9/17 자 68편을 통째로 띠 1 로 내보냈다. 계층 다음이 띠라 그 아래 항목은 볼 것도 없이 밀린다 —
+    내용 5자리가 전부 저널로 넘어갔고 본문을 못 받아 초록 정리만 나갔다. 38스캔 중 19건이 이 상태였다.
+
+    **출처로 가르지 않는다** — 이 픽스처에 arXiv·저널 구분은 없다. 고치는 것은 앵커가 표본 한 점에
+    흔들리는 것뿐이다."""
+    tip = _paper("tip", "target term only", _day(0))                        # 꼬리 1편
+    thin = _paper("thin", "target term only", _day(1))                      # 그다음도 1편
+    mass = [_paper(f"m{i}", "target term only", _day(2)) for i in range(4)]  # 여기서부터 무리
+    double = _paper("double", "target term and trend term", _day(3))        # 무리 안의 2개념
+    got = _order([tip, thin, *mass, double])
+    assert got[0] == "double", (
+        "앵커가 '최신 1편'이면 무리가 띠 1 로 밀려 tip 이 먼저 온다 — 지지 규칙이 빠졌다. "
+        f"실제 순서: {got[:3]}")
+
+
+def test_앵커가_물러나는_거리에는_상한이_있다():
+    """이 테스트가 잡는 것: **무관한 후보 하나가 앵커를 멀리 끌어내리는 것**(2026-09-21 Codex 검토 A4).
+
+    지지 규칙을 "셋째로 최신인 날" 로 짜면 후보가 정확히 셋일 때 그 셋째가 **가장 오래된 날**이라
+    앵커가 거기까지 끌려간다. 실측: 9/21 한 편과 9/11 한 편만 있을 때 순서는 `new → old` 인데,
+    **무관한 하위 계층 한 편(9/10)을 넣자 앵커가 11일 당겨지며 모든 띠가 0 이 되어 뒤집혔다.**
+    §8-150 에서 무적중 후보를 앵커에서 뺀 것과 같은 이유 — 무관한 후보가 상위 두 편의 순서를
+    바꾸면 안 된다."""
+    profile = {"core_topics": ["target term", "trend term", "low term"],
+               "core_weights": {"target term": 1.0, "trend term": 1.0, "low term": 0.1},
+               "target_domain": [], "exclude": []}
+    new = _paper("new", "target term only", _day(0))
+    old = _paper("old", "target term and trend term", _day(10))
+    low = _paper("low", "low term only", _day(11))            # 무관·하위 계층
+
+    def order(papers):
+        return [p["arxiv_id"] for p in ps.score_and_rank(papers, profile)["papers"]]
+
+    assert order([new, old])[:2] == ["new", "old"]
+    assert order([new, old, low])[:2] == ["new", "old"], "무관한 한 편이 상위 두 편의 순서를 바꿨다"
+
+
+def test_앵커_지지_규칙은_표본이_작으면_적용하지_않는다():
+    """이 테스트가 잡는 것: 후보가 둘뿐인데도 셋째를 찾아 앵커를 과거로 끌어내리는 것.
+
+    표본이 작으면 무엇이 꼬리인지 말할 수 없다. 기존 계약(T13 — 띠를 넘는 오래된 논문은 결합이
+    많아도 뒤)이 그대로 서야 한다."""
+    newest_single = _paper("d0-single", "target term only", _day(0))
+    old_double = _paper("d3-double", "target term and trend term", _day(3))
+    assert _order([old_double, newest_single]) == ["d0-single", "d3-double"]
+    assert ps.band_anchor([]) is None

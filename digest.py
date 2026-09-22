@@ -412,7 +412,9 @@ _REPRO_LABELS = {
     ("clone", "clone_timeout"): "[재현 – 클론 시간 초과]",
     ("clone", "clone_failed"): "[재현 – 클론 실패]",
     ("clone", "unsupported_host"): "[재현 – 클론 불가 호스트]",
-    ("clone", "repo_too_large"): "[재현 – 저장소가 상한(500MB)보다 큼]",     # 2026-09-16 보안 상한(docker_runner.MAX_REPO_KB)
+    # 2026-09-21 에 크기 거부를 없앴다 — **새로 생기지 않는 값**이지만 옛 기록(4건)이 DB 에 남아 있어
+    # 라벨은 둔다. 지우면 지난 메일·운영 화면이 "알 수 없음"으로 바뀐다.
+    ("clone", "repo_too_large"): "[재현 – 저장소가 커서 건너뜀 (2026-09-21 이전 기준)]",
 }
 
 # fail_detail 이 없는 구형 행(2026-09-01 이전 29건)은 stage 만으로 판정한다.

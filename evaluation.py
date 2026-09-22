@@ -149,9 +149,18 @@ def semantic_metrics(labels: dict[str, str] | None, ranked_keys: list[str], k: i
 # ── 재생 (§11.6) — 시점 누수 방지 ─────────────────────────────────────────
 def replay(db: Path, profile_id: str, cutoff: datetime, k: int) -> dict:
     """cutoff 까지의 관측만으로 스냅샷을 만들고, **그 시점 scan_runs 의 프로필 스냅샷**
-    으로 재채점한다("당시 입력·정책으로 재생"). cutoff 이후 관측은 안 쓴다.
+    으로 재채점한다. cutoff 이후 관측은 안 쓴다.
     관측 도입 전이면 not_replayable — 개체 테이블로 부분 재생을 시도하지 않는다
-    (그 테이블은 최신 상태라 당시 입력이 아니다)."""
+    (그 테이블은 최신 상태라 당시 입력이 아니다).
+
+    **"당시 입력" 이지 "당시 정책" 이 아니다**(2026-09-21 Codex 검토 B5). 정렬은 **지금 코드**로
+    한다 — 옛 정책 분기를 들고 있지 않기 때문이다. 그런데 예전엔 결과에 **DB 에 적힌 옛
+    policy_version 을 그대로 붙여** 돌려줬다. 옛 정책으로 매긴 순위인 것처럼 읽힌다.
+    실측(Codex): 옛 `…dateband3` 스냅샷을 재생하면 순위는 지금 `anchor3` 규칙의 것인데
+    라벨만 `dateband3` 였다. 정책 버전을 올릴 때마다 이 거짓 기록이 쌓인다.
+    그래서 **셋을 나눠 돌려준다** — `snapshot_policy`(당시), `scored_with`(지금 실제로 쓴 것),
+    `policy_match`(둘이 같은가). `policy_version` 은 **실제로 쓴 정책**을 가리키게 바꿨다.
+    """
     import profile_impact
     with sqlite3.connect(db) as con:
         row = con.execute(
@@ -164,7 +173,12 @@ def replay(db: Path, profile_id: str, cutoff: datetime, k: int) -> dict:
     if snap["paper_count"] == 0:
         return {"status": NOT_REPLAYABLE, "reason": "no_observations_before_cutoff"}
     ranked = profile_scoring.score_and_rank(snap["papers"], profile)["papers"]
-    return {"status": "replayed", "cutoff": cutoff.isoformat(), "policy_version": row[1],
+    now_policy = research_profile.RANK_POLICY_VERSION
+    return {"status": "replayed", "cutoff": cutoff.isoformat(),
+            "policy_version": now_policy,          # 실제로 순위를 매긴 정책
+            "snapshot_policy": row[1],             # 그 스캔에 적혀 있던 정책
+            "scored_with": now_policy,
+            "policy_match": row[1] == now_policy,  # 다르면 "당시 정책 재생" 이 아니다
             "snapshot_id": snap["snapshot_id"], "papers": snap["paper_count"],
             "topk": [p["_paper_key"] for p in ranked[:k]], "eligible": len(ranked)}
 
