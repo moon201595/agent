@@ -115,3 +115,29 @@ def test_the_mail_report_day_follows_the_same_calendar_as_the_shell():
         assert rps.is_weekly_review_day(moment), f"{day} 는 셸이 weekly 인데 메일이 아니라고 한다"
     ordinary = datetime(2026, 10, 7, 5, 5, tzinfo=KST).astimezone(timezone.utc)
     assert not rps.is_weekly_review_day(ordinary)                    # 그 주에 두 번 싣지 않는다
+
+
+def test_the_watchdog_calls_a_late_briefing_late_not_normal(tmp_path, capsys):
+    """이 테스트가 잡는 것: **늦게 나간 날을 "정상" 이라고 부르는 것.**
+
+    2026-09-22 실측(§8-190): PC 가 최신 대기에서 05:00 에 안 깨어나 스캔이 **09:53 에야** 시작했는데,
+    10:30 감시 회차는 `정상: … 종료·저장·발송 확인` 을 찍었다. "오늘 안에 나갔나" 만 보고
+    "제때 나갔나" 는 안 봤기 때문이다 — 사용자가 먼저 알아챘고 감시는 조용했다.
+    `_late_start` 를 빼거나 임계치를 없애면 이 테스트가 실패한다."""
+    import importlib
+    sys.path.insert(0, str(ROOT / "scripts"))
+    check = importlib.import_module("check_daily_mail")
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+
+    day = date(2026, 9, 22)                                   # 화요일 — 근무일
+    boundary = datetime(2026, 9, 21, 20, 0, tzinfo=timezone.utc)   # 9/22 05:00 KST
+    now = datetime(2026, 9, 22, 1, 30, tzinfo=timezone.utc)        # 9/22 10:30 KST 점검 회차
+
+    on_time = "=== 2026-09-21T20:00:01Z 시작 (pid 1) ===\n"
+    late    = "=== 2026-09-22T00:53:41Z 시작 (pid 2) ===\n"      # 09:53 KST
+
+    assert check._late_start(on_time, boundary, now) == "", "제때 시작을 지연이라 부르면 안 된다"
+    msg = check._late_start(late, boundary, now)
+    assert msg, "05:00 예정인데 09:53 에 시작한 것을 지연으로 잡지 못했다"
+    assert "09:53" in msg and "4.9시간" in msg, msg

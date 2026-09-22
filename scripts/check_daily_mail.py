@@ -55,6 +55,33 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+LATE_AFTER = timedelta(hours=2)   # 05:00 예정에서 2시간 — 이보다 늦게 시작하면 "제때" 가 아니다
+
+
+def _late_start(log_text: str, boundary: datetime, now: datetime) -> str:
+    """오늘 실행이 **예정보다 늦게** 시작했으면 그 사실을 한 줄로 돌려준다.
+
+    왜 필요한가(2026-09-22 실측): 9/22 에 PC 가 최신 대기(S0ix)에서 05:00 에 안 깨어나
+    스캔이 **09:53 에야** 시작했다. 그런데 이 감시는 10:30 회차에서 `정상: … 종료·저장·발송 확인`
+    을 찍었다 — **"오늘 안에 나갔나" 만 보고 "제때 나갔나" 는 안 봤기 때문**이다.
+    사용자가 먼저 알아챘고 감시는 조용했다. 그건 감시가 아니다.
+
+    06:30 회차는 기계가 자고 있으면 cron 자체가 안 돈다(WSL 이 같이 잔다) — 그건 여기서 못 고친다.
+    고칠 수 있는 것은 **깨어난 뒤의 회차가 늦었다는 사실을 말하게 하는 것**이다.
+    실행 기록(5회 정시 / 3회 지연, 9/14~9/22)이 있으니 지연은 예외가 아니라 반복되는 상태다.
+    """
+    starts = [s for s in _run_starts(log_text) if boundary <= s <= now]
+    if not starts:
+        return ""
+    first = min(starts)
+    late = first - boundary
+    if late < LATE_AFTER:
+        return ""
+    local = first.astimezone(KST)
+    return (f"오늘 스캔이 예정(05:00)보다 {late.total_seconds() / 3600:.1f}시간 늦게 시작했다 "
+            f"(실제 {local:%H:%M} KST) — PC 가 제때 안 깨어났을 수 있다")
+
+
 def _operational_day(now: datetime) -> tuple[date, datetime]:
     """05:00 KST 경계를 UTC 전날 20:00 으로 환산해 운영일을 정한다(time_policy)."""
     local_day = now.astimezone(KST).date()
@@ -215,6 +242,14 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
         return 1
 
     if not reasons:
+        # **늦게라도 나간 것과 제때 나간 것을 같은 말로 부르지 않는다**(2026-09-22, §8-190).
+        # 경보(2)까지 올리지는 않는다 — 메일은 결국 나갔고, 늑대소년이 되면 진짜 고장을 못 본다.
+        late = _late_start(args.log.read_text(encoding="utf-8") if args.log.exists() else "",
+                           boundary, current)
+        if late:
+            print(f"지연: {today.isoformat()} KST 브리핑은 나갔지만 늦었다")
+            print(f"- {late}")
+            return 0
         print(f"정상: {today.isoformat()} KST 브리핑 종료·저장·발송 확인")
         return 0
 
