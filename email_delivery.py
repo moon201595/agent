@@ -85,6 +85,23 @@ def send_digest_email(
     # 공백은 앱 비밀번호에 유효한 문자가 아니라 표시용 구분자일 뿐이라 지워도
     # 안전하다.
     password = password.replace(" ", "")
+    # SMTP 직전 최종 링크 감사(2026-09-30) — 메일에 실린 모든 링크를 한 번 더 본다. 막힌 링크만 글자로 바꾸고 메일은 보낸다(규칙 6).
+    # 로그에는 호스트와 이유만 남긴다 — 반응 버튼 URL 에는 수신자별 서명 토큰이 들어 있다.
+    import link_policy
+    digest_text, digest_html, blocked = link_policy.audit_mail(digest_text, digest_html)
+    if blocked:
+        try:                                            # 로그가 발송을 막으면 안 된다(Codex 검토 2026-09-30: `https://[oops` 가 여기서 터졌다)
+            from urllib.parse import urlparse
+
+            def host(u: str) -> str:
+                try:
+                    return urlparse(u).hostname or u[:20]
+                except ValueError:
+                    return u[:20]
+            shown = sorted({f"{host(u)}: {why}" for u, why in blocked})
+            print(f"[링크 감사] {len(blocked)}건을 링크 없이 보냄 — " + " · ".join(shown[:8]))
+        except Exception:  # noqa: BLE001
+            print(f"[링크 감사] {len(blocked)}건을 링크 없이 보냄")
     msg = build_message(digest_text, subject, sender, recipients, digest_html)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()

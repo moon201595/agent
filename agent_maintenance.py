@@ -45,7 +45,14 @@ MAX_REACTED_PAPERS = 40                     # 입력 크기 상한(변경 개수
 MAX_TERM_CHARS = 80
 MAX_REASON_CHARS = 200
 PROMPTS = Path(__file__).resolve().parent / "prompts"
-PROMPT_VERSION = "agent-v2-trend"
+PROMPT_VERSION = "agent-v3-external"
+# 외부 정찰 근거만으로 추가하는 키워드의 가중치 상한(2026-09-30). 사용자 반응도 동향 근거도 없이 **외부에서 본 것만으로** 사용자의 주 관심
+# (기본 1.0)과 같은 계층에 넣지 않는다 — 메일 구성이 외부 모델의 발견으로 바뀌는 폭을 줄인다. 반응이 붙으면 feedback_weights 가 올린다.
+EXTERNAL_WEIGHT_MAX = 0.7
+EXTERNAL_MIN_MISSED = 2           # 외부 근거로 키워드를 더하려면 **에이전트가 실제로 놓친** 서로 다른 외부 논문 2편 이상에 그 용어가 있어야 한다
+BASIS_LABELS = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거", "maintenance": "관측 근거",
+                "external": "외부 정찰 근거", "feedback+external": "반응·외부 정찰 근거", "trend+external": "동향·외부 정찰 근거",
+                "feedback+trend+external": "반응·동향·외부 정찰 근거"}
 
 TREND_REASONS = {
     "related_direction": "현재 관심 분야와 연결되는 연구 방향을 동향 자료에서 확인해 반영",
@@ -164,6 +171,7 @@ class Brief:
     keyword_ids: dict[str, str]     # K id → 핵심 키워드
     base_revision: int
     liked_texts: list[str] = field(default_factory=list)   # 좋다고 반응한 **모든** 논문(창·상한 무관) — 제외어 보호용, 모델엔 안 간다
+    external: dict[str, dict] = field(default_factory=dict)  # E id → {gap_stage} — 외부 정찰의 검증된 근거(external_scout)
 
     @property
     def evidence_ids(self) -> set[str]:
@@ -173,7 +181,8 @@ class Brief:
         """반응 또는 읽을 동향 자료가 있으면 모델이 변경 필요성을 판단한다."""
         prof = self.data["profile"]
         stale_auto = any(k["origin"] in AUTO_ORIGINS and k["hits_28d"] == 0 for k in prof["core"]) and prof["scans_28d"] >= 7
-        return bool(self.data["reactions"] or stale_auto or self.data.get("trend", {}).get("records"))
+        return bool(self.data["reactions"] or stale_auto or self.data.get("trend", {}).get("records")
+                    or self.data.get("external", {}).get("items"))
 
 
 
@@ -307,6 +316,17 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
     import agent_trend_evidence
     trend = agent_trend_evidence.collect(db, profile, now)
     texts.update({r["id"]: r["text"] for r in trend["records"]})
+    # 외부 정찰(2026-09-30) — Claude 가 검증한 외부 연구만. 검증용 글(texts)은 S2 공식 제목·초록이다(정찰이 쓴 문장이 아니다).
+    import external_scout
+    external, external_ids = [], {}
+    for i, e in enumerate(external_scout.evidence_for_brief(db, profile_id, now), start=1):
+        eid = f"E{i}"
+        texts[eid] = f"{e['title']}. {_clip(e['abstract'], ABSTRACT_CHARS)}"
+        external_ids[eid] = {"gap_stage": e["gap_stage"]}
+        external.append({"id": eid, "title": e["title"], "abstract": _clip(e["abstract"], ABSTRACT_CHARS), "venue": e["venue"],
+                         "source_type": e["source_type"], "published": e["published"], "gap_stage": e["gap_stage"],
+                         "manufacturing_relation": e["manufacturing_relation"], "candidate_terms": e["candidate_terms"],
+                         "performance_verified": e["performance_verified"]})
     data = {
         "trend": trend,
         "profile": {"id": profile_id, "name": profile["name"], "scans_28d": scans,
@@ -315,9 +335,11 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                     "target_domain": list(profile["target_domain"]), "exclude": list(profile["exclude"])},
         "reactions": reactions, "liked_terms": liked_terms,
         "missed_terms": missed_terms, "missed_papers": missed_papers,
+        "external": {"items": external},
     }
     return Brief(data=data, texts=texts, reactions=reaction_ids, keyword_ids=keyword_ids,
-                 base_revision=research_profile.current_revision(db, profile_id), liked_texts=liked_texts)
+                 base_revision=research_profile.current_revision(db, profile_id), liked_texts=liked_texts,
+                 external=external_ids)
 
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
@@ -345,7 +367,7 @@ def _liked(brief: Brief, evidence_id: str) -> bool:
 
 
 # 한글 조사는 유니코드 단어 문자라 \b 가 "X4의" 사이에서 안 끊긴다 — 경계를 영숫자 기준 lookaround 로 직접 건다.
-_ID = r"(?<![A-Za-z0-9])[RXK]\d+(?![0-9A-Za-z])"
+_ID = r"(?<![A-Za-z0-9])[RXKE]\d+(?![0-9A-Za-z])"
 _EVIDENCE_ID_RE = re.compile(rf"\(?{_ID}(?:\s*[·,/]\s*{_ID})*\)?(?:\s?(?:에서|의|에|는|은|이|가)(?![가-힣]))?")
 
 
@@ -413,10 +435,12 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
             a["reason_code"] = raw["reason"]
             a["reason"] = TREND_REASONS[raw["reason"]]
             a["source_evidence"] = [trend_records[e] for e in trend_ev]
-        a["basis"] = ("feedback" if any(e in brief.reactions for e in ev) else
-                      "trend" if trend_ev else "maintenance")
-        if trend_ev and any(e in brief.reactions for e in ev):
-            a["basis"] = "feedback+trend"
+        # 외부 근거: 이 용어가 공식 제목·초록에 있는 E. "놓친" 것(검색이 못 가져옴·핵심어 미적중·자리 탈락)만 세어 둔다.
+        ext_ev = [e for e in ev if e in brief.external and _in_text(term, brief.texts.get(e, ""))]
+        missed_ev = {e for e in ext_ev if brief.external[e]["gap_stage"] in ("not_retrieved", "no_core_hit", "ranked_out")}
+        parts = [name for name, on in (("feedback", any(e in brief.reactions for e in ev)), ("trend", bool(trend_ev)),
+                                       ("external", bool(ext_ev))) if on]
+        a["basis"] = "+".join(parts) or "maintenance"
         if op in ("add_keyword", "set_weight"):
             w = a["weight"]
             if isinstance(w, bool) or not isinstance(w, (int, float)) or not (WEIGHT_MIN <= float(w) <= WEIGHT_MAX):
@@ -438,8 +462,16 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
             if not any(e in brief.texts and _in_text(term, brief.texts[e]) for e in ev):
                 reject(a, "term_not_in_evidence"); continue
             # 2026-09-18 사용자 결정: 반응 우선은 유지하되, 명시적으로 인용한 동향 근거도 허용한다.
-            if not trend_ev and not any(_liked(brief, e) and _in_text(term, brief.texts[e]) for e in ev):
-                reject(a, "no_liked_evidence"); continue
+            liked_ok = any(_liked(brief, e) and _in_text(term, brief.texts[e]) for e in ev)
+            if not trend_ev and not liked_ok:
+                # 2026-09-30: 외부 정찰 근거로도 된다 — 단 **에이전트가 실제로 놓친 서로 다른 외부 논문 2편 이상**(일회성·이미 잡은 것 제외),
+                # 가중치 상한, 그리고 사용자가 관심 밖으로 표시한 논문의 말이면 안 된다(규칙 1 — 사용자 반응이 외부 발견보다 먼저다).
+                if len(missed_ev) < EXTERNAL_MIN_MISSED:
+                    reject(a, "no_liked_evidence" if not ext_ev else "external_not_missed_twice"); continue
+                if a["weight"] > EXTERNAL_WEIGHT_MAX:
+                    reject(a, "external_weight_too_high"); continue
+                if any(c["out"] > 0 and _in_text(term, brief.texts.get(r, "")) for r, c in brief.reactions.items()):
+                    reject(a, "conflicts_user_reaction"); continue
             core[term] = {"weight": a["weight"], "origin": "agent"}
         elif op == "set_weight":
             if not known_core:
@@ -829,8 +861,7 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
         for a in json.loads(applied or "[]"):
             w = f" {a['weight']:g}" if a.get("weight") is not None else ""
             why = reader_reason(a.get("reason") or "")
-            basis = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거",
-                     "maintenance": "관측 근거"}.get(a.get("basis"), "")
+            basis = BASIS_LABELS.get(a.get("basis"), "")
             lines.append(f"   - {OP_LABELS.get(a['op'], a['op'])}: {a['term']}{w}" + (f" — {why}" if why else "")
                          + (f" [{basis}]" if basis else ""))
         imp = json.loads(impact_raw) if impact_raw else None
@@ -860,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile", action="append", help="이 프로필만(여러 번 가능). 생략하면 전체")
     ap.add_argument("--force", action="store_true", help="이번 주에 이미 돌았어도 다시")
     ap.add_argument("--brief-only", action="store_true", help="모델을 부르지 않고 브리프만 출력")
+    ap.add_argument("--no-scout", action="store_true", help="외부 정찰을 건너뛰고 주간 관리만")
     args = ap.parse_args(argv)
     db = Path(args.db)
     if args.brief_only:
@@ -867,6 +899,13 @@ def main(argv: list[str] | None = None) -> int:
             b = build_brief(db, pid)
             print(json.dumps(b.data if b else None, ensure_ascii=False, indent=1))
         return 0
+    if not args.profile and not args.no_scout:
+        # 외부 정찰은 주간 관리 **전에** 한 번(4개 프로필 함께). 실패해도 주간 관리는 내부 근거로 돈다.
+        try:
+            import external_scout
+            print(json.dumps(external_scout.run_weekly(db, force=args.force), ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001
+            print(f"  [외부 정찰] 생략: {type(e).__name__}")
     results = run_week(db, force=args.force, profile_ids=args.profile)
     for r in results:
         print(json.dumps(r, ensure_ascii=False))

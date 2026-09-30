@@ -115,8 +115,12 @@ def test_titles_have_no_star_rating_and_keywords_come_first():
     text, html = generate_digest(result, "p"), digest.generate_digest_html(result, "p")
     for out in (text, html):
         assert "★" not in out and "왜 걸렸나" not in out
-        assert "핵심 키워드: defect detection, NPU / 도메인 일치: wafer" in out
-    assert "1. 표적 논문" in text and "1. 표적 논문" in html
+    # 평문은 한 줄 글, HTML 은 칩이다(2026-09-30 사용자 시안). **키워드가 사라지지 않는다**는 불변식은 둘 다 같다.
+    assert "핵심 키워드: defect detection, NPU / 도메인 일치: wafer" in text
+    for kw in (">defect detection<", ">NPU<", ">도메인: wafer<"):
+        assert kw in html, f"HTML 에서 적중 키워드 칩이 사라졌다: {kw}"
+    assert "1. 표적 논문" in text
+    assert ">1.</span>" in html and "표적 논문" in html          # HTML 은 번호와 제목이 따로 칠해진다
     lines = text.splitlines()
     assert lines[lines.index("1. 표적 논문") + 1].strip().startswith("핵심 키워드")
 
@@ -621,9 +625,32 @@ def test_abstract_only_paper_stays_inside_its_own_toggle():
                         "domain_hits": [], "venue_hit": None, "top_core_weight": 1.0}}
     html = digest._paper_entry_html(2, paper)
 
-    assert html.startswith("<details")           # 상자 안에 있다
-    assert html.rstrip().endswith("</details>")  # 밖으로 안 샌다
-    assert "2. 초록만 있는 논문" in html          # 번호가 있다(별점 괄호는 2026-09-15 제거)
+    # 2026-09-30 시안: 카드 바깥 상자가 details 에서 div 로 바뀌었다. 불변식은 같다 — **한 상자로 시작해 그 상자로 끝난다.**
+    assert html.startswith("<div")               # 상자 안에 있다
+    assert html.rstrip().endswith("</div>")      # 밖으로 안 샌다
+    assert html.count("<div") == html.count("</div>")   # 상자가 중간에 닫혀 뒤 내용이 새지 않는다
+    assert "<details" in html and "</details>" in html  # 긴 요약은 여전히 접힘 안에
+    # 개수·시작·끝만으로는 부모 관계를 못 본다(Codex 검토 2026-09-30: `<details>` 앞에 `</div><div>` 를 끼워도 통과했다).
+    # 파서로 **바깥 카드가 끝까지 한 번만 열려 있고** 토글·버튼이 그 안에 있는지 본다.
+    from html.parser import HTMLParser
+    seen = {"depth": 0, "closed_at_top": 0, "details_depth": None}
+
+    class Tree(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "details" and seen["details_depth"] is None:
+                seen["details_depth"] = seen["depth"]
+            if tag == "div":
+                seen["depth"] += 1
+
+        def handle_endtag(self, tag):
+            if tag == "div":
+                seen["depth"] -= 1
+                if seen["depth"] == 0:
+                    seen["closed_at_top"] += 1
+    Tree().feed(html)
+    assert seen["closed_at_top"] == 1                    # 바깥 카드는 맨 끝에서 한 번만 닫힌다
+    assert seen["details_depth"] and seen["details_depth"] >= 1   # 토글은 카드 안에 있다
+    assert ">2.</span>" in html                  # 번호가 있다(별점 괄호는 2026-09-15 제거)
     assert "초록만 있는 논문" in html              # 제목이 있다
     assert "doi.org/10.1/x" in html              # 링크가 있다
     assert "결함을 검출한다" in html               # 내용도 그대로
@@ -1457,12 +1484,16 @@ def test_branch_inline_title_lists_are_reflowed_one_per_line():
 
 
 def test_chips_are_visible_while_collapsed(isolated_db):
-    """2026-09-12: 토글이 닫힌 채로 오므로 검증·재현·철회 칩은 <summary> 안에 있어야 보인다.
-    이 테스트가 잡는 것: 칩이 </summary> 뒤(펼쳐야 보이는 자리)에 있는 것."""
+    """2026-09-12: 토글이 닫힌 채로 오므로 재현·철회·원문 칩은 접힌 상태에서도 보여야 한다.
+    이 테스트가 잡는 것: 칩이 **펼쳐야 보이는 자리**(details 본문)로 들어가는 것.
+
+    2026-09-30 시안에서 카드를 details 밖으로 꺼내 칩도 details **앞**에 둔다 — 예전(summary 안)보다 강하다.
+    예전 판은 제목 "flag 논문" 이 summary 에 있다는 것만으로도 통과했다(검증 칩 "28/31" 은 2026-09-14 에
+    메일에서 뺐으므로 원래 없다). 그래서 **재현 칩**으로 조인다 — 보통 논문이면 늘 붙는 칩이다."""
     _seed_verification(isolated_db["db"], "p1", total=31, matched=28)
     html = _html_for([_scored_paper("p1", "flag 논문", 1.0)])
-    summary = html[html.index("<summary"):html.index("</summary>")]
-    assert "28/31" in summary or "flag" in summary.lower(), "칩이 summary 안에 있어야 접힌 채로 보인다"
+    chip_at = html.index(">재현")
+    assert chip_at < html.index("<details"), "재현 칩이 details 안(펼쳐야 보이는 자리)에 있다"
 
 
 def test_summary_labels_are_bold_up_to_and_including_the_colon_for_any_label():

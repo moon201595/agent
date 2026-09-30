@@ -14,7 +14,7 @@ import feedback_links as fl
 SECRET = "s" * 40
 DEPLOY = "AKfycb" + "x" * 40
 URL = f"https://script.google.com/macros/s/{DEPLOY}/exec"
-PAGE = "https://example.github.io/agent/reaction/"
+PAGE = "https://moon201595.github.io/agent/web/reaction/"   # 2026-09-30 부터 이 저장소의 Pages 출처 하나만 받는다
 
 
 @pytest.fixture
@@ -241,7 +241,12 @@ def test_deliver_gives_each_recipient_own_buttons_and_marks_delivery(tmp_path, m
              "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}
     status = rps._deliver(db, "p", {"papers": [paper], "candidates_found": 1}, "")
     assert status.endswith("2명") and len(sent) == 2
-    hrefs = [html.split('href="')[1].split('"')[0] for _to, html in sent if "더 보고 싶음" in html]
+    # **"더 보고 싶음" 버튼의 href 를 정확히 집는다.** 예전엔 HTML 의 첫 href 가 곧 그 버튼이었는데, 2026-09-30
+    # 메일 형식 개정(사용자 시안)에서 논문 제목이 원문 링크가 되면서 첫 href 가 arXiv 주소로 바뀌었다 —
+    # 두 수신자에게 같은 주소라 이 비교가 엉뚱한 링크를 보고 있었다. 버튼 문구로 집으면 자리가 바뀌어도 맞다.
+    import re as _re
+    hrefs = [m.group(1) for _to, html in sent
+             for m in [_re.search(r'<a href="([^"]+)"[^>]*>더 보고 싶음</a>', html)] if m]
     assert len(hrefs) == 2 and hrefs[0] != hrefs[1]
     with sqlite3.connect(db) as con:
         assert con.execute("SELECT COUNT(*) FROM feedback_tokens WHERE delivered_at IS NOT NULL").fetchone()[0] == 2
@@ -335,9 +340,11 @@ def test_relay_page_source_has_no_endpoint_or_secret():
 def test_relay_page_must_be_github_pages(configured, db, monkeypatch):
     """Codex 검토(2026-09-16 P1). 이 테스트가 잡는 것: 임의 https 주소를 중계 페이지로 받아 서명 토큰이 제3자 페이지로 가는 것."""
     import summarize_engine as engine
-    for bad in ("https://evil.example/reaction/", "https://github.io.evil.test/x/", "https://example.github.io.evil/x/", "http://user.github.io/x/"):
+    for bad in ("https://evil.example/reaction/", "https://github.io.evil.test/x/", "https://example.github.io.evil/x/", "http://user.github.io/x/",
+                "https://someone.github.io/agent/web/reaction/",           # 남의 Pages — 2026-09-30 부터 막는다
+                "https://moon201595.github.io.evil.test/agent/web/reaction/", "https://x@moon201595.github.io/agent/"):
         monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", bad)
         assert fl.page_url() == "", bad
         assert fl.issue_links(db, "p", f"i-{hash(bad)}", "a@x.com", _papers())["2609.00001"]["more"].startswith(URL + "?t=")
-    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", "https://someone.github.io/agent/web/reaction/")
-    assert fl.page_url().startswith("https://someone.github.io/")
+    monkeypatch.setitem(engine.ENV, "FEEDBACK_PAGE_URL", PAGE)
+    assert fl.page_url() == PAGE

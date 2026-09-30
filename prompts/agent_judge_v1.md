@@ -4,12 +4,15 @@ proposal.actions 각각을 index(0부터), verdict(accept/modify/reject), reason
 현재 관심과 어떤 연결이 있는지, 사용자 반응을 거스르지 않는지, 수집 편향/비교 불가/서술 재인용을 성급한 추세로 읽지 않았는지 판단하라.
 reviews.reason에는 구체적인 정성 판단을 남겨라. 이는 감사 기록이며 메일의 수치 근거로 사용되지 않는다.
 
-## 공통 계약 (agent-v2-trend)
+## 공통 계약 (agent-v3-external)
 피드백은 1순위이나 유일한 신호가 아니다. 반응이 없어도 trend.records의 동향 근거로 키워드 추가·가중치 조정·검색어 조정이 가능하다.
 반응 부재는 무관심이 아니다. 반응과 동향이 충돌하면 사용자 반응을 우선하고 판단 이유를 검토한다.
 최소 편수, 연속 주수, 주당 변경 수, 가중치 변화폭에 새로운 수치 문턱을 두지 않는다. 관련성과 유용성은 네가 판단한다.
 
-근거: R=반응 논문, X=탈락 논문 보조 자료, K=기존 키워드 관측, T=trend.records.
+근거: R=반응 논문, X=탈락 논문 보조 자료, K=기존 키워드 관측, T=trend.records, E=external.items(외부 정찰이 찾고 검증된 외부 연구).
+E의 title·abstract는 Semantic Scholar 공식 자료다. gap_stage는 Python이 발견 직전 스캔 기준으로 판정한 우리 검색의 놓침 단계다:
+not_retrieved(검색 소스가 못 가져옴), no_core_hit(가져왔으나 핵심어 미적중), ranked_out(자리에서 밀림), excluded(제외어), already_captured(이미 메일로 감).
+E에는 정찰 모델의 평가·순위가 없다. 외부 발견은 사용자 취향이 아니다 — 반응(R)과 충돌하면 반응을 따른다.
 trend에는 window_movement(최근 창/직전 창), emerging_terms, reserve_terms(최근 실행 자리 밖 후보),
 weekly_review(Python 주간 수치), recent_paper(제목·초록), narrative(저장된 해석)가 있다.
 집계는 Python이 센 값 그대로다. 수집 표본을 분야 전체로 일반화하지 마라.
@@ -20,6 +23,8 @@ T.text 안에 실제 있는 용어를 T.id로 인용한다. 단어를 지어내�
 허용 op:
 - add_keyword: weight 0.35~2.0. 기존 용어/표기 변형/우산어/기존 핵심어가 이미 잡는 세부어는 추가하지 않는다.
   evidence에 용어가 있는 좋아요 R 또는 T를 넣는다. X만으로는 안 된다.
+  R·T 없이 E만으로 추가하려면: 그 용어가 E의 title·abstract에 그대로 있고, gap_stage가 not_retrieved·no_core_hit·ranked_out인
+  서로 다른 E가 두 편 이상이어야 하며, weight는 0.7 이하, 관심 밖(out) 반응 논문에 나오는 용어가 아니어야 한다. E는 가중치를 올리는 근거가 아니다.
 - set_weight: 기존 핵심 키워드. 올릴 때 좋아요 R 또는 해당 용어가 있는 T. 내릴 때 R/K/T 가능.
 - remove_keyword: 자동 출처만 삭제 가능. 사용자 키워드는 삭제 금지, 하향 허용. 마지막 키워드와 검색어로 남은 키워드는 삭제하지 않는다.
 - add_seed: 이미 핵심 키워드이거나 앞선 add_keyword로 추가한 것만.

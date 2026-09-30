@@ -353,6 +353,14 @@ async def scan_and_digest(
                 print(f"  [주간] 검색 기준 변화 {n}건을 메일에 싣는다")
         except Exception as e:  # noqa: BLE001 — 변화 보고가 실패해도 메일은 나간다
             print(f"  [주간] 검색 기준 변화 집계 실패(무시): {type(e).__name__}")
+        # 외부 정찰(2026-09-30) — 주간 관리 직전에 돈 정찰에서 **검증된** 외부 연구와, 그중 에이전트가 놓친 것. 없으면 절이 없다.
+        try:
+            import external_scout
+            scout = external_scout.mail_summary(db_path, profile_id, datetime.now(timezone.utc))
+            if scout:
+                result["external_scout"] = scout
+        except Exception as e:  # noqa: BLE001
+            print(f"  [주간] 외부 정찰 요약 실패(무시): {type(e).__name__}")
 
 
     if profile and result.get("papers"):
@@ -382,6 +390,13 @@ async def scan_and_digest(
                     paper["_sota_claims"] = claims
                     known = {e["id"] for e in paper["_evidence"]}
                     paper["_evidence"] = paper["_evidence"] + [e for e in sota_claims.evidence_packets(claims) if e["id"] not in known]
+            # 성능 동향(2026-09-30): SOTA 라는 말이 없어도 **내용 자리 논문 전부**의 표 결과를 관측 DB 에 쌓고, 다른 논문 관측값·외부 근거와
+            # 견준다(`research_frontier`). 외부 조사는 하루 2편·180초이고, 무엇이 실패해도 메일은 나간다.
+            try:
+                import research_frontier
+                research_frontier.analyze(db_path, list(result["papers"]))
+            except Exception as e:  # noqa: BLE001
+                print(f"  [성능 동향] 생략: {type(e).__name__}")
             # 최근 7일 창 — 서술 앞에서 먼저 센다. 서술에는 늘어난 "말"만 맥락으로 주고(수치는 안 준다),
             # 수치 자체는 Python 이 메일의 별도 절에 싣는다(2026-09-18, 사용자 요청 ①).
             try:

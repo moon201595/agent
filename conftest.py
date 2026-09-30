@@ -35,6 +35,55 @@ def _no_real_shadow_search(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_link_audit_network(monkeypatch):
+    """발송 직전 링크 감사(2026-09-30)가 테스트에서 실제 DNS·HTTP 를 치지 않게 한다. DNS 는 공인 주소 하나로 답하고, 리다이렉터 확인은
+    실패시킨다(= doi.org 링크는 막힌다). 감사 자체를 보는 테스트(test_mail_link_audit)는 자기 가짜를 다시 넣는다.
+    프로세스 공유 판정 캐시도 테스트마다 비운다 — 앞 테스트의 판정이 뒤 테스트로 새면 안 된다."""
+    import link_policy
+
+    def refuse(url, timeout):
+        raise ConnectionError(f"테스트에서 실제 HTTP 호출: {url!r}")
+    monkeypatch.setattr(link_policy, "_dns_lookup", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(link_policy, "_http_probe", refuse)
+    monkeypatch.setattr(link_policy, "_SHARED", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sota_lookups(monkeypatch):
+    """성능 동향·외부 신호(2026-09-30)가 테스트에서 실제 네트워크·헤드리스 에이전트를 부르지 않게 한다. S2·HF·GitHub 는 조회 실패,
+    arXiv HTML 표는 없음, 외부 조사 에이전트는 실패(= "외부 비교 미완료")로 간다. 각 모듈 테스트는 자기 가짜를 다시 넣는다."""
+    import adoption_signals
+    import external_evidence
+    import research_frontier
+
+    def refuse(url, *args, **kwargs):
+        raise ConnectionError(f"테스트에서 실제 HTTP 호출: {url!r}")
+
+    def no_agent(prompt, timeout):
+        raise ConnectionError("테스트에서 실제 헤드리스 에이전트 호출")
+    monkeypatch.setattr(adoption_signals, "_get_json", refuse)
+    monkeypatch.setattr(adoption_signals, "_post_json", refuse)
+    monkeypatch.setattr(external_evidence, "_fetch", refuse)
+    monkeypatch.setattr(external_evidence, "_run_agent", no_agent)
+    monkeypatch.setattr(research_frontier, "_arxiv_tables", lambda arxiv_id: [])
+    monkeypatch.setattr(research_frontier, "_HTML_CACHE", {})
+    monkeypatch.setattr(research_frontier, "_CALLED_ON", set())
+    monkeypatch.setattr(research_frontier, "_RESULTS", {})
+    monkeypatch.setattr(research_frontier, "_SIGNALS", {})
+
+
+@pytest.fixture(autouse=True)
+def _no_real_external_scout(monkeypatch):
+    """외부 정찰(2026-09-30)이 테스트에서 실제 Codex 웹검색·Claude·S2 를 부르지 않게 한다. 정찰 테스트는 가짜를 인자로 넘긴다."""
+    import external_scout
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("테스트에서 실제 외부 정찰 호출")
+    for name in ("_run_codex_scout", "_run_claude_verify", "_s2_batch", "_arxiv_batch"):
+        monkeypatch.setattr(external_scout, name, refuse)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_github_search(monkeypatch):
     """테스트가 GitHub 검색을 실제로 부르지 않게 한다(2026-09-16 실측: 스캔 테스트가 ⑦ 사다리를 거쳐 gh 를 세 번 불렀고 운영 DB 에 행을
     남겼다). 검색이 필요한 테스트는 자기 가짜로 다시 monkeypatch 한다 — 그러면 이 기본값을 덮는다."""

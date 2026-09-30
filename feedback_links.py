@@ -75,8 +75,10 @@ def page_url() -> str:
     url = _env("FEEDBACK_PAGE_URL")
     # 정적 호스팅(GitHub Pages)만 허용한다 — 임의 https 주소를 받으면 잘못 설정된 .env 하나로 서명 토큰이 제3자 페이지로 흘러간다
     # (Codex 검토 2026-09-16 P1). .env 를 쥔 사람은 비밀키도 쥐고 있어 실질 위험은 작지만, 검사 비용이 0 이라 막는다.
-    m = re.match(r"^https://([a-z0-9-]+)\.github\.io/", url)
-    return url if m else ""
+    # 2026-09-30: `*.github.io` 전체에서 **이 저장소의 Pages 출처 하나**로 좁혔다 — github.io 하위 도메인은 누구나 만든다.
+    # 발송 직전 감사(`link_policy.audit_mail`)도 같은 상수로 버튼을 가른다.
+    import link_policy
+    return url if url.startswith(link_policy.FEEDBACK_PAGE_PREFIX) and "@" not in url else ""
 
 
 def deploy_id(webapp_url: str) -> str:
