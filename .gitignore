@@ -24,3 +24,13 @@ skills-lock.json
 docs/patent/
 docs/paper/
 .pytest_tmp/
+
+# 발표자료 — 커밋하지 않는다(2026-09-30 사용자 결정: "깃허브에 올릴 필요가 없다"). 슬라이드·제작 스크립트·캡처·node_modules 전부.
+docs/diagrams_feedback_*/
+*.pptx
+docs/DECK_*.md
+
+# arXiv 원문 표 발췌 픽스처 중 재배포 권한이 없는 것(2026-09-30 확인): 2609.21424 = arXiv 기본 라이선스, 2609.18623 = CC BY-NC-SA.
+# CC BY 인 2609.35059 만 출처를 밝혀 커밋한다. 없으면 실제 값 테스트는 건너뛰고, 구조 계약은 합성 픽스처로 돈다.
+fixtures/arxiv_tables/2609.21424.html
+fixtures/arxiv_tables/2609.18623.html
