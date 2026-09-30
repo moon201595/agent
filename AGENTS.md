@@ -101,7 +101,12 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   제외어 조정). 셋 다 `create_profile` revision 으로 쓰고 origin 이 `feedback`·`agent` 로 갈린다. 에이전트 변경의 검증 규칙(좋아요 근거·제외어 2편·
   사용자 키워드 삭제 금지)은 프롬프트가 아니라 `agent_maintenance.validate` 가 강제한다 — 두 모델이 동의해도 통과 못 한다.
 - `mail_ledger.py`(발송 회차·논문 기록) · `ops_dashboard.py`(운영 화면 자료 — 화면 `review_app.render_research_tab` 은 그리기만) ·
-  `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시).
+  `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시) →
+  `research_frontier.py`(성능 동향 — `arxiv_tables` 표 셀 → `performance_results` → 관측 DB `frontier_store` → 하루 2편 `external_evidence` 외부 비교,
+  우열 계산 금지·"관측 범위"만) · `adoption_signals.py`(인용·공식 GitHub·HF — 성능과 섞지 않는 관측값, 판정어 없음).
+- `external_scout.py` — 주 1회 **검색 바깥** 정찰(GPT 웹검색) → S2 공식 제목·초록으로 신원 확인 → 발견 직전 스캔 기준 놓침 단계 → Claude 검증 →
+  주간 브리프 `E` 근거. 정찰의 평가·순위는 버린다. 외부 근거만으로 키워드를 더하려면 **놓친 외부 논문 2편 이상·가중치 0.7 이하·관심 밖 반응과
+  충돌 없음**(`agent_maintenance.validate`). 최종 정책은 기존 Codex 판정 단계다. `term_discovery` 는 검색 **안쪽** 사각지대 몫이다.
 - `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
 - **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
   `batch_summarize._process_paper`(새벽 스캔) **하나**다(옛 검색 화면의 `review_core._summarize_target` 은 2026-09-16 에 파일째 지웠다 —
@@ -164,6 +169,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 모든 코드 변경은 대응 테스트와 함께 커밋한다. pytest 전체 green 이 완료 조건이다.
 - 설계 결정과 실측 결과는 `docs/PROGRESS.md` 에 날짜와 함께 남긴다.
 - **에이전트는 사용자가 요청하지 않는 한 커밋·push 하지 않는다.**
+- **발표자료(pptx·deck 제작 스크립트·캡처)는 커밋하지 않는다**(2026-09-30 사용자 결정). `.gitignore` 에 있다 — 이미 추적 중인 옛 파일은 다음 커밋에서 추적만 뺀다(`git rm --cached`).
 
 ## 보안 · 안전
 
@@ -174,6 +180,8 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   **clone 은 크기로 거부하지 않는다**(2026-09-21 사용자 결정) — 크기는 재현 가능성이 아니고 판정 뒤 작업 트리는
   어차피 지운다. 실제 상한은 시간이다(clone 120초·설치 900초·실행 120초 + `--depth 1`·blob 20MB·LFS skip).
   크기는 `LARGE_REPO_KB` 를 넘으면 **로그에 남기고 그대로 진행**한다 — 재되 막지 않는다.
+- **메일 링크는 SMTP 직전에 한 번 더 감사한다**(`link_policy.audit_mail`, `email_delivery.send_digest_email` 안, 2026-09-30) — 허용 목록·DNS 공인 주소·
+  doi.org 홉별 추적·반응 버튼 정확한 출처. 막힌 링크는 글자로 남기고 메일은 보낸다. 새 링크 자리를 만들어도 이 감사를 우회하지 않는다.
 - 논문 본문은 `injection_scan` 이 인젝션 의심 패턴을 표시한다(차단은 안 한다). LLM 입력에서 논문은 데이터로만 다룬다.
 - LLM 입력에 넣어도 되는 것: 공개 논문 텍스트·제목·초록·저자·venue, 관심 키워드, 피드백 집계. 넣지 않는 것: 시크릿, 사내 문서.
 - 시크릿을 코드·로그·커밋 메시지에 남기지 않는다. `.env` 와 `data/` 는 `.gitignore` 에 있다.
