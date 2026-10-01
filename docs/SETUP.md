@@ -1,209 +1,91 @@
-# 개발 환경 사용법
+# 개발·운영 환경
 
-작성일: 2026-07-30 · 대상: `~/paper-harness` (WSL2 Ubuntu)
+최초 작성 2026-07-30 · 전면 개정 2026-10-01 · 대상: WSL2 Ubuntu 의 `~/paper-harness`
 
-## 요약
+옛 판(7~8월)은 "채팅으로 논문을 하나씩 요약"하던 시절의 사용법이었다. 지금 시스템은 매일 무인으로 돌고, 사람은 메일을 읽고
+반응 버튼을 누른다. 이 문서는 그 운영을 유지·수정하는 데 필요한 것만 남긴다. 명령·모듈의 사실은 [AGENTS.md](../AGENTS.md)가 기준이다.
 
-**매번 할 일은 사실상 없다.** VS Code 열고 채팅 열면 끝이다. 아래 "처음 한 번만" 항목은 전부 완료된 상태다.
+## 1. 평소
 
----
-
-## 1. 매번 (VS Code 켤 때)
-
-| # | 할 일 |
+| 하고 싶은 것 | 방법 |
 | --- | --- |
-| 1 | VS Code 실행 — 이전 창(`paper-harness [WSL: Ubuntu]`)이 자동으로 열린다 |
-| 2 | `Ctrl+Alt+I` 로 Claude Code 채팅 열기 |
-| 3 | 작업 |
+| 작업하기 | VS Code 를 WSL 원격 창(`paper-harness [WSL: Ubuntu]`)으로 열고 Claude Code 채팅을 연다 |
+| 오늘 운행 확인 | `logs/daily_scan.log` 끝부분, 또는 `logs/morning_report.txt` |
+| 운영 화면 | `.venv/bin/streamlit run review_app.py` → http://localhost:8501 (127.0.0.1 전용) |
+| 전체 테스트 | `.venv/bin/python -m pytest` — 인자 없이 돌려도 안전하다 |
 
-창이 자동으로 안 열리면 **File → Open Recent → `paper-harness [WSL: Ubuntu]`** 를 고른다.
+가상환경을 활성화할 필요는 없다. 모든 명령을 `.venv/bin/...` 로 부른다.
 
-터미널을 열 필요도, 가상환경을 활성화할 필요도, `claude mcp list` 를 칠 필요도 없다.
+## 2. 자동 운행이 걸려 있는 곳
 
-### 확인 방법
-
-| 봐야 할 곳 | 정상 상태 |
+| 트리거 | 내용 |
 | --- | --- |
-| 창 제목 | `paper-harness [WSL: Ubuntu]` |
-| 좌하단 상태바 | `WSL: Ubuntu` |
-| 좌하단 | `Restricted Mode` 표시가 **없어야** 한다 |
-| 확장 아이콘 | ⚠ 배지가 **없어야** 한다 |
+| WSL cron `0 5 * * *` | `run_daily_scan.sh` — 쉬는 날 판정(`work_calendar`)은 스크립트 안에서 한다 |
+| WSL cron `30 6,10 * * *` | `scripts/check_daily_mail.py` — 그날 메일이 안 나갔으면 알린다 |
+| Windows 작업 스케줄러 `paper-harness\daily-scan` | 매일 05:00, 깨어나는 즉시 실행·절전 해제 허용. PC 가 절전이면 WSL cron 은 그 시각을 건너뛰기 때문이다 |
 
----
+동시에 겹치면 `flock` 이 뒤의 것을 건너뛴다. 주간 관리는 같은 주 두 번째 실행을 `agent_runs` 기록이 막는다. 다만 **일일 스캔이
+끝난 뒤 다른 트리거가 순차로 다시 부르면 스캔·발송이 한 번 더 돌 수 있다**(주차 표지는 일일 스크립트가 쓰기만 한다).
+작업 XML 은 Windows 사용자 폴더의 `paper-harness-tasks\` 에 있다. 등록 상태 확인: cron 2026-10-01, Windows 작업 XML 2026-09-18.
+지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
 
-## 2. 처음 한 번만 (전부 완료됨)
+로그: `logs/daily_scan.log`(매일), `logs/weekly_agent.log`(손으로 돌린 주간 관리), `logs/cron.log`(cron 자체 출력).
 
-다시 할 필요 없다. 새 PC 나 새 WSL 에서 세팅할 때만 참고한다.
+종료코드(`run_profile_scan.py --all`): 0 정상, 1 스캔 예외·발송 실패·프로필 없음, **2 발송은 했지만 검색 소스 하나가 실패**.
+종료코드만으로 메일 도착을 증명할 수는 없다 — 수신자가 없으면 보내지 않고도 0 이다.
 
-```bash
-# WSL 진입 후
-cd ~/paper-harness && code .        # WSL 원격 창 열기 (VS Code Server 자동 설치)
-```
-
-그 다음 VS Code 에서:
-
-1. **폴더 신뢰** — 파란 배너 `Manage` → `Trust`.
-   Claude Code 확장은 `untrustedWorkspaces: supported: false` 라서 **신뢰하지 않으면 아예 동작하지 않는다.** 채팅 패널이 껍데기만 뜬다.
-2. 확장의 `linux-x64` 빌드 설치 제안이 나오면 허용.
-
-이미 끝난 나머지 세팅:
-
-| 항목 | 내용 |
-| --- | --- |
-| Claude Code CLI | `~/.local/bin/claude` (2.1.220) |
-| PATH | `~/.bashrc` 119행에 `export PATH="$HOME/.local/bin:$PATH"` |
-| MCP 서버 등록 | `/home/mjh/paper-harness` 프로젝트 스코프 |
-| git 신원 | 전역: `moon201595 <answnsgur030@naver.com>` |
-| venv | `~/paper-harness/.venv` (Python 3.14.4) |
-
-MCP 등록 명령 (재등록이 필요할 때만):
+## 3. 처음 한 번 (새 PC·새 WSL)
 
 ```bash
-claude mcp add paper-harness -- ~/paper-harness/.venv/bin/python ~/paper-harness/server.py
+cd ~/paper-harness && code .                       # WSL 원격 창 (VS Code Server 자동 설치)
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python migrate.py --apply --scope all    # 새 설치의 스키마 (운영 DB 는 --scope 없이, 자동 백업)
 ```
 
-`.venv` 의 python 을 **절대경로로** 지정해야 한다. 시스템 python 으로 등록하면 의존성을 못 찾는다. 기본은 project 스코프라 `~/paper-harness` 에서 띄울 때만 붙는다. 어디서나 쓰려면 `-s user` 를 붙인다.
+1. VS Code 파란 배너에서 **폴더 신뢰**(`Manage` → `Trust`). 신뢰하지 않으면 Claude Code 확장 채팅이 껍데기만 뜬다.
+2. `.env` 를 만든다. 이름과 발급처는 [API_KEYS.md](API_KEYS.md). 값은 저장소·로그·채팅에 남기지 않는다.
+3. 주간 관리·동향 서술이 부르는 `claude`·`codex` CLI 에 로그인해 둔다. cron 의 PATH 에는 `~/.local/bin` 이 없어서 스크립트가 직접 붙인다.
+4. MCP 도구가 필요하면(탐색·디버깅용) venv 의 python 을 **절대경로로** 등록한다:
+   `claude mcp add paper-harness -- ~/paper-harness/.venv/bin/python ~/paper-harness/server.py`
+5. Windows 작업 스케줄러 작업을 다시 만든다(2절).
 
----
-
-## 3. 필요할 때만
-
-### 채팅창 안에서 (슬래시 명령)
-
-| 명령 | 용도 |
-| --- | --- |
-| `/mcp` | paper-harness 가 붙었는지, 도구 8종이 보이는지 |
-| `/usage` | 5시간·주간 한도 확인 |
-
-**슬래시 명령은 채팅창 전용이다.** 터미널에 치면 안 된다.
-
-### 터미널에서
-
-가상환경 활성화가 필요한 것은 **직접 파이썬을 돌릴 때뿐**이다.
-
-```bash
-cd ~/paper-harness
-source .venv/bin/activate
-
-pytest test_verify_units.py test_select.py -q   # 단위 22개, 네트워크 불필요
-python test_smoke.py                            # 실동작 7개, 네트워크 필요
-python eval.py                                  # 저장된 요약 통과율
-```
-
-진단용:
-
-```bash
-claude mcp list     # 서버가 뜨는지 (가상환경 활성화 불필요)
-git status          # 변경 확인
-```
-
----
-
-## 4. 내 변경 실시간으로 보기
-
-`Ctrl+Shift+G` (Source Control) 에서 diff 로 보인다. 기준선 커밋(`d797a0e`)이 있어서 이후 모든 변경이 diff 로 잡힌다.
-
-채팅 패널은 도구 호출과 결과를 그때그때 보여준다. 접혀 있으면 펼쳐서 볼 수 있다.
-
----
-
-## 5. 함정 (실제로 겪은 것들)
-
-### PowerShell 에는 `&&` 가 없다
-
-Windows PowerShell 5.1 은 `&&` 를 파서 에러로 뱉는다.
-
-```powershell
-cd ~/paper-harness && claude     # 에러
-```
-
-애초에 `~/paper-harness` 는 WSL 경로라 PowerShell 에서 `cd` 자체가 안 된다. WSL 터미널에서 해야 한다.
-
-### 슬래시 명령을 셸에 치면 안 된다
-
-`/mcp` 를 bash 에 치면 파일을 찾는다. `mcp` 를 치면 엉뚱하게 `mmv` 패키지 설치를 권한다. 채팅창에서만 쓴다.
-
-### Windows 창으로 열면 경로가 깨진다
-
-`\\wsl.localhost\Ubuntu\...` UNC 경로로 폴더를 열면 확장의 diff 뷰가 실패한다:
-
-```
-Unable to read file '_claude_vscode_fs_left:/wsl.localhost/Ubuntu/home/mjh/...'
-```
-
-`_claude_vscode_fs_left` 는 확장의 diff 파일시스템이다. **WSL 원격 창으로 열면 해결된다.**
-
-### statusLine 상태바는 VS Code 확장에서 안 된다
-
-모델·컨텍스트·5시간 한도를 하단에 상시 표시하는 `statusLine` 설정을 만들어뒀지만(`~/.claude/settings.json`, `~/.claude/statusline.py`) **확장이 그 명령을 실행조차 하지 않는다.** 실측으로 확인했다 — 렌더 코드가 없고, 호출 로그도 안 남는다.
-
-- 상시 표시를 원하면 통합 터미널에서 `claude` 로 세션을 띄운다 (거기서는 뜬다)
-- 확장에서는 `/usage` 로 확인한다. 한도가 높아지면 입력창 위에 배너로도 뜬다
-
-### `select.py` 라는 파일명은 금지
-
-표준 라이브러리 `select` 를 가려서 asyncio 가 깨진다. 그래서 `selection.py` 다.
-
-### WSL 파일을 클립보드로 복사할 때 한글
-
-`clip.exe` 는 UTF-8 을 제대로 못 읽는다. `iconv` 로 변환해야 안 깨진다.
-
-```bash
-iconv -f UTF-8 -t UTF-16LE ~/paper-harness/docs/PROGRESS.md | clip.exe
-```
+## 4. 함정 (실제로 겪은 것)
 
 ### `/tmp` 는 날아간다
+WSL 의 `/tmp` 는 WSL 이 내려가면 지워진다. 발표 자료 생성 스크립트를 거기 두었다가 잃은 적이 있다. 다시 쓸 것은 `~` 아래에 둔다.
 
-WSL 의 `/tmp` 는 tmpfs 라 WSL 이 내려가면 지워진다. 오래 두어야 할 것은 `~` 아래에 둔다.
+### API 키를 URL 에 실으면 로그에 남는다
+Gemini 를 `?key=...` 쿼리로 부르면 `httpx` 요청 로그가 URL 째 찍는다. 키는 헤더(`x-goog-api-key`)로 보내고 `httpx`·`httpcore`
+로거를 WARNING 으로 낮춰 막았다. 새 API 를 붙일 때마다 확인한다.
 
----
+### 기본 User-Agent 가 막힌다
+Groq 를 파이썬 기본 User-Agent 로 부르면 Cloudflare 가 봇으로 보고 1010 을 낸다. User-Agent 를 명시한다.
 
-## 6. 세션·인증이 나뉘는 단위
+### `select.py` 라는 파일명은 금지
+표준 라이브러리 `select` 를 가려 asyncio 가 깨진다. 그래서 `selection.py` 다.
 
-### 대화 기록은 폴더(프로젝트) 단위
+### `pytest.ini` 의 `norecursedirs` 를 지우지 않는다
+⑦ 재현이 clone 한 남의 저장소(`data/`)까지 수집해 100건 넘게 깨진다(2026-08-18).
 
-`/home/mjh/paper-harness` 창에서 시작한 대화는 다른 폴더의 `/resume` 목록에 안 나온다. **새 프로젝트에서 `SESSIONS` 목록이 비어 있는 것은 로그아웃이 아니라 기록이 없는 것이다.**
+### 테스트가 운영 DB 를 건드릴 수 있었다
+conftest 가 데이터 디렉터리를 임시 경로로 돌린다(2026-09-16). 새 모듈은 DB 경로를 인자로 받는다.
 
-새 세션에서 맥락을 잇는 방법:
+### PC 절전 중에는 cron 이 안 돈다
+2026-09-15 실측. 그래서 Windows 작업 스케줄러(2절)를 같이 건다. 전원 설정의 "절전 해제 타이머 허용"이 켜져 있어야 한다.
 
-```
-@docs/PROGRESS.md 읽고 이어서 작업하자.
-```
+### Windows 창으로 열면 diff 가 깨진다
+`\\wsl.localhost\Ubuntu\...` 로 폴더를 열면 Claude Code 확장의 diff 뷰가 실패한다. WSL 원격 창으로 연다.
 
-### 인증은 홈 디렉터리 단위
+### PowerShell 에는 `&&` 가 없다
+Windows PowerShell 5.1 은 `&&` 를 문법 오류로 낸다. 이 저장소 명령은 WSL 터미널에서 친다.
 
-Windows 와 WSL 이 각각 별개 파일을 쓴다.
+### 슬래시 명령은 채팅창 전용
+`/mcp`·`/usage` 를 bash 에 치면 파일 경로로 해석된다.
 
-| | 경로 |
-| --- | --- |
-| Windows | `C:\Users\answn\.claude\.credentials.json` |
-| WSL | `/home/mjh/.claude/.credentials.json` |
+### 클립보드로 한글 복사
+`clip.exe` 는 UTF-8 을 못 읽는다: `iconv -f UTF-8 -t UTF-16LE 파일 | clip.exe`.
 
-현재 양쪽 모두 같은 계정(`answnsgur030@naver.com`, Pro)으로 로그인돼 있다. 확인·재로그인 명령:
+## 5. 세션
 
-```bash
-claude auth status     # {"loggedIn": true, ...}
-claude auth login      # 필요할 때만
-```
-
-### 재시작 후 유지되는 것
-
-| 항목 | 재시작 후 |
-| --- | --- |
-| VS Code 창 | ✅ 자동 복원 (`window.restoreWindows` 기본값) |
-| 폴더 Trust | ✅ 유지 |
-| MCP 서버 연결 | ✅ 세션 시작 시 자동 |
-| 로그인 | ✅ 유지 |
-| **Claude 대화** | ❌ 새로 시작. 이전 건 `/resume` |
-
----
-
-## 7. 토큰 아끼기
-
-논문 전문은 4만~29만 자다. 통째로 읽히면 컨텍스트를 크게 먹는다. `get_paper_text` 에 `offset` / `max_chars` 가 있는 이유가 이것이다.
-
-```
-원문은 get_paper_text 로 앞 2만 자만 먼저 읽고, 부족하면 offset 을 옮겨 더 읽어.
-```
-
-요약에 필요한 것은 보통 초록·실험·결론이라 처음부터 다 읽을 필요가 없다.
+Claude Code 대화 기록은 폴더 단위로 나뉜다. 새 세션에서 맥락을 이을 때는 `docs/PROGRESS.md` 끝부분과 `AGENTS.md` 를 먼저 읽힌다.
+세션 안에서 건 예약(CronCreate)은 그 창이 닫히면 사라진다 — 꼭 돌아야 하는 일은 cron·작업 스케줄러에 둔다.
