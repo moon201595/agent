@@ -801,6 +801,36 @@ def _evidence_lines(result: dict) -> list[str]:
     return lines
 
 
+# 카드의 깊이(2026-10-01 사용자 결정). 자리는 관련도가 정하고(§8-86), **깊이는 카드마다 분명히** 말한다 —
+# "최종 5편 = 본문 논문만"으로 순위를 뒤집지 않는 대신, 원문을 읽은 카드와 초록만 본 카드가 한눈에 갈려야 한다.
+# "원문 분석 완료"는 저장된 요약이 **실제로 있을 때만** 쓴다. 원문 일부만 반영된 요약이면 "원문 일부 분석"이다(규칙 7).
+DEPTH_FULL = "원문 분석 완료"
+DEPTH_PARTIAL = "원문 일부 분석"
+DEPTH_ABSTRACT = "초록 기반 · 미검증"
+
+
+def depth_label(paper: dict) -> str:
+    """카드의 깊이 라벨. 처리 실패·요약 없음은 빈 문자열 — 그 카드는 기존 "미검증" 표시가 말한다."""
+    deep_status = str(paper.get("deep_status") or "")
+    if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
+        return DEPTH_ABSTRACT
+    if deep_status.startswith("failed"):
+        return ""
+    arxiv_id = str(paper.get("arxiv_id") or "")
+    if not arxiv_id or not summary_sections(arxiv_id):
+        return ""
+    return DEPTH_PARTIAL if coverage_label(arxiv_id) else DEPTH_FULL
+
+
+def depth_counts(papers: list[dict]) -> str:
+    """제목 옆 괄호 — "원문 분석 3 · 초록 기반 2". 라벨을 실제로 단 카드만 센다."""
+    labels = [depth_label(p) for p in papers]
+    full = sum(1 for x in labels if x in (DEPTH_FULL, DEPTH_PARTIAL))
+    abstract = sum(1 for x in labels if x == DEPTH_ABSTRACT)
+    parts = ([f"원문 분석 {full}"] if full else []) + ([f"초록 기반 {abstract}"] if abstract else [])
+    return " · ".join(parts)
+
+
 def _paper_entry(idx: int, paper: dict) -> str:
     score = paper.get("_score", {})
     arxiv_id = paper.get("arxiv_id", "?")
@@ -826,7 +856,7 @@ def _paper_entry(idx: int, paper: dict) -> str:
         for ln in paper["abstract_brief"].strip().splitlines():
             if _plain(ln):
                 lines.append(f"     {_plain(ln)}")
-        lines.append("   [초록 기반 정리 · 본문 미확보 · 미검증]")
+        lines.append(f"   [{DEPTH_ABSTRACT}]")
     elif deep_status.startswith("failed"):
         reason = deep_status.split(":", 1)[1].strip() if ":" in deep_status else "사유 미상"
         # S2 tldr 이 있으면 초록 발췌 대신 그걸 쓴다(M6) — 다만 S2 모델이 만든
@@ -871,7 +901,8 @@ def _paper_entry(idx: int, paper: dict) -> str:
             lines.append(f"   초록 발췌 : {_abstract_excerpt(paper)}")
         # 수치 검증 표시("[검증 22/22 통과]")는 메일에서 뺐다(2026-09-14 사용자 결정: 받는 사람에게 의미가 없다).
         # 검증 자체는 저장 때 계속 돌고(server.save_summary) verification_label 은 내부 확인용으로 남는다.
-        labels = f"   {_paper_repro_label(paper)}"
+        depth = depth_label(paper)
+        labels = (f"   [{depth}]" if depth else "") + f"   {_paper_repro_label(paper)}"
         cov = coverage_label(arxiv_id)
         if cov:
             labels += f"   {cov}"
@@ -1736,7 +1767,8 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
                      "최근 며칠은 다음 실행에서 다시 조회합니다.")
         lines.append(body)
     elif papers:
-        lines += [f"■ 오늘의 신규 논문 {len(papers)}편 (전체 후보 {candidates}건 중)", ""]
+        depth = depth_counts(papers)
+        lines += [f"■ 오늘의 핵심 논문 {len(papers)}편 ({depth + ' · ' if depth else ''}전체 후보 {candidates}건 중)", ""]
         for i, paper in enumerate(papers, start=1):
             lines.append(_paper_entry(i, paper))
             lines.append("")
@@ -1952,7 +1984,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
 
     if deep_status == "abstract_only" and (paper.get("abstract_brief") or "").strip():
         # 검증·재현 라벨을 절대 같이 쓰지 않는다(규칙 8) — ⑤ 를 통과한 게 아니다.
-        chips = _status_chip("초록 기반 정리 · 본문 미확보 · 미검증", flagged=False)
+        chips = _status_chip(DEPTH_ABSTRACT, flagged=False)
         detail = ""
         needs_attention = False
     elif deep_status.startswith("failed"):
@@ -1967,6 +1999,9 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         needs_attention = ("✗" in r_label) or bool(c_label)
         # strip("[]") 은 양끝만 벗긴다 — 안쪽 괄호까지 뺀다(2026-09-11 메일에서 "통과]" 가 남았던 사례).
         chips = _status_chip(r_label.replace("[", "").replace("]", "").strip(), flagged="✗" in r_label)
+        depth = depth_label(paper)
+        if depth:
+            chips = _status_chip(depth, flagged=False) + chips
         if c_label:
             # 커버리지 경고는 flag 취급한다 — "검증 통과"만 보고 요약을
             # 그대로 믿으면 안 되는 상황이라 눈에 띄어야 한다.
@@ -2062,18 +2097,22 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     )
 
 
-# 동향 서술의 소제목 — trend_report._NARRATIVE_PROMPT 가 시키는 네 개 그대로다.
-# LLM 이 "■ " 를 붙일 때도 있고 안 붙일 때도 있어서(실측: 09-06 두 실행이
-# 서로 달랐다) 앞의 장식을 떼고 대조한다. 프롬프트가 정한 문구와 **문자열
-# 대조**만 하므로 판정이 아니다(규칙 7).
+# 동향 서술의 소제목. 2026-10-01 story-v2 부터는 `trend_report.render_story` 가 **Python 으로** 쓴다 —
+# 고정 소제목 셋과 흐름 소제목(`■ 1. 흐름 이름`). 앞의 네 개는 v1(모델이 직접 쓰던 고정 네 절)이고,
+# 지난 글을 다시 그릴 일이 남아 있어 지우지 않는다. 앞의 장식을 떼고 **문자열 대조**만 하므로 판정이 아니다(규칙 7).
 _NARRATIVE_HEADINGS = frozenset({
     "오늘 눈에 띄는 것", "갈래", "우리 분야와 만나는 지점", "아직 밖에 있지만 넘어올 것",
+    "오늘의 한 줄", "우리 연구에서 볼 것", "주변 신호",
 })
+_LEAD_HEADINGS = frozenset({"오늘 눈에 띄는 것", "오늘의 한 줄"})     # 결론 문단 — 청록 왼쪽 줄 상자에 담는다
 _HEADING_ORNAMENT_RE = re.compile(r"^[■□▪●•\-*#\s]+|[:：\s]+$")
+# 흐름 소제목은 이름이 매일 달라 문구로 못 찾는다. **■ 로 시작하고 번호가 붙은 줄**만 — 본문의 "1. …" 목록과 가른다.
+_THREAD_HEADING_RE = re.compile(r"^■\s*[1-9]\.\s+\S")
 
 
 def _is_narrative_heading(line: str) -> bool:
-    return _HEADING_ORNAMENT_RE.sub("", line.strip()) in _NARRATIVE_HEADINGS
+    stripped = line.strip()
+    return _HEADING_ORNAMENT_RE.sub("", stripped) in _NARRATIVE_HEADINGS or bool(_THREAD_HEADING_RE.match(stripped))
 
 
 # ---------------------------------------------------------------- 가독성 보조 (2026-09-08)
@@ -2472,7 +2511,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     # 2026-09-30 사용자 시안: 남색 띠를 걷고 눈썹 글 · 큰 제목 · 프로필 · 숫자 줄로.
     # 숫자 줄은 **이 메일에 실제로 있는 값만** 싣는다. 시안의 "수치 검증 통과 n/m" 칸은 넣지 않는다 —
     # 2026-09-14 사용자 결정으로 메일에서 검증 수치를 뺐고(§8-122), 시안(9/07)은 그 결정보다 앞선 것이다.
-    kpis = [("신규 논문", f"{len(papers)}편"), ("전체 후보", f"{candidates}건")]
+    kpis = [("핵심 논문", f"{len(papers)}편"), ("전체 후보", f"{candidates}건")]
     mv = scan_result.get("trend_window") or {}
     if mv.get("papers"):
         kpis.append((f"최근 {mv.get('days', 7)}일 관련", f"{mv['papers'][0]}편"))
@@ -2518,7 +2557,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             _paper_entry_html(i, p) for i, p in enumerate(papers, start=1)
         )
         body = (
-            _h1(f"오늘의 신규 논문 {len(papers)}편", f"(전체 후보 {candidates}건 중)") + entries
+            _h1(f"오늘의 핵심 논문 {len(papers)}편",
+                f"({depth_counts(papers) + ' · ' if depth_counts(papers) else ''}전체 후보 {candidates}건 중)") + entries
         )
     else:
         body = (
@@ -2559,7 +2599,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             if lead_open and is_head:
                 chunks.append("</div>"); lead_open = False
             chunks.append(_narrative_line_html(ln))
-            if is_head and _HEADING_ORNAMENT_RE.sub("", _plain(ln)) == "오늘 눈에 띄는 것":
+            if is_head and _HEADING_ORNAMENT_RE.sub("", _plain(ln)) in _LEAD_HEADINGS:
                 chunks.append(f'<div style="background-color:{_PAPER_BG};border-left:3px solid {_ACCENT};'
                               f'padding:6px 0 6px 16px;margin:6px 0 4px;">')
                 lead_open = True

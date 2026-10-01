@@ -2054,3 +2054,22 @@ def test_a_failed_translation_does_not_stop_the_digest(tmp_path, monkeypatch):
     assert text.strip()
     shown = list(result.get("papers") or []) + list(result.get("title_only_papers") or [])
     assert all("title_ko" not in p for p in shown)      # 번역은 없고, 원제만 나간다
+
+
+def test_slot_log_separates_failures_from_untried_candidates(tmp_path, monkeypatch, capsys):
+    """2026-10-01 Codex 조사: "[자리] 본문 수집에 실패한 976편" 의 N 은 자리가 차서 시도하지 않은 후보까지 센 값이었다.
+    망가뜨리면 실패하는 것: demoted 전체를 실패로 세는 것."""
+    db_path = tmp_path / "t.db"
+    rp.create_profile(db_path, "team_ai", "우리팀", core_topics=["agent", "digital twin"],
+                      target_domain=["robot hand"], exclude=["medical"], max_items=1)
+    _mock_arxiv_three_agent_papers(monkeypatch)
+    monkeypatch.setattr(rps, "_summary_exists", lambda _aid: False)
+
+    async def fake_process(client, arxiv_id, on_progress=None, paper=None, wait_for_repro=False):
+        if arxiv_id == "p1":
+            raise RuntimeError("테스트 실패")
+        return {"arxiv_id": arxiv_id, "status": "done", "engine": "gemini"}
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", fake_process)
+    _run_scan_and_digest(db_path)
+    out = capsys.readouterr().out
+    assert "[자리] 처리 실패 1편 · 자리가 차서 시도 안 한 후보 1편 — 내용 자리는 1/1편" in out

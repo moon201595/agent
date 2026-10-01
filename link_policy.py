@@ -58,6 +58,9 @@ ALLOWED_HOSTS = frozenset({
     "www.cambridge.org",
     "journals.sagepub.com",
     "www.science.org",
+    # 2026-10-01 사용자 결정 — ISPRS Annals 의 DOI 가 isprs-annals.copernicus.org 로 착지해 막혔다(오늘 메일 실측). Copernicus 는
+    # 오픈액세스 학술 출판사이고 학술지마다 하위 도메인을 쓴다(접미사 대조라 `*.copernicus.org` 전체가 열린다).
+    "copernicus.org",
     "ojs.aaai.org",
     "www.jstage.jst.go.jp",
 })

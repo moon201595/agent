@@ -98,7 +98,7 @@ def test_monday_prompt_carries_all_three_inputs_without_leaking_counts():
         movement=trend_report._movement_context(
             {"comparable": True, "days": 7, "terms": [("agentic rl", 9, 3)]}),
         history=trend_report._history_context([{"reader_date": "2026-09-18", "body": "어제 흐름"}]),
-        weekly=trend_report._weekly_context("키워드 A 12편 (지난주 8)"))
+        weekly=trend_report._weekly_context("키워드 A 12편 (지난주 8)"), anchors="")
     assert "오늘 논문" in prompt and "어제 흐름" in prompt and "키워드 A 12편" in prompt
     assert "agentic rl" in prompt                      # 늘어난 말은 이름만
     movement_part = prompt.split("agentic rl")[1][:80]

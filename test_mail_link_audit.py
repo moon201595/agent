@@ -249,3 +249,17 @@ def test_plain_text_catches_glued_and_www_urls_and_never_reexposes_a_url_as_doi(
     assert "evil.example" not in out and len(blocked) == 3
     ok, _ = audit_text("www.arxiv.org/abs/1", _auditor().check)
     assert ok == "www.arxiv.org/abs/1"
+
+
+def test_real_landing_hosts_from_2026_10_01_mail():
+    """10-01 아침 메일에서 막힌 두 착지 호스트(실측). 망가뜨리면 실패하는 것: copernicus.org 를 목록에서 빼는 것(사용자 결정으로 허용) ·
+    여러 회사가 같이 쓰는 콘텐츠 배포 서버(sitecorecontenthub.cloud)를 출판사처럼 여는 것 · 하위 도메인 접미사 대조를 흉내 낸 도메인을 받는 것."""
+    isprs = "https://doi.org/10.5194/isprs-annals-xii-4-w1-2026-267-2026"
+    welding = "https://doi.org/10.29391/2026.105.022"
+    a = _auditor(redirects={
+        isprs: (302, "https://isprs-annals.copernicus.org/articles/XII-4-W1-2026/267/2026/"),
+        welding: (302, "https://aws-p-001-delivery.sitecorecontenthub.cloud/api/public/content/x"),
+    })
+    assert a.check(isprs) is None
+    assert "허용 목록 밖" in a.check(welding)
+    assert a.check("https://evilcopernicus.org/x") is not None

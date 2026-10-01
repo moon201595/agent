@@ -332,7 +332,7 @@ def test_prompt_carries_topics_but_never_our_measurements():
     # movement 는 2026-09-18 에 붙인 최근 창 맥락 자리다 — 여기서는 비워 두고,
     # 값이 들어갔을 때 수치가 새지 않는지는 아래에서 따로 본다.
     prompt = trend_report._NARRATIVE_PROMPT.format(
-        papers=corpus, topics=trend_report.narrative_topics(profile), movement="", history="", weekly="")
+        papers=corpus, topics=trend_report.narrative_topics(profile), movement="", history="", weekly="", anchors="")
 
     assert "defect detection" in prompt          # 관심 분야는 나간다
     # 우리 쪽 측정값은 하나도 안 나간다. ("편수"라는 낱말 자체는 프롬프트에
@@ -341,7 +341,7 @@ def test_prompt_carries_topics_but_never_our_measurements():
     with_ctx = trend_report._NARRATIVE_PROMPT.format(
         papers=corpus, topics=trend_report.narrative_topics(profile),
         movement=trend_report._movement_context(
-            {"comparable": True, "days": 7, "terms": [("agentic rl", 9, 3)]}), history="", weekly="")
+            {"comparable": True, "days": 7, "terms": [("agentic rl", 9, 3)]}), history="", weekly="", anchors="")
     assert "agentic rl" in with_ctx              # 늘어난 "말"은 맥락으로 나간다
     assert " 9" not in with_ctx.split("agentic rl")[1][:60]   # 그 말의 편수는 안 나간다
 
@@ -743,24 +743,23 @@ def test_same_paper_in_both_lists_is_counted_once():
 
 
 def test_prompt_demands_the_shape_digest_renders():
-    """**프롬프트와 렌더링이 같은 형식을 말해야 한다.** 2026-09-08 실측:
-    요약을 넣자 LLM 이 소제목을 문장에 녹여 굵게 처리가 통째로 사라졌다
-    (소제목 인식 0/4). 프롬프트가 형식을 강제하도록 고쳤고, 이 테스트가
-    그 지시가 프롬프트에 남아 있는지 지킨다.
-
-    digest 쪽 인식은 test_digest.py 가 지킨다 — 두 파일이 같은 문구를 본다.
-    """
+    """**프롬프트·조립·렌더링이 같은 형식을 말해야 한다.** story-v2(2026-10-01)부터 모델은 JSON 을 내고 소제목은
+    `render_story` 가 쓴다. 망가뜨리면 실패하는 것: 프롬프트가 스키마 키를 안 시키는 것 · 조립한 소제목을 digest 가
+    소제목으로 못 알아보는 것(흐름 소제목 `■ 1. 이름` 포함) · 프롬프트가 다시 "칸 채우기" 절 이름을 시키는 것."""
     import digest
 
     prompt = trend_report._NARRATIVE_PROMPT
-    assert "형식(반드시 지킨다)" in prompt
-    assert "한 줄에 단독으로" in prompt
-    assert '"첫째,"' in prompt
-
-    # 프롬프트가 지시하는 네 소제목을 digest 가 전부 소제목으로 인식하는가
-    for heading in digest._NARRATIVE_HEADINGS:
-        assert heading in prompt, f"프롬프트가 '{heading}' 을 지시하지 않는다"
-        assert digest._is_narrative_heading(f"■ {heading}")
+    for key in trend_report.STORY_SCHEMA["required"]:
+        assert f'"{key}"' in prompt, f"프롬프트가 '{key}' 를 시키지 않는다"
+    assert "갈래" not in prompt and "넘어올 것" not in prompt
+    corpus = "- [P1:T] Alpha paper\n  [P1:A] a\n- [P2:T] Beta paper\n  [P2:A] b\n- [P3:T] Gamma paper\n  [P3:A] c"
+    plan = {"headline": "질문과 답 [P1:A]", "threads": [{"name": "흐름", "papers": ["P1", "P2"], "body": "공통 [P1:A][P2:A]"}],
+            "relation": "", "implications": ["볼 것 [P1:A]"], "side_signals": [{"paper": "P3", "note": "주변"}]}
+    text = trend_report.render_story(trend_report.repair_story(plan, corpus))
+    heads = [ln for ln in text.splitlines() if ln.startswith("■")]
+    assert heads == ["■ 오늘의 한 줄", "■ 1. 흐름", "■ 우리 연구에서 볼 것", "■ 주변 신호"]
+    assert all(digest._is_narrative_heading(h) for h in heads)
+    assert not digest._is_narrative_heading("1. 본문 목록 줄")       # ■ 없는 번호 줄은 소제목이 아니다
 
 
 def test_citation_audit_treats_branch_list_lines_as_evidence_of_the_lead_sentence():
@@ -778,37 +777,307 @@ def test_citation_audit_treats_branch_list_lines_as_evidence_of_the_lead_sentenc
     assert b["title_only"] == [] and b["cited_lines"] == 1
 
 
-# ── 갈래 목록 줄이 근거 ID 만일 때 (2026-09-17 team_vision 실측: 7/7 줄이 "- [P1:T] [P1:T]")
+# ── story-v2: 모델은 구조를 내고 Python 이 손질·조립한다 (2026-10-01, 사용자 지적 "지금 내용이 처참해")
 
-def test_tag_only_bullets_get_the_title_from_the_corpus():
-    """망가뜨리면 실패하는 것: 채움을 빼서 메일 갈래에 태그만 나가는 것 · 자료에 없는 제목을 만들어 넣는 것(P9) ·
-    설명 문장(목록 줄 아님)을 건드리는 것 · 같은 태그를 두 번 남기는 것 · 두 논문이 섞인 줄에 첫 논문 제목을 붙이는 것(Codex #7, 2026-09-17)."""
-    import trend_report as tr
-    corpus = ("- [P1:T] Research on surface defect detection for PV panels\n  발표일: 2026-09-15\n  [P1:A] abstract\n"
-              "- [P2:T] Cigarette defect detection with YOLOv8s\n  [P2:A] abs\n")
-    text = ("■ 갈래\n첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A].\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P9:T] [P9:T]\n- [P1:A] [P2:A]\n"
-            "■ 우리 분야와 만나는 지점\n[P1:A] 로 시작하는 설명 문장은 목록이 아니다.")
-    out, filled = tr.fill_tag_only_bullets(text, corpus)
-    assert filled == 2
-    lines = out.splitlines()
-    assert lines[2] == "- Research on surface defect detection for PV panels [P1:T]"
-    assert lines[3] == "- Cigarette defect detection with YOLOv8s [P2:T] [P2:A]"
-    assert lines[4] == "- [P9:T] [P9:T]"                       # 자료에 없는 번호는 손대지 않는다
-    assert lines[5] == "- [P1:A] [P2:A]"                       # 두 논문이 섞인 줄은 어느 제목도 붙이지 않는다
-    assert lines[1] == "첫째, 욜로 계열 개선 연구가 관찰된다 [P1:A]."
-    assert lines[7] == "[P1:A] 로 시작하는 설명 문장은 목록이 아니다."
+_STORY_CORPUS = ("- [P1:T] FLASH: generate once synthesize many\n  [P1:A] a1\n  [P1:R] [원문 요약 · 결과] r1\n"
+                 "- [P2:T] Visual anomaly synthesis for model selection\n  [P2:A] a2\n"
+                 "- [P3:T] Wood defect detection with YOLO\n  [P3:A] a3\n"
+                 "- [P4:T] Prototype aligned few-shot defect network\n  [P4:A] a4\n"
+                 "- [P5:T] Title only paper\n"
+                 "- [P6:T] Few-shot welding defect detection\n  [P6:A] a6\n"
+                 "- [P7:T] Goose down YOLO\n  [P7:A] a7\n")
 
 
-def test_narrative_applies_the_bullet_repair(monkeypatch):
-    """narrative() 가 모델 응답에 채움을 실제로 거친다 — fill 함수만 있고 안 부르면 실패한다."""
-    import trend_report as tr
+def _plan(**over):
+    plan = {"headline": "결함 데이터 부족에 두 방향으로 답한다 [P1:A][P4:A]",
+            "threads": [{"name": "합성 결함의 역할 확대", "papers": ["P1", "P2"], "body": "둘 다 합성 결함을 쓴다 [P1:R][P2:A]."},
+                        {"name": "few-shot 검사", "papers": ["P4", "P6"], "body": "적은 샘플로 학습한다 [P4:A][P6:A]."}],
+            "relation": "같은 문제에 대한 다른 대응이다 [P1:A][P4:A]",
+            "implications": ["합성 결함의 현실성을 확인한다 [P2:A]", "근거 없는 제안"],
+            "side_signals": [{"paper": "P7", "note": "경량 미세질감 검출"}, {"paper": "P5", "note": "제목만"}]}
+    plan.update(over)
+    return plan
+
+
+def test_story_repair_keeps_threads_to_their_own_evidence():
+    """망가뜨리면 실패하는 것: 흐름 body 에 다른 논문 근거를 남기는 것(거위털이 흐름에 끼는 10-01 실물) ·
+    body 가 부르지 않은 논문을 목록에 남기는 것 · 한 논문을 두 흐름에 넣는 것 · 2편 미만을 흐름이라 부르는 것."""
+    plan = _plan(threads=[
+        {"name": "합성 결함", "papers": ["P1", "P2", "P3"], "body": "합성 결함이다 [P1:A][P2:A][P7:A]."},  # P3 는 body 에 없음, P7 은 남의 근거
+        {"name": "중복", "papers": ["P2", "P6"], "body": "겹친다 [P2:A][P6:A]."},                          # P2 는 이미 앞 흐름
+        {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}])
+    story = trend_report.repair_story(plan, _STORY_CORPUS)
+    assert [t["papers"] for t in story["threads"]] == [[1, 2], [4, 6]]
+    assert "[P7:A]" not in story["threads"][0]["body"]
+    assert "thread_too_thin" in story["repairs"]
+
+
+def test_story_repair_drops_unknown_and_title_only_tags():
+    """망가뜨리면 실패하는 것: 자료에 없는 ID(P9)·제목 T 를 근거로 남기는 것 · 근거를 다 잃은 headline 을 싣는 것 ·
+    근거 없는 implication 을 해석 표시 없이 싣는 것 · 초록 없는 논문(P5)을 주변 신호로 싣는 것."""
+    story = trend_report.repair_story(_plan(headline="머리 [P9:A][P1:T]"), _STORY_CORPUS)
+    assert story["headline"] == "" and "headline_uncited" in story["repairs"]
+    assert story["implications"] == ["합성 결함의 현실성을 확인한다 [P2:A]", "근거 없는 제안 (해석)"]
+    assert [s["paper"] for s in story["side_signals"]] == [7]
+    assert story["relation"].endswith("[P1:A][P4:A]")
+
+
+def test_story_needs_a_card_paper_in_every_thread():
+    """anchors(메일 카드 논문 수)가 있으면 흐름마다 카드 논문이 있어야 한다 — 카드와 무관한 흐름이 본문을 차지하지 않게.
+    망가뜨리면 실패하는 것: 조건을 빼는 것 · 흐름이 다 빠졌는데 빈 글을 내는 것."""
+    plan = _plan(threads=[{"name": "카드 밖", "papers": ["P6", "P7"], "body": "둘 다 밖이다 [P6:A][P7:A]."},
+                          {"name": "카드 안", "papers": ["P1", "P6"], "body": "하나는 카드다 [P1:A][P6:A]."}])
+    story = trend_report.repair_story(plan, _STORY_CORPUS, anchors={1, 2, 3, 4})
+    assert [t["name"] for t in story["threads"]] == ["카드 안"]
+    only_outside = _plan(threads=[{"name": "카드 밖", "papers": ["P6", "P7"], "body": "밖 [P6:A][P7:A]."}])
+    assert trend_report.repair_story(only_outside, _STORY_CORPUS, anchors={1, 2, 3, 4}) is None
+    assert trend_report.repair_story(only_outside, _STORY_CORPUS) is not None     # 주간 글처럼 카드가 없으면 조건 없음
+
+
+def test_story_render_lists_titles_from_the_corpus():
+    """목록 줄의 제목은 자료에서 Python 이 붙인다 — 모델이 쓴 제목이 아니다. 근거는 요약 결과(R)가 있으면 R.
+    망가뜨리면 실패하는 것: 흐름 순서·번호 · 제목 대신 ID 만 싣는 것(09-17 "- [P1:T] [P1:T]" 사고) · 흐름이 하나인데 관계 문장을 싣는 것."""
+    text = trend_report.render_story(trend_report.repair_story(_plan(), _STORY_CORPUS))
+    lines = text.splitlines()
+    assert lines[:3] == ["■ 오늘의 한 줄", "결함 데이터 부족에 두 방향으로 답한다 [P1:A][P4:A]",
+                         "같은 문제에 대한 다른 대응이다 [P1:A][P4:A]"]
+    assert "■ 1. 합성 결함의 역할 확대" in lines and "■ 2. few-shot 검사" in lines
+    assert "- FLASH: generate once synthesize many [P1:R]" in lines
+    assert "- Goose down YOLO — 경량 미세질감 검출 [P7:A]" in lines
+    one = trend_report.repair_story(_plan(threads=_plan()["threads"][:1]), _STORY_CORPUS)
+    assert one["relation"] == ""
+
+
+def test_parse_story_rejects_broken_shapes():
+    """망가뜨리면 실패하는 것: 코드펜스·앞뒤 잡글이 붙은 정상 JSON 을 버리는 것 · 키가 빠진 JSON 을 받아들이는 것."""
+    import json
+    good = json.dumps(_plan(), ensure_ascii=False)
+    assert trend_report.parse_story(f"```json\n{good}\n```")["threads"]
+    for bad in ("■ 오늘 눈에 띄는 것\n글", json.dumps({"headline": "x"}), "{not json}"):
+        with pytest.raises(ValueError):
+            trend_report.parse_story(bad)
+
+
+def test_narrative_falls_through_engines_until_a_valid_story(monkeypatch):
+    """narrative() 가 구조 검증을 실제로 거친다. 망가뜨리면 실패하는 것: 옛 산문을 그대로 싣는 것 ·
+    깨진 구조에서 다음 엔진으로 안 가는 것 · 마지막까지 깨졌는데 글을 내는 것 · 메일 카드 수(anchors)를 프롬프트에 안 넣는 것."""
+    import json
+    import narrative_engine as ne
     import summarize_engine as se
+    rows = [{"arxiv_id": f"p{i}", "title": f"Paper number {i}", "abstract": f"abstract {i}", "published": "2026-09-15"}
+            for i in (1, 2, 3)]
+    story = {"headline": "한 줄 [P1:A]", "threads": [{"name": "흐름", "papers": ["P1", "P2"], "body": "공통 [P1:A][P2:A]"}],
+             "relation": "", "implications": [], "side_signals": []}
+    prompts = []
 
-    async def fake_call(fn, label):
-        return "■ 갈래\n첫째, 흐름이다.\n- [P1:T] [P1:T]\n- [P2:T] [P2:A]\n- [P3:T] [P3:A]"
-    monkeypatch.setattr(se, "_call_with_rate_limit_retry", fake_call)
-    rows = [{"arxiv_id": f"p{i}", "title": f"Paper {i}", "abstract": f"abstract {i}", "published": "2026-09-15"} for i in (1, 2, 3)]
-    result = asyncio.run(tr.narrative(None, rows, {"core_topics": ["defect"]}))
-    assert result is not None
-    text = result[0]
-    assert "- Paper 1 [P1:T]" in text and "- Paper 2 [P2:T] [P2:A]" in text and "- Paper 3 [P3:T] [P3:A]" in text
+    async def gemini(fn, label):
+        prompts.append(label)
+        return "■ 오늘 눈에 띄는 것\n옛 산문 [P1:A]"
+
+    async def groq(fn, label):
+        return json.dumps(story, ensure_ascii=False)
+    calls = iter([gemini, groq])
+    monkeypatch.setattr(ne, "_codex", lambda *a, **k: None)
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", lambda fn, label: next(calls)(fn, label))
+    seen = {}
+    real = ne.generate
+
+    async def spy(client, prompt, **kw):
+        seen["prompt"], seen["kw"] = prompt, kw
+        return await real(client, prompt, **kw)
+    monkeypatch.setattr(ne, "generate", spy)
+    text, ungrounded, _enriched, engine = asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]}, anchors=2))
+    assert engine == "groq" and "■ 1. 흐름" in text and "옛 산문" not in text
+    assert "- Paper number 1 · 초록 기반 [P1:A]" in text                  # 상태가 원문 분석이 아니면 초록 기반으로 적는다
+    assert "P1, P2 는 이 메일 아래에 상세 카드로" in seen["prompt"]
+    assert seen["kw"]["schema"] is trend_report.STORY_SCHEMA         # Codex 에 출력 모양을 넘긴다
+
+    async def always_prose(fn, label):
+        return "산문만 [P1:A]"
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", always_prose)
+    assert asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]})) is None
+
+
+def test_clipping_never_strips_evidence_that_was_counted():
+    """Codex 검토 2026-10-01: 근거를 센 **뒤에** 글자 수로 잘라 흐름·headline 이 근거 없이 남았다.
+    망가뜨리면 실패하는 것: 자르기를 근거 판정 뒤로 되돌리는 것 · 문장 단위가 아니라 글자로 잘라 문장 끝 근거를 떨구는 것 ·
+    잘려서 근거를 잃은 implication 에 "(해석)" 을 안 붙이는 것."""
+    long_body = "가" * 510 + " [P1:A][P2:A]"
+    story = trend_report.repair_story(_plan(threads=[{"name": "길다", "papers": ["P1", "P2"], "body": long_body},
+                                                     {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}],
+                                            headline="나" * 400 + " [P4:A]",
+                                            implications=["다" * 400 + " [P4:A]"]), _STORY_CORPUS)
+    assert [t["papers"] for t in story["threads"]] == [[4, 6]]       # 근거가 잘린 흐름은 흐름이 아니다
+    assert story["headline"] == "" and "headline_uncited" in story["repairs"]
+    assert story["implications"][0].endswith("(해석)") and "[P4:A]" not in story["implications"][0]
+    sentences = "첫 문장이다 [P1:A]. " + "둘째 " * 200 + "문장 [P2:A]."
+    kept = trend_report.repair_story(_plan(threads=[{"name": "문장", "papers": ["P1", "P2"], "body": sentences},
+                                                    {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}]),
+                                     _STORY_CORPUS)
+    assert kept["threads"][0]["name"] == "few-shot"                 # 둘째 문장이 잘려 P2 근거가 없으면 흐름이 아니다
+    for field in (kept["headline"], kept["relation"], *kept["implications"], *(t["body"] for t in kept["threads"])):
+        assert len(field) <= max(trend_report._STORY_LIMITS.values()) + len(" (해석)")
+
+
+def test_bundled_and_malformed_tags_never_reach_the_mail():
+    """Codex 검토 2026-10-01: 이름·메모의 "[P99:A, P1:T]" 와 본문의 "[P1:A, P99:Z]" 가 정리를 우회했다.
+    망가뜨리면 실패하는 것: 이름·메모에 근거 ID 모양을 남기는 것 · 묶음 속 정상 근거를 버리는 것 · 모양이 틀린 근거를 남기는 것 ·
+    모델 글 줄머리의 ■ 를 남겨 렌더러가 흐름 소제목으로 읽게 하는 것."""
+    plan = _plan(threads=[{"name": "■ 이름 [P99:A, P1:T]", "papers": ["P1", "P2"], "body": "■ 9. 공통 [P1:A, P99:Z] 그리고 [P2:A; P9:A]."}],
+                 side_signals=[{"paper": "P7", "note": "주변 [P99:A, P1:T] [P7:A]"}])
+    story = trend_report.repair_story(plan, _STORY_CORPUS)
+    thread = story["threads"][0]
+    assert thread["name"] == "이름" and thread["papers"] == [1, 2]
+    assert "P99" not in thread["body"] and "P9:" not in thread["body"] and not thread["body"].startswith("■")
+    assert "[P1:A]" in thread["body"] and "[P2:A]" in thread["body"]
+    assert story["side_signals"] == [{"paper": 7, "note": "주변"}]
+    import digest
+    lines = trend_report.render_story(story).splitlines()
+    body_line = lines[lines.index("■ 1. 이름") + 1]
+    assert body_line == thread["body"] and not digest._is_narrative_heading(body_line)
+
+
+def test_numbers_the_model_wrote_are_flagged_even_at_line_start():
+    """Codex 검토 2026-10-01: 목차 예외에 ■ 를 넣자 모델이 쓴 "■ 987." 의 987 이 경고에서 빠졌다. 흐름 번호는 우리 목차라 빼되
+    모델 글에는 예외를 주지 않는다. 망가뜨리면 실패하는 것: 숫자 대조를 렌더링한 글로 되돌리는 것 · model_text 에서 줄머리 표시를 빼는 것."""
+    import json
+    import narrative_engine as ne
+    import summarize_engine as se
+    rows = [{"arxiv_id": f"p{i}", "title": f"Paper number {i}", "abstract": "no digits here", "published": ""} for i in (1, 2, 3)]
+    story = {"headline": "한 줄 [P1:A]", "threads": [{"name": "흐름", "papers": ["P1", "P2"], "body": "■ 987. 성능이 올랐다 [P1:A][P2:A]"}],
+             "relation": "", "implications": [], "side_signals": []}
+
+    async def gemini(fn, label):
+        return json.dumps(story, ensure_ascii=False)
+    monkeypatch_targets = (ne, "_codex", lambda *a, **k: None)
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(*monkeypatch_targets)
+        mp.setattr(se, "_call_with_rate_limit_retry", gemini)
+        text, ungrounded, _e, _engine = asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]}))
+    finally:
+        mp.undo()
+    assert "■ 1. 흐름" in text and ungrounded == ["987"]
+
+
+def test_card_rule_follows_corpus_numbers_when_a_row_has_no_title(monkeypatch):
+    """Codex 검토 2026-10-01: 제목 없는 카드가 자료에서 빠지면 번호가 밀려 각주 논문이 카드로 판정됐다.
+    rows = [제목 없는 카드, 카드, 각주 A, 각주 B], anchors=2 → 카드는 P1 하나. 망가뜨리면 실패하는 것: 카드를 "앞 n 편"으로 세는 것."""
+    import json
+    import narrative_engine as ne
+    import summarize_engine as se
+    rows = [{"arxiv_id": "x0", "title": "  ", "abstract": "a"},
+            {"arxiv_id": "x1", "title": "Card paper", "abstract": "a1"},
+            {"arxiv_id": "x2", "title": "Footnote A", "abstract": "a2"},
+            {"arxiv_id": "x3", "title": "Footnote B", "abstract": "a3"}]
+    plans = {"outside": {"headline": "h [P2:A]", "threads": [{"name": "각주끼리", "papers": ["P2", "P3"], "body": "b [P2:A][P3:A]"}],
+                         "relation": "", "implications": [], "side_signals": []},
+             "inside": {"headline": "h [P1:A]", "threads": [{"name": "카드 포함", "papers": ["P1", "P2"], "body": "b [P1:A][P2:A]"}],
+                        "relation": "", "implications": [], "side_signals": []}}
+    monkeypatch.setattr(ne, "_codex", lambda *a, **k: None)
+    for key, expect in (("outside", None), ("inside", "■ 1. 카드 포함")):
+        async def answer(fn, label, key=key):
+            return json.dumps(plans[key], ensure_ascii=False)
+        monkeypatch.setattr(se, "_call_with_rate_limit_retry", answer)
+        got = asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]}, anchors=2))
+        assert (got is None) if expect is None else (expect in got[0])
+    assert trend_report._included_rows(rows) == [1, 2, 3]
+
+
+def test_story_caps_and_label_rules():
+    """망가뜨리면 실패하는 것: 이름 없는 흐름을 받는 것 · 흐름 상한(3) · implication 상한(3) · 주변 신호 상한(5)·중복·흐름 논문 재사용 ·
+    한 흐름 안 같은 ID 중복 · 근거 없는 관계 문장에 "(해석)" 을 안 붙이는 것."""
+    corpus = "".join(f"- [P{i}:T] Paper title number {i}\n  [P{i}:A] a{i}\n" for i in range(1, 16))
+    threads = [{"name": "", "papers": ["P1", "P2"], "body": "x [P1:A][P2:A]"}] + [
+        {"name": f"흐름{i}", "papers": [f"P{2 * i + 1}", f"P{2 * i + 1}", f"P{2 * i + 2}"],
+         "body": f"y [P{2 * i + 1}:A][P{2 * i + 2}:A]"} for i in range(1, 5)]
+    plan = {"headline": "h [P3:A]", "threads": threads, "relation": "관계만 말한다",
+            "implications": [f"볼 것 {i} [P3:A]" for i in range(5)],
+            "side_signals": [{"paper": "P3", "note": "흐름 논문"}, {"paper": "P11", "note": "a"}, {"paper": "P11", "note": "중복"}]
+                            + [{"paper": f"P{i}", "note": f"n{i}"} for i in range(12, 16)] + [{"paper": "P1", "note": "여섯째"}]}
+    story = trend_report.repair_story(plan, corpus)
+    assert [t["name"] for t in story["threads"]] == ["흐름1", "흐름2", "흐름3"] and "thread_cap" in story["repairs"]
+    assert story["threads"][0]["papers"] == [3, 4]
+    assert len(story["implications"]) == 3
+    assert [s["paper"] for s in story["side_signals"]] == [11, 12, 13, 14, 15]
+    assert story["relation"] == "관계만 말한다 (해석)"
+
+
+def test_full_text_gets_the_floor_but_not_the_gate(monkeypatch):
+    """2026-10-01 사용자 결정 + 판단: 순위는 관련도, 서사의 **발언권**은 깊이. 원문 확보는 흐름의 **자격이 아니다** — 저널 위주 분야의
+    실제 흐름이 수집 사정으로 밀리면 안 된다. rows = [원문 카드 P1, 초록 카드 P2, 원문 카드 P3, 각주 P4].
+    망가뜨리면 실패하는 것: 초록 카드 흐름을 버리는 것(자격으로 쓰기) · 각주만의 흐름을 받는 것 · 원문 흐름을 앞에 안 두는 것 ·
+    목록에 깊이를 안 적는 것 · 프롬프트가 깊이를 안 알려 주는 것."""
+    import json
+    import narrative_engine as ne
+    import summarize_engine as se
+    rows = [{"arxiv_id": "a1", "title": "Full text card one", "abstract": "x", "deep_status": "ok"},
+            {"arxiv_id": "a2", "title": "Abstract only card", "abstract": "x", "deep_status": "abstract_only"},
+            {"arxiv_id": "a3", "title": "Full text card two", "abstract": "x", "deep_status": "skipped: 이미 요약 저장됨"},
+            {"arxiv_id": "a4", "title": "Footnote paper one", "abstract": "x"},
+            {"arxiv_id": "a5", "title": "Footnote paper two", "abstract": "x"}]
+    plan = {"headline": "h [P1:A]", "threads": [
+                {"name": "초록 카드 흐름", "papers": ["P2", "P4"], "body": "b [P2:A][P4:A]"},
+                {"name": "각주끼리", "papers": ["P5", "P4"], "body": "b [P5:A][P4:A]"},
+                {"name": "원문 흐름", "papers": ["P1", "P3"], "body": "b [P1:A][P3:A]"}],
+            "relation": "", "implications": [], "side_signals": []}
+    prompts = []
+    monkeypatch.setattr(ne, "_codex", lambda *a, **k: None)
+
+    async def answer(fn, label):
+        return json.dumps(plan, ensure_ascii=False)
+    real = ne.generate
+
+    async def spy(client, prompt, **kw):
+        prompts.append(prompt)
+        return await real(client, prompt, **kw)
+    monkeypatch.setattr(ne, "generate", spy)
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", answer)
+    text = asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]}, anchors=3))[0]
+    heads = [ln for ln in text.splitlines() if ln.startswith("■ ") and ln[2].isdigit()]
+    assert heads == ["■ 1. 원문 흐름", "■ 2. 초록 카드 흐름"]                     # 각주끼리는 빠지고 원문 흐름이 앞
+    assert "- Full text card one · 원문 분석 [P1:A]" in text
+    assert "- Abstract only card · 초록 기반 [P2:A]" in text and "- Footnote paper one · 초록 기반 [P4:A]" in text
+    assert "그중 P1, P3 는 본문을 읽고 요약한 논문이다" in prompts[0] and "P2 는 초록만 본 논문이다" in prompts[0]
+    weekly = trend_report.render_story(trend_report.repair_story(plan, "".join(
+        f"- [P{i}:T] {r['title']}\n  [P{i}:A] x\n" for i, r in enumerate(rows, 1))))
+    assert "원문 분석" not in weekly and "초록 기반" not in weekly                 # 깊이 정보가 없는 글엔 표시 없음
+
+
+def test_cards_that_never_reach_the_corpus_keep_the_rule_on(monkeypatch):
+    """Codex 2차 검토 2026-10-01: 카드가 전부 제목 없는 행이라 자료에서 빠지면 카드 조건이 꺼져 각주끼리의 흐름이 통과했다.
+    망가뜨리면 실패하는 것: 빈 카드 집합을 None(조건 없음)으로 바꾸는 것."""
+    import json
+    import narrative_engine as ne
+    import summarize_engine as se
+    rows = [{"arxiv_id": "c1", "title": " ", "abstract": "a"}, {"arxiv_id": "c2", "title": "", "abstract": "a"},
+            {"arxiv_id": "f1", "title": "Footnote one", "abstract": "a"}, {"arxiv_id": "f2", "title": "Footnote two", "abstract": "a"},
+            {"arxiv_id": "f3", "title": "Footnote three", "abstract": "a"}]
+    plan = {"headline": "h [P1:A]", "threads": [{"name": "각주끼리", "papers": ["P1", "P2"], "body": "b [P1:A][P2:A]"}],
+            "relation": "", "implications": [], "side_signals": []}
+    monkeypatch.setattr(ne, "_codex", lambda *a, **k: None)
+
+    async def answer(fn, label):
+        return json.dumps(plan, ensure_ascii=False)
+    monkeypatch.setattr(se, "_call_with_rate_limit_retry", answer)
+    assert asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]}, anchors=2)) is None
+    assert asyncio.run(trend_report.narrative(None, rows, {"core_topics": ["x"]})) is not None     # 카드 없는 글(주간)은 조건 없음
+
+
+def test_nested_tags_leave_no_residue():
+    """Codex 2차 검토 2026-10-01: 중첩 괄호 "[근거 [P1:A], P2:A]" 는 안쪽만 지워지고 바깥이 남았다.
+    망가뜨리면 실패하는 것: 남은 괄호를 한 번만 지우는 것 · 비어 버린 괄호를 남기는 것."""
+    plan = _plan(threads=[{"name": "이름 [근거 [P1:A], P2:A] [[P2:A]]", "papers": ["P1", "P2"],
+                           "body": "공통이다 [근거 [P9:A], P2:A] [[P9:Z]] [메모 [P9:Z] P8:Q] [P1:A][P2:A]."},
+                          {"name": "둘째 ] [P4:A", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}],
+                 side_signals=[{"paper": "P7", "note": "메모 [[P7:A]] [x [P1:T]]"}])
+    story = trend_report.repair_story(plan, _STORY_CORPUS)
+    thread = story["threads"][0]
+    assert thread["name"] == "이름"
+    assert thread["body"] == "공통이다 [P1:A][P2:A]."
+    assert story["threads"][1]["name"] == "둘째"
+    assert story["side_signals"][0]["note"] == "메모"
+    third = trend_report.repair_story(_plan(threads=[{"name": "결함 [참고] 합성", "papers": ["P1", "P2"], "body": "b [P1:A][P2:A]"}]),
+                                      _STORY_CORPUS)
+    assert third["threads"][0]["name"] == "결함 합성"       # 닫힌 괄호는 그 묶음만 — 뒤 낱말까지 버리지 않는다
