@@ -18,7 +18,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 관심 분야를 스스로 조정**하는 연구 지원 에이전트다(2026-09-14 방향 전환 — 계획 `docs/AGENT_PLAN_2026-09-14.md`).
 
 - 주요 스택: Python 3.14 · MCP 서버(stdio) · Streamlit(사람 판단 UI) · SQLite(`data/papers.db`) · Docker(⑦ 코드 재현 격리 실행)
-- 요약·서술 LLM 은 현재 Gemini 우선, Groq 대체다. 에이전트 두뇌로 Claude Code·Codex(구독, 헤드리스 포함)를 붙이는 중이다(계획 v2 §1).
+- ④ 요약 LLM 은 Gemini 우선, Groq 대체다. ⑨ 동향 서술은 Codex → Gemini → Groq 순서다(`narrative_engine`). 주간 관리는 Claude Code 제안 →
+  Codex 판정(구독 CLI, 헤드리스·도구 없음), 외부 정찰은 Codex 웹 검색 → Claude 검증이다. 어느 쪽도 결과를 적용하지 않는다 — Python 이 검증·적용한다.
 - 모노레포가 아니다. 루트 평면 배치이고 `src/` 레이아웃이 아니다. 하위 AGENTS.md 도 없다.
 - 일일 진입점은 `run_daily_scan.sh → run_profile_scan.py`(조정기) 이고, ①② 는 `scan_search.scan_profile`, ⑨ 는 `scan_deliver._deliver` 다(2026-09-17 분할 — 이름·시그니처는
   그대로이고 `run_profile_scan` 이 재수출한다. 테스트가 `rps._deliver`·`rps.scan_profile` 을 monkeypatch 하므로 조정기는 **자기 전역**으로 부른다 — `scan_deliver._deliver(...)`
@@ -74,6 +75,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   (`pytest-cov` 는 설치돼 있지 않다 — `--cov` 옵션은 없다. `coverage` 7.x 를 직접 쓴다)
 - 회귀 기준선: `.venv/bin/python eval.py` — 저장된 전체 요약의 통과율을 잰다.
   기록된 기준선은 39편 · pass_ratio 0.982 다(내부 품질 확인용 — 메일에는 검증 수치를 싣지 않는다, 2026-09-14).
+  39편은 8/5 의 평가셋이고 지금 `eval.py` 는 저장된 요약 **전체**를 잰다 — 모집단이 달라 두 값을 바로 견주지 않는다.
   값이 흔들리면 원인을 분석해 `docs/PROGRESS.md` 에 있는 그대로 적는다.
 - 린터·포매터·타입체커를 두지 않는다. Ruff · Black · isort · mypy 설정이 없고, 추가하지 않는다.
   `pyproject.toml` 도 없다. **완료 조건은 pytest 전체 green 이다**.
@@ -82,7 +84,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 
 ## 코드 스타일 · 컨벤션
 
-- 타입 힌트를 쓴다(비테스트 함수 257개 중 245개에 반환 타입이 있다). 새 코드도 붙인다.
+- 타입 힌트를 쓴다(비테스트 함수 990개 중 965개에 반환 타입이 있다 — 루트·`scripts/` 의 `*.py` 에서 `test_*`·conftest 를 빼고 중첩·async 포함 AST 로 셈, 2026-10-01). 새 코드도 붙인다.
 - 주석과 docstring 은 **한국어 평서체**로 쓰고, 무엇을 하는지가 아니라 **왜 그렇게 했는지**를
   적는다. 실측 결과와 날짜를 함께 남기는 것이 이 저장소의 관행이다. 이 톤을 유지한다.
 - 모듈 docstring 첫 줄은 담당 단계로 시작한다 — 예: `"""② 중복 제거·선별 — 결정적 규칙, 네트워크·LLM 미사용."""`
@@ -91,7 +93,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 
 ## 아키텍처 메모
 
-코드만 보고 유추하기 어려운 것만 적는다. 전체 지도는 `README.md`, 결정 이력은 `docs/PROGRESS.md`.
+코드만 보고 유추하기 어려운 것만 적는다. 시스템 개요는 `README.md`(2026-10-01 개정, 모듈 목록은 이 절이 맡는다), 개발 경과는
+`docs/HISTORY.md`, 결정 이력은 `docs/PROGRESS.md`.
 
 - `server.py` — MCP 도구 12종. ④ 요약, ⑥ 사람 판단, ⑦ 재현은 이 서버의 일이 아니다.
 - `summarize_engine.py` — ④ 요약 엔진(Gemini 우선/Groq 대체). 긴 논문은 청크로 나눠 전문을 읽는다.
@@ -114,6 +117,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   고정 절("눈에 띄는 것·갈래·…")을 채우라는 프롬프트로 되돌리지 않는다 — 절마다 논문을 다시 골라 이야기가 끊겼다(§200).
   **일일 메일 = 연구 흐름 + 핵심 논문(카드), 주간 관리일 메일 = 그 아래 "이번 주 브리프"**(7일 창·자리 밖 용어·외부 정찰·검색 기준 변화, §201).
   주변 신호는 카드가 아닌 논문만 — 무엇이 핵심인지는 순위 계약이 정한다. 일일 서술에 7일 증감을 다시 넣지 않는다.
+- **S2 검색 시드(`kind='s2_seed'`)를 비워도 S2 가 꺼지지 않는다** — `s2_delta.keywords_for_s2` 가 가중치 1.0 이상 core 로 대신 고른다(구형
+  프로필 하위 호환). 시드가 있으면 core 가중치는 순위만 바꾸고 S2 질의어를 바꾸지 않는다(2026-09-09 분리).
 - `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
 - **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
   `batch_summarize._process_paper`(새벽 스캔) **하나**다(옛 검색 화면의 `review_core._summarize_target` 은 2026-09-16 에 파일째 지웠다 —
