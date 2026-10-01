@@ -28,6 +28,8 @@ def engines(monkeypatch):
             state.calls.append("codex")
             state.processes.append((argv, kwargs))
             self.last = Path(argv[argv.index("-o") + 1])
+            if "--output-schema" in argv:      # 임시 폴더가 지워지기 전에 넘긴 스키마를 읽어 둔다
+                state.schema_text = Path(argv[argv.index("--output-schema") + 1]).read_text(encoding="utf-8")
             self.timed_out = False
             if state.cli == "spawn_error":
                 raise OSError("private error detail")
@@ -179,3 +181,22 @@ def test_empty_order_disables_generation(engines):
     """빈 순서를 기본 순서로 바꿔 의도하지 않은 엔진을 호출하면 실패한다."""
     assert asyncio.run(ne.generate(None, "입력", order=())) is None
     assert engines.calls == []
+
+
+def test_schema_goes_to_codex_and_accept_decides(engines):
+    """story-v2(2026-10-01). 망가뜨리면 실패하는 것: Codex 에 --output-schema 를 안 넘기는 것 · 스키마 파일이 격리 폴더 밖이거나
+    내용이 다른 것 · accept 가 ValueError 를 내도 그 출력을 싣는 것 · 다음 엔진으로 안 넘어가는 것."""
+    import json
+    schema = {"type": "object", "required": ["x"]}
+    seen = []
+
+    def accept(text):
+        seen.append(text)
+        if text == "정상 서술":
+            raise ValueError("구조 아님")
+        return f"조립:{text}"
+    got = asyncio.run(ne.generate(None, "프롬프트", schema=schema, accept=accept))
+    argv, opts = engines.processes[0]
+    assert "--output-schema" in argv and Path(argv[argv.index("--output-schema") + 1]).parent == Path(opts["cwd"])
+    assert json.loads(engines.schema_text) == schema
+    assert seen == ["정상 서술", "Gemini 서술"] and got == ("조립:Gemini 서술", "gemini")

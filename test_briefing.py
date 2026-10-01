@@ -213,7 +213,9 @@ def test_scan_carries_grounded_material_through_both_mail_formats(db, tmp_path, 
     prompts = []
     async def generate(client, prompt):
         prompts.append(prompt)
-        return "■ 오늘 눈에 띄는 것\n실내 평가다 [P1:S0002]"
+        # story-v2(2026-10-01): 모델은 구조를 낸다 — 글은 Python 이 조립한다.
+        return ('{"headline": "실내 평가다 [P1:S0002]", "threads": [{"name": "촉각 제어", "papers": ["P1", "P2"], '
+                '"body": "실내 평가다 [P1:S0002][P2:S0002]"}], "relation": "", "implications": [], "side_signals": []}')
     async def process(client, aid, **kwargs):
         assert kwargs["wait_for_repro"] is True
         return {"status": "done", "skipped": True, "arxiv_id": aid,

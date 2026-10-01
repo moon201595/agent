@@ -107,6 +107,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - `external_scout.py` — 주 1회 **검색 바깥** 정찰(GPT 웹검색) → S2 공식 제목·초록으로 신원 확인 → 발견 직전 스캔 기준 놓침 단계 → Claude 검증 →
   주간 브리프 `E` 근거. 정찰의 평가·순위는 버린다. 외부 근거만으로 키워드를 더하려면 **놓친 외부 논문 2편 이상·가중치 0.7 이하·관심 밖 반응과
   충돌 없음**(`agent_maintenance.validate`). 최종 정책은 기존 Codex 판정 단계다. `term_discovery` 는 검색 **안쪽** 사각지대 몫이다.
+- **⑨ 동향 서술은 모델이 글이 아니라 구조(JSON)를 낸다**(story-v2, 2026-10-01). `trend_report.parse_story → repair_story → render_story` 가
+  흐름(같은 문제를 다루는 논문 2편 이상, body 가 근거로 부른 논문만, 흐름마다 메일 카드 논문)·주변 신호를 검증하고 소제목·제목 목록을 Python 이 쓴다.
+  고정 절("눈에 띄는 것·갈래·…")을 채우라는 프롬프트로 되돌리지 않는다 — 절마다 논문을 다시 골라 이야기가 끊겼다(§200).
 - `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
 - **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
   `batch_summarize._process_paper`(새벽 스캔) **하나**다(옛 검색 화면의 `review_core._summarize_target` 은 2026-09-16 에 파일째 지웠다 —

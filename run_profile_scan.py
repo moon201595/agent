@@ -278,8 +278,11 @@ async def scan_and_digest(
 
     # 자리를 못 채웠거나 내놓은 논문을 정리한다.
     dropped = len(result["papers"]) - len([p for p in content if p in result["papers"]])
+    # `demoted` 에는 실패와 **자리가 차서 시도하지 않은 후보**가 함께 든다. 2026-10-01 Codex 조사: 이 로그가 둘을 합쳐
+    # "본문 수집에 실패한 976편"이라 찍고 있었다(실제 실패는 0편). 실패만 따로 센다.
+    failed_count = sum(1 for p in demoted if str(p.get("deep_status", "")).startswith("failed"))
     if demoted:
-        print(f"  [자리] 본문 수집에 실패한 {len(demoted)}편을 각주로 내렸다 — "
+        print(f"  [자리] 처리 실패 {failed_count}편 · 자리가 차서 시도 안 한 후보 {len(demoted) - failed_count}편 — "
               f"내용 자리는 {len(content)}/{max_items}편")
     result["papers"] = content
     result["title_only_papers"] = (
@@ -433,7 +436,8 @@ async def scan_and_digest(
                 result["narrative_past_days"] = len(past)      # 메일 라벨이 실제 입력을 말하려면 이 수가 필요하다
                 print(f"  [동향] 지난 서술 {len(past)}일치를 맥락으로 넣는다 ({past[-1]['reader_date']}~{past[0]['reader_date']})")
             story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
-                                                 movement=movement, past=past)
+                                                 movement=movement, past=past,
+                                                 anchors=len(result["papers"]))
             if story:
                 text, ungrounded, enriched, engine = story
                 result["narrative_engine"] = engine

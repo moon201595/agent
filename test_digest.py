@@ -654,7 +654,7 @@ def test_abstract_only_paper_stays_inside_its_own_toggle():
     assert "초록만 있는 논문" in html              # 제목이 있다
     assert "doi.org/10.1/x" in html              # 링크가 있다
     assert "결함을 검출한다" in html               # 내용도 그대로
-    assert "초록 기반 정리" in html                # 라벨은 붙되
+    assert "초록 기반 · 미검증" in html            # 라벨은 붙되
     assert "검증" not in html.split("결함을")[0]   # 검증 라벨은 안 붙는다(규칙 8)
 
 
@@ -750,7 +750,7 @@ def test_abstract_brief_replaces_the_error_dump():
 def test_abstract_brief_never_claims_verification():
     """본문 요약과 라벨을 같이 쓰면 안 된다 — ⑤ 를 통과한 게 아니다(규칙 8)."""
     entry = digest._paper_entry(1, _brief_paper())
-    assert "[초록 기반 정리 · 본문 미확보 · 미검증]" in entry
+    assert "[초록 기반 · 미검증]" in entry
     assert "검증 " not in entry.replace("미검증", "")
 
 
@@ -1666,9 +1666,39 @@ def test_every_section_heading_is_bold_in_the_html_mail():
                                       "shadow": None, "failed": None}},
     }
     html = digest.generate_digest_html(scan, "t")
-    headings = ["오늘의 동향 정리", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 신규 논문",
+    headings = ["오늘의 동향 정리", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 핵심 논문",
                 "상승", "하락", "핵심 키워드 밖 반복 관측", "가중치 변화", "신규", "이유", "검색 영향"]
     for heading in headings:
         m = re.search(r"<(?:p|div)[^>]*>[^<]*" + re.escape(heading) + r"[^<]*<", html)
         assert m, f"{heading} 이 메일에 없다"
         assert "font-weight:700" in m.group(0), f"{heading} 이 굵지 않다: {m.group(0)[:120]}"
+
+
+def test_story_v2_lead_box_wraps_only_the_headline():
+    """story-v2(2026-10-01): 결론 상자는 "오늘의 한 줄" 본문만 감싼다. 망가뜨리면 실패하는 것: 상자를 옛 소제목에만 거는 것 ·
+    흐름 소제목(■ 1. 이름)을 소제목으로 못 알아봐 상자가 닫히지 않는 것."""
+    text = "■ 오늘의 한 줄\n결론 [P1:A]\n\n■ 1. 흐름 이름\n흐름 본문 [P1:A][P2:A]\n- Paper title [P1:A]\n\n■ 주변 신호\n- Other — 메모 [P3:A]"
+    html = digest.generate_digest_html({"papers": [], "narrative": (text, []), "title_only_papers": []}, "팀")
+    box = html.index("border-left:3px solid")
+    assert html.index("오늘의 한 줄") < box < html.index("결론") < html.index("1. 흐름 이름")
+    assert html[box:html.index("1. 흐름 이름")].count("</div>") >= 2          # 흐름 소제목 전에 상자가 닫힌다
+    assert html.count("border-left:3px solid") == 1
+
+
+def test_cards_say_how_deep_we_read(monkeypatch):
+    """2026-10-01 사용자 결정: 순위는 관련도, 깊이는 카드마다 분명히. 망가뜨리면 실패하는 것: 요약이 없는데 "원문 분석 완료"라고
+    하는 것 · 원문 일부만 반영된 요약을 "완료"라고 하는 것 · 초록 카드에 원문 라벨을 다는 것 · 제목 옆 집계가 실제 라벨과 다른 것."""
+    body = {"overview": ["o"], "method": [], "setup": [], "results": [], "author_limits": "", "limits": ""}
+    sections = {"full": body, "part": body}
+    monkeypatch.setattr(digest, "summary_sections", lambda aid: sections.get(aid, {}))
+    monkeypatch.setattr(digest, "coverage_label", lambda aid: "[원문 60%만 반영]" if aid == "part" else "")
+    full = {"arxiv_id": "full", "title": "Full", "deep_status": "ok"}
+    part = {"arxiv_id": "part", "title": "Part", "deep_status": "skipped: 이미 요약 저장됨"}
+    abstract = {"arxiv_id": "", "title": "Abs", "deep_status": "abstract_only", "abstract_brief": "요지"}
+    lost = {"arxiv_id": "lost", "title": "Lost", "deep_status": "ok"}       # 요약 파일이 없다
+    assert [digest.depth_label(p) for p in (full, part, abstract, lost)] == [
+        "원문 분석 완료", "원문 일부 분석", "초록 기반 · 미검증", ""]
+    assert digest.depth_counts([full, part, abstract, lost]) == "원문 분석 2 · 초록 기반 1"
+    html = digest._paper_entry_html(1, dict(full))
+    assert "원문 분석 완료" in html
+    assert "원문 분석" not in digest._paper_entry_html(3, dict(abstract))
