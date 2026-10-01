@@ -333,3 +333,65 @@ def test_monday_narrative_prompt_carries_the_weekly_numbers(db, tmp_path, monkey
     assert "지난 한 주" not in digest.narrative_source_label(result)            # 라벨도 봤다고 하지 않는다
     for mail in (text, digest.generate_digest_html(result, "팀")):
         assert "주간 동향 리뷰" not in mail                   # 메일에도 안 나간다
+
+
+@pytest.mark.parametrize("weekly,moved,caught", [(False, True, True), (True, True, True), (False, False, True), (False, False, False)])
+def test_seven_day_window_is_weekly_and_daily_profile_moves_are_reported(db, monkeypatch, weekly, moved, caught):
+    """2026-10-01 사용자 결정: 7일 창 셈·자리 밖 용어는 주간 관리일에만 계산·게재하고, 평일에 반응으로 가중치가 바뀌면 그날 메일에
+    한 줄로 남긴다(주간 관리일에는 검색 기준 변화 절이 담는다). 일일 서술에는 7일 증감을 주지 않는다.
+    망가뜨리면 실패하는 것: 평일에 7일 창을 싣는 것 · 주간 관리일에 안 싣는 것 · 평일 변경을 버리는 것 · 서술에 movement 를 넘기는 것 ·
+    **아무것도 안 바뀐 평일**에 변경 줄을 싣는 것(Codex 최종 검토 2026-10-01: 그 경우가 없었다)."""
+    import feedback_weights
+    import observation_signals
+    import server
+    rows = [paper(aid, "Robot " + aid, abstract="Tactile sensing") for aid in ("a", "b", "c")]
+
+    order = []
+
+    async def scan(*args):
+        order.append("scan")
+        return {"papers": rows, "candidates_found": 3, "run_status": "done"}
+
+    async def sweep():
+        return {"checked": 0, "resolved": 0, "retracted": 0, "remaining": 0}
+
+    async def process(client, aid, **kwargs):
+        return {"status": "done", "skipped": True, "arxiv_id": aid}
+    seen = {}
+
+    async def narrative(client, rows, profile, **kw):
+        seen.update(kw)
+        return None
+    monkeypatch.setattr(server, "DB_PATH", db)
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", process)
+    monkeypatch.setattr(rps, "scan_profile", scan)
+    monkeypatch.setattr(rps, "_summary_exists", lambda aid: True)
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda now=None: weekly)
+    monkeypatch.setattr(server, "sweep_retraction_status", sweep)
+    monkeypatch.setattr(rps.trend_report, "narrative", narrative)
+    monkeypatch.setattr(rps.trend_report, "window_movement", lambda *a, **k: {
+        "days": 7, "papers": (3, 1), "days_covered": (3, 3), "comparable": True, "keywords": [], "terms": []})
+    monkeypatch.setattr(observation_signals, "reserve_terms", lambda *a, **k: {"count": 4, "terms": [("tool use", 2)]})
+    def update(*a, **k):
+        order.append("feedback")
+        if not moved:                                   # 반응 변경은 없고 따라잡기만 있는 날
+            return {"status": "no_reactions", "changes": [], "reactions_used": 0}
+        return {"status": "updated", "changes": [{"keyword": "robot", "before": 0.8, "after": 0.9}], "reactions_used": 1}
+    monkeypatch.setattr(feedback_weights, "update_profile", update)
+    import agent_maintenance
+    monkeypatch.setattr(agent_maintenance, "applied_since",
+                        lambda *a, **k: [{"op": "add_keyword", "term": "tactile"}] if caught else [])
+    async def build(*a, **k):
+        return ""
+    monkeypatch.setattr(rps.trend_report, "build", build)
+    result, text = asyncio.run(rps.scan_and_digest(db, "team", None))
+    assert ("trend_window" in result) is weekly and ("reserve_terms" in result) is weekly
+    assert ("profile_update" in result) is (not weekly and (moved or caught))
+    assert "movement" not in seen
+    assert ("오늘 반영된 검색 프로필 변경" in text) is (not weekly and (moved or caught))
+    # 따라잡기(그 주 첫 근무일에 끝나지 않은 주간 관리를 오늘 다시 돈 것)가 바꾼 키워드도 같은 줄에 — 주간 관리일엔 브리프가 담는다
+    assert ("다시 돌려 적용했다 — 키워드 추가 : tactile" in text) is (caught and not weekly)
+    assert ("robot 0.80→0.90" in text) is (moved and not weekly)
+    # 반응 반영이 스캔보다 먼저다 — 그래야 그날 스캔 스냅숏(주간 관리일엔 검색 기준 변화의 끝점)에 들어간다
+    # (test_weekly_profile_changes::test_same_day_feedback_on_a_weekly_day_lands_in_the_weekly_changes 가 그 뒤를 잇는다).
+    assert order == ["feedback", "scan"]

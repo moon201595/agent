@@ -103,3 +103,15 @@ def test_monday_prompt_carries_all_three_inputs_without_leaking_counts():
     assert "agentic rl" in prompt                      # 늘어난 말은 이름만
     movement_part = prompt.split("agentic rl")[1][:80]
     assert " 9" not in movement_part and " 3" not in movement_part   # 그 말의 편수는 안 간다
+
+
+def test_other_working_days_catch_up_an_unfinished_weekly_run_before_the_scan():
+    """2026-10-01 사용자 결정: 주간 관리가 실패했거나 못 돌았으면 남은 근무일 아침에 다시 한다. 이 테스트가 잡는 것: 따라잡기를
+    빼는 것 · 주간 관리일 갈래에 넣어 두 번 도는 것 · 스캔 **뒤로** 옮기는 것 · 실패가 스캔을 막는 것."""
+    sh = (ROOT / "run_daily_scan.sh").read_text(encoding="utf-8")
+    weekly = sh.index('if [ "$DAY_KIND" = "weekly" ]')
+    other = sh.index("    else\n", weekly)
+    catch = sh.index(".venv/bin/python agent_maintenance.py --catch-up")
+    scan = sh.index(".venv/bin/python run_profile_scan.py --all")
+    assert weekly < other < catch < scan
+    assert '|| echo "  [주간 따라잡기] 실패(무시)"' in sh[catch:scan]

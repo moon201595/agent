@@ -727,7 +727,11 @@ def _reserve(db: Path, profile_id: str, week: str, now: datetime, force: bool) -
                           (profile_id, week)).fetchone()
         if row and not force:
             started = datetime.fromisoformat(row[1]) if row[1] else None
-            if not (row[0] == "running" and started is not None and now - started > STALE_RUNNING):
+            stale = row[0] == "running" and started is not None and now - started > STALE_RUNNING
+            # **실패한 주는 다시 잡는다**(2026-10-01 사용자 결정). 9/28 세 프로필이 `codex_missing` 으로 실패했는데 이 행이
+            # 그 주 재시도를 막아 한 주 키워드 조정이 통째로 비었다. 실패는 revision 을 안 쓴 상태다 — revision 을 쓴 뒤의
+            # 실패는 `_fail` 이 applied 로 남기므로 다시 잡아도 같은 변경이 두 번 들어가지 않는다.
+            if not (stale or row[0] == "failed"):
                 return False
         con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status, prompt_version) VALUES (?,?,?,'running',?) "
                     "ON CONFLICT(profile_id, week) DO UPDATE SET started_at=excluded.started_at, status='running', "
@@ -829,6 +833,54 @@ def run_week(db: Path, runner=None, now: datetime | None = None, force: bool = F
     return [run_profile(db, pid, runner, now=now, force=force) for pid in ids]
 
 
+# ── 따라잡기 ────────────────────────────────────────────────────────────────
+# 주간 관리가 실패했거나 그날 아예 못 돌았으면(PC 꺼짐 등) **주간 관리일 바로 다음 근무일 아침에 한 번** 다시 한다(2026-10-01
+# 사용자 결정: "월요일 실패했으면 화요일에 바로 실행했어야 … 지금은 너무 늦었어"). 그보다 늦으면 다음 주간 관리가 가까워
+# 따라잡을 값어치가 작다 — 그래서 W40(9/28 실패)은 넘긴다. 끝난 상태는 다시 하지 않고, 할 일이 없으면 모델을 부르지 않는다.
+DONE_STATUSES = frozenset({"applied", "no_change", "skipped_no_signal", "applying"})
+
+
+def catch_up_targets(db: Path, now: datetime | None = None) -> list[str]:
+    """이번 주에 아직 끝나지 않은 프로필(실패했거나 행이 없음). **오늘이 이번 주 주간 관리일의 바로 다음 근무일일 때만** —
+    주간 관리일 당일은 본 실행의 몫이고, 이틀 넘게 지나면 다음 주간 관리를 기다린다. 'applying' 은 revision 을 썼을 수 있어
+    사람이 보기 전에는 다시 잡지 않는다(`_reserve` 와 같은 판단)."""
+    import work_calendar
+    now = now or _now()
+    day = now.astimezone(KST).date()
+    monday = day - timedelta(days=day.weekday())
+    weekly = [monday + timedelta(days=i) for i in range((day - monday).days)
+              if work_calendar.is_weekly_day(monday + timedelta(days=i))]
+    if not weekly or work_calendar.next_work_day(weekly[0]) != day:
+        return []
+    init_db(db)
+    week = week_of(now)
+    with sqlite3.connect(db) as con:
+        rows = con.execute("SELECT profile_id, status, started_at FROM agent_runs WHERE week=?", (week,)).fetchall()
+    # 오늘 이미 다시 잡았다가 또 실패한 행도 뺀다 — "한 번만"이다. 날짜 판정만으로는 같은 날 두 번째 호출(작업 스케줄러가
+    # cron 뒤에 순차로 깨우는 경우)이 실패 행을 또 잡는다(Codex 최종 검토 2026-10-01). started_at 은 _reserve 가 잡을 때 쓴 UTC 다.
+    skip = {pid for pid, status, started in rows
+            if status in DONE_STATUSES or (status == "failed" and started
+                                            and datetime.fromisoformat(started).astimezone(KST).date() == day)}
+    return [pid for pid in research_profile.list_profiles(db) if pid not in skip]
+
+
+def applied_since(db: Path, profile_id: str, since: datetime) -> list[dict]:
+    """since 이후 끝난 주간 관리가 실제로 적용한 조치 — 따라잡기로 평일에 바뀐 키워드를 그날 메일 한 줄에 싣는 데 쓴다."""
+    init_db(db)
+    # finished_at 은 `_finish` 가 UTC 로 쓴다. 문자열 비교이므로 기준도 UTC 로 맞춘다 — KST 자정("…T00:00:00+09:00")을 그대로
+    # 넘기면 그날 새벽 따라잡기(UTC 로는 전날 20시)가 전부 빠졌다(Codex 최종 검토 2026-10-01).
+    with sqlite3.connect(db) as con:
+        rows = con.execute("SELECT applied_json FROM agent_runs WHERE profile_id=? AND status='applied' AND finished_at>=?",
+                           (profile_id, since.astimezone(timezone.utc).isoformat())).fetchall()
+    out: list[dict] = []
+    for (raw,) in rows:
+        try:
+            out += [a for a in json.loads(raw or "[]") if isinstance(a, dict)]
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 # ── 아침 메일 ───────────────────────────────────────────────────────────────
 FAIL_LABELS = {"timeout": "시간 초과", "claude_exit": "Claude 실행 실패", "claude_error": "Claude 응답 오류",
                "claude_bad_json": "Claude 응답 형식 오류", "claude_missing": "Claude CLI 없음",
@@ -901,8 +953,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true", help="이번 주에 이미 돌았어도 다시")
     ap.add_argument("--brief-only", action="store_true", help="모델을 부르지 않고 브리프만 출력")
     ap.add_argument("--no-scout", action="store_true", help="외부 정찰을 건너뛰고 주간 관리만")
+    ap.add_argument("--catch-up", action="store_true",
+                    help="주간 관리일 바로 다음 근무일에, 이번 주 주간 관리가 실패했거나 못 돈 프로필만 다시(run_daily_scan.sh 가 부른다)")
     args = ap.parse_args(argv)
     db = Path(args.db)
+    if args.catch_up:
+        targets = catch_up_targets(db)
+        if not targets:
+            print("  [주간 따라잡기] 할 일 없음")
+            return 0
+        print(f"  [주간 따라잡기] 이번 주 미완료 {len(targets)}개 프로필: {', '.join(targets)}")
+        # 정찰은 주간 관리의 근거라 다시 돌 프로필이 있을 때만 — 이번 주 정찰이 끝났으면(done·partial) run_weekly 가 스스로 건너뛴다.
+        try:
+            import external_scout
+            print(json.dumps(external_scout.run_weekly(db), ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001
+            print(f"  [외부 정찰] 생략: {type(e).__name__}")
+        results = run_week(db, profile_ids=targets)
+        for r in results:
+            print(json.dumps(r, ensure_ascii=False))
+        return 1 if any(r["status"] == "failed" for r in results) else 0
     if args.brief_only:
         for pid in args.profile or research_profile.list_profiles(db):
             b = build_brief(db, pid)

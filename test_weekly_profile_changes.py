@@ -491,3 +491,53 @@ def test_the_previous_cycle_is_a_report_day_not_merely_the_same_weekday(tmp_path
                          json.dumps({"core_topics": ["X"], "core_weights": {"X": w}})))
     got = wpc._previous_cycle(db, "p1", utc(2026, 10, 6, 5, 5), 7)     # 10/5 가 휴일이라 화요일이 보고일
     assert got and got[0] == monday.isoformat(), "지난 보고는 월요일 회차다 — 화요일 일일 스캔이 아니다"
+
+
+def test_same_day_feedback_on_a_weekly_day_lands_in_the_weekly_changes(tmp_path, monkeypatch):
+    """2026-10-01: 주간 관리일에는 평일 한 줄("오늘 반영된 검색 프로필 변경")을 싣지 않는다 — 그 대신 그날 새벽 반응으로 바뀐
+    가중치가 **검색 기준 변화 절에 실제로 들어가야** 한다. 실행 순서(반응 반영 → 스캔 스냅숏 → collect)를 실제 함수로 잇는다.
+    망가뜨리면 실패하는 것: 끝 스냅숏을 스캔 전 프로필로 잡는 것 · 반응 revision 을 창 밖으로 빼는 것 · 출처(feedback)를 잃는 것 ·
+    쓰인 반응 수를 안 세는 것. 이게 깨지면 주간 관리일에만 사용자 반응 변화가 메일에서 사라진다(외부 검토 지적)."""
+    import agent_maintenance
+    import feedback_links as fl
+    import feedback_weights as fw
+    db = tmp_path / "p.db"
+    utc = lambda *a: datetime(*a, tzinfo=KST).astimezone(timezone.utc)   # noqa: E731
+    clock = {"t": utc(2026, 9, 1, 9, 0)}
+    monkeypatch.setattr(research_profile, "_now", lambda: clock["t"].isoformat(timespec="microseconds"))
+    research_profile.create_profile(db, "p", "프로필", core_topics=["topic"], target_domain=["robotics"],
+                                    core_weights={"topic": 1.0})
+    fw.init_db(db)
+    fl.init_db(db)
+    agent_maintenance.init_db(db)
+
+    def scan_row(scan_id, started):
+        with sqlite3.connect(db) as con:
+            con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version) "
+                        "VALUES (?,?,?,?,'test')", (scan_id, "p", started.isoformat(),
+                                                    json.dumps(research_profile.get_profile(db, "p"))))
+    scan_row("s1", utc(2026, 9, 21, 5, 2))                     # 지난 주간 관리일 회차
+    for i, day in enumerate((24, 25)):                          # 한 주 동안 두 논문에 "관심 있음"
+        seen = utc(2026, 9, day, 5, 10)
+        with sqlite3.connect(db) as con:
+            con.execute("INSERT INTO candidate_observations (scan_id, profile_id, paper_key, observed_at, core_hits) "
+                        "VALUES (?,?,?,?,?)", (f"o{i}", "p", f"k{i}", seen.isoformat(), json.dumps(["topic"])))
+            con.execute("INSERT INTO feedback_tokens (tid, issue_id, profile_id, item_no, paper_key, recipient_hash, "
+                        "position, created_at, expires_at, delivered_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (f"t{i}", "issue", "p", "P1", f"k{i}", "r", 1, seen.isoformat(), 9999999999, seen.isoformat()))
+            con.execute("INSERT INTO feedback_events (event_id, tid, action, received_at, status, imported_at) "
+                        "VALUES (?,?,?,?,?,?)", (f"e{i}", f"t{i}", "more", (seen + timedelta(hours=3)).isoformat(),
+                                                 fl.STATUS_VALID, (seen + timedelta(hours=3)).isoformat()))
+    weekly = utc(2026, 9, 28, 5, 0)                             # 이번 주간 관리일 새벽 — 반응 반영이 스캔보다 먼저
+    clock["t"] = weekly
+    moved = fw.update_profile(db, "p", now=weekly)
+    assert [(c["keyword"], c["before"], c["after"]) for c in moved["changes"]] == [("topic", 1.0, 1.1)]
+    clock["t"] = utc(2026, 9, 28, 5, 2)
+    scan_row("s2", clock["t"])                                  # 이번 회차가 실제로 검색에 쓴 프로필
+    out = wpc.collect(db, "p", now=utc(2026, 9, 28, 5, 40), scan_id="s2")
+    assert out is not None
+    w = out["weights"][0]
+    assert (w["keyword"], w["before"], w["after"]) == ("topic", 1.0, 1.1) and "feedback" in w["origins"]
+    assert out["reactions_used"] == 2
+    text = "\n".join(digest._profile_changes_section({"profile_changes": out}))
+    assert "topic" in text and "반영된 사용자 반응 2건" in text

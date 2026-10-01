@@ -257,14 +257,15 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 1. threads(흐름): **같은 문제를 다루는 논문 2편 이상**의 묶음. 1~3개. 공통 문제가 하나뿐이면 하나만 낸다.
    - name: 흐름 이름. 무엇에 관한 흐름인지 짧은 명사구(예: "합성 결함 데이터의 역할 확대").
    - papers: 그 흐름의 논문 ID(예: ["P1", "P2"]). 한 논문은 한 흐름에만 넣는다.
-   - body: 2~3문장. 무엇이 공통인가(같은 문제) + 어떻게 다른가(접근·목적의 차이). 흐름에 넣은 논문을 모두 근거 ID 로 부른다.
+   - body: 2~3문장. 첫 문장은 **공통 연구 문제**(같은 질문·목표)를 말하고, 이어서 각 논문이 그 문제에 무엇을 하는지(역할·접근의
+     차이)를 쓴다. 흐름에 넣은 논문을 모두 근거 ID 로 부른다. 같은 키워드·같은 응용 분야라는 것만으로는 흐름이 아니다.
 2. relation: 흐름이 둘 이상일 때 서로 어떤 관계인지 한 문장(같은 문제에 대한 다른 대응인지, 별개 문제인지).
    별개면 별개라고 쓴다. 흐름이 하나면 빈 문자열.
 3. headline: 오늘의 한 줄. 흐름들을 묶는 **중심 질문과 그에 대한 오늘 표본의 답**을 1~2문장으로.
 4. implications: 우리 연구에서 볼 것 1~3개. 위 흐름이 관심 분야와 만나는 지점에서 확인할 조건·실험.
    적용 조건과 다음에 확인할 실험을 구분한다.
-5. side_signals: 어느 흐름에도 속하지 않지만 관심 분야와 이어지는 논문. note 는 무엇에 관한 것인지 짧은 명사구.
-   흐름에 억지로 넣지 않는다. 관련이 약하면 아예 빼도 된다. 최대 5개.
+5. side_signals: 어느 흐름에도 속하지 않지만 관심 분야와 이어지는 **메일 카드가 아닌** 논문. note 는 무엇에 관한 것인지 짧은 명사구.
+   카드 논문은 아래에 이미 카드로 실리므로 주변 신호로 내리지 않는다. 흐름에 억지로 넣지 않는다. 관련이 약하면 빼도 된다. 최대 5개.
 
 출력(반드시 지킨다): JSON 객체 하나만. 코드펜스·설명 없이.
 {{"headline": "...", "threads": [{{"name": "...", "papers": ["P1", "P2"], "body": "..."}}],
@@ -280,7 +281,7 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
   쓴다 — 초록의 성과 문구는 저자 주장이다. 흐름에 본문을 읽은 논문이 있으면 그 논문으로 흐름을 연다.
 - 문장에서 논문을 부를 때는 제목 전체가 아니라 짧은 이름(예: 제목의 콜론 앞)만 쓴다 — 제목 목록은 Python 이 붙인다.
 - 이전 기간의 비교 근거는 제공되지 않았다. 증가·전환·부상 등 시간적 변화는 단정하지 않고
-  "이번 수집 표본에서 관찰되는 주제"로 서술한다.
+  "이번 수집 표본에서 관찰되는 주제"로 서술한다. 하루 표본이므로 "트렌드"라는 말도 쓰지 않는다.
 - 저자 명시 한계와 요약자 해석을 구분한다. 논문에서 확인하지 않은 적용 가능성은 문장 끝에 "(해석)" 을 붙인다 —
   "해석이다" 같은 서술어로 쓰지 않는다. 표본 밖의 것은 "~는 이 표본으로는 알 수 없다." 로 끝낸다.
 - "(논문 자체의 SOTA 주장 — 미검증)" 이 붙은 S번호 문장은 그 논문이 스스로 최고 성능이라고 말한 것이다. 흐름과 이어질 때만
@@ -402,6 +403,9 @@ def _fit(text: str, allowed: set[int] | None, tags: set[str], limit: int) -> tup
         kept.append(match.group(0))
         return f"\x00{len(kept) - 1}\x00"
     out = _strip_stray(_TAG_FIND_RE.sub(keep, text))
+    # 닫히지 않은 "[P99:A" — 닫힌 것은 위에서 지웠으니 남은 "[P번호…" 는 전부 검사를 안 거친 조각이다(Codex 최종 검토 2026-10-01:
+    # 짧은 본문 끝의 "[P99:A" 가 그대로 나갔다). 이름·메모의 `_label` 은 괄호 이후를 다 버리지만 본문은 글을 살리고 조각만 뗀다.
+    out = re.sub(r"\[\s*P\d+[^\s\[\]\x00]*", "", out)
     out = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], out)
     out = _LEAD_ORNAMENT_RE.sub("", " ".join(out.split()))
     out = re.sub(r"\s+([.,。])", r"\1", out)
@@ -422,6 +426,27 @@ def _label(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
+# 결과 수치 — 퍼센트·배수·pp·dB, 또는 소수. 모델 이름의 버전("GPT-4.1"·"Qwen2.5")과 데이터셋 번호("MVTec AD 2")는 결과가 아니다.
+# 경계는 ASCII 로만 본다 — 파이썬 \w 는 한글도 글자라 "0.82를" 의 조사가 소수를 가렸다.
+_RESULT_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_.\-])\d+(?:\.\d+)?\s*(?:%p?|퍼센트|배|[x×](?![A-Za-z0-9_])|pp\b|dB\b)"
+                               r"|(?<![A-Za-z0-9_.\-])\d+\.\d+(?![A-Za-z0-9_.])")
+_CLAIM_RE = re.compile(r"([^\[]*?)((?:\s*\[P\d+:(?:[ART]|S\d+)\])+)")
+
+
+def _mark_abstract_results(text: str) -> str:
+    """초록 근거(A)만 단 결과 수치에 "(초록 기준)" 을 붙인다. "결과 주장은 원문 근거(R·S)로만"은 프롬프트 규칙이었고 코드가
+    막지 않았다 — 초록만 본 두 논문에 "정확도 95%를 달성했다 [P1:A][P2:A]" 가 그대로 나갔다(Codex 최종 검토 2026-10-01).
+    지우지 않는 이유: 초록의 수치도 저자가 한 말이라 틀린 인용은 아니다. 다만 원문 결과표로 확인한 값과 같은 무게로 읽히면 안 된다.
+    단위는 근거 묶음 하나와 그 앞의 글이다 — 한 문장에 원문 근거 절과 초록 근거 절이 섞여도 절마다 따로 본다."""
+    def mark(match: re.Match) -> str:
+        claim, run = match.group(1), match.group(2)
+        kinds = re.findall(r":([ART]|S\d+)\]", run)
+        if all(k == "A" for k in kinds) and _RESULT_NUMBER_RE.search(claim):
+            return f"{claim}{run} (초록 기준)"
+        return match.group(0)
+    return _CLAIM_RE.sub(mark, text or "")
+
+
 def _mark_interpretation(text: str, cited: set[int]) -> str:
     """근거 ID 가 하나도 안 남은 문장은 해석이다 — 근거를 지어 붙이지 않고 "(해석)" 으로 표시한다."""
     if cited or not text or text.endswith("(해석)") or text.endswith("알 수 없다."):
@@ -439,10 +464,13 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
       오늘 메일의 이야기가 아니다. 개수가 아니라 번호 집합이다 — 제목 없는 행은 자료에서 빠져 번호가 밀린다(Codex 검토).
     - deep(원문을 분석한 논문의 P 번호)은 **자격이 아니라 발언권**이다: 그런 논문이 든 흐름을 앞에 두고, 목록에 깊이를 적는다.
       원문 확보를 흐름의 자격으로 삼으면 저널 위주 분야(vision·ai_advance 는 카드의 2/3 가 초록만)의 실제 흐름이 수집 사정
-      때문에 주변으로 밀린다 — §8-86 과 같은 왜곡이다(2026-10-01 판단). 주장의 강도는 프롬프트가 가른다(결과 주장은 R·S 로만).
+      때문에 주변으로 밀린다 — §8-86 과 같은 왜곡이다(2026-10-01 판단). 주장의 강도는 프롬프트가 가르고(결과 주장은 R·S 로만),
+      어겨도 초록 근거만 단 결과 수치에는 `_mark_abstract_results` 가 "(초록 기준)" 을 붙인다.
     - headline·relation·implications 는 흐름 논문의 근거만 남긴다. headline 이 근거를 다 잃으면 뺀다.
       relation·implications 는 근거가 없으면 "(해석)" 을 붙인다 — 근거를 지어 붙이지 않는다.
-    - side_signals: 흐름에 안 든 논문만, 초록이 있는 것만, 한 번씩.
+    - side_signals: 흐름에 안 든 논문만, 초록이 있는 것만, 한 번씩, **메일 카드가 아닌 것만**(anchors). 무엇이 핵심(카드)인지는
+      Python 의 결정적 순위가 정하고 모델은 고르지 않는다 — 카드가 주변 신호로 다시 나오면 "왜 어제는 핵심이 오늘은 주변인가"를
+      설명할 수 없다(2026-10-01 사용자 결정). 카드가 흐름에 안 들어도 사라지지 않는다 — 아래 카드로 실린다.
     """
     titles, tags = _corpus_index(corpus)
     repairs: list[str] = []
@@ -468,7 +496,7 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
             repairs.append("thread_without_anchor")
             continue
         used.update(papers)
-        threads.append({"name": name, "papers": papers, "body": body})
+        threads.append({"name": name, "papers": papers, "body": _mark_abstract_results(body)})
     if not threads:
         return None
     if deep:
@@ -478,20 +506,24 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
     if not head_cited:
         headline = ""
         repairs.append("headline_uncited")
+    headline = _mark_abstract_results(headline)
     relation = ""
     if len(threads) >= 2:
         relation, rel_cited = _fit(plan.get("relation") or "", used, tags, _STORY_LIMITS["relation"])
-        relation = _mark_interpretation(relation, rel_cited)
+        relation = _mark_interpretation(_mark_abstract_results(relation), rel_cited)
     implications = []
     for raw in (plan.get("implications") or [])[:STORY_MAX_IMPLICATIONS]:
         text, cited = _fit(raw, used, tags, _STORY_LIMITS["implication"])
         if text:
-            implications.append(_mark_interpretation(text, cited))
+            implications.append(_mark_interpretation(_mark_abstract_results(text), cited))
     side: list[dict] = []
     for raw in plan.get("side_signals") or []:
         match = re.fullmatch(r"\s*P(\d+)\s*", str(raw.get("paper") or ""))
         num = int(match.group(1)) if match else 0
         note = _label(raw.get("note") or "", _STORY_LIMITS["note"])
+        if anchors is not None and num in anchors:
+            repairs.append("side_signal_is_card")
+            continue
         if num in titles and num not in used and f"P{num}:A" in tags and note and len(side) < STORY_MAX_SIDE:
             side.append({"paper": num, "note": note})
             used.add(num)

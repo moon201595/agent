@@ -781,7 +781,7 @@ def _scan_with_story(ungrounded=None):
 def test_daily_digest_carries_a_narrative_not_just_counts():
     text = digest.generate_digest(_scan_with_story(), "t")
     assert "결함 검출은 합성 데이터로 메우는 흐름이 뚜렷하다." in text
-    assert "오늘의 동향 정리" in text
+    assert "오늘의 연구 흐름" in text
     # 빈도표는 "동향"이라 부르지 않는다 — 그건 셈이다
     assert "키워드별 적중 편수" in text
 
@@ -797,9 +797,9 @@ def test_narrative_comes_first_and_carries_no_boilerplate_header():
         assert boilerplate not in html_head
     # 2026-09-09 사용자 요청: 브리핑을 첫 화면에 둔다. 검증 라벨은 위에서
     # 계속 검사하고, 새 순서 계약은 평문·HTML 모두 잠근다(검증 완화 아님).
-    assert text.index("오늘의 동향 정리") < text.index("키워드별 적중 편수")
+    assert text.index("오늘의 연구 흐름") < text.index("키워드별 적중 편수")
     html = digest.generate_digest_html(_scan_with_story(), "t")
-    assert html.index("오늘의 동향 정리") < html.index("키워드별 적중 편수")
+    assert html.index("오늘의 연구 흐름") < html.index("키워드별 적중 편수")
 
 
 def test_narrative_warns_about_invented_numbers():
@@ -814,7 +814,7 @@ def test_digest_renders_without_a_narrative():
     scan = _scan_with_story()
     del scan["narrative"]
     text = digest.generate_digest(scan, "t")
-    assert "오늘의 흐름" not in text
+    assert "오늘의 연구 흐름" not in text
     assert "키워드별 적중 편수" in text
 
 
@@ -1666,7 +1666,7 @@ def test_every_section_heading_is_bold_in_the_html_mail():
                                       "shadow": None, "failed": None}},
     }
     html = digest.generate_digest_html(scan, "t")
-    headings = ["오늘의 동향 정리", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 핵심 논문",
+    headings = ["오늘의 연구 흐름", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 핵심 논문",
                 "상승", "하락", "핵심 키워드 밖 반복 관측", "가중치 변화", "신규", "이유", "검색 영향"]
     for heading in headings:
         m = re.search(r"<(?:p|div)[^>]*>[^<]*" + re.escape(heading) + r"[^<]*<", html)
@@ -1702,3 +1702,24 @@ def test_cards_say_how_deep_we_read(monkeypatch):
     html = digest._paper_entry_html(1, dict(full))
     assert "원문 분석 완료" in html
     assert "원문 분석" not in digest._paper_entry_html(3, dict(abstract))
+
+
+def test_weekly_brief_sits_below_todays_papers_and_only_when_there_is_one(monkeypatch):
+    """2026-10-01 사용자 결정: 일일 = "오늘 무엇을 읽고 오늘 논문들이 무슨 이야기를 하나", 주간 관리일 = 거기에 "이번 주 브리프"
+    (7일 창·외부 정찰·검색 기준 변화)를 오늘 논문 **아래** 띠로 붙인다. 평일에 반응으로 가중치가 바뀌면 맨 아래 한 줄.
+    망가뜨리면 실패하는 것: 주간 절을 논문 위로 되돌리는 것 · 평일에도 띠를 다는 것 · 평일 프로필 변경을 말없이 넘기는 것 ·
+    평문·HTML 이 갈리는 것."""
+    for name in ("verification_label", "repro_label", "coverage_label", "retraction_label", "injection_label"):
+        monkeypatch.setattr(digest, name, lambda aid: "")
+    base = {"papers": [{"arxiv_id": "a", "title": "Paper A", "_score": {"core_hits": ["robot"]}}],
+            "candidates_found": 9, "narrative": ("■ 오늘의 한 줄\n결론 [P1:A]", [])}
+    weekly = dict(base, trend_window={"days": 7, "papers": (5, 3), "days_covered": (5, 5), "comparable": True,
+                                      "keywords": [("robot", 5, 3)], "terms": []})
+    daily = dict(base, profile_update={"changes": [{"keyword": "robot", "before": 0.8, "after": 0.9}], "reactions_used": 2})
+    for render in (digest.generate_digest, digest.generate_digest_html):
+        w, d = render(weekly, "t"), render(daily, "t")
+        assert w.index("오늘의 연구 흐름") < w.index("오늘의 핵심 논문") < w.index(digest.WEEKLY_BRIEF_NOTE) < w.index("최근 7일 흐름")
+        assert digest.WEEKLY_BRIEF_TITLE not in d and "최근 7일 흐름" not in d      # 띠도, 브리프에 미루는 약속도 없다
+        assert "오늘 반영된 검색 프로필 변경" in d and "robot 0.80→0.90▲로 조정했고 오늘 검색부터 적용했다" in d and "반응 2건" in d
+        assert d.index("오늘의 핵심 논문") < d.index("오늘 반영된 검색 프로필 변경")
+        assert "오늘 반영된 검색 프로필 변경" not in w
