@@ -48,6 +48,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
+- **주간 관리가 실패하거나 못 돌면 바로 다음 근무일 아침에 한 번만 다시 한다**(`agent_maintenance --catch-up`, 2026-10-01 §202) —
+  실패 행은 다시 잡히고 끝난 상태·applying 은 안 잡힌다. 그보다 늦으면 다음 주간 관리를 기다린다(사용자 결정).
 - **주간 관리는 "월요일"이 아니라 그 주 첫 근무일**(`work_calendar.is_weekly_day`)이다 — 월요일이 공휴일인 주가
   실제로 있다(2026-10-05 개천절 대체 휴일). 고정이면 그 주 키워드 조정이 통째로 건너뛴다.
 - **주간 관리는 모든 프로필에, 일일 스캔은 `schedule='daily'` 프로필에만 돈다.** `agent_maintenance.run_week` 는
@@ -110,6 +112,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - **⑨ 동향 서술은 모델이 글이 아니라 구조(JSON)를 낸다**(story-v2, 2026-10-01). `trend_report.parse_story → repair_story → render_story` 가
   흐름(같은 문제를 다루는 논문 2편 이상, body 가 근거로 부른 논문만, 흐름마다 메일 카드 논문)·주변 신호를 검증하고 소제목·제목 목록을 Python 이 쓴다.
   고정 절("눈에 띄는 것·갈래·…")을 채우라는 프롬프트로 되돌리지 않는다 — 절마다 논문을 다시 골라 이야기가 끊겼다(§200).
+  **일일 메일 = 연구 흐름 + 핵심 논문(카드), 주간 관리일 메일 = 그 아래 "이번 주 브리프"**(7일 창·자리 밖 용어·외부 정찰·검색 기준 변화, §201).
+  주변 신호는 카드가 아닌 논문만 — 무엇이 핵심인지는 순위 계약이 정한다. 일일 서술에 7일 증감을 다시 넣지 않는다.
 - `term_hygiene.py` — ②주간·⑨동향 공용 용어 위생. 낱말·구절·우산어 목록과 `reject_reason` 이 여기 하나뿐이다.
 - **⑦ 재현 시작점**: ④⑤ 저장 → ⑦ 재현은 `docker_runner.launch_background()` 로 시작하고, 호출 지점은
   `batch_summarize._process_paper`(새벽 스캔) **하나**다(옛 검색 화면의 `review_core._summarize_target` 은 2026-09-16 에 파일째 지웠다 —

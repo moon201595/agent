@@ -155,6 +155,7 @@ async def scan_and_digest(
             print("  [반응] 수집: " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     except Exception as e:  # noqa: BLE001
         print(f"  [반응] 수집 실패(무시): {type(e).__name__}")
+    moved: dict = {}
     try:
         import feedback_weights
         moved = feedback_weights.update_profile(db_path, profile_id)
@@ -164,6 +165,21 @@ async def scan_and_digest(
         print(f"  [반응] 가중치 반영 실패(무시): {type(e).__name__}")
 
     result = await scan_profile(db_path, profile_id, client, page_size, max_pages)
+    # 반응으로 가중치가 바뀐 날은 그 사실을 메일 맨 아래 한 줄로 남긴다(2026-10-01 사용자 결정) — 프로필이 말없이 바뀌면
+    # "왜 오늘 결과가 달라졌나"에 메일 안에서 답할 수 없다. 주간 관리일에는 이번 주 브리프의 검색 기준 변화가 이것까지 담는다.
+    if not is_weekly_review_day():
+        # 주간 관리 따라잡기(`agent_maintenance --catch-up`, 같은 새벽 스캔 직전)가 오늘 적용한 조치도 같은 줄에 싣는다 —
+        # 주간 관리일이 아니라 이번 주 브리프가 없는 날이라, 안 그러면 키워드가 말없이 바뀐다.
+        try:
+            import agent_maintenance
+            caught_up = agent_maintenance.applied_since(
+                db_path, profile_id, datetime.now(READER_TZ).replace(hour=0, minute=0, second=0, microsecond=0))
+        except Exception as e:  # noqa: BLE001 — 조회가 실패해도 메일은 나간다
+            caught_up = []
+            print(f"  [주간 따라잡기] 적용 내역 조회 실패(무시): {type(e).__name__}")
+        if moved.get("changes") or caught_up:
+            result["profile_update"] = {"changes": list(moved.get("changes") or []),
+                                        "reactions_used": moved.get("reactions_used") or 0, "agent": caught_up}
     search_calls = run_scope.total()
     print(f"  [계측] ③ 검색 단계: {run_scope.format_summary()}")
 
@@ -344,6 +360,26 @@ async def scan_and_digest(
     # 지난 한 주 **검색 기준 변화**(2026-09-19). 주간 관리가 같은 새벽 스캔 직전에 돌았으므로
     # 여기서 잡히는 것은 방금 바뀐 것이고, 아래 실릴 논문은 그 기준으로 고른 것이다.
     if profile and is_weekly_review_day():
+        # **이번 주 브리프**(2026-10-01 사용자 결정): 7일 창 셈·자리 밖 후보 용어는 매일 싣지 않고 주간 관리일 메일에만 싣는다 —
+        # 일일 메일은 "오늘 무엇을 읽고 오늘 논문들이 무슨 이야기를 하나", 주간은 "한 주 동안 분야와 관심이 어디로 움직였나"다.
+        # 시스템의 두 시간 단위(매일 반응 가중치 · 주 1회 구조 개정)와 메일 구조를 맞춘 것이다. 논문이 0편인 날에도 센다.
+        try:
+            movement = trend_report.window_movement(db_path, profile)
+            if movement:
+                result["trend_window"] = movement
+                cmp_label = "직전 7일 대비" if movement["comparable"] else "직전 구간 관측 없음 — 비교 안 함"
+                print(f"  [주간] 최근 {movement['days']}일 {movement['papers'][0]}편 ({cmp_label})")
+        except Exception as e:  # noqa: BLE001 — 창 집계가 실패해도 메일은 나간다
+            print(f"  [주간] 최근 창 집계 실패(무시): {type(e).__name__}")
+        try:
+            import observation_signals
+            # 관측은 이미 `scan_search` 가 저장했으므로 이 프로필의 최신 실행이 곧 이번 실행이다.
+            reserve = observation_signals.reserve_terms(db_path, profile_id)
+            if reserve:
+                result["reserve_terms"] = reserve
+                print(f"  [주간] 자리 밖 후보 {reserve['count']}편에서 용어 {len(reserve['terms'])}개")
+        except Exception as e:  # noqa: BLE001 — 집계가 실패해도 메일은 나간다
+            print(f"  [주간] 자리 밖 후보 집계 실패(무시): {type(e).__name__}")
         try:
             import weekly_profile_changes
             # `scan_id` 를 준다 — 끝 스냅숏이 **이번 회차가 실제로 검색에 쓴 프로필**이어야
@@ -400,28 +436,6 @@ async def scan_and_digest(
                 research_frontier.analyze(db_path, list(result["papers"]))
             except Exception as e:  # noqa: BLE001
                 print(f"  [성능 동향] 생략: {type(e).__name__}")
-            # 최근 7일 창 — 서술 앞에서 먼저 센다. 서술에는 늘어난 "말"만 맥락으로 주고(수치는 안 준다),
-            # 수치 자체는 Python 이 메일의 별도 절에 싣는다(2026-09-18, 사용자 요청 ①).
-            try:
-                movement = trend_report.window_movement(db_path, profile)
-            except Exception as e:  # noqa: BLE001 — 창 집계가 실패해도 서술·메일은 나간다
-                movement = None
-                print(f"  [동향] 최근 창 집계 실패(무시): {type(e).__name__}")
-            if movement:
-                result["trend_window"] = movement
-                cmp_label = "직전 7일 대비" if movement["comparable"] else "직전 구간 관측 없음 — 비교 안 함"
-                print(f"  [동향] 최근 {movement['days']}일 {movement['papers'][0]}편 ({cmp_label})")
-            # 자리 밖으로 밀린 후보(reserve)를 버리지 않고 집계만이라도 싣는다(2026-09-18, 사용자 요청 ②).
-            # 관측은 이미 `scan_search` 가 저장했으므로 이 프로필의 최신 실행이 곧 이번 실행이다.
-            try:
-                import observation_signals
-                reserve = observation_signals.reserve_terms(db_path, profile_id)
-            except Exception as e:  # noqa: BLE001 — 집계가 실패해도 메일은 나간다
-                reserve = None
-                print(f"  [동향] 자리 밖 후보 집계 실패(무시): {type(e).__name__}")
-            if reserve:
-                result["reserve_terms"] = reserve
-                print(f"  [동향] 자리 밖 후보 {reserve['count']}편에서 용어 {len(reserve['terms'])}개")
             # 지난 5일치 **동향 서술**을 맥락으로 준다(2026-09-18 사용자 결정 — 논문을 다시 읽히지 않는다).
             try:
                 import narrative_store
@@ -435,8 +449,8 @@ async def scan_and_digest(
             if past:
                 result["narrative_past_days"] = len(past)      # 메일 라벨이 실제 입력을 말하려면 이 수가 필요하다
                 print(f"  [동향] 지난 서술 {len(past)}일치를 맥락으로 넣는다 ({past[-1]['reader_date']}~{past[0]['reader_date']})")
-            story = await trend_report.narrative(client, shown, profile, summaries=excerpts,
-                                                 movement=movement, past=past,
+            # 7일 창 증감은 서술에 주지 않는다(2026-10-01) — 일일 서술은 "오늘 표본의 공통축"이고, 기간 비교는 주간 브리프의 몫이다.
+            story = await trend_report.narrative(client, shown, profile, summaries=excerpts, past=past,
                                                  anchors=len(result["papers"]))
             if story:
                 text, ungrounded, enriched, engine = story

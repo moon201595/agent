@@ -1139,7 +1139,8 @@ def _narrative_section(scan_result: dict) -> list[str]:
     # 머리말 두 줄(출처 라벨 · "기간 비교 없는 수집 표본…")은 2026-09-20 사용자 요청으로 뺐다.
     # 매일 같은 문장이 글 앞을 막아 정작 동향이 두 줄 아래에서 시작했다. 라벨 계산(`narrative_source_label`)
     # 과 감사 결과는 그대로 돌고 `narrative_store` 에 남는다 — 화면에서 안 보일 뿐 기록은 있다.
-    lines = ["", "─" * 62, "■ 오늘의 동향 정리", ""]
+    # 절 이름은 "동향"이 아니라 "연구 흐름"(2026-10-01) — 하루 표본의 공통축이지 기간 비교가 아니다. 증감은 주간 브리프의 몫.
+    lines = ["", "─" * 62, "■ 오늘의 연구 흐름", ""]
     # 서술이 부른 논문 뒤에 `(논문 3)` 을 붙인다 — "이 정리가 어디서 왔나"를
     # 읽는 사람이 바로 알 수 있게(2026-09-08 사용자 요청).
     text = annotate_numbers(reflow_branch_lists(normalise_interpretation_marks(text)), numbered_mentions(scan_result), len(scan_result.get("papers") or []))
@@ -1552,6 +1553,57 @@ def _changes_tail(ch: dict, hidden: int) -> list[str]:
     return out
 
 
+# 이번 주 브리프(2026-10-01 사용자 결정). 일일 메일은 "오늘 무엇을 읽고, 오늘 논문들이 무슨 이야기를 하나", 주간 관리일 메일은
+# 거기에 "한 주 동안 분야와 검색 기준이 어디로 움직였나"를 더한다 — 7일 창 셈·자리 밖 후보 용어·외부 정찰·검색 기준 변화.
+# 메일을 따로 보내지 않는 이유: 발송 기록·반응 버튼·링크 감사가 회차당 한 통을 전제로 한다. 같은 메일 **아래쪽**에 띠로 가른다.
+WEEKLY_BRIEF_TITLE = "이번 주 브리프"
+WEEKLY_BRIEF_NOTE = "한 주 동안 분야와 검색 기준이 어떻게 움직였나 (주간 관리일에만)"
+
+
+def _profile_update_text(scan_result: dict) -> str:
+    """평일에 반응으로 가중치가 바뀐 날의 한 줄. 프로필이 말없이 바뀌면 "왜 오늘 결과가 달라졌나"에 메일 안에서 답할 수 없다.
+    값은 `feedback_weights.update_profile` 이 이번 회차에 실제로 바꾼 것 그대로다(우리가 만든 수치가 아니다)."""
+    up = scan_result.get("profile_update") or {}
+    changes = up.get("changes") or []
+    agent = up.get("agent") or []
+    if not changes and not agent:
+        return ""
+    parts = []
+    if agent:
+        # 주간 관리 따라잡기(그 주 첫 근무일에 실패·누락된 것을 오늘 다시 했다)가 바꾼 것. 이유는 다음 주간 브리프의 검색 기준 변화가
+        # 담는다 — 그 창은 지난 주간 관리일 스캔부터라 오늘 변경이 들어간다(`weekly_profile_changes.collect`).
+        labels, _ = _agent_labels()
+        acts = " · ".join(_agent_action_line(a, labels) for a in agent[:6]) + (f" 외 {len(agent) - 6}건" if len(agent) > 6 else "")
+        parts.append(f"그 주 첫 근무일에 끝나지 않은 주간 관리를 오늘 다시 돌려 적용했다 — {acts}.")
+    if not changes:
+        return f"{parts[0]} 오늘 검색부터 반영했다."
+    moves = []
+    for c in changes[:6]:
+        before, after = float(c.get("before") or 0), float(c.get("after") or 0)
+        arrow = "▲" if after > before else "▼"
+        moves.append(f"{c.get('keyword')} {before:.2f}→{after:.2f}{arrow}")
+    more = f" 외 {len(changes) - 6}건" if len(changes) > 6 else ""
+    used = int(up.get("reactions_used") or 0)
+    lead = f"반응 {used}건을 반영해 " if used else ""
+    # "이유는 이번 주 브리프에 싣는다" 같은 약속은 하지 않는다(2026-10-01 외부 검토) — 주간 절은 순변화와 반응 건수를 싣지만
+    # 개별 반응 변경의 이유를 다시 풀어 쓰는 계약은 없다. 무엇이 어떻게 바뀌었고 언제부터인지만 말한다.
+    feedback = f"{lead}{' · '.join(moves)}{more}로 조정했고 오늘 검색부터 적용했다."
+    return f"{parts[0]} {feedback}" if parts else feedback
+
+
+def _profile_update_lines(scan_result: dict) -> list[str]:
+    text = _profile_update_text(scan_result)
+    return ["", "■ 오늘 반영된 검색 프로필 변경", f"   {text}"] if text else []
+
+
+def _profile_update_html(scan_result: dict) -> str:
+    text = _profile_update_text(scan_result)
+    if not text:
+        return ""
+    return (f'<div style="background-color:{_BOX_BG};color:{_INK};font-size:12.5px;line-height:1.6;'
+            f'border-radius:6px;padding:9px 14px;margin:26px 0 0;"><b>오늘 반영된 검색 프로필 변경</b> · {_esc(text)}</div>')
+
+
 def _profile_changes_section(scan_result: dict) -> list[str]:
     """월요일 메일의 "지난 N일 검색 기준 변화" — 동향(분야가 어떻게 움직였나)과 **다른 질문**에 답한다.
 
@@ -1748,12 +1800,6 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         lines += [outage, ""]
     if not empty:
         lines += _narrative_section(scan_result)
-        lines += _window_section(scan_result)
-    # **빈 갈래도 받는다**(2026-09-20). 그날 논문이 0편이어도 그 새벽 주간 관리가 검색 기준을 바꿨으면
-    # 그건 알려야 할 사실이고, 오히려 "왜 0편인가"의 답일 수 있다. HTML 판은 처음부터 갈래 밖이라
-    # 평문만 빠져 두 판이 갈렸다 — §8-70 과 같은 병이다.
-    lines += _profile_changes_section(scan_result)
-    lines += _external_scout_lines(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -1786,12 +1832,19 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         if lines and lines[-1] != "":
             lines.append("")
 
+    # 이번 주 브리프(주간 관리일) 또는 오늘의 프로필 갱신 한 줄(평일) — 오늘 논문 **아래**에 둔다(2026-10-01 사용자 결정).
+    # **빈 갈래도 받는다**(2026-09-20): 그날 논문이 0편이어도 주간 관리가 검색 기준을 바꿨으면 그건 "왜 0편인가"의 답일 수 있다.
+    weekly = _window_section(scan_result) + _external_scout_lines(scan_result) + _profile_changes_section(scan_result)
+    if weekly:
+        lines += ["", "━" * 62, f"■ {WEEKLY_BRIEF_TITLE} — {WEEKLY_BRIEF_NOTE}", ""] + weekly
+    lines += _profile_update_lines(scan_result)
+
+    if not empty:
         filtered = _filtered_line(scan_result)
         if filtered:
+            if lines and lines[-1] != "":
+                lines.append("")
             lines.append(f"■ 이번 실행에서 걸러진 것: {filtered}")
-
-    # ⑥ 주간 리뷰는 맨 아래에 붙는다(주 1회). **모든 갈래가 여기로 모인다** —
-    # HTML 판도 같은 `weekly_review` 하나를 읽는다.
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -2634,14 +2687,17 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             # 제목·본문을 한 단계씩 키웠다(2026-09-20 사용자 요청) — 이 절이 메일의 본론인데
             # 다른 절과 같은 크기라 눈에 먼저 들어오지 않았다.
             # 2026-09-30: 시안에서 모든 절 제목이 18px 이 됐으므로 같은 _h1 을 쓴다(크기 그대로, 위 가는 줄이 붙는다).
-            _h1("오늘의 동향 정리")
+            _h1("오늘의 연구 흐름")
             + f'{paras}{warn}{named}'
         )
 
-    body += _window_html(scan_result)
-    body += _profile_changes_html(scan_result)
-    body += _external_scout_html(scan_result)
     body += details_body
+    weekly = _window_html(scan_result) + _external_scout_html(scan_result) + _profile_changes_html(scan_result)
+    if weekly:
+        body += (f'<div style="background-color:#E8F2F3;color:{_ACCENT_DARK};font-size:13px;font-weight:700;'
+                 f'padding:9px 14px;margin:34px 0 0;border-radius:6px;">{_esc(WEEKLY_BRIEF_TITLE)}'
+                 f'<span style="color:{_MUTED};font-weight:400;"> · {_esc(WEEKLY_BRIEF_NOTE)}</span></div>' + weekly)
+    body += _profile_update_html(scan_result)
 
     filtered = "" if empty else _filtered_line(scan_result)
     footer = ""

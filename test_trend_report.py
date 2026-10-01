@@ -1016,10 +1016,13 @@ def test_full_text_gets_the_floor_but_not_the_gate(monkeypatch):
             {"arxiv_id": "a2", "title": "Abstract only card", "abstract": "x", "deep_status": "abstract_only"},
             {"arxiv_id": "a3", "title": "Full text card two", "abstract": "x", "deep_status": "skipped: 이미 요약 저장됨"},
             {"arxiv_id": "a4", "title": "Footnote paper one", "abstract": "x"},
-            {"arxiv_id": "a5", "title": "Footnote paper two", "abstract": "x"}]
+            {"arxiv_id": "a5", "title": "Footnote paper two", "abstract": "x"},
+            {"arxiv_id": "a6", "title": "Footnote paper three", "abstract": "x"}]
+    # 각주끼리 흐름은 첫 흐름과 논문이 겹치지 않아야 한다 — 겹치면 중복 제거로 한 편만 남아 "카드 조건"이 아니라 "2편 미만"으로
+    # 빠지고, 카드 조건을 지워도 이 테스트가 통과했다(Codex 최종 검토 2026-10-01 변이 실측).
     plan = {"headline": "h [P1:A]", "threads": [
                 {"name": "초록 카드 흐름", "papers": ["P2", "P4"], "body": "b [P2:A][P4:A]"},
-                {"name": "각주끼리", "papers": ["P5", "P4"], "body": "b [P5:A][P4:A]"},
+                {"name": "각주끼리", "papers": ["P5", "P6"], "body": "b [P5:A][P6:A]"},
                 {"name": "원문 흐름", "papers": ["P1", "P3"], "body": "b [P1:A][P3:A]"}],
             "relation": "", "implications": [], "side_signals": []}
     prompts = []
@@ -1043,6 +1046,28 @@ def test_full_text_gets_the_floor_but_not_the_gate(monkeypatch):
     weekly = trend_report.render_story(trend_report.repair_story(plan, "".join(
         f"- [P{i}:T] {r['title']}\n  [P{i}:A] x\n" for i, r in enumerate(rows, 1))))
     assert "원문 분석" not in weekly and "초록 기반" not in weekly                 # 깊이 정보가 없는 글엔 표시 없음
+
+
+def test_abstract_only_results_are_marked_and_open_tags_are_dropped():
+    """Codex 최종 검토 2026-10-01 두 건. (1) "결과 주장은 원문 근거로만"이 프롬프트에만 있어 초록만 본 두 논문에 "정확도 95%를
+    달성했다 [P1:A][P2:A]" 가 그대로 나갔다. (2) 본문 끝의 닫히지 않은 "[P99:A" 가 정리를 우회했다.
+    망가뜨리면 실패하는 것: 표시를 빼는 것 · 원문 근거(R·S)가 있는 절이나 결과가 아닌 숫자(모델 버전·데이터셋 번호)에도 붙이는 것 ·
+    headline·relation·implications 에 적용을 빼는 것 · 열린 조각을 남기는 것."""
+    corpus = "".join(f"- [P{i}:T] t{i}\n  [P{i}:A] 정확도 95% mAP 0.82\n" for i in (1, 2, 3, 4)) + "  [P3:R] r\n  [P4:S7] s\n"
+    plan = {"headline": "두 방법이 정확도 95%를 보고했다 [P1:A][P2:A].",
+            "threads": [{"name": "초록 흐름", "papers": ["P1", "P2"],
+                         "body": "두 방법 모두 정확도 95%를 달성했다 [P1:A][P2:A]. 추가 근거 [P99:A"},
+                        {"name": "원문 흐름", "papers": ["P3", "P4"],
+                         "body": "mAP 0.82를 얻었다 [P3:R], GPT-4.1 과 MVTec AD 2 를 쓴다 [P4:A][P3:A]. 0.82 를 재현했다 [P4:S7]."}],
+            "relation": "둘 다 0.82 근처다 [P1:A][P3:A].", "implications": ["정확도 95% 조건을 본다 [P2:A]."],
+            "side_signals": []}
+    story = trend_report.repair_story(plan, corpus)
+    one, two = story["threads"]
+    assert one["body"] == "두 방법 모두 정확도 95%를 달성했다 [P1:A][P2:A] (초록 기준). 추가 근거"
+    assert "(초록 기준)" not in two["body"]
+    assert story["headline"].endswith("[P1:A][P2:A] (초록 기준).")
+    assert "(초록 기준)" in story["relation"] and "(초록 기준)" in story["implications"][0]
+    assert "P99" not in trend_report.render_story(story)
 
 
 def test_cards_that_never_reach_the_corpus_keep_the_rule_on(monkeypatch):
@@ -1081,3 +1106,13 @@ def test_nested_tags_leave_no_residue():
     third = trend_report.repair_story(_plan(threads=[{"name": "결함 [참고] 합성", "papers": ["P1", "P2"], "body": "b [P1:A][P2:A]"}]),
                                       _STORY_CORPUS)
     assert third["threads"][0]["name"] == "결함 합성"       # 닫힌 괄호는 그 묶음만 — 뒤 낱말까지 버리지 않는다
+
+
+def test_cards_never_come_back_as_side_signals():
+    """2026-10-01 사용자 결정: 무엇이 핵심(카드)인지는 Python 의 결정적 순위가 정한다 — 모델이 카드를 주변 신호로 내리면
+    "왜 어제는 핵심이 오늘은 주변인가"를 설명할 수 없고 같은 논문이 두 번 실린다. 망가뜨리면 실패하는 것: 카드 제외를 빼는 것 ·
+    카드가 없는 글(주간)에서도 제외를 거는 것."""
+    plan = _plan(side_signals=[{"paper": "P3", "note": "카드인 목재 결함"}, {"paper": "P7", "note": "카드 밖"}])
+    story = trend_report.repair_story(plan, _STORY_CORPUS, anchors={1, 2, 3, 4, 5})
+    assert [s["paper"] for s in story["side_signals"]] == [7] and "side_signal_is_card" in story["repairs"]
+    assert [s["paper"] for s in trend_report.repair_story(plan, _STORY_CORPUS)["side_signals"]] == [3, 7]

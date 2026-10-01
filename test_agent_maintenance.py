@@ -699,3 +699,113 @@ def test_a_trend_id_does_not_launder_a_term_found_only_in_other_evidence(world):
     ok, bad = am.validate([_act("add_keyword", "tactile skin", ["T1", "T3"], 0.7, "related_direction")], b)
     assert ok and not bad
     assert [r["id"] for r in ok[0]["source_evidence"]] == ["T3"]
+
+
+# ── 따라잡기 (2026-10-01 사용자 결정: "월요일 실패했으면 화요일에 바로 실행했어야") ─────────────────────────────
+
+def test_a_failed_week_is_retaken_but_finished_ones_are_not(tmp_path):
+    """이 테스트가 잡는 것: 실패 행이 그 주 재시도를 막는 것(9/28 codex_missing 세 프로필이 한 주를 비웠다) · 반대로 끝난 상태
+    (applied·no_change·skipped_no_signal)나 revision 을 썼을 수 있는 applying 을 다시 잡아 같은 주에 두 번 바꾸는 것."""
+    db = tmp_path / "r.db"
+    _profile(db)
+    am.init_db(db)
+    now = datetime.now(timezone.utc)
+    week = am.week_of(now)
+    for status, expect in (("failed", "skipped_no_signal"), ("applied", "already_ran"), ("no_change", "already_ran"),
+                           ("skipped_no_signal", "already_ran"), ("applying", "already_ran")):
+        with sqlite3.connect(db) as con:
+            con.execute("DELETE FROM agent_runs")
+            con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status) VALUES ('p', ?, ?, ?)",
+                        (week, (now - timedelta(hours=1)).isoformat(), status))
+        assert am.run_profile(db, "p", FakeRunner(), now=now)["status"] == expect, status
+
+
+def test_catch_up_targets_only_unfinished_profiles_on_the_next_working_day(tmp_path):
+    """이 테스트가 잡는 것: 주간 관리일 당일·쉬는 날·**이틀 넘게 지난 날**에 따라잡기가 도는 것(본 실행과 겹치거나, 다음 주간
+    관리가 가까워 값어치가 없다 — 사용자: "지금은 너무 늦었어") · 끝난 프로필이나 applying 을 다시 고르는 것 · **그날 아예 못 돈**
+    (행이 없는) 프로필을 빠뜨리는 것."""
+    db = tmp_path / "c.db"
+    import storage
+    storage.init_storage(db)
+    for pid in ("a", "b", "c", "d", "e"):
+        rp.create_profile(db, pid, pid, core_topics=["robot"], core_weights={"robot": 1.0})
+    am.init_db(db)
+    kst = lambda *a: datetime(*a, 6, 0, tzinfo=am.KST)   # noqa: E731
+    week = am.week_of(kst(2026, 9, 29))
+    with sqlite3.connect(db) as con:
+        for pid, status in (("a", "applied"), ("b", "failed"), ("c", "skipped_no_signal"), ("e", "applying")):  # d 는 행이 없다
+            con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status) VALUES (?,?,?,?)",
+                        (pid, week, kst(2026, 9, 28).isoformat(), status))
+    assert am.catch_up_targets(db, kst(2026, 9, 28)) == []             # 주간 관리일 당일은 본 실행의 몫
+    assert am.catch_up_targets(db, kst(2026, 9, 29)) == ["b", "d"]     # 바로 다음 근무일 — 한 번
+    assert am.catch_up_targets(db, kst(2026, 9, 30)) == []             # 그 뒤는 다음 주간 관리를 기다린다
+    assert am.catch_up_targets(db, kst(2026, 10, 2)) == []             # (W40 을 내일 다시 돌지 않는다)
+    assert am.catch_up_targets(db, kst(2026, 10, 3)) == []             # 쉬는 날
+    assert am.catch_up_targets(db, kst(2026, 10, 6)) == []             # 월요일(10/5)이 쉬어 화요일이 주간 관리일
+    assert am.catch_up_targets(db, kst(2026, 10, 7)) == ["a", "b", "c", "d", "e"]   # 그 주(W41) 행이 없으면 전부 — 다음 근무일
+
+
+def test_catch_up_is_once_even_if_called_again_the_same_day(tmp_path):
+    """Codex 최종 검토 2026-10-01: 날짜만 보면 따라잡기가 또 실패한 뒤 같은 날 두 번째 호출(작업 스케줄러가 cron 뒤에 순차로 깨움)이
+    실패 행을 다시 잡았다. 이 테스트가 잡는 것: 오늘 이미 다시 잡았다가 실패한 프로필을 또 고르는 것 · 반대로 **주간 관리일에**
+    실패한 행(어제 시작)까지 빼서 따라잡기를 무력화하는 것. started_at 은 운영처럼 UTC 로 쓴다 — 10/7 05:00 KST 는 10/6 20:00 UTC."""
+    db = tmp_path / "o.db"
+    import storage
+    storage.init_storage(db)
+    for pid in ("x", "y"):
+        rp.create_profile(db, pid, pid, core_topics=["robot"], core_weights={"robot": 1.0})
+    am.init_db(db)
+    kst = lambda *a: datetime(*a, tzinfo=am.KST)   # noqa: E731
+    week = am.week_of(kst(2026, 10, 7, 5))
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status) VALUES ('x',?,?,'failed')",
+                    (week, kst(2026, 10, 6, 5).astimezone(timezone.utc).isoformat()))     # 주간 관리일 실패
+        con.execute("INSERT INTO agent_runs (profile_id, week, started_at, status) VALUES ('y',?,?,'failed')",
+                    (week, kst(2026, 10, 7, 5).astimezone(timezone.utc).isoformat()))     # 오늘 새벽 따라잡기도 실패
+    assert am.catch_up_targets(db, kst(2026, 10, 7, 6)) == ["x"]
+
+
+def test_catch_up_cli_calls_no_model_when_nothing_is_left(tmp_path, monkeypatch):
+    """이 테스트가 잡는 것: 할 일이 없는 평일 아침에도 정찰·주간 관리를 불러 구독 한도를 쓰는 것 · 할 일이 있을 때 미완료
+    프로필만이 아니라 전체를 다시 도는 것."""
+    import external_scout
+    calls = []
+    monkeypatch.setattr(am, "catch_up_targets", lambda db, now=None: [])
+    monkeypatch.setattr(external_scout, "run_weekly", lambda *a, **k: calls.append("scout") or {})
+    monkeypatch.setattr(am, "run_week", lambda db, **k: calls.append(("week", k.get("profile_ids"))) or [])
+    assert am.main(["--db", str(tmp_path / "x.db"), "--catch-up"]) == 0 and calls == []
+    monkeypatch.setattr(am, "catch_up_targets", lambda db, now=None: ["b", "d"])
+    assert am.main(["--db", str(tmp_path / "x.db"), "--catch-up"]) == 0
+    assert calls == ["scout", ("week", ["b", "d"])]
+
+
+def test_applied_since_reads_only_todays_applied_actions(tmp_path):
+    """이 테스트가 잡는 것: 따라잡기로 평일에 바뀐 키워드를 그날 메일이 못 싣는 것 · 지난 실행이나 실패한 실행의 조치를 싣는 것."""
+    db = tmp_path / "a.db"
+    _profile(db)
+    am.init_db(db)
+    now = datetime.now(timezone.utc)
+    rows = (("W1", (now - timedelta(days=2)).isoformat(), "applied", [{"op": "add_keyword", "term": "old"}]),
+            ("W2", (now - timedelta(minutes=5)).isoformat(), "applied", [{"op": "add_keyword", "term": "new"}]),
+            ("W3", (now - timedelta(minutes=3)).isoformat(), "failed", [{"op": "add_keyword", "term": "no"}]))
+    with sqlite3.connect(db) as con:
+        for week, finished, status, acts in rows:
+            con.execute("INSERT INTO agent_runs (profile_id, week, started_at, finished_at, status, applied_json) "
+                        "VALUES ('p',?,?,?,?,?)", (week, finished, finished, status, json.dumps(acts)))
+    assert [a["term"] for a in am.applied_since(db, "p", now - timedelta(hours=1))] == ["new"]
+
+
+def test_applied_since_compares_in_utc_whatever_zone_the_caller_uses(tmp_path):
+    """Codex 최종 검토 2026-10-01: `_finish` 는 UTC 로 쓰고 호출자(run_profile_scan)는 KST 자정을 넘기는데 비교가 문자열이라,
+    10/7 05:00 KST 따라잡기("2026-10-06T20:00…+00:00")가 "2026-10-07T00:00…+09:00" 보다 작아 그날 메일에서 빠졌다.
+    이 테스트가 잡는 것: 기준을 UTC 로 바꾸지 않고 그대로 비교하는 것 · 바꾸면서 전날(10/6 23:59 KST) 적용까지 싣는 것."""
+    db = tmp_path / "z.db"
+    _profile(db)
+    am.init_db(db)
+    kst = lambda *a: datetime(*a, tzinfo=am.KST)   # noqa: E731
+    with sqlite3.connect(db) as con:
+        for week, at, term in (("W1", kst(2026, 10, 7, 5), "today"), ("W0", kst(2026, 10, 6, 23, 59), "yesterday")):
+            stamp = at.astimezone(timezone.utc).isoformat()
+            con.execute("INSERT INTO agent_runs (profile_id, week, started_at, finished_at, status, applied_json) "
+                        "VALUES ('p',?,?,?,'applied',?)", (week, stamp, stamp, json.dumps([{"term": term}])))
+    assert [a["term"] for a in am.applied_since(db, "p", kst(2026, 10, 7))] == ["today"]

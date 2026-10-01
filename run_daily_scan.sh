@@ -77,6 +77,11 @@ LOCKFILE="logs/daily_scan.lock"
         .venv/bin/python db_retention.py --apply > logs/retention_last.json || echo "  [주간] DB 정리 실패(무시)"
         .venv/bin/python agent_maintenance.py || echo "  [주간] 에이전트 실패(무시)"
         echo "$(TZ=Asia/Seoul date +%G-W%V)" > logs/weekly_agent.stamp
+    else
+        # **따라잡기**(2026-10-01 사용자 결정): 그 주 주간 관리가 실패했거나 그날 아예 못 돌았으면(PC 꺼짐 등) **바로 다음
+        # 근무일 아침에 한 번** 미완료 프로필만 다시 한다 — 9/28 실패가 그 주 키워드 조정을 통째로 비웠다. 그 밖의 날·할 일이
+        # 없는 날은 모델을 안 부르고 바로 끝난다(판정은 `agent_maintenance.catch_up_targets`). 실패해도 일일 스캔은 그대로 간다(규칙 6).
+        .venv/bin/python agent_maintenance.py --catch-up || echo "  [주간 따라잡기] 실패(무시)"
     fi
 
     .venv/bin/python run_profile_scan.py --all --send --max-pages 30
