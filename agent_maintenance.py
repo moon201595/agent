@@ -172,6 +172,7 @@ class Brief:
     base_revision: int
     liked_texts: list[str] = field(default_factory=list)   # 좋다고 반응한 **모든** 논문(창·상한 무관) — 제외어 보호용, 모델엔 안 간다
     external: dict[str, dict] = field(default_factory=dict)  # E id → {gap_stage} — 외부 정찰의 검증된 근거(external_scout)
+    out_texts: list[str] = field(default_factory=list)      # 관심 밖 반응이 붙은 **모든** 논문(창·상한·초록 자르기 무관) — 외부 근거 보호용, 모델엔 안 간다
 
     @property
     def evidence_ids(self) -> set[str]:
@@ -269,10 +270,17 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
 
         all_rows = feedback_links.valid_reactions(db, profile_id)
         counts = _latest_reactions(all_rows, since)
-        liked_texts = []
+        liked_texts, out_texts = [], []
         for key, c in _latest_reactions(all_rows, "").items():
-            if sum(c[a] for a in POSITIVE) > 0 and (held := _latest_observation(con, profile_id, key)) is not None:
+            held = _latest_observation(con, profile_id, key)
+            if held is None:
+                continue
+            if sum(c[a] for a in POSITIVE) > 0:
                 liked_texts.append(f"{held['title'] or ''}. {held['abstract']}")
+            # 외부 근거 충돌 검사는 브리프(28일·40편·초록 700자)가 아니라 **모든 유효 관심 밖 반응의 전체 글**로 한다(Codex 검토 2026-09-30:
+            # 오래된 관심 밖 반응은 브리프에서 빠져 충돌 검사를 비껴갔다).
+            if c["out"] > 0:
+                out_texts.append(f"{held['title'] or ''}. {held['abstract']}")
         # 최근 반응 순이 아니라 반응 수 → 키 순으로 자른다(결정적). 상한은 입력 크기 보호용이다.
         chosen = sorted(counts, key=lambda k: (-sum(counts[k].values()), k))[:MAX_REACTED_PAPERS]
         reactions, reaction_ids, liked_pool = [], {}, []
@@ -339,7 +347,7 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
     }
     return Brief(data=data, texts=texts, reactions=reaction_ids, keyword_ids=keyword_ids,
                  base_revision=research_profile.current_revision(db, profile_id), liked_texts=liked_texts,
-                 external=external_ids)
+                 external=external_ids, out_texts=out_texts)
 
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
@@ -470,7 +478,8 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                     reject(a, "no_liked_evidence" if not ext_ev else "external_not_missed_twice"); continue
                 if a["weight"] > EXTERNAL_WEIGHT_MAX:
                     reject(a, "external_weight_too_high"); continue
-                if any(c["out"] > 0 and _in_text(term, brief.texts.get(r, "")) for r, c in brief.reactions.items()):
+                if any(c["out"] > 0 and _in_text(term, brief.texts.get(r, "")) for r, c in brief.reactions.items()) or \
+                        any(_in_text(term, t) for t in brief.out_texts):
                     reject(a, "conflicts_user_reaction"); continue
             core[term] = {"weight": a["weight"], "origin": "agent"}
         elif op == "set_weight":

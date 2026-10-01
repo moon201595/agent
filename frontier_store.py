@@ -37,9 +37,8 @@ def init_db(db: Path) -> None:
 
 def record(db: Path, paper_id: str, results: list[dict], published: str | None = None,
            now: datetime | None = None) -> int:
-    """표 결과를 쌓는다. 같은 (논문, 셀)은 덮어쓴다. 돌려주는 값은 넣은 행 수."""
-    if not results:
-        return 0
+    """이 논문의 표 결과를 **이번 추출로 바꾼다**(빈 결과면 그 논문 관측을 비운다 — 정상 재추출에서 사라진 값이 비교에 남지 않게).
+    받기 실패와 구분하는 것은 호출부 몫이다(`research_frontier` 는 받았을 때만 부른다). 돌려주는 값은 넣은 행 수."""
     init_db(db)
     ts = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     with sqlite3.connect(db) as con:

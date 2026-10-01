@@ -57,6 +57,8 @@ def _db(tmp_path):
                     "filter_reason TEXT, observed_at TEXT)")
         con.executemany("INSERT INTO scan_runs VALUES (?,?,?)", [("s1", "p", "2026-10-01T20:00:00+00:00"),
                                                                 ("s2", "p", "2026-10-09T20:00:00+00:00")])
+        con.execute("CREATE TABLE mail_issues (issue_id TEXT, profile_id TEXT, sent_at TEXT, status TEXT)")
+        con.execute("CREATE TABLE mail_issue_items (issue_id TEXT, paper_key TEXT)")
     return db
 
 
@@ -69,8 +71,8 @@ def _it(aid, published="2026-09-20", title="Some Paper"):
     ([("dropped", "no_core_hit")], "no_core_hit"),
     ([("dropped", "exclude_hit")], "excluded"),
     ([("reserve", None)], "ranked_out"),
-    ([("dropped", "no_core_hit"), ("content", None)], "already_captured"),
-    ([("filtered", "already_shown")], "already_captured"),
+    ([("content", None)], "not_delivered"),             # 선정됐지만 발송 기록이 없다 — 배달로 세지 않는다(Codex 최종 검토)
+    ([("filtered", "already_shown")], "not_delivered"),
 ])
 def test_gap_stage_uses_observations_before_discovery(tmp_path, rows, want):
     """이 테스트가 무엇을 망가뜨리면 실패하는가: 놓침 단계(검색 못 함·핵심어 미적중·제외·자리 탈락·이미 메일)를 뒤섞으면 실패한다."""
@@ -78,6 +80,25 @@ def test_gap_stage_uses_observations_before_discovery(tmp_path, rows, want):
     with sqlite3.connect(db) as con:
         con.executemany("INSERT INTO candidate_observations VALUES ('s1','p','2609.1','Some Paper',?,?,'2026-10-01T20:10:00+00:00')", rows)
     assert es.gap_stage(db, "p", _it("2609.1"), NOW) == (want, "s1")
+
+
+def test_latest_observation_and_mail_ledger_decide_the_stage(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 예전 관측(reserve)이 발견 직전 관측(exclude_hit)을 이기거나(Codex 재현), 선정(content)을
+    배달로 세거나, 발견 전 발송 기록이 있는데 놓침으로 세면 실패한다."""
+    db = _db(tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO candidate_observations VALUES ('s1','p','2609.1','Some Paper','reserve',NULL,'2026-09-25T20:10:00+00:00')")
+        con.execute("INSERT INTO candidate_observations VALUES ('s1','p','2609.1','Some Paper','dropped','exclude_hit','2026-10-01T20:10:00+00:00')")
+        con.execute("INSERT INTO candidate_observations VALUES ('s1','p','2609.3','Other Paper','content',NULL,'2026-10-01T20:10:00+00:00')")
+    assert es.gap_stage(db, "p", _it("2609.1"), NOW)[0] == "excluded"
+    assert es.gap_stage(db, "p", _it("2609.3", title="Other Paper"), NOW)[0] == "not_delivered"
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO mail_issues VALUES ('i1','p','2026-10-01T21:00:00+00:00','sent')")
+        con.execute("INSERT INTO mail_issue_items VALUES ('i1','2609.3')")
+        con.execute("INSERT INTO mail_issues VALUES ('i2','p','2026-10-01T21:00:00+00:00','failed')")
+        con.execute("INSERT INTO mail_issue_items VALUES ('i2','2609.1')")
+    assert es.gap_stage(db, "p", _it("2609.3", title="Other Paper"), NOW)[0] == "already_captured"
+    assert es.gap_stage(db, "p", _it("2609.1"), NOW)[0] == "excluded"                 # 실패한 발송은 배달이 아니다
 
 
 def test_gap_stage_has_no_time_leak_and_marks_not_yet_evaluable(tmp_path):
@@ -92,8 +113,9 @@ def test_gap_stage_has_no_time_leak_and_marks_not_yet_evaluable(tmp_path):
 
 def test_capture_counts_three_stages():
     """이 테스트가 무엇을 망가뜨리면 실패하는가: 검색·프로필·배달 capture 를 하나로 뭉개거나 판정 불가 항목을 분모에 넣으면 실패한다."""
-    got = es.capture_summary(["not_retrieved", "no_core_hit", "ranked_out", "already_captured", "not_yet_evaluable", "excluded"])
-    assert got == {"evaluable": 5, "not_yet_evaluable": 1, "retrieved": 4, "core_hit": 2, "delivered": 1}
+    got = es.capture_summary(["not_retrieved", "no_core_hit", "ranked_out", "already_captured", "not_yet_evaluable", "excluded",
+                              "not_delivered"])
+    assert got == {"evaluable": 6, "not_yet_evaluable": 1, "retrieved": 5, "core_hit": 3, "delivered": 1}
 
 
 def test_verdict_terms_must_be_in_the_official_text():
@@ -248,3 +270,49 @@ def test_s2_rate_limit_falls_back_to_arxiv_and_reports_partial_honestly(monkeypa
     assert items[0]["identity"] == "verified" and items[0]["official"]["source"] == "arxiv"
     assert items[0]["official"]["published"] == "2026-09-12"
     assert items[1]["identity"] == "unverified"
+
+
+
+def test_performance_check_must_match_the_claimed_metric():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 정찰의 AUROC 주장을 같은 행의 F1 셀 값으로 "확인"하면 실패한다(Codex 최종 검토 재현)."""
+    html = ('<figure class="ltx_table" id="T1"><figcaption>Results on MVTec AD.</figcaption><table>'
+            '<tr><th>Method</th><th>AUROC</th><th>F1</th></tr><tr><td>Ours</td><td>80.0</td><td>60.0</td></tr></table></figure>')
+    it = {"benchmark": {"name": "MVTec AD", "metric": "AUROC", "value": "60.0"},
+          "official": {"arxiv_id": "2609.1", "title": "Method X"}}
+    assert es.check_performance(it, lambda *a, **k: html, float("inf")) is False
+    it["benchmark"]["value"] = "80.0"
+    assert es.check_performance(it, lambda *a, **k: html, float("inf")) is True
+
+
+def test_verify_cap_is_shared_across_profiles_and_marks_partial(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 검증 상한을 앞에서부터 잘라 뒤쪽 프로필이 0편이 되거나, 검증 못 한 항목이 남았는데 done 으로 적으면
+    실패한다(Codex 재현: 5·5·2·0 인데 done)."""
+    import research_profile
+    db = _world(tmp_path)
+    for pid in ("q", "r", "s"):
+        research_profile.create_profile(db, pid, pid, core_topics=["defect detection"], s2_seeds=["defect detection"])
+    ids = ["p", "q", "r", "s"]
+    items = {pid: [{**ITEM, "arxiv_id": f"2609.{i}{j:04d}", "title": f"Surface Defect Paper {pid} {j}"} for j in range(5)]
+             for i, pid in enumerate(ids, start=1)}
+    official = lambda keys: [{"title": f"Surface Defect Paper {k}", "abstract": "a", "publicationDate": "2026-09-10", "venue": "v",
+                              "externalIds": {}} for k in keys]
+    by_title = {f"ARXIV:2609.{i}{j:04d}": f"{pid} {j}" for i, pid in enumerate(ids, start=1) for j in range(5)}
+    seen = []
+
+    def verdict(payload, timeout):
+        got = json.loads(payload)["items"]
+        seen.extend(x["profile"]["name"] for x in got)
+        return {"items": [{"id": x["id"], "verdict": "verified", "relevant": True, "manufacturing_relation": "direct",
+                           "claim_supported": True, "candidate_terms": [], "note": "ok"} for x in got]}
+    res = es.run_weekly(db, NOW, scout=lambda p, t: _scout_json(items),
+                        s2_batch=lambda keys: official([by_title[k] for k in keys]), verify=verdict, fetch=lambda *a, **k: "")
+    counts = Counter(seen)
+    assert sum(counts.values()) == es.MAX_VERIFY and all(counts[n] == 3 for n in ("비전", "q", "r", "s"))
+    assert res["status"] == "partial" and "verify_cap:8" in res["error"]
+
+
+def test_old_out_reaction_outside_the_brief_still_blocks_external_keyword():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 브리프 창(28일)·상한 밖의 관심 밖 반응이 외부 근거 키워드 추가를 막지 못하면 실패한다(Codex 재현)."""
+    b = _brief({"E1": "not_retrieved", "E2": "no_core_hit"}, texts={"E1": TXT, "E2": TXT})
+    b.out_texts = [f"An old paper about {TERM} that the user marked as out of interest."]
+    assert am.validate([_add(["E1", "E2"])], b)[1][0]["reason"] == "conflicts_user_reaction"

@@ -63,6 +63,7 @@ def _no_real_sota_lookups(monkeypatch):
         raise ConnectionError("테스트에서 실제 헤드리스 에이전트 호출")
     monkeypatch.setattr(adoption_signals, "_get_json", refuse)
     monkeypatch.setattr(adoption_signals, "_post_json", refuse)
+    monkeypatch.setattr(external_evidence, "_real_fetch", external_evidence._fetch, raising=False)   # 받기 함수 자체를 보는 테스트용
     monkeypatch.setattr(external_evidence, "_fetch", refuse)
     monkeypatch.setattr(external_evidence, "_run_agent", no_agent)
     monkeypatch.setattr(research_frontier, "_arxiv_tables", lambda arxiv_id: [])

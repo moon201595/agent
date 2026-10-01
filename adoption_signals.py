@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 HTTP_TIMEOUT_S = 10.0
+_DEADLINE: float | None = None   # research_frontier 가 조회 예산의 절대 마감(monotonic)을 넣는다 — 요청마다 남은 시간만 쓴다
 
 S2_MIN_INTERVAL_S = 1.1        # S2 한도는 "초당 1회, 엔드포인트 합산"이다(http_client 와 같은 값)
 _last_s2 = 0.0
@@ -35,8 +36,13 @@ def _get_json(url: str, headers: dict | None = None) -> object:
             if wait > 0:
                 time.sleep(wait)
             _last_s2 = time.monotonic()
+        timeout = HTTP_TIMEOUT_S
+        if _DEADLINE is not None:
+            timeout = min(timeout, _DEADLINE - time.monotonic())
+            if timeout <= 0:
+                raise TimeoutError("조회 예산 초과")
         try:
-            resp = httpx.get(url, headers=headers or {}, timeout=HTTP_TIMEOUT_S, follow_redirects=False)
+            resp = httpx.get(url, headers=headers or {}, timeout=timeout, follow_redirects=False)
         except httpx.HTTPError:
             api_usage.record(host, "error")
             raise
@@ -244,6 +250,8 @@ def signals_line(sig: dict, today: date | None = None) -> str:
             parts.append(f"HF 추천 {h['upvotes']}")
     days = _days_since(s.get("publication_date"), today)
     observed = [p for p in parts if "실패" not in p and not p.startswith("인용 0회")]
-    if not observed:
+    failed = [p for p in parts if "실패" in p]
+    if not observed and not failed:
         return f"신규 논문으로 아직 관측 없음(공개 {days}일)" if days is not None and days < 90 else " · ".join(parts) or "관측 없음"
+    # 조회 실패 표시는 "관측 없음" 설명으로 덮지 않는다(Codex 최종 검토: 신규 논문 분기가 HF 다운로드 조회 실패를 지웠다).
     return " · ".join(parts)

@@ -32,8 +32,9 @@ _GH_MENTION_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)", re.I)
 _HTML_CACHE: dict[str, list[dict]] = {}
 
 
-def _arxiv_tables(arxiv_id: str) -> list[dict]:
-    """이 논문의 arXiv HTML 표. 프로세스 안에서 한 번만 받는다(여러 프로필에 같은 논문이 실린다). 실패하면 빈 목록."""
+def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
+    """이 논문의 arXiv HTML 표. 프로세스 안에서 한 번만 받는다(여러 프로필에 같은 논문이 실린다).
+    **받기 실패는 None, 받았는데 표가 없으면 빈 목록** — 둘을 가르지 않으면 정상 재추출의 빈 결과로 옛 관측을 못 지운다(Codex 최종 검토)."""
     if arxiv_id not in _HTML_CACHE:
         try:
             import arxiv_tables
@@ -41,8 +42,8 @@ def _arxiv_tables(arxiv_id: str) -> list[dict]:
             _HTML_CACHE[arxiv_id] = arxiv_tables.parse_tables(
                 external_evidence._fetch(f"https://arxiv.org/html/{arxiv_id}", external_evidence.FETCH_TIMEOUT_S))
         except Exception as error:  # noqa: BLE001 — HTML 판이 없는 논문이 많다(PDF 만 있는 경우)
-            print(f"  [성능 동향] {arxiv_id} 표 없음: {type(error).__name__}")
-            _HTML_CACHE[arxiv_id] = []
+            print(f"  [성능 동향] {arxiv_id} 표 받기 실패: {type(error).__name__}")
+            _HTML_CACHE[arxiv_id] = None
     return _HTML_CACHE[arxiv_id]
 
 
@@ -104,17 +105,28 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
     now = now or datetime.now(timezone.utc)
     day = now.date().isoformat()
 
-    def get_tables(aid: str) -> list[dict]:
+    def get_tables(aid: str) -> list[dict] | None:
         if given is not None:
             return given(aid)
         if aid not in _HTML_CACHE and clock() > lookup_deadline:
-            return []                                               # 조회 예산이 끝났다 — 표 없이 간다
+            return None                                             # 조회 예산이 끝났다 — 확인 못 함(빈 결과와 다르다)
         return _arxiv_tables(aid)
     candidates: list[tuple[tuple, dict, dict]] = []
     texts: dict[str, str] = {}
     for order, paper in enumerate(papers):
         aid = paper.get("arxiv_id") or ""
         if not aid or aid.startswith("pdf-"):
+            # arXiv 밖 논문(DOI·합성 ID)은 HTML 표가 없어 표 분석을 **지원하지 않는다** — 조용히 빼지 않고 그 상태를 적는다(Codex 최종 검토).
+            # 원문·초록이 있으면 문장 근거(원문 주장 표시)만 본다.
+            try:
+                text, title, _pub = _paper_row(db, aid) if aid else ("", "", "")
+                text = text or paper.get("abstract") or ""
+                claims = paper.get("_sota_claims") or []
+                src = "text" if aid and len(text) > 3000 else "abstract"
+                paper["_frontier"] = {"main": [], "claims": claims, "external": None, "unsupported": "non_arxiv",
+                                      "sentences": pr.performance_evidence(text, claims, src, pr.method_name(title or paper.get("title")))}
+            except Exception as error:  # noqa: BLE001
+                print(f"  [성능 동향] {aid or 'DOI 논문'} 생략: {type(error).__name__}")
             continue
         try:
             text, title, published = _paper_row(db, aid)
@@ -122,9 +134,10 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
             claims = paper.get("_sota_claims") or []
             method = pr.method_name(title or paper.get("title"))
             benches = pr.benchmark_candidates(text, claims)
-            results = pr.table_results(get_tables(aid), method=method, benchmarks=benches) if benches else []
+            tables = get_tables(aid) if benches else []
+            results = pr.table_results(tables, method=method, benchmarks=benches) if tables else []
             try:
-                if results:                                     # 받기 실패(빈 결과)로 기존 관측을 지우지 않는다
+                if tables is not None:                          # 받았다면(빈 결과 포함) 그 논문 관측을 이번 추출로 바꾼다. 받기 실패면 그대로 둔다
                     frontier_store.record(db, aid, results, published, now)
             except Exception as error:  # noqa: BLE001 — migrate 전 운영 DB 등. 비교만 못 한다
                 print(f"  [성능 동향] 관측 저장 생략: {type(error).__name__}")
@@ -140,11 +153,15 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
                 candidates.append(((not trigger, order), paper, main[0]))
         except Exception as error:  # noqa: BLE001
             print(f"  [성능 동향] {aid} 생략: {type(error).__name__}")
+    # 외부 조사(자기 180초 상한)는 조회 예산에서 뺀다 — 둘은 별개 상한이다(Codex 최종 검토: 외부 조사가 조회 예산을 다 먹은 뒤
+    # S2 batch 를 새로 불렀다). 외부 조사 전 남은 조회 시간을 그 뒤로 옮긴다.
+    left = lookup_deadline - clock()
     _external(db, candidates, day, run_external, texts)
+    lookup_deadline = clock() + left                     # 이미 다 썼으면(음수) 마감은 지난 것이다
     ids = [p.get("arxiv_id") for p in papers if p.get("arxiv_id") and not p["arxiv_id"].startswith("pdf-")]
     todo = [a for a in ids if (day, a) not in _SIGNALS]
     prefetched: dict = {}
-    if signals_of is None and todo:
+    if signals_of is None and todo and clock() < lookup_deadline:
         try:
             import adoption_signals
             # 캐시(프로세스·당일 스냅숏)에 없는 것만 S2 batch 로 한 번에 — 편마다 부르면 초당 1회 한도에 걸린다(실측 2026-09-30)
@@ -157,16 +174,24 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
         if (day, aid) in _SIGNALS:
             paper["_signals"] = _SIGNALS[(day, aid)]
             continue
-        if signals_of is None and clock() > lookup_deadline:
+        if signals_of is None and clock() >= lookup_deadline:
             continue                                                # 조회 예산이 끝났다 — 외부 신호 없이 간다
         try:
             import adoption_signals
+            if signals_of is None:
+                adoption_signals._DEADLINE = time.monotonic() + max(0.0, lookup_deadline - clock())   # 요청마다 남은 시간만 준다
             sig = (signals_of or (lambda a: adoption_signals.collect(db, a, now=now, scholarly_data=prefetched.get(a))))(aid)
             paper["_signals"] = sig
             if signals_of is None:
                 _SIGNALS[(day, aid)] = sig
         except Exception as error:  # noqa: BLE001
             print(f"  [외부 신호] {aid} 생략: {type(error).__name__}")
+        finally:
+            try:
+                import adoption_signals
+                adoption_signals._DEADLINE = None
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _external(db: Path, candidates: list, day: str, run_external: Callable | None, texts: dict[str, str] | None = None) -> None:
@@ -284,6 +309,8 @@ def block_lines(fr: dict) -> list[tuple[str, str]]:
         s = fr["sentences"][0]
         where = f" [S{s['index']:04d}]" if s.get("index") else " (초록)"
         lines.append((f"원문 주장: “{s['sentence']}”{where} — 표 구조가 없어 수치 비교는 하지 않음", ""))
+        if fr.get("unsupported") == "non_arxiv":
+            lines.append(("arXiv 밖 논문 — 표 분석·외부 비교는 지원하지 않음", ""))
         return lines
     for r in fr["main"]:
         lines.append((f"이 논문: {r['benchmark']} · {r['metric']} {r['text']} (원문 표 {r['model']} 행)", ""))

@@ -301,7 +301,9 @@ def audit_html(html: str, check: Callable[[str], str | None]) -> tuple[str, list
                 continue
             if name in _URL_ATTRS or name.startswith("on") or name == "srcdoc":
                 continue
-            if name == "style" and re.search(r"(?i)url\s*\(|expression\s*\(|@import", value):
+            # 우리 메일의 style 에는 역슬래시도 url 도 없다. CSS 이스케이프(`u\\72l(`)로 정규식을 비껴가므로(Codex 최종 검토) 역슬래시·
+            # url·expression·import·image-set 이 하나라도 있으면 style 을 통째로 버린다.
+            if name == "style" and ("\\" in value or re.search(r"(?i)url|expression|@import|image-set|src\s*\(", value)):
                 continue
             kept.append(f' {name}="{_attr_value(value)}"')
         if tag == "a":

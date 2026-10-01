@@ -287,20 +287,147 @@ def test_github_source_must_be_named_in_the_target_paper():
     assert got["status"] == "unofficial_repo"
 
 
-def test_same_conditions_need_quotes_from_both_papers():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 에이전트의 same_conditions=true 만으로 동일 조건을 인정하거나, 한쪽 원문에만 있는 인용으로
-    인정하면 실패한다(Codex 재현: 근거 없이 "관측 범위 내 최고"가 됐다)."""
-    md = "# Bench2Drive\n\nWe report on Bench2Drive v0.0.3 base set with 220 routes.\n\n| Method | DS |\n|---|---|\n| SimLingo | 85.07 |\n"
+def test_same_conditions_need_all_four_conditions_with_distinct_quotes_from_both_papers():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 에이전트의 same_conditions=true 만으로, 네 조건 중 일부만으로, 같은 인용문을 되풀이해서,
+    또는 한쪽 원문에만 있는 인용으로 동일 조건을 인정하면 실패한다(Codex 최종 검토 재현: 같은 문장 두 번으로 "관측 범위 내 최고")."""
+    md = ("# Bench2Drive\n\nWe report on Bench2Drive v0.0.3 base set with 220 routes using the official CARLA leaderboard protocol "
+          "and single-camera training data only.\n\n| Method | DS |\n|---|---|\n| SimLingo | 85.07 |\n")
+    target = {**TARGET, "source_text": "We evaluate on the Bench2Drive v0.0.3 base set with 220 routes using the official CARLA "
+                                        "leaderboard protocol, trained on single-camera training data only."}
     url = "https://github.com/o/Bench2Drive"
-    bare = ee.verify_competitor(_comp(source_url=url, differences=[], same_conditions=True), TARGET, lambda *a, **k: md, 5)
-    assert bare["status"] == "verified" and bare["same_conditions"] is False
-    ev = [{"what": "버전", "source_quote": "Bench2Drive v0.0.3 base set", "target_quote": "Bench2Drive v0.0.3 base set"},
-          {"what": "경로 수", "source_quote": "with 220 routes", "target_quote": "with 220 routes using"}]
-    ok = ee.verify_competitor(_comp(source_url=url, differences=[], same_conditions=True, match_evidence=ev), TARGET, lambda *a, **k: md, 5)
-    assert ok["same_conditions"] is True and ok["matched_conditions"] == ["버전", "경로 수"]
-    half = [ev[0], {"what": "경로 수", "source_quote": "with 220 routes", "target_quote": "with 999 routes nowhere in target"}]
-    one = ee.verify_competitor(_comp(source_url=url, differences=[], same_conditions=True, match_evidence=half), TARGET, lambda *a, **k: md, 5)
-    assert one["same_conditions"] is False
+
+    def run(ev, same=True):
+        return ee.verify_competitor(_comp(source_url=url, differences=[], same_conditions=same, match_evidence=ev), target,
+                                    lambda *a, **k: md, 5)
+    full = [{"condition": "dataset_version", "what": "판", "source_quote": "Bench2Drive v0.0.3 base set", "target_quote": "Bench2Drive v0.0.3 base set"},
+            {"condition": "split", "what": "경로", "source_quote": "with 220 routes", "target_quote": "with 220 routes using"},
+            {"condition": "protocol", "what": "프로토콜", "source_quote": "official CARLA leaderboard protocol", "target_quote": "official CARLA leaderboard protocol,"},
+            {"condition": "training_setting", "what": "학습", "source_quote": "single-camera training data only", "target_quote": "trained on single-camera training data"}]
+    assert run([], same=True)["same_conditions"] is False
+    assert run(full)["same_conditions"] is True
+    assert run(full[:3])["same_conditions"] is False                                   # 학습 설정 근거 없음
+    dup = [dict(full[0], condition=c) for c in ("dataset_version", "split", "protocol", "training_setting")]
+    assert run(dup)["same_conditions"] is False                                        # 같은 인용 되풀이
+    one_side = full[:3] + [dict(full[3], target_quote="trained with 999 cameras nowhere in target")]
+    assert run(one_side)["same_conditions"] is False
+
+
+def test_variant_row_is_never_accepted_for_the_requested_model():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 요청한 모델(SimLingo) 행이 없을 때 이름이 비슷한 변형(SimLingo-base) 행 하나를 대신 승인하면
+    실패한다(Codex 최종 검토 재현)."""
+    md = "# Bench2Drive\n\n| Method | DS |\n|---|---|\n| SimLingo-base | 85.07 |\n"
+    got = ee.verify_competitor(_comp(source_url="https://github.com/o/Bench2Drive", differences=[]), TARGET, lambda *a, **k: md, 5)
+    assert got["status"] == "not_found"
+
+
+def test_fetch_deadline_stops_slow_redirect_chains(monkeypatch):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 요청마다 원래 timeout 을 줘서 리다이렉트가 이어지면 15초 상한이 42초까지 늘어나거나(Codex 재현),
+    마지막 빈 응답에서 마감을 안 보면 실패한다."""
+    import httpx
+    now = [0.0]
+    asked = []
+
+    class Resp:
+        def __init__(self, code, loc=None):
+            self.status_code, self.headers, self.encoding = code, ({"location": loc} if loc else {}), "utf-8"
+        def __enter__(self):
+            now[0] += 14
+            return self
+        def __exit__(self, *a): return False
+        def raise_for_status(self): pass
+        def iter_bytes(self): return iter([])
+
+    class Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def stream(self, method, url, timeout=None):
+            asked.append(timeout.read if hasattr(timeout, "read") else timeout)
+            return Resp(302, url + "x") if len(asked) < 3 else Resp(200)
+
+    class Clock:
+        @staticmethod
+        def monotonic():
+            return now[0]
+    monkeypatch.setattr(httpx, "Client", Client)
+    monkeypatch.setattr(ee, "time", Clock)
+    with pytest.raises(TimeoutError):
+        ee._real_fetch("https://arxiv.org/html/2601.00001", 15)
+    assert len(asked) <= 2 and asked[1] <= 1.0 + 1e-9                                    # 둘째 요청엔 남은 1초만
+
+
+def test_lookup_budget_is_separate_from_external_and_blocks_new_batches(tmp_path, monkeypatch):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 외부 조사 시간이 조회 예산을 먹거나, 예산이 끝난 뒤에 S2 batch 를 새로 부르면 실패한다(Codex 재현)."""
+    import adoption_signals
+    db = tmp_path / "p.db"
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, text_path TEXT, abstract TEXT, title TEXT, published TEXT)")
+        con.execute("INSERT INTO papers VALUES ('2609.1', NULL, 'We evaluate on Real3D-AD.', 'P', NULL)")
+    now = [0.0]
+    batches = []
+    monkeypatch.setattr(adoption_signals, "scholarly_batch", lambda ids: batches.append(ids) or {})
+    monkeypatch.setattr(adoption_signals, "collect", lambda *a, **k: {"collected": True})
+
+    def slow_external(targets):
+        now[0] += 100                                   # 외부 조사가 조회 예산(60초)보다 오래 걸려도
+        return {x["paper_id"]: {"status": "done", "competitors": []} for x in targets}
+    tables = lambda aid: [{"id": "T1", "caption": "Results on Real3D-AD", "header_rows": 1, "grid": [["Method", "O-AUROC"], ["Ours", "88.0"]]}]
+    papers = [{"arxiv_id": "2609.1", "title": "P", "_score": {}}]
+    rf.analyze(db, papers, tables_of=tables, run_external=slow_external, now=NOW, clock=lambda: now[0])
+    assert batches == [["2609.1"]] and papers[0]["_signals"] == {"collected": True}     # 외부 조사 시간은 조회 예산에서 빠진다
+    monkeypatch.setattr(rf, "_SIGNALS", {})
+    monkeypatch.setattr(rf, "_CALLED_ON", set())
+    now[0] = 0.0
+
+    def eat_budget(aid):
+        now[0] += 61
+        return tables(aid)
+    batches.clear()
+    papers = [{"arxiv_id": "2609.1", "title": "P", "_score": {}}]
+    rf.analyze(db, papers, tables_of=eat_budget, run_external=lambda t: {}, now=NOW, clock=lambda: now[0])
+    assert batches == [] and "_signals" not in papers[0]
+
+
+def test_empty_reextraction_clears_old_cells_but_fetch_failure_keeps_them(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 정상 재추출에서 사라진 옛 관측이 비교에 남거나(Codex 재현), 받기 실패로 멀쩡한 관측을 지우면 실패한다."""
+    db = tmp_path / "p.db"
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, text_path TEXT, abstract TEXT, title TEXT, published TEXT)")
+        con.execute("INSERT INTO papers VALUES ('2609.1', NULL, 'We evaluate on Real3D-AD.', 'P', NULL)")
+    fs.record(db, "2609.1", [_r(88.0, own=True)], None, NOW)
+    count = lambda: sqlite3.connect(db).execute("SELECT COUNT(*) FROM observed_results WHERE reported_in='2609.1'").fetchone()[0]
+    rf.analyze(db, [{"arxiv_id": "2609.1", "title": "P"}], tables_of=lambda a: None, run_external=lambda t: {}, signals_of=lambda a: {}, now=NOW)
+    assert count() == 1                                                               # 받기 실패 — 그대로
+    rf.analyze(db, [{"arxiv_id": "2609.1", "title": "P"}], tables_of=lambda a: [], run_external=lambda t: {}, signals_of=lambda a: {}, now=NOW)
+    assert count() == 0                                                               # 받았는데 표 없음 — 비운다
+
+
+def test_non_arxiv_paper_gets_an_explicit_unsupported_state(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: arXiv 밖 논문을 조용히 빼 버려 성능 주장이 있어도 아무 상태가 없으면 실패한다(Codex 재현)."""
+    paper = {"arxiv_id": None, "doi": "10.1/x", "title": "T", "abstract": "Our method achieves 99.1% AUROC on MVTec AD.",
+             "_sota_claims": [{"benchmarks": ["MVTec AD"]}]}
+    rf.analyze(tmp_path / "none.db", [paper], run_external=lambda t: {}, signals_of=lambda a: {}, now=NOW)
+    lines = [t for t, _ in rf.block_lines(paper["_frontier"])]
+    assert paper["_frontier"]["unsupported"] == "non_arxiv" and any("arXiv 밖 논문" in t for t in lines)
+
+
+def test_signal_failures_survive_the_new_paper_note():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 신규 논문 설명이 HF 다운로드 조회 실패 표시를 덮어 "관측 없음"으로만 나오면 실패한다(Codex 재현)."""
+    import adoption_signals
+    from datetime import date
+    line = adoption_signals.signals_line({"scholarly": {"citations": 0, "publication_date": "2026-09-20"},
+                                          "hub": {"page": True, "n_models": 4, "models": [], "models_error": "TimeoutError"}},
+                                         date(2026, 9, 30))
+    assert "다운로드 조회 실패" in line and "관측 없음" not in line
+
+
+def test_css_escape_url_in_style_is_dropped():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: CSS 이스케이프(`u\\72l(`)로 쓴 외부 URL 이 style 에 남으면 실패한다(Codex 재현). 우리 style 은 남는다."""
+    import link_policy
+    a = link_policy.MailLinkAuditor(lookup=lambda h: ["151.101.3.42"], probe=lambda u, t: (200, ""))
+    out, _ = link_policy.audit_html('<div style="background-image:u\\72l(https://evil.example/x)">t</div>'
+                                    '<div style="color:#000;background-color:#fff;font-family:\'Noto Sans KR\',sans-serif">ok</div>', a.check)
+    assert "evil.example" not in out and "72l" not in out and "background-color:#fff" in out
 
 
 def test_direction_conflict_and_scale_guess_are_refused():

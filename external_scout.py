@@ -34,7 +34,8 @@ MAX_VERIFY = 12                  # Claude 에 보내는 항목 상한
 CLIP = {"title": 300, "venue": 120, "contribution": 400, "change_from_prior": 400, "manufacturing_use": 300, "published": 20}
 SOURCE_TYPES = ("conference", "journal", "arxiv", "openreview", "report", "leaderboard", "repository", "model_hub", "other")
 MISSED_STAGES = ("not_retrieved", "no_core_hit", "ranked_out")
-STAGES = ("not_yet_evaluable", "not_retrieved", "no_core_hit", "excluded", "ranked_out", "already_captured")
+# not_delivered: 선정은 됐지만 발송 기록이 없다(본문 처리 탈락·발송 실패) — 프로필이 놓친 것이 아니므로 키워드 근거(MISSED_STAGES)가 아니다.
+STAGES = ("not_yet_evaluable", "not_retrieved", "no_core_hit", "excluded", "ranked_out", "not_delivered", "already_captured")
 
 # 정찰 출력에서 남기는 필드(화이트리스트). 이 밖(read_priority·score·recommendation·must_read …)은 전부 버린다.
 _ITEM_FIELDS = ("title", "arxiv_id", "doi", "url", "source_type", "venue", "published", "contribution", "change_from_prior",
@@ -256,26 +257,37 @@ def gap_stage(db: Path, profile_id: str, it: dict, discovered_at: datetime) -> t
         rows = []
         if keys:
             marks = ",".join("?" * len(keys))
-            rows = con.execute(f"SELECT outcome, filter_reason FROM candidate_observations WHERE profile_id=? AND observed_at<=? "
-                               f"AND paper_key IN ({marks})", (profile_id, cutoff, *keys)).fetchall()
+            # **가장 최근 관측**이 단계를 정한다(Codex 검토 2026-09-30: 예전 reserve 가 직전 스캔의 exclude_hit 을 이겼다).
+            # 증분 검색이라 한 논문은 보통 처음 들어온 스캔에서 한 번만 관측된다 — 그래서 "직전 스캔 것만"이 아니라 "발견 전 마지막 관측"이다.
+            rows = con.execute(f"SELECT outcome, filter_reason, scan_id FROM candidate_observations WHERE profile_id=? AND observed_at<=? "
+                               f"AND paper_key IN ({marks}) ORDER BY observed_at DESC", (profile_id, cutoff, *keys)).fetchall()
+            delivered = con.execute(
+                f"SELECT 1 FROM mail_issue_items i JOIN mail_issues m ON m.issue_id=i.issue_id WHERE m.profile_id=? AND m.sent_at<=? "
+                f"AND m.status IN ('sent','partial') AND i.paper_key IN ({marks}) LIMIT 1", (profile_id, cutoff, *keys)).fetchone() \
+                if con.execute("SELECT 1 FROM sqlite_master WHERE name='mail_issue_items'").fetchone() else None
         if not rows:
             # ID 로 못 찾으면 제목으로(합성 ID `pdf-…` 로 들어온 논문 등). 가장 긴 낱말로 좁힌 뒤 **정규화 제목이 같을 때만**.
             title = _norm_title((it.get("official") or {}).get("title") or it["title"])
             longest = max(title.split(), key=len) if title else ""
             if len(longest) >= 5:
-                rows = [(o, f) for o, f, t in con.execute(
-                    "SELECT outcome, filter_reason, title FROM candidate_observations WHERE profile_id=? AND observed_at<=? AND title LIKE ?",
-                    (profile_id, cutoff, f"%{longest}%")).fetchall() if _norm_title(t) == title]
+                rows = [(o, f, sid) for o, f, t, sid in con.execute(
+                    "SELECT outcome, filter_reason, title, scan_id FROM candidate_observations WHERE profile_id=? AND observed_at<=? "
+                    "AND title LIKE ? ORDER BY observed_at DESC", (profile_id, cutoff, f"%{longest}%")).fetchall() if _norm_title(t) == title]
+    if not keys:
+        delivered = None
+    # 배달은 관측이 아니라 **발송 기록**으로 본다 — 관측은 발송 전에 저장되므로 선정(content)이 곧 배달이 아니다(Codex 검토 2026-09-30).
+    if delivered:
+        return "already_captured", (rows[0][2] if rows else scan[0])
     if not rows:
         return "not_retrieved", scan[0]
-    outcomes = {(o, f) for o, f in rows}
-    if any(o in ("content", "title_only") or (o == "filtered" and f == "already_shown") for o, f in outcomes):
-        return "already_captured", scan[0]
-    if any(o == "reserve" or (o == "dropped" and f is None) for o, f in outcomes):
-        return "ranked_out", scan[0]
-    if any(f == "exclude_hit" for _o, f in outcomes):
-        return "excluded", scan[0]
-    return "no_core_hit", scan[0]
+    outcome, reason, sid = rows[0]
+    if outcome in ("content", "title_only") or (outcome == "filtered" and reason == "already_shown"):
+        return "not_delivered", sid
+    if outcome == "reserve" or (outcome == "dropped" and reason is None):
+        return "ranked_out", sid
+    if reason == "exclude_hit":
+        return "excluded", sid
+    return "no_core_hit", sid
 
 
 def check_performance(it: dict, fetch: Callable[..., str] | None, deadline: float) -> bool | None:
@@ -291,9 +303,12 @@ def check_performance(it: dict, fetch: Callable[..., str] | None, deadline: floa
         page = (fetch or external_evidence._fetch)(f"https://arxiv.org/html/{aid}", min(15.0, max(1.0, deadline - time.monotonic())))
         rows = pr.table_results(arxiv_tables.parse_tables(page), method=pr.method_name(it["official"]["title"]), benchmarks=[b["name"]])
         claimed = arxiv_tables.cell_number(b["value"])
-        if claimed is None:
+        want = pr.metric_key(b["metric"])
+        if claimed is None or not want:
             return False
-        return any(r["own"] and (abs(r["value"] - claimed) <= 0.051 or abs(r["value"] * 100 - claimed) <= 0.051) for r in rows)
+        # 벤치마크·**지표**·자기 행이 맞는 셀만 대조한다(Codex 검토 2026-09-30: AUROC 주장이 F1 셀 값으로 확인됐다).
+        return any(r["own"] and (r["metric_key"] == want or r["metric_key"].startswith(want) or want.startswith(r["metric_key"]))
+                   and (abs(r["value"] - claimed) <= 0.051 or abs(r["value"] * 100 - claimed) <= 0.051) for r in rows)
     except Exception:  # noqa: BLE001 — HTML 판이 없는 논문이 많다
         return None
 
@@ -370,7 +385,7 @@ def capture_summary(stages: list[str]) -> dict:
     분모는 판정 가능한 항목(`not_yet_evaluable` 제외). 외부 정찰은 완전한 정답 집합이 아니다 — 독립 관측 집합일 뿐이다."""
     ev = [s for s in stages if s != "not_yet_evaluable"]
     retrieved = [s for s in ev if s != "not_retrieved"]
-    core = [s for s in retrieved if s in ("ranked_out", "already_captured")]
+    core = [s for s in retrieved if s in ("ranked_out", "not_delivered", "already_captured")]
     return {"evaluable": len(ev), "not_yet_evaluable": len(stages) - len(ev), "retrieved": len(retrieved),
             "core_hit": len(core), "delivered": sum(1 for s in ev if s == "already_captured")}
 
@@ -432,10 +447,24 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
             it["performance_verified"] = check_performance(it, fetch, deadline)
         else:
             it["gap_stage"], it["last_scan"] = "not_yet_evaluable", None
-    to_verify = [it for it in items if it["identity"] == "verified"][:MAX_VERIFY]
+    # 검증 상한을 **프로필마다 돌아가며** 채운다 — 앞에서부터 자르면 뒤쪽 프로필이 매주 외부 근거를 못 받는다(Codex 검토 2026-09-30).
+    verified_items = [it for it in items if it["identity"] == "verified"]
+    by_profile: dict[str, list[dict]] = {}
+    for it in verified_items:
+        by_profile.setdefault(it["profile_id"], []).append(it)
+    to_verify, rank = [], 0
+    while len(to_verify) < MAX_VERIFY and any(rank < len(v) for v in by_profile.values()):
+        for pid in ids:
+            lst = by_profile.get(pid) or []
+            if rank < len(lst) and len(to_verify) < MAX_VERIFY:
+                to_verify.append(lst[rank])
+        rank += 1
+    capped = len(verified_items) - len(to_verify)
     # 신원 조회가 실패해 확인 못 한 항목이 있으면 "done" 이 아니다 — 사실대로 partial(실측: S2 429 인데 done 으로 적혔다).
     unresolved = any(it["identity"] != "verified" and (it.get("arxiv_id") or it.get("doi")) for it in items)
     status, error = ("partial", "identity:" + ",".join(identity_errors)) if identity_errors and unresolved else ("done", None)
+    if capped > 0:
+        status, error = "partial", ((error + ";") if error else "") + f"verify_cap:{capped}"
     if to_verify:
         by_pid = {p["id"]: p for p in profiles}
         payload = {"items": [{"id": it["id"], "profile": {"name": by_pid[it["profile_id"]]["name"],
@@ -503,7 +532,8 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
 
 # ── 월요일 메일 — 에이전트가 무엇을 놓쳤나 ──────────────────────────────────────────
 STAGE_LABELS = {"not_retrieved": "검색 소스가 못 가져옴", "no_core_hit": "가져왔으나 핵심어에 안 걸림", "ranked_out": "관련인데 자리에서 밀림",
-                "excluded": "제외어에 걸림", "already_captured": "이미 메일로 보냄", "not_yet_evaluable": "마지막 스캔 뒤에 나와 판정 전"}
+                "excluded": "제외어에 걸림", "not_delivered": "선정됐으나 발송 기록 없음", "already_captured": "이미 메일로 보냄",
+                "not_yet_evaluable": "마지막 스캔 뒤에 나와 판정 전"}
 
 
 def mail_summary(db: Path, profile_id: str, now: datetime, days: int = 7) -> dict | None:
