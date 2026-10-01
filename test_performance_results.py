@@ -39,8 +39,9 @@ def test_benchmark_in_row_label_and_mean_column_only():
     assert own[("Surface Defects-4i", "mIoU(1-shot) / MEAN")] == 55.41
     assert own[("Surface Defects-4i", "mIoU(5-shot) / MEAN")] == 55.26
     assert not any("Fold" in m for _b, m in own)
-    assert not any("FB-IoU" in r["metric"] for r in rows if r["locator"].startswith("S3.T1:"))
-    assert not any(r["locator"].startswith("S3.T2:") for r in rows)        # TABLE II 는 절제 실험 — 변형 행은 경쟁 결과가 아니다
+    assert not any("FB-IoU" in r["metric"] for r in rows if r["locator"].startswith("S3.T1#"))
+    assert not any(r["locator"].startswith("S3.T2#") for r in rows)        # TABLE II 는 절제 실험 — 변형 행은 경쟁 결과가 아니다
+    assert any(r["locator"].startswith("S3.T1#") for r in rows)            # 위 두 검사가 빈 목록을 보고 통과하지 않게(Codex 최종 검토)
 
 
 def test_baseline_rows_are_kept_as_not_own():

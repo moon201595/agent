@@ -50,8 +50,10 @@ SCHEMA = {
                     "source_url": {"type": "string", "maxLength": 400},
                     "column": {"type": "string", "maxLength": 200},
                     "match_evidence": {"type": "array", "maxItems": 4, "items": {
-                        "type": "object", "additionalProperties": False, "required": ["what", "source_quote", "target_quote"],
-                        "properties": {"what": {"type": "string", "maxLength": 200},
+                        "type": "object", "additionalProperties": False, "required": ["condition", "what", "source_quote", "target_quote"],
+                        "properties": {"condition": {"type": "string", "enum": list(("dataset_version", "split", "protocol",
+                                                                                      "training_setting"))},
+                                       "what": {"type": "string", "maxLength": 200},
                                        "source_quote": {"type": "string", "maxLength": 400},
                                        "target_quote": {"type": "string", "maxLength": 400}}}},
                     "model": {"type": "string", "maxLength": 120},
@@ -88,7 +90,9 @@ def _prompt(targets: list[dict]) -> str:
         "For each competitor give: source_url (the page whose TABLE shows the number), model (the row label exactly as printed in that "
         "table), column (the column header path exactly as printed, e.g. 'O-AUROC / Mean'), value (the cell exactly as printed), "
         "same_conditions (true only if dataset version, split, protocol and training setting all match this paper's; when true, give "
-        "match_evidence: for each matching condition a verbatim quote from the competitor source AND a verbatim quote from THIS paper), "
+        "match_evidence: one entry for EACH of the four conditions dataset_version, split, protocol, training_setting, each with a "
+        "verbatim quote from the competitor source AND a verbatim quote from THIS paper; if any condition cannot be shown, set "
+        "same_conditions false), "
         "and differences "
         "(each: what differs as a short KOREAN phrase under 40 characters, plus a verbatim quote in the source language from the source "
         "page showing it). "
@@ -129,21 +133,32 @@ def parse_proposal(text: str) -> dict:
 # ---------------------------------------------------------------- 출처 받기(허용 호스트만, 홉마다 검사, 크기·시간 상한)
 
 def _fetch(url: str, timeout: float, headers: dict | None = None) -> str:
+    """허용 호스트만, 홉마다 검사, 크기 상한, 그리고 **하나의 절대 마감**. 요청마다 남은 시간만 주고, 리다이렉트·본문 수신 사이사이와
+    끝에서 마감을 본다(Codex 최종 검토 2026-09-30: 요청마다 원래 timeout 을 줘서 15초 상한이 42초까지 늘어났다)."""
     import httpx
     import link_policy
-    auditor = link_policy.MailLinkAuditor(budget_s=timeout)
-    deadline = time.monotonic() + timeout                   # DNS·리다이렉트·본문 수신 전체에 한 번의 마감(Codex 검토 2026-09-30)
+    deadline = time.monotonic() + timeout
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("받기 시간 상한")
+        return left
+    auditor = link_policy.MailLinkAuditor(budget_s=remaining())
     current = url
-    with httpx.Client(follow_redirects=False, timeout=timeout,
+    with httpx.Client(follow_redirects=False,
                       headers={"User-Agent": "paper-harness/1.0 (research frontier check)", **(headers or {})}) as client:
         for _ in range(4):
             host = (urlparse(current).hostname or "").lower()
             if urlparse(current).scheme != "https" or not _host_in(host, STRUCTURED_HOSTS + ("api.github.com",)):
                 raise ValueError(f"허용 밖 호스트 {host}")
+            auditor._budget_s = remaining()                  # DNS 도 남은 시간 안에서만
+            auditor.start()
             public, _why = auditor._public(host)
             if not public:
                 raise ValueError(f"공인 주소 아님 {host}")
-            with client.stream("GET", current) as resp:
+            with client.stream("GET", current, timeout=httpx.Timeout(remaining())) as resp:
+                remaining()
                 if 300 <= resp.status_code < 400 and resp.headers.get("location"):
                     current = urljoin(current, resp.headers["location"])
                     continue
@@ -153,8 +168,8 @@ def _fetch(url: str, timeout: float, headers: dict | None = None) -> str:
                     body += chunk
                     if len(body) > MAX_FETCH_BYTES:
                         raise ValueError("크기 상한")
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("받기 시간 상한")
+                    remaining()
+                remaining()
                 return body.decode(resp.encoding or "utf-8", errors="replace")
     raise ValueError("리다이렉트 상한")
 
@@ -289,7 +304,11 @@ def verify_competitor(comp: dict, target: dict, fetch: Callable[..., str], timeo
     # (Codex 재현: SimLingo 를 묻는데 SimLingo-base 행을 값으로 골랐다).
     # 정확 일치는 **첫 칸(방법 이름)**으로 본다 — 행 이름에는 입력·센서 같은 속성 열이 이어 붙어("SimLingo [18] S") 전체로는 안 맞는다.
     exact = [c for c in matches if _row_key(c["first_cell"]) == want or _row_key(c["row_label"]) == want] if want else []
-    pool = exact or matches
+    # 이름이 있으면 **정확히 같은 행만** 받는다 — 부분 일치 하나로 변형 모델(SimLingo-base)을 SimLingo 로 승인하던 경로를 닫는다
+    # (Codex 최종 검토 2026-09-30). 이름 없는 "Ours" 는 그 표의 Ours 행이 하나일 때만.
+    pool = exact if want else matches
+    if not pool:
+        return {**out, "status": "not_found", "reason": "요청한 모델 이름과 정확히 같은 행이 없음"}
     rows = {(c["table"], c["row"]) for c in pool}
     if len(rows) != 1:
         return {**out, "status": "not_found", "reason": "행이 하나로 정해지지 않음"}
@@ -313,13 +332,26 @@ def verify_competitor(comp: dict, target: dict, fetch: Callable[..., str], timeo
     diffs = [_short(d["what"]) for d in comp.get("differences") or [] if in_text(d.get("quote", ""), body)]
     # 동일 조건: 에이전트의 true 만으로는 안 된다. 조건마다 **경쟁 출처 인용 + 대상 논문 인용**이 둘 다 원문에 있어야 하고, 그런 조건이
     # 둘 이상이며, 차이가 하나도 없을 때만(Codex 재현: 근거 없는 same_conditions=true 가 "관측 범위 내 최고"가 됐다).
-    matched = [e for e in comp.get("match_evidence") or []
-               if in_text(e.get("source_quote", ""), body) and in_text(e.get("target_quote", ""), target_text)]
-    same = bool(comp.get("same_conditions")) and len(matched) >= 2 and not comp.get("differences")
+    # 동일 조건: 네 조건(데이터셋 판·분할·평가 프로토콜·학습 설정) **각각**에 대해 양쪽 원문 인용이 있어야 하고, 인용은 조건마다 달라야
+    # 한다(Codex 최종 검토: 같은 문장 "We evaluate on Bench2Drive." 를 두 번 넣어 통과했다). 하나라도 없으면 조건 미확인이다.
+    matched, used_src, used_tgt = [], set(), set()
+    for e in comp.get("match_evidence") or []:
+        src, tgt = re.sub(r"\s+", " ", e.get("source_quote", "").strip()), re.sub(r"\s+", " ", e.get("target_quote", "").strip())
+        if e.get("condition") in {m["condition"] for m in matched} or src in used_src or tgt in used_tgt:
+            continue
+        if in_text(src, body) and in_text(tgt, target_text):
+            matched.append(e)
+            used_src.add(src)
+            used_tgt.add(tgt)
+    covered = {m["condition"] for m in matched}
+    same = bool(comp.get("same_conditions")) and covered == REQUIRED_CONDITIONS and not comp.get("differences")
     return {**out, "status": "verified", "value": found["value"], "text": _md_text(found["text"]), "note": note,
             "locator": f"{_md_text(found['row_label'])} × {' / '.join(found['column_path'])}", "differences": diffs,
             "unverified_differences": len(comp.get("differences") or []) - len(diffs), "same_conditions": same,
             "matched_conditions": [_short(e.get("what", "")) for e in matched]}
+
+
+REQUIRED_CONDITIONS = frozenset({"dataset_version", "split", "protocol", "training_setting"})
 
 
 def check(targets: list[dict], *, budget_s: float = BUDGET_S, run_agent: Callable[[str, float], str] | None = None,
