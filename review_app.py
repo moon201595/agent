@@ -747,7 +747,7 @@ def _story_html(story: dict, pid: str | None = None, meta: str = "") -> str:
     parts: list[str] = []
     lead = [x for x in (story.get("headline"), story.get("relation")) if x]
     parts.append("<div class='rm-lead'><div class='rm-ct'>오늘의 연구 흐름" + (f"<small class='r'>{_h(meta)}</small>" if meta else "") + "</div>"
-                 + ("".join(f"<p>{_h(x)}</p>" for x in lead) if lead else "<p class='rm-empty'>오늘의 한 줄이 없는 글입니다.</p>") + "</div>")
+                 + ("".join(f"<p>{_h(x)}</p>" for x in lead) if lead else "<p class='rm-empty'>오늘의 요점이 없는 글입니다.</p>") + "</div>")
     threads = story.get("threads") or []
     if threads:
         cells = []

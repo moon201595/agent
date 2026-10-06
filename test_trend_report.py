@@ -757,7 +757,7 @@ def test_prompt_demands_the_shape_digest_renders():
             "relation": "", "implications": ["볼 것 [P1:A]"], "side_signals": [{"paper": "P3", "note": "주변"}]}
     text = trend_report.render_story(trend_report.repair_story(plan, corpus))
     heads = [ln for ln in text.splitlines() if ln.startswith("■")]
-    assert heads == ["■ 오늘의 한 줄", "■ 1. 흐름", "■ 우리 연구에서 볼 것", "■ 주변 신호"]
+    assert heads == ["■ 오늘의 요점", "■ 1. 흐름", "■ 우리 연구에서 볼 것", "■ 주변 신호"]
     assert all(digest._is_narrative_heading(h) for h in heads)
     assert not digest._is_narrative_heading("1. 본문 목록 줄")       # ■ 없는 번호 줄은 소제목이 아니다
 
@@ -839,7 +839,7 @@ def test_story_render_lists_titles_from_the_corpus():
     망가뜨리면 실패하는 것: 흐름 순서·번호 · 제목 대신 ID 만 싣는 것(09-17 "- [P1:T] [P1:T]" 사고) · 흐름이 하나인데 관계 문장을 싣는 것."""
     text = trend_report.render_story(trend_report.repair_story(_plan(), _STORY_CORPUS))
     lines = text.splitlines()
-    assert lines[:3] == ["■ 오늘의 한 줄", "결함 데이터 부족에 두 방향으로 답한다 [P1:A][P4:A]",
+    assert lines[:3] == ["■ 오늘의 요점", "결함 데이터 부족에 두 방향으로 답한다 [P1:A][P4:A]",
                          "같은 문제에 대한 다른 대응이다 [P1:A][P4:A]"]
     assert "■ 1. 합성 결함의 역할 확대" in lines and "■ 2. few-shot 검사" in lines
     assert "- FLASH: generate once synthesize many [P1:R]" in lines
@@ -905,7 +905,7 @@ def test_clipping_never_strips_evidence_that_was_counted():
     long_body = "가" * 510 + " [P1:A][P2:A]"
     story = trend_report.repair_story(_plan(threads=[{"name": "길다", "papers": ["P1", "P2"], "body": long_body},
                                                      {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}],
-                                            headline="나" * 400 + " [P4:A]",
+                                            headline="나" * 500 + " [P4:A]",          # 상한(450)보다 길어야 잘린다 — 2026-10-06 요점 상한 300→450
                                             implications=["다" * 400 + " [P4:A]"]), _STORY_CORPUS)
     assert [t["papers"] for t in story["threads"]] == [[4, 6]]       # 근거가 잘린 흐름은 흐름이 아니다
     assert story["headline"] == "" and "headline_uncited" in story["repairs"]
@@ -1191,3 +1191,25 @@ def test_parse_rendered_story_without_headline_preserves_relation():
     assert got["format"] == "v2" and got["headline"] == ""
     assert got["relation"] == "같은 문제에 대한 다른 대응이다"
     assert got["threads"][-1]["body"] == "적은 샘플로 학습한다."
+
+
+def test_today_point_heading_and_legacy_heading_both_parse():
+    """2026-10-06 "오늘의 한 줄" → "오늘의 요점". 새 글이 옛 소제목으로 나가거나, 되읽기가 옛 소제목(10/6 이전 저장 글)이나 새 소제목 중
+    하나를 놓치면 실패한다. 요점이 두세 문장이어도 한 줄로 조립돼 relation 과 섞이지 않아야 한다."""
+    corpus = "- [P1:T] Alpha paper\n  [P1:A] a\n- [P2:T] Beta paper\n  [P2:A] b"
+    plan = {"headline": "공통 문제는 결함 데이터 부족이다 [P1:A]. 오늘은 합성 쪽 답이 붙었다 [P2:A]. 지난 관측보다 범위가 넓다 [P1:A].",
+            "threads": [{"name": "흐름", "papers": ["P1", "P2"], "body": "공통 [P1:A][P2:A]"}],
+            "relation": "", "implications": [], "side_signals": []}
+    text = trend_report.render_story(trend_report.repair_story(plan, corpus))
+    assert text.splitlines()[0] == "■ 오늘의 요점" and "오늘의 한 줄" not in text
+    got = trend_report.parse_rendered_story(text)
+    assert got["format"] == "v2" and got["headline"].startswith("공통 문제는") and got["headline"].endswith("범위가 넓다.")
+    assert got["relation"] == ""
+    old = trend_report.parse_rendered_story("■ 오늘의 한 줄\n옛 요지 [P1:A]\n\n■ 1. 흐름\n본문 [P1:A][P2:A]")
+    assert old["format"] == "v2" and old["headline"] == "옛 요지"
+
+
+def test_digest_boxes_both_lead_headings():
+    """digest 가 새 소제목을 결론 상자로 못 알아보면 요점이 일반 문단으로 떨어져 실패한다(옛 소제목도 계속 상자)."""
+    import digest
+    assert {"오늘의 요점", "오늘의 한 줄"} <= digest._LEAD_HEADINGS <= digest._NARRATIVE_HEADINGS

@@ -1685,6 +1685,15 @@ def test_story_v2_lead_box_wraps_only_the_headline():
     assert html.count("border-left:3px solid") == 1
 
 
+def test_today_point_lead_box_in_html():
+    """2026-10-06 "오늘의 요점". 새 소제목을 결론 상자로 못 알아보면 상자가 안 생기거나(count 0) 요점이 상자 밖에 있어 실패한다."""
+    text = "■ 오늘의 요점\n공통 문제와 답 [P1:A]. 지난 관측보다 넓다 [P2:A].\n\n■ 1. 흐름 이름\n흐름 본문 [P1:A][P2:A]\n- Paper title [P1:A]"
+    html = digest.generate_digest_html({"papers": [], "narrative": (text, []), "title_only_papers": []}, "팀")
+    box = html.index("border-left:3px solid")
+    assert html.index("오늘의 요점") < box < html.index("공통 문제와 답") < html.index("1. 흐름 이름")
+    assert html.count("border-left:3px solid") == 1
+
+
 def test_cards_say_how_deep_we_read(monkeypatch):
     """2026-10-01 사용자 결정: 순위는 관련도, 깊이는 카드마다 분명히. 망가뜨리면 실패하는 것: 요약이 없는데 "원문 분석 완료"라고
     하는 것 · 원문 일부만 반영된 요약을 "완료"라고 하는 것 · 초록 카드에 원문 라벨을 다는 것 · 제목 옆 집계가 실제 라벨과 다른 것."""
