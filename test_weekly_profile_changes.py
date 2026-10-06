@@ -368,25 +368,60 @@ def test_a_no_change_week_is_not_reported_as_a_failure(tmp_path):
         assert "no_change" not in rendered
 
 
-def test_a_week_of_only_small_moves_still_says_so(tmp_path):
-    """이 테스트가 잡는 것: 자동 변화가 전부 문턱(`MIN_DELTA`) 아래면 **절 전체가 사라지는 것**
-    (2026-09-20 Codex 검토 #4).
-
-    §8-170 에서 "감춘 것을 말없이 버리지 않는다"고 정해 꼬리 줄을 만들었는데, `_has_auto_change` 가
-    감춘 수를 안 봐서 그 꼬리까지 통째로 날아갔다 — "이번 주엔 아무 일도 없었다"로 읽힌다."""
-    db = tmp_path / "p.db"
+def _only_small_moves(db, reactions: int) -> dict:
+    """자동 변화가 전부 문턱(`MIN_DELTA`) 아래인 한 주. 반응 건수만 바꿔 가며 쓴다."""
     _snap(db, "p1", 1, NOW - timedelta(days=8), "user", [["defect detection", "core", 1.0]])
     _snap(db, "p1", 2, NOW - timedelta(days=1), "feedback", [["defect detection", "core", 1.05]])
     with sqlite3.connect(db) as con:
         con.execute("INSERT INTO feedback_weight_runs (profile_id, run_date, created_at, revision,"
-                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,3)",
+                    " changes_json, skipped_no_observation, reactions_used) VALUES (?,?,?,?,?,0,?)",
                     ("p1", "2026-09-18", (NOW - timedelta(days=1)).isoformat(), 2,
-                     json.dumps([{"keyword": "defect detection", "after": 1.05}])))
-    out = wpc.collect(db, "p1", days=7, now=NOW)
-    assert digest._split_moves(out)[2] == 1          # 감춘 것 한 건
-    text = "\n".join(digest._profile_changes_section(out and {"profile_changes": out}))
-    assert "그 밖에 작게 움직인 가중치 1건" in text
-    assert "그 밖에 작게 움직인 가중치 1건" in digest._profile_changes_html({"profile_changes": out})
+                     json.dumps([{"keyword": "defect detection", "after": 1.05}]), reactions))
+    return wpc.collect(db, "p1", days=7, now=NOW)
+
+
+def test_small_moves_are_still_counted_but_no_longer_named_in_the_mail(tmp_path):
+    """2026-10-06 사용자 요청: 꼬리의 `그 밖에 작게 움직인 가중치 N건` 을 **표시에서** 뺀다.
+    2026-09-20 Codex 검토 #4 가 세운 반대 계약(감춘 건수를 꼬리로 남긴다)을 사용자 결정이 대체한다.
+
+    이 테스트가 잡는 것: ① 그 문구를 어느 판에든 되살리는 것 ② 같이 붙어 있던
+    `반영된 사용자 반응 N건` 을 건수째 잃거나 고정값으로 바꾸는 것 ③ 문구를 빼면서 집계(`_split_moves`
+    의 감춘 수)나 순변화 자료까지 지워 "작은 변화가 없었다"로 만드는 것. 평문·HTML 둘 다 본다."""
+    out = _only_small_moves(tmp_path / "p.db", reactions=3)
+    assert digest._split_moves(out)[2] == 1          # 감춘 것 한 건 — 집계는 그대로 돈다
+    assert out["weights"][0]["delta"] == 0.05        # 자료도 그대로다(표시만 뺐다)
+    text = "\n".join(digest._profile_changes_section({"profile_changes": out}))
+    html = digest._profile_changes_html({"profile_changes": out})
+    for rendered in (text, html):
+        assert "그 밖에 작게 움직인" not in rendered
+        assert "가중치 1건" not in rendered
+        assert "반영된 사용자 반응 3건" in rendered   # 실제 집계값이다 — 고정값이 아니다
+    assert "지난 7일 검색 기준 변화" in text and "지난 7일 검색 기준 변화" in html
+
+
+def test_a_week_with_nothing_left_to_show_drops_the_section_instead_of_an_empty_title(tmp_path):
+    """이 테스트가 잡는 것: 꼬리 문구를 뺀 뒤 **제목만 남은 빈 절**(빈 흰 상자)이 나가는 것.
+
+    감춘 작은 변화뿐이고 쓰인 반응도 없으면 이 절에는 그릴 것이 없다. 그런데 `_has_auto_change` 가
+    옛 계약대로 `hidden` 을 참으로 세면 `_h1` 과 빈 블록만 메일에 남는다 — `pending_report` 와 같은
+    이유로 통째로 뺀다. 집계(`_split_moves`)와 순변화 자료는 여전히 살아 있어야 한다."""
+    out = _only_small_moves(tmp_path / "p.db", reactions=0)
+    assert digest._split_moves(out)[2] == 1 and out["weights"][0]["delta"] == 0.05
+    assert digest._has_auto_change(out) is False
+    assert digest._profile_changes_section({"profile_changes": out}) == []
+    assert digest._profile_changes_html({"profile_changes": out}) == ""
+
+
+def test_redrawing_an_old_saved_mail_drops_the_retired_tail_phrase(tmp_path):
+    """이 테스트가 잡는 것: 이미 발송된 옛 본문을 다시 그릴 때 **글자로 박혀 있던** 꼬리 문구가
+    화면에 되살아나는 것, 그리고 그걸 지우면서 뒤에 이어 붙은 반응 건수까지 잘라 먹는 것.
+
+    저장 평문·운영 DB 는 발송된 그대로 둔다(기록이다) — 표시 단계에서만 지운다."""
+    import saved_digest
+    html = saved_digest._line("그 밖에 작게 움직인 가중치 1건 · 반영된 사용자 반응 15건")
+    assert "그 밖에 작게 움직인" not in html and "반영된 사용자 반응 15건" in html
+    assert saved_digest._line("그 밖에 작게 움직인 가중치 4건") == ""      # 그 문구뿐이면 빈 칸도 안 남긴다
+    assert "반응" in saved_digest._line("반영된 사용자 반응 2건")
 
 
 def test_events_after_this_cycles_scan_wait_for_the_next_report(tmp_path):

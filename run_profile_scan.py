@@ -460,6 +460,8 @@ async def scan_and_digest(
                 result["narrative_summaries"] = enriched
                 corpus, _, _ = trend_report._narrative_corpus(shown, excerpts)
                 result["citation_audit"] = trend_report.citation_audit(text, corpus)
+                if getattr(story, "structured", None):
+                    result["citation_audit"]["story"] = story.structured
                 result["evidence_catalog"] = trend_report.evidence_catalog(shown, excerpts)
                 print(f"  [동향] 오늘의 서술을 붙였다 (원문 요약 {enriched}편 반영)")
                 # 쌓아 둔다 — 내일 서술의 맥락이 되고, 나중에 "그때 뭐라고 했나"를 다시 읽을 수 있다(§8-162).

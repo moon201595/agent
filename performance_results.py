@@ -22,7 +22,7 @@ _METRIC_ABBR = re.compile(
     r"(?<!\w)(AUROC|AUPRO|AUPR|mAP(?:@[\d.:]+)?|AP(?:50|75)?|mIoU|FB-IoU|IoU|F1|PSNR|SSIM|LPIPS|FID|BLEU|ROUGE(?:-[L12])?|EM|"
     r"SR|DS|RC|WER|CER|MRR|nDCG(?:@\d+)?|Dice|PCK|ADE|FDE|EPE|MAE|RMSE|NDS|HOTA|MOTA)(?![\w-])")
 _METRIC_PHRASE = re.compile(
-    r"\b(accuracy|success rates?|driving score|route completion|error rates?|collision rates?|top-1|top-5|recall@\d+|pass@\d+|"
+    r"\b(accuracy|success(?: rates?)?|driving score|route completion|error rates?|collision rates?|top-1|top-5|recall@\d+|pass@\d+|"
     r"precision|recall|f1[- ]score|exact match|win rate)\b", re.IGNORECASE)
 # 수치 — 소수 또는 백분율만. 정수는 "Table 1"·"[41]"·연도와 구별이 안 된다.
 _VALUE_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s?%|(?<![\w.])\d+\.\d+(?![\w.%])")   # 백분율을 먼저 — "10.5" 만 잡고 "%" 를 흘리지 않게
@@ -72,6 +72,8 @@ def _scored_value(sentence: str) -> bool:
     """지표 이름 **가까이에** 성능 수치가 있는가. 같은 문장 안에 있기만 한 숫자는 근거가 아니다."""
     metrics = [m.span() for m in _METRIC_ABBR.finditer(sentence)] + [m.span() for m in _METRIC_PHRASE.finditer(sentence)]
     for v in _VALUE_RE.finditer(sentence):
+        if re.search(r"(?:§|\bsection|\bsec\.?)\s*$", sentence[:v.start()], re.I):
+            continue                                        # §4.4는 소수처럼 생겼지만 성능 값이 아니다
         if _NOT_SCORE_RE.match(sentence[v.end():]):
             continue
         if any(v.start() - me <= _ADJACENT and v.start() >= me or ms - v.end() <= _ADJACENT and ms >= v.end()
@@ -97,7 +99,7 @@ def performance_evidence(text: str, claims: list[dict], source: str, method: str
 
     source 가 'text' 면 index 는 원문 S번호, 'abstract' 면 None(초록 문장 번호는 원문 S번호가 아니다)."""
     benches = list(dict.fromkeys(b for c in claims for b in c.get("benchmarks") or []))
-    if not benches or not text:
+    if not text:
         return []
     sentences = sentence_grounding.segment_sentences(text)
     out: list[dict] = []
@@ -113,6 +115,30 @@ def performance_evidence(text: str, claims: list[dict], source: str, method: str
         quote = _window(" ".join(s.split()), pat)
         out.append({"benchmark": bench, "metric": _metric(s), "index": i if source == "text" else None,
                     "sentence": quote, "source": source})
+        if len(out) >= MAX_BENCHMARKS:
+            break
+    return out or reported_sentences(text, source)
+
+
+def reported_sentences(text: str, source: str) -> list[dict]:
+    """SOTA·벤치마크 이름이 없어도 저자 자신의 성능 보고는 남긴다. 비교 DB에 넣는 구조화 수치는 아니다.
+
+    제목의 기법 이름만 언급한 관련 연구는 받지 않는다. 앞선 자기 결과를 잇는 It 문장만 제한적으로 허용한다.
+    2026-10-02 VHop의 L4·L5 원문 수치가 SOTA 벤치마크 문지기에 가려진 결함을 막는다."""
+    out: list[dict] = []
+    previous_own = False
+    previous_caption = False
+    for index, sentence in enumerate(sentence_grounding.segment_sentences(text), 1):
+        own = bool(_SELF_RE.search(sentence)) and not _OTHERS_RE.search(sentence)
+        continuation = previous_own and bool(re.match(r"^It (?:also )?(?:improves|achieves|reaches|obtains)\b", sentence, re.I))
+        good = (len(sentence) <= 320 and not previous_caption and not any(_sentence_rank(sentence)[:2])
+                and _scored_value(sentence) and (own or continuation))
+        previous_own = good and own
+        previous_caption = bool(_CAPTION_RE.match(sentence)) and len(sentence) < 50
+        if not good:
+            continue
+        out.append({"benchmark": "", "metric": _metric(sentence), "index": index if source == "text" else None,
+                    "sentence": " ".join(sentence.split()), "source": source})
         if len(out) >= MAX_BENCHMARKS:
             break
     return out

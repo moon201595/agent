@@ -1,11 +1,18 @@
-# review_app.py UI 테마 — 기준은 docs/DESIGN.md(2026-09-16). 색상 기반만 여기, 세부 모양은 review_app._inject_custom_style.
+# review_app.py UI 테마 — 기준은 docs/DESIGN.md(2026-10-01 개정: 메일과 같은 청록·잉크 토큰). 색상 기반만 여기, 세부 모양은 review_app._inject_custom_style.
 [theme]
 base = "light"
-primaryColor = "#3B5BDB"
+primaryColor = "#1F7A72"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#EEF2FF"
-textColor = "#111827"
-font = "sans serif"
+secondaryBackgroundColor = "#F6F8F9"
+textColor = "#1E2B37"
+# 글꼴·크기는 여기서 정한다(Streamlit 공식 테마 옵션 — CSS 로 덮는 것보다 표·입력칸까지 일관되게 먹는다).
+# 16px 은 Streamlit 기본값이자 대시보드 본문 권장 범위(14~16px)의 위쪽 — 2026-10-01 에 14px 로 줄였다가 "글씨크기부터 쳐 키워" 지적.
+font = "Malgun Gothic, 맑은 고딕, Apple SD Gothic Neo, sans-serif"
+baseFontSize = 16
+baseRadius = "6px"
+borderColor = "#E3E8EC"
+dataframeHeaderBackgroundColor = "#F6F8FA"   # 표 머리 — 옅은 회색(사용자 시안). 청록은 선택·흐름 상자에만
+showSidebarBorder = true
 
 # 운영 화면에는 되돌리기·가중치 저장·수신자 변경 버튼이 있고 로그인이 없다(2026-09-16). 이 PC 에서만 열리게 묶는다 —
 # WSL 의 localhost 포워딩으로 Windows 브라우저의 http://localhost:8501 은 그대로 열린다.

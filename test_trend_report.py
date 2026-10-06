@@ -1116,3 +1116,78 @@ def test_cards_never_come_back_as_side_signals():
     story = trend_report.repair_story(plan, _STORY_CORPUS, anchors={1, 2, 3, 4, 5})
     assert [s["paper"] for s in story["side_signals"]] == [7] and "side_signal_is_card" in story["repairs"]
     assert [s["paper"] for s in trend_report.repair_story(plan, _STORY_CORPUS)["side_signals"]] == [3, 7]
+
+
+def test_parse_rendered_story_roundtrip():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 렌더러의 흐름·깊이·해석·주변 신호를 파서가 잃거나 근거 태그를 남기면 실패한다."""
+    story = trend_report.repair_story(_plan(), _STORY_CORPUS, deep={1})
+    result = trend_report.parse_rendered_story(trend_report.render_story(story))
+    assert result["format"] == "v2"
+    assert result["headline"] == "결함 데이터 부족에 두 방향으로 답한다"
+    assert result["relation"] == "같은 문제에 대한 다른 대응이다"
+    assert result["threads"] == [
+        {"name": "합성 결함의 역할 확대", "body": "둘 다 합성 결함을 쓴다.", "items": [
+            {"title": "FLASH: generate once synthesize many", "depth": "원문 분석"},
+            {"title": "Visual anomaly synthesis for model selection", "depth": "초록 기반"}]},
+        {"name": "few-shot 검사", "body": "적은 샘플로 학습한다.", "items": [
+            {"title": "Prototype aligned few-shot defect network", "depth": "초록 기반"},
+            {"title": "Few-shot welding defect detection", "depth": "초록 기반"}]}]
+    assert result["implications"] == ["합성 결함의 현실성을 확인한다", "근거 없는 제안 (해석)"]
+    assert result["side_signals"] == [{"title": "Goose down YOLO", "note": "경량 미세질감 검출"}]
+
+
+def test_parse_rendered_story_legacy():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 옛 문단·서수·복합 근거·논문 목록의 경계를 잘못 읽으면 실패한다."""
+    text = """■ 오늘 눈에 띄는 것
+
+첫 문단 [P1:A, P2:S7] (초록 기준)
+
+둘째 문단 [P2:R]
+
+■ 갈래
+
+첫째, 하나의 흐름 [P1:A].
+줄바꿈도 같은 문단이다.
+
+- Alpha [P1:A]
+- Beta · 부분 분석 [P2:S7]
+
+둘째, 다른 흐름 [P3:A]
+
+- Gamma [P3:A]
+
+■ 우리 분야와 만나는 지점
+
+실험 제안 [P1:A] (해석)
+
+적용 조건 [P2:S7]
+
+■ 아직 밖에 있지만 넘어올 것
+
+밖의 신호 [P9:A]
+
+추가 신호 [P10:A]
+"""
+    got = trend_report.parse_rendered_story(text)
+    assert got == {"format": "v1", "headline": "첫 문단 (초록 기준)", "relation": "둘째 문단",
+                   "threads": [{"name": "", "body": "하나의 흐름. 줄바꿈도 같은 문단이다.", "items": [
+                       {"title": "Alpha", "depth": ""}, {"title": "Beta", "depth": "부분 분석"}]},
+                               {"name": "", "body": "다른 흐름", "items": [{"title": "Gamma", "depth": ""}]}],
+                   "implications": ["실험 제안 (해석)", "적용 조건"],
+                   "side_signals": [{"title": "", "note": "밖의 신호"}, {"title": "", "note": "추가 신호"}]}
+
+
+def test_parse_rendered_story_unknown_and_empty():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 알 수 없는 글을 숨기거나 빈 글에 내용을 만들면 실패한다."""
+    for text, expected in [("", ""), (" 낯선 글 [P2:S7]\n (해석) [P1:A, P3:R] ", "낯선 글 (해석)")]:
+        assert trend_report.parse_rendered_story(text) == {
+            "format": "unknown", "headline": expected, "relation": "", "threads": [], "implications": [], "side_signals": []}
+
+
+def test_parse_rendered_story_without_headline_preserves_relation():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 머리 없는 렌더링의 흐름 뒤 관계 문장을 본문에 섞으면 실패한다."""
+    story = trend_report.repair_story(_plan(headline=""), _STORY_CORPUS)
+    got = trend_report.parse_rendered_story(trend_report.render_story(story))
+    assert got["format"] == "v2" and got["headline"] == ""
+    assert got["relation"] == "같은 문제에 대한 다른 대응이다"
+    assert got["threads"][-1]["body"] == "적은 샘플로 학습한다."

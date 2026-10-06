@@ -171,8 +171,9 @@ def window_movement(db: Path, profile: dict, days: int = 7,
     else:
         keywords = [(kw, n, 0) for kw, n in now_c.most_common(top_keywords)]
 
+    # 용어를 안 부르는 호출(운영 화면 개요)은 n-gram 셈을 건너뛴다 — 이 셈이 창 계산의 9할이다(2026-10-01 실측: 41초 중 38초).
     terms = emerging_terms(this_rows, profile, prev_rows if comparable else None,
-                           top_n=top_terms)
+                           top_n=top_terms) if top_terms > 0 else []
     return {"days": days,
             "window": (start.isoformat(), end.isoformat()),
             "previous": (previous.isoformat(), start.isoformat()),
@@ -243,7 +244,7 @@ NARRATIVE_ABSTRACT_CHARS = 900  # 논문당 초록 길이 상한
 # 그래서 모델이 **글 대신 구조**를 낸다: 오늘의 중심 질문 → 같은 문제를 다루는 논문 묶음(흐름) → 흐름 사이 관계 →
 # 우리 연구에서 볼 것 → 흐름에 안 드는 논문은 주변 신호. Python 이 그 구조를 검증·손질(`repair_story`)하고
 # 글로 조립한다(`render_story`). 흐름이 없으면 절도 없다 — 빈 칸을 채우라는 지시 자체가 없어진다.
-NARRATIVE_VERSION = "story-v2"
+NARRATIVE_VERSION = "story-v3"
 
 _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 제목과 초록이다.
 최근 발견됐다는 것이 최근 발표됐다는 뜻은 아니다.{movement}{history}{weekly}
@@ -256,6 +257,9 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 
 1. threads(흐름): **같은 문제를 다루는 논문 2편 이상**의 묶음. 1~3개. 공통 문제가 하나뿐이면 하나만 낸다.
    - name: 흐름 이름. 무엇에 관한 흐름인지 짧은 명사구(예: "합성 결함 데이터의 역할 확대").
+   - history: 오늘의 연구 문제를 지난 관측과 연결하는 것이 읽는 데 도움이 될 때만 낸다. 연결할 이유가 없으면 null.
+     실제 제공된 H번호 하나(ref), continuing(이어짐)·expanding(확장)·branching(갈라짐) 중 relation, note 한 문장.
+     note에는 이 흐름의 오늘 논문 P 근거를 붙인다. 단순 키워드 겹침은 연결이 아니다. "새 흐름"·"최초"를 강제로 붙이지 않는다.
    - papers: 그 흐름의 논문 ID(예: ["P1", "P2"]). 한 논문은 한 흐름에만 넣는다.
    - body: 2~3문장. 첫 문장은 **공통 연구 문제**(같은 질문·목표)를 말하고, 이어서 각 논문이 그 문제에 무엇을 하는지(역할·접근의
      차이)를 쓴다. 흐름에 넣은 논문을 모두 근거 ID 로 부른다. 같은 키워드·같은 응용 분야라는 것만으로는 흐름이 아니다.
@@ -268,7 +272,7 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
    카드 논문은 아래에 이미 카드로 실리므로 주변 신호로 내리지 않는다. 흐름에 억지로 넣지 않는다. 관련이 약하면 빼도 된다. 최대 5개.
 
 출력(반드시 지킨다): JSON 객체 하나만. 코드펜스·설명 없이.
-{{"headline": "...", "threads": [{{"name": "...", "papers": ["P1", "P2"], "body": "..."}}],
+{{"headline": "...", "threads": [{{"name": "...", "papers": ["P1", "P2"], "body": "...", "history": null}}],
  "relation": "", "implications": ["..."], "side_signals": [{{"paper": "P7", "note": "..."}}]}}
 
 지킬 것:
@@ -280,8 +284,10 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 - **성능·결과에 관한 주장은 R(요약 결과)·S(원문 문장) 근거로만 쓴다.** 초록(A)만 있는 논문은 무엇을 다루고 무엇을 제안하는지까지만
   쓴다 — 초록의 성과 문구는 저자 주장이다. 흐름에 본문을 읽은 논문이 있으면 그 논문으로 흐름을 연다.
 - 문장에서 논문을 부를 때는 제목 전체가 아니라 짧은 이름(예: 제목의 콜론 앞)만 쓴다 — 제목 목록은 Python 이 붙인다.
-- 이전 기간의 비교 근거는 제공되지 않았다. 증가·전환·부상 등 시간적 변화는 단정하지 않고
-  "이번 수집 표본에서 관찰되는 주제"로 서술한다. 하루 표본이므로 "트렌드"라는 말도 쓰지 않는다.
+- 지난 관측 H번호가 있으면 연구 문제의 의미적 연결만 history에 제안한다. 없는 H번호·과거 날짜·수치를 만들지 않는다.
+  지난 관측이 없거나 오늘과 이어지지 않으면 history는 null이다. 연결은 선택이며 매일 넣을 의무가 없다.
+  증가·급부상·쇠퇴 같은 정량적 시간 변화는 기간 비교 근거 없이 단정하지 않는다.
+- 증가·전환·부상 같은 표현을 관측 밖의 추세로 일반화하지 않는다. H연결은 두 관측의 연구 문제 관계에만 쓴다.
 - 저자 명시 한계와 요약자 해석을 구분한다. 논문에서 확인하지 않은 적용 가능성은 문장 끝에 "(해석)" 을 붙인다 —
   "해석이다" 같은 서술어로 쓰지 않는다. 표본 밖의 것은 "~는 이 표본으로는 알 수 없다." 로 끝낸다.
 - "(논문 자체의 SOTA 주장 — 미검증)" 이 붙은 S번호 문장은 그 논문이 스스로 최고 성능이라고 말한 것이다. 흐름과 이어질 때만
@@ -303,9 +309,13 @@ STORY_SCHEMA = {
     "properties": {
         "headline": {"type": "string"},
         "threads": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["name", "papers", "body"],
+            "type": "object", "additionalProperties": False, "required": ["name", "papers", "body", "history"],
             "properties": {"name": {"type": "string"}, "papers": {"type": "array", "items": {"type": "string"}},
-                           "body": {"type": "string"}}}},
+                           "body": {"type": "string"}, "history": {"anyOf": [
+                               {"type": "null"}, {"type": "object", "additionalProperties": False,
+                                "required": ["ref", "relation", "note"], "properties": {
+                                    "ref": {"type": "string"}, "relation": {"type": "string", "enum": ["continuing", "expanding", "branching"]},
+                                    "note": {"type": "string"}}}]}}}},
         "relation": {"type": "string"},
         "implications": {"type": "array", "items": {"type": "string"}},
         "side_signals": {"type": "array", "items": {
@@ -350,6 +360,11 @@ def parse_story(text: str) -> dict:
         raise ValueError("JSON 없음")
     try:
         data = json.loads(match.group(0))
+        # 저장된 v2 제안과 폴백 모델은 새 선택 칸을 생략할 수 있다. 연결 없음으로만 보완한다.
+        if isinstance(data, dict) and isinstance(data.get("threads"), list):
+            for thread in data["threads"]:
+                if isinstance(thread, dict):
+                    thread.setdefault("history", None)
         jsonschema.validate(data, STORY_SCHEMA)
     except (json.JSONDecodeError, jsonschema.ValidationError) as error:
         raise ValueError(f"구조 불일치: {type(error).__name__}") from error
@@ -455,7 +470,7 @@ def _mark_interpretation(text: str, cited: set[int]) -> str:
 
 
 def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
-                 deep: set[int] | None = None) -> dict | None:
+                 deep: set[int] | None = None, history: dict[str, dict] | None = None) -> dict | None:
     """모델이 낸 구조를 자료에 비춰 손질한다. 흐름이 하나도 안 남으면 None(서술 없음 — 메일은 나간다).
 
     - 흐름: 자료에 있는 논문만, 한 논문은 한 흐름에만. **body 가 근거로 부른 논문만** 흐름에 남긴다
@@ -496,7 +511,19 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
             repairs.append("thread_without_anchor")
             continue
         used.update(papers)
-        threads.append({"name": name, "papers": papers, "body": _mark_abstract_results(body)})
+        thread = {"name": name, "papers": papers, "body": _mark_abstract_results(body)}
+        proposed = raw.get("history")
+        if proposed:
+            import trend_history
+            source = (history or {}).get(proposed.get("ref")) if isinstance(proposed, dict) else None
+            note, cited_now = _fit(proposed.get("note") or "", set(papers), tags, 220) if source else ("", set())
+            if (source and proposed.get("relation") in trend_history.RELATIONS and note and cited_now
+                    and not re.search(r"증가|감소|급증|급부상|쇠퇴|최초|\d+(?:\.\d+)?\s*(?:%|배|편|건)", note)):
+                thread["history"] = {"ref": proposed["ref"], "relation": proposed["relation"],
+                                     "note": _mark_abstract_results(note), "source": dict(source)}
+            else:
+                repairs.append("history_unverified")
+        threads.append(thread)
     if not threads:
         return None
     if deep:
@@ -553,6 +580,8 @@ def model_text(story: dict) -> str:
     parts = [story["headline"], story["relation"]]
     for thread in story["threads"]:
         parts += [thread["name"], thread["body"]]
+        if thread.get("history"):
+            parts.append(thread["history"]["note"])
     parts += story["implications"] + [s["note"] for s in story["side_signals"]]
     return "\n".join(f"※ {part}" for part in parts if part)
 
@@ -567,7 +596,11 @@ def render_story(story: dict) -> str:
             lines.append(story["relation"])
         lines.append("")
     for i, thread in enumerate(story["threads"], start=1):
-        lines += [f"■ {i}. {thread['name']}", thread["body"]]
+        lines += [f"■ {i}. {thread['name']}"]
+        if thread.get("history"):
+            import trend_history
+            lines.append(trend_history.display(thread["history"]))
+        lines.append(thread["body"])
         lines += [f"- {titles[n]}{_depth_mark(n, story.get('deep'))} {_best_tag(n, tags)}".rstrip() for n in thread["papers"]]
         lines.append("")
     if not story["headline"] and story["relation"]:
@@ -908,6 +941,14 @@ def _ids(nums) -> str:
     return ", ".join(f"P{n}" for n in sorted(nums))
 
 
+class NarrativeResult(tuple):
+    """기존 네 항목 호출을 유지하면서 검증한 구조를 저장 쪽에 건넨다."""
+    def __new__(cls, text: str, ungrounded: list[str], enriched: int, engine: str, structured: dict) -> NarrativeResult:
+        result = super().__new__(cls, (text, ungrounded, enriched, engine))
+        result.structured = structured
+        return result
+
+
 async def narrative(client: httpx.AsyncClient, rows: list,
                     profile: dict | None = None,
                     summaries: dict[str, str] | None = None,
@@ -948,21 +989,29 @@ async def narrative(client: httpx.AsyncClient, rows: list,
             anchor_note += f"그중 {_ids(deep)} 는 본문을 읽고 요약한 논문이다 — 흐름에 들어가면 그 논문으로 흐름을 연다.\n"
         if cards - deep:
             anchor_note += f"{_ids(cards - deep)} 는 초록만 본 논문이다 — 결과 주장의 근거로 쓰지 않는다.\n"
+    import trend_history
+    histories = trend_history.catalog(past)
     prompt = _NARRATIVE_PROMPT.format(papers=corpus, topics=topics, anchors=anchor_note,
                                       movement=_movement_context(movement),
-                                      history=_history_context(past),
+                                      history=trend_history.context(histories) if histories else _history_context(past),
                                       weekly=_weekly_context(weekly))
     repairs: list[str] = []
     check: list[str] = []
+    accepted: dict = {}
 
     def accept(text: str) -> str:
         # 카드가 있어야 하는 글(anchors)인데 카드가 하나도 자료에 안 들었으면 빈 집합 그대로 — 어떤 흐름도 통과 못 한다.
         # None 으로 바꾸면 조건 자체가 꺼져 각주끼리의 흐름이 통과한다(Codex 2차 검토 2026-10-01 재현).
-        story = repair_story(parse_story(text), corpus, cards if anchors else None, deep)
+        story = repair_story(parse_story(text), corpus, cards if anchors else None, deep, history=histories)
         if story is None:
             raise ValueError("흐름 없음")
         repairs[:] = story["repairs"]
         check[:] = [model_text(story)]
+        accepted.clear()
+        accepted.update({"version": NARRATIVE_VERSION, "headline": story["headline"],
+                         "threads": [{**t, "titles": [story["titles"][n] for n in t["papers"]]} for t in story["threads"]],
+                         "relation": story["relation"], "implications": story["implications"],
+                         "side_signals": story["side_signals"]})
         return render_story(story)
 
     # 2026-09-18 사용자 결정: 서술은 구독 CLI(Codex)가 먼저 쓰고, 실패하면 Gemini·Groq 로 내려간다.
@@ -976,7 +1025,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     if repairs:
         print(f"  [동향] 구조 손질: {', '.join(sorted(set(repairs)))}")
     # 숫자 대조는 모델이 쓴 칸만으로 한다 — 흐름 번호는 우리 목차이고, 모델 글에는 목차 예외를 주지 않는다.
-    return text, ungrounded_numbers(check[0] if check else text, corpus), enriched, engine
+    return NarrativeResult(text, ungrounded_numbers(check[0] if check else text, corpus), enriched, engine, accepted)
 
 
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
@@ -998,7 +1047,7 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
     본문이 없는 논문도 포함하며 이 표본은 분야 전체의 출판량이 아니다.
     """
     import profile_scoring
-    with sqlite3.connect(db) as con:
+    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT c.*, p.authors, s.created_at AS summarized_at, s.engine, "
@@ -1519,3 +1568,89 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
     except Exception as e:  # noqa: BLE001
         report += f"\n■ 프로필 건강 지표: 집계 실패 — {type(e).__name__}\n"
     return report
+
+
+def parse_rendered_story(text: str) -> dict:
+    """저장된 신·구 서술을 되읽는다. 근거 표시는 숨기되 해석·초록 한계 문구는 보존한다."""
+    def clean(value: str) -> str:
+        value = re.sub(r"\[P\d+(?::[A-Za-z]\d*)?(?:\s*[,;]\s*P?\d+(?::[A-Za-z]\d*)?)*\]", "", value)
+        # 근거 표기를 떼면 "쓴다 [P1:A]." 가 "쓴다 ." 가 된다 — 문장부호 앞 빈칸을 닫는다.
+        return re.sub(r"\s+([.,。!?])", r"\1", " ".join(value.split()))
+
+    out = {"format": "unknown", "headline": "", "relation": "", "threads": [],
+           "implications": [], "side_signals": []}
+    headings = {"오늘 눈에 띄는 것", "갈래", "우리 분야와 만나는 지점", "아직 밖에 있지만 넘어올 것",
+                "오늘의 한 줄", "우리 연구에서 볼 것", "주변 신호"}
+    sections: list[tuple[str, list[str]]] = []
+    for line in (text or "").splitlines():
+        heading = re.sub(r"^[■□▪●•\-*#\s]+|[:：\s]+$", "", line)
+        if heading in headings or re.match(r"^\s*■\s*\d+\.\s+\S", line):
+            sections.append((heading, []))
+        elif sections:
+            sections[-1][1].append(line.strip())
+    if not sections:
+        out["headline"] = clean(text or "")
+        return out
+    out["format"] = "v2" if any(h in {"오늘의 한 줄", "우리 연구에서 볼 것", "주변 신호"}
+                                              or re.match(r"^\d+\. ", h) for h, _ in sections) else "v1"
+
+    def paragraphs(lines: list[str]) -> list[str]:
+        return [clean(p) for p in re.split(r"\n\s*\n", "\n".join(lines)) if clean(p)]
+
+    def item(line: str) -> dict:
+        title = clean(re.sub(r"^[-•]\s*", "", line))
+        match = re.search(r"\s*·\s*(원문 분석|부분 분석|초록 기반)$", title)
+        return {"title": title[:match.start()].strip() if match else title,
+                "depth": match.group(1) if match else ""}
+
+    ordinal = r"^(?:첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째|여덟째|아홉째|열째)\s*[,，.:：]\s*"
+    for heading, lines in sections:
+        if heading in {"오늘의 한 줄", "오늘 눈에 띄는 것"}:
+            # render_story 는 headline 과 relation 사이에 빈 줄을 넣지 않는다.
+            ps = ([clean(l) for l in lines if clean(l)] if heading == "오늘의 한 줄" else paragraphs(lines))
+            out["headline"] = ps[0] if ps else ""
+            out["relation"] = "\n\n".join(ps[1:])
+        elif re.match(r"^\d+\.\s+", heading):
+            thread = {"name": re.sub(r"^\d+\.\s+", "", clean(heading)), "body": "", "items": []}
+            body = []
+            after_items = []
+            for line in lines:
+                if line.startswith(("- ", "• ")):
+                    thread["items"].append(item(line))
+                elif line.startswith("↳ 지난 관측 "):
+                    thread["history_note"] = clean(line)
+                elif line:
+                    (after_items if thread["items"] else body).append(line)
+            thread["body"] = clean(" ".join(body))
+            out["threads"].append(thread)
+            if after_items:
+                out["relation"] = clean(" ".join(after_items))
+        elif heading == "갈래":
+            thread = None
+            for block in re.split(r"\n\s*\n", "\n".join(lines)):
+                for line in block.splitlines():
+                    if not line.strip():
+                        continue
+                    if line.startswith(("- ", "• ")):
+                        if thread is None:
+                            thread = {"name": "", "body": "", "items": []}
+                            out["threads"].append(thread)
+                        thread["items"].append(item(line))
+                    else:
+                        if thread is None or thread["items"] or re.match(ordinal, line):
+                            thread = {"name": "", "body": "", "items": []}
+                            out["threads"].append(thread)
+                        thread["body"] = clean(thread["body"] + " " + re.sub(ordinal, "", line))
+        elif heading in {"우리 연구에서 볼 것", "우리 분야와 만나는 지점"}:
+            out["implications"].extend([clean(re.sub(r"^[-•]\s*", "", l)) for l in lines if l]
+                                       if heading == "우리 연구에서 볼 것" else paragraphs(lines))
+        elif heading == "주변 신호":
+            for line in lines:
+                if line:
+                    title, sep, note = clean(re.sub(r"^[-•]\s*", "", line)).partition(" — ")
+                    out["side_signals"].append({"title": title if sep else "", "note": note if sep else title})
+        elif heading == "아직 밖에 있지만 넘어올 것":
+            out["side_signals"].extend({"title": "", "note": p} for p in paragraphs(lines))
+    if not any(out[k] for k in ("headline", "relation", "threads", "implications", "side_signals")):
+        out.update(format="unknown", headline=clean(text or ""))
+    return out

@@ -825,7 +825,7 @@ def test_markdown_bold_does_not_leak_into_plain_email():
     p["abstract_brief"] = "- **무엇을 하려 했는가** : 결함을 검출한다."
     entry = digest._paper_entry(1, p)
     assert "**" not in entry
-    assert "무엇을 하려 했는가 : 결함을 검출한다." in entry
+    assert "연구 목적 : 결함을 검출한다." in entry
 
 
 def test_markdown_bold_stripped_from_narrative_too():

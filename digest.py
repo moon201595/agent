@@ -31,6 +31,8 @@ import json
 import re
 
 import textutil
+import mail_document
+import mail_layout
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -574,6 +576,51 @@ def signals_text(paper: dict) -> str:
         return ""
 
 
+def _observation_sections(paper: dict) -> list[tuple[str, list[tuple[str, str]]]]:
+    """관측 부가 정보가 깨져도 제목·분석·배달은 이어져야 한다."""
+    try:
+        import paper_observations
+        return paper_observations.sections(paper)
+    except Exception:  # noqa: BLE001 — 부가 정보 때문에 메일을 막지 않는다
+        return []
+
+
+def _comparison_rows(paper: dict) -> list[tuple[str, str]]:
+    """비교는 부가 표시이므로 불완전한 관측이 있어도 원래 분석과 메일은 나간다."""
+    try:
+        import paper_observations
+        return paper_observations.comparison_rows(paper)
+    except Exception:  # noqa: BLE001 — 불완전한 비교 자료로 원래 분석을 막지 않는다
+        return []
+
+
+def _comparison_block_html(paper: dict) -> str:
+    """실제 관측값과 출처만 기존 표의 한 행에 넣어 표시 구조를 유지한다."""
+    rows = _comparison_rows(paper)
+    if not rows:
+        return ""
+    body = ''.join('<div style="margin:6px 0;">'
+                   + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text))
+                   + '</div>' for text, url in rows)
+    return mail_document.section("성능 비교", body)
+
+
+def _observation_blocks_html(paper: dict) -> str:
+    """논문 보고와 외부 신호는 토글 밖에 둔다. 비신뢰 원문·저장소 이름을 HTML로 해석하지 않는다."""
+    blocks = []
+    for heading, entries in _observation_sections(paper):
+        rows = ''.join('<div style="font-size:13.5px;line-height:1.7;margin-top:5px;word-break:break-word;">'
+                       + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text))
+                       + '</div>' for text, url in entries)
+        if heading == "외부 관측 신호":
+            blocks.append(mail_document.info(heading, rows))
+            continue
+        blocks.append('<div style="border:1px solid #E3E8EC;border-radius:8px;padding:10px 12px;margin-top:8px;">'
+                      + f'<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">{_esc(heading)}</div>'
+                      + rows + '</div>')
+    return ''.join(blocks)
+
+
 def sota_claim_line(paper: dict) -> str:
     """SOTA 주장 한 줄(2026-09-16) — run_profile_scan 이 붙인 `_sota_claims` 만 쓴다(여기서 원문을 다시 읽지 않는다). 없으면 빈 문자열."""
     try:
@@ -843,6 +890,9 @@ def _paper_entry(idx: int, paper: dict) -> str:
         if warning:
             lines.append(f"   {warning}")
     lines.append(f"   {_why_matched(score)}")   # "왜 걸렸나 :" 머리말은 뺐다(2026-09-15 사용자 요청) — 핵심 키워드부터 보인다
+    for heading, entries in _observation_sections(paper):
+        lines.append(f"   {heading}")
+        lines += [f"     {text}" + (f" <{url}>" if url else "") for text, url in entries]
 
     # Deep Layer(M1)가 실패한 논문만 예전의 "미검증 · 초록 기반"으로 남는다
     # — 나머지는 DB 에 실제 검증·재현 결과가 있으므로 그걸 그대로 보여준다.
@@ -883,16 +933,18 @@ def _paper_entry(idx: int, paper: dict) -> str:
             gist = _one_line_gist(paper, sections)
             if gist:
                 lines.append(f"   {_clip(gist, _GIST_CHARS)}")
-            point, signals = reading_point(paper), signals_text(paper)
+            point = reading_point(paper)
             if point:
                 lines.append(f"   읽을 포인트 — {point}")
-            if signals:
-                lines.append(f"   외부 신호  {signals}")
             for label, key in (("무엇을·어떻게", "overview"), ("방법 상세", "method"),
                                ("실험 설정", "setup"), ("핵심 결과", "results")):
                 if sections.get(key):
                     lines.append(f"   {label} :")
                     lines += [f"     - {_plain(b)}" for b in sections[key]]
+            comparisons = _comparison_rows(paper)
+            if comparisons:
+                lines.append("   성능 비교 :")
+                lines += [f"     - {text}" + (f" <{url}>" if url else "") for text, url in comparisons]
             if sections.get("author_limits"):
                 lines.append(f"   저자가 명시한 한계 : {_plain(sections['author_limits'])}")
             if sections["limits"]:
@@ -910,16 +962,11 @@ def _paper_entry(idx: int, paper: dict) -> str:
         code = code_ladder_line(arxiv_id)
         if code:
             lines.append(f"   {code}")
-    perf = frontier_lines(paper)
-    if perf:
-        lines.append(f"   성능 동향 · {perf[0][0]}")
-        lines += [f"     {t}" + (f" <{u}>" if u else "") for t, u in perf[1:]]
-
     link = paper_link(paper)
     if link:
         lines.append(f"   {link}")
     lines += _feedback_buttons_text(paper)
-    return "\n".join(lines)
+    return "\n".join(mail_document.nominal_line(line) for line in lines)
 
 
 _TREND_KEYWORDS_SHOWN = 12
@@ -1180,7 +1227,7 @@ def _h1(text: str, note: str = "") -> str:
     tail = (f'<span style="color:{_MUTED};font-size:12px;font-weight:400;margin-left:6px;">{_esc(note)}</span>'
             if note else "")
     # 2026-09-30 시안: 절마다 위에 가는 줄을 긋고 제목을 18px 로 — 메일이 길어도 절 경계가 한눈에 보인다.
-    return (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:18px;font-weight:700;'
+    return (f'<p style="background-color:{mail_document.CANVAS_BG};color:{_INK};font-size:18px;font-weight:700;'
             f'border-top:1px solid {_LINE};padding-top:18px;margin:30px 0 10px;">{_esc(text)}{tail}</p>')
 
 
@@ -1192,6 +1239,23 @@ def _h2(text: str) -> str:
     # 시안의 h3 — 청록 13px 굵게. 회색 평체가 아니라서 아래 목록과 여전히 구별된다.
     return (f'<div style="background-color:{_PAPER_BG};color:{_ACCENT};font-size:13px;font-weight:700;'
             f'margin:16px 0 6px;">{_esc(text)}</div>')
+
+
+# 주간 브리프의 흰 영역에는 안쪽 여백이 없어서 제목·칩·본문이 흰 바탕의 왼쪽 경계에 붙어 있었다
+# (2026-10-06 사용자 지적, 받은 메일 캡처). 위쪽 논문 카드는 `mail_layout.box` 가 `12px 14px` 를 주는데
+# 이 절들만 맨 div 라 그랬다. **바깥 회색 폭·본문 폭은 건드리지 않는다** — 흰 블록 안쪽만 띄운다.
+_BLOCK_PAD = "12px 14px"
+
+
+def _block(content: str) -> str:
+    """주간 브리프 한 절의 흰 바탕을 한 겹으로 묶고 안쪽 여백을 준다.
+
+    안에 든 조각들도 저마다 흰 바탕을 들고 있어(다크모드 대비, 위 `_h2`·`_chip`) 겹쳐도 색이 달라지지
+    않는다. 빈 내용이면 빈 흰 상자를 남기지 않는다 — 제목만 뜬 빈 절과 같은 병이다(`_has_auto_change`).
+    """
+    if not content:
+        return ""
+    return f'<div style="background-color:{_PAPER_BG};padding:{_BLOCK_PAD};">{content}</div>'
 
 
 def _window_moves(mv: dict) -> tuple[list, list]:
@@ -1209,7 +1273,7 @@ def _window_html(scan_result: dict) -> str:
     두 판이 갈라지면 같은 메일 안에서 숫자가 달라진다(§8-70 이 그 사고였다)."""
     mv = scan_result.get("trend_window")
     if not mv:
-        return _reserve_html(scan_result)
+        return _block(_reserve_html(scan_result))
     days = mv.get("days", 7)
     now_n, prev_n = mv.get("papers", (0, 0))
     d_now, d_prev = mv.get("days_covered", (0, 0))
@@ -1227,7 +1291,7 @@ def _window_html(scan_result: dict) -> str:
                 f'<span style="color:{_MUTED};">· {now}편</span> '
                 f'<span style="color:{colour};">{sign}{abs(delta)}</span></div>')
 
-    out = _h1(f"최근 {days}일 흐름")
+    out = ""
     if comparable:
         out += (f'<p style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;margin:0;">'
                 f'관련 논문 <b>{now_n}편</b> <span style="color:{_MUTED};">(직전 {prev_n}편)</span></p>'
@@ -1260,7 +1324,8 @@ def _window_html(scan_result: dict) -> str:
     if terms:
         out += head("핵심 키워드 밖 반복 관측") + f'<div style="background-color:{_PAPER_BG};">{terms}</div>'
     # 설명 주석(※ 검색 관측 기준…)은 2026-09-30 사용자 요청으로 뺐다 — 매일 같은 말이라 읽히지 않는다.
-    return out + _reserve_html(scan_result)
+    # 자리 밖 후보는 이 절과 **같은 흰 블록** 안이다(절 제목이 하나뿐이라 블록도 하나다).
+    return _h1(f"최근 {days}일 흐름") + _block(out + _reserve_html(scan_result))
 
 
 def _reserve_html(scan_result: dict) -> str:
@@ -1413,11 +1478,13 @@ def _has_auto_change(ch: dict) -> bool:
     """
     up, down, hidden = _split_moves(ch)
     agent = ch.get("agent") or {}
-    # **감춘 것도 있는 것이다**(2026-09-20 Codex 검토 #4). 그 주 자동 변화가 전부 `MIN_DELTA` 아래면
-    # `up`·`down` 이 비는데, 여기서 `hidden` 을 안 보면 꼬리 줄("그 밖에 작게 움직인 가중치 N건")까지
-    # 통째로 사라져 "이번 주엔 아무 일도 없었다"로 읽힌다 — §8-170 에서 세운 계약과 정반대다.
-    return bool(up or down or hidden or _auto(ch.get("added")) or _auto(ch.get("removed"))
-                or _reason_groups(agent.get("applied")) or _impact_rows(agent) or agent.get("failed"))
+    # 2026-09-20 Codex 검토 #4 는 `hidden` 자체를 여기서 참으로 셌다 — 그때는 감춘 건수가 꼬리 줄로
+    # 나갔기 때문이다. 2026-10-06 사용자 요청으로 그 문구를 뺐으므로, `hidden` 만 있는 주는 **그릴 것이
+    # 없다**. 그대로 두면 제목만 뜨고 아무것도 없는 빈 절이 나간다(위 docstring 의 바로 그 병).
+    # 판정을 `_changes_tail` 에 맡겨 "꼬리에 실리는 것"과 "절을 띄우는 조건"이 갈라지지 않게 한다.
+    return bool(up or down or _auto(ch.get("added")) or _auto(ch.get("removed"))
+                or _reason_groups(agent.get("applied")) or _impact_rows(agent) or agent.get("failed")
+                or _changes_tail(ch, hidden))
 
 
 def _external_scout_lines(scan_result: dict) -> list[str]:
@@ -1449,9 +1516,9 @@ def _external_scout_html(scan_result: dict) -> str:
         + (f' <span style="background-color:{_PAPER_BG};color:{_MUTED};">({_esc(m["venue"])})</span>' if m["venue"] else "")
         + f' {_chip(m["stage"], "warn")}</div>' for m in sc["missed"])
     return (_h1("외부 정찰", f"이번 주 검증된 외부 연구 {sc['verified']}편")
-            + f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;">판정 가능 {c["evaluable"]}편 중 '
-              f'검색 소스가 가져온 것 {c["retrieved"]} · 핵심어에 걸린 것 {c["core_hit"]} · 메일까지 간 것 {c["delivered"]}</div>'
-            + (_h2("에이전트가 놓친 연구") + rows if rows else ""))
+            + _block(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;">판정 가능 {c["evaluable"]}편 중 '
+                     f'검색 소스가 가져온 것 {c["retrieved"]} · 핵심어에 걸린 것 {c["core_hit"]} · 메일까지 간 것 {c["delivered"]}</div>'
+                     + (_h2("에이전트가 놓친 연구") + rows if rows else "")))
 
 
 def _profile_changes_html(scan_result: dict) -> str:
@@ -1483,7 +1550,7 @@ def _profile_changes_html(scan_result: dict) -> str:
             f'<div style="color:{_MUTED};font-size:12px;">{w["before"]:.2f} → {w["after"]:.2f}'
             f'<span style="color:{colour};"> {sign}{abs(w["delta"]):.2f}</span></div></div>')
 
-    out = _h1(f"지난 {days}일 검색 기준 변화")
+    out = ""
     if up or down:
         out += head("가중치 변화")
         out += "".join(move_row(w) for w in up + down)
@@ -1534,18 +1601,18 @@ def _profile_changes_html(scan_result: dict) -> str:
     if tail:
         out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
                 f'margin:10px 0 0 10px;">{_esc(" · ".join(tail))}</div>')
-    return out
+    return _h1(f"지난 {days}일 검색 기준 변화") + _block(out)
 
 
 def _changes_tail(ch: dict, hidden: int) -> list[str]:
-    """꼬리 한두 줄 — 감춘 작은 변화, 사용자 변경 건수, 쓰인 반응 수.
+    """꼬리 한 줄 — 이 기간에 쓰인 반응 수.
 
-    **감춘 것을 말없이 버리지 않는다.** 그 주의 변화가 전부 `MIN_DELTA` 아래였다면 위 목록이 비는데,
-    그때 이 줄까지 없으면 "이번 주엔 아무 일도 없었다"로 읽힌다 — 실제로는 움직였다.
+    **감춘 작은 변화 건수(`hidden`)는 표시하지 않는다**(2026-10-06 사용자 요청). 집계는 그대로 돈다 —
+    `_split_moves` 가 계속 세고, 가중치 변경과 revision 은 DB·운영 화면에 그대로 남는다. 메일에서 문구만
+    뺀다: `그 밖에 작게 움직인 가중치 1건` 은 읽는 사람이 할 수 있는 일이 없는 숫자였다(§8-170 의 반대 결정).
+    인자를 남겨 둔 이유는 **세는 것과 보이는 것이 다르다**는 걸 호출부에서도 보이게 하려는 것이다.
     """
     out = []
-    if hidden:
-        out.append(f"그 밖에 작게 움직인 가중치 {hidden}건")
     if ch.get("reactions_used"):
         out.append(f"반영된 사용자 반응 {ch['reactions_used']}건")
     # 사용자가 직접 바꾼 revision 건수는 뺐다(2026-09-20) — 메일에서 아무 행동도 유도하지 못하고,
@@ -1855,25 +1922,14 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
 # part 로 계속 쓴다. HTML 을 못 읽거나 차단하는 환경에서도 내용이 그대로
 # 읽혀야 하기 때문이다.
 #
-# 이메일 HTML 은 웹 HTML 과 제약이 다르다. 아래는 caniemail 기준으로 확인된
-# 사실이고, 설계를 여기에 맞췄다:
-#
-# 1. <details>/<summary> 는 Gmail 전 플랫폼과 Outlook Windows(Word 엔진)에서
-#    동작하지 않는다. Gmail 은 태그를 <u></u> 로 치환해 **항상 펼쳐진 상태**로
-#    보인다. Apple Mail 만 토글이 실제로 접힌다. 따라서 접기는 있으면 좋은
-#    장식이지 기능이 아니다 — "접힌 상태에서만 보이는 정보"를 두지 않는다.
-#    우리 요구(flag 있는 항목은 펼침)는 이 fallback 과 방향이 같아서 오히려
-#    잘 맞는다.
-# 2. Gmail 은 HTML 이 약 102KB 를 넘으면 메시지를 잘라낸다(클리핑). 논문당
-#    발췌 길이로 총량을 제어하고 회귀 테스트로 상한을 잠근다.
-# 3. <style> 블록은 Gmail 에서 제한적이라 **인라인 CSS 만** 쓴다.
-# 4. 외부 이미지·웹폰트·JS 는 차단되거나 프라이버시 경고를 띄운다 — 안 쓴다.
-# 5. 다크모드에서 클라이언트가 색을 뒤집을 수 있다. 배경색과 전경색을
-#    항상 **함께** 인라인으로 명시해 대비를 확보한다(색을 안 준 요소를
-#    남기지 않는다).
+# 메일 클라이언트마다 지원 태그가 다르다. 기존 details/summary는 유지한다(2026-10-02 사용자 실사용 확인).
+# 토글을 무시하는 클라이언트에서도 제목·주의·분석을 읽을 수 있게 한다.
+# 기본 경계·색·여백은 인라인으로, 두 칸은 표로 그린다. Gmail은 미디어 쿼리도 지원하지만
+# 이를 지우는 클라이언트에서는 inline-table의 자연 줄바꿈을 쓴다(mail_layout).
+# 외부 이미지·웹폰트·JS는 넣지 않는다. 102KB 상한은 기존 회귀 테스트로 확인한다.
+# https://developers.google.com/workspace/gmail/design/css
+# https://www.campaignmonitor.com/dev-resources/guides/mobile/
 
-# 2026-09-30 사용자 시안(`mail_preview_refined_toggle.html`)의 색으로 바꿨다 — 이름은 그대로 두고 값만.
-# 시안은 `<style>` 블록·클래스로 짰는데 메일에선 그게 사라지므로(위 3) 같은 색을 인라인으로 옮긴다.
 _NAVY = "#12266B"          # 상승 화살표·키워드 칩 — 시안도 이 색을 그대로 쓴다
 _ACCENT = "#086C75"        # 청록 — 번호·링크·눈썹 글·소제목
 _ACCENT_DARK = "#0B5F68"   # 논문 제목 링크
@@ -1881,7 +1937,7 @@ _INK = "#162536"
 _MUTED = "#526675"
 _LINE = "#DFE5E9"
 _PAPER_BG = "#FFFFFF"
-_CARD_BG = "#FBFCFD"       # 논문 카드
+_CARD_BG = "#FFFFFF"       # 회색 바탕 위 논문 카드는 흰색이다(2026-10-02 사용자 시안).
 _CARD_LINE = "#E2E8EC"
 _BOX_BG = "#F6F8F9"        # 칩·상자 바탕
 _FLAG_BG = "#FDF6EC"
@@ -1931,7 +1987,7 @@ _SUMMARY_LABEL_RE = re.compile(r"^([^:：\n]{1,30}?\s*[:：])(?=\s|$)")
 
 def _summary_label_html(text: str) -> str:
     """요약의 항목명(콜론까지)을 굵게 해 값과 구분한다(2026-09-10 사용자 요청, 2026-09-12 일반화)."""
-    escaped = _esc(text)
+    escaped = _esc(mail_document.nominal_line(text))
     return _SUMMARY_LABEL_RE.sub(r"<strong>\1</strong>", escaped, count=1)
 
 
@@ -1944,17 +2000,15 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     """
     def para(text: str, *, muted: bool = False, top: int = 6) -> str:
         color = _MUTED if muted else _INK
-        return (f'<div style="background-color:{_CARD_BG};color:{color};font-size:13px;margin-top:{top}px;'
-                f'line-height:1.5;">{_summary_label_html(text)}</div>')
+        return (f'<div style="background-color:{_CARD_BG};color:{color};font-size:14px;margin-top:{top}px;'
+                f'line-height:1.8;">{_summary_label_html(text)}</div>')
 
     def bullets(label: str, items: list[str]) -> str:
         lis = "".join(
-            f'<li style="background-color:{_CARD_BG};color:{_INK};font-size:13px;line-height:1.5;'
-            f'margin-bottom:12px;">{_summary_label_html(b)}</li>' for b in items
+            f'<li style="background-color:{_CARD_BG};color:{_INK};font-size:14px;line-height:1.8;'
+            f'margin-bottom:10px;">{_summary_label_html(b)}</li>' for b in items
         )
-        return (f'<div style="background-color:{_CARD_BG};color:{_MUTED};font-size:12px;font-weight:600;'
-                f'margin-top:16px; font-weight:700;"><strong>{_esc(label)}</strong></div>'
-                f'<ul style="margin:4px 0 0;padding-left:18px;">{lis}</ul>')
+        return mail_document.section(label, f'<ul style="margin:0;padding-left:20px;">{lis}</ul>')
 
     # 초록 기반 정리는 **여기서** 만든다(2026-09-07).
     #
@@ -1974,10 +2028,7 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
     # 길이 여럿이면 모이는 지점을 먼저 만들라는 교훈이 또 걸렸다.
     brief = (paper.get("abstract_brief") or "").strip()
     if deep_status == "abstract_only" and brief:
-        body = "".join(
-            f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
-            f'margin:12px 0;">{_summary_label_html(_plain(ln))}</div>'
-            for ln in brief.splitlines() if _plain(ln))
+        body = mail_document.from_lines([_plain(ln) for ln in brief.splitlines() if _plain(ln)], para, brief=True)
         return (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
                 f'margin-top:8px;">본문 비공개 — 초록만 보고 정리한 것이다</div>{body}')
 
@@ -1995,11 +2046,14 @@ def _summary_block_html(arxiv_id: str, paper: dict, deep_status: str) -> str:
                        ("실험 설정", "setup"), ("핵심 결과", "results")):
         if sections.get(key):
             out += bullets(label, [_plain(b) for b in sections[key]])
+    out += _comparison_block_html(paper)
     if sections.get("author_limits"):
-        out += para("저자가 명시한 한계 : " + _plain(sections["author_limits"]), muted=True, top=8)
+        out += mail_document.section("저자가 명시한 한계", para(_plain(sections["author_limits"]), muted=True, top=0))
     if sections["limits"]:
-        out += para("요약자의 해석 : " + _plain(sections["limits"]), muted=True, top=8)
-    return out
+        out += mail_document.section("요약자의 해석", para(_plain(sections["limits"]), muted=True, top=0))
+    refs = '\n'.join([line for key in ("overview", "method", "setup", "results") for line in sections.get(key, [])]
+                     + [sections.get("author_limits") or "", sections.get("limits") or ""])
+    return mail_document.document(out) + mail_document.evidence_footer(refs)
 
 
 def _feedback_buttons_html(paper: dict) -> str:
@@ -2063,17 +2117,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         code = code_ladder_line(arxiv_id)
         if code:
             detail += f'<div style="background-color:{_CARD_BG};color:{_MUTED};font-size:12.5px;margin-top:6px;">{_esc(code)}</div>'
-    perf = frontier_lines(paper)
-    if perf:
-        # 성능 동향(2026-09-30) — 첫 줄은 근거 수준 라벨, 나머지는 이 논문 값·외부 경쟁 값·조건 차이. 우열 판정 문구는 만들지 않는다.
-        rows = "".join(
-            f'<div style="background-color:{_BOX_BG};color:{_INK};font-size:12.5px;line-height:1.55;margin-top:3px;">'
-            + (f'<a href="{_esc(u)}" style="background-color:{_BOX_BG};color:{_ACCENT_DARK};text-decoration:none;">{_esc(t)} ↗</a>'
-               if u else _esc(t)) + '</div>' for t, u in perf[1:])
-        detail += (f'<div style="background-color:{_BOX_BG};color:{_INK};border:1px solid {_CARD_LINE};border-radius:8px;'
-                   f'padding:10px 14px;margin-top:8px;">'
-                   f'<div style="background-color:{_BOX_BG};color:{_ACCENT_DARK};font-size:13px;font-weight:700;">성능 동향 · {_esc(perf[0][0])}</div>'
-                   f'{rows}</div>')
+    detail += _observation_blocks_html(paper)
 
     # 철회 경고(M5)는 실패 여부와 무관하게 붙고, 붙으면 무조건 펼친다 —
     # 이 항목에서 가장 중요한 정보다.
@@ -2109,15 +2153,11 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     # **접힌 상태에서도 보이는 한 줄**(2026-09-05) — 제목만으론 무슨 논문인지 모르고, 다 펼쳐 두면 훑을 수가 없다.
     gist_html = (f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:14px;line-height:1.7;'
                  f'margin:6px 0 8px;">{_esc(_clip(gist, _GIST_CHARS))}</div>') if gist else ""
-    # 읽을 포인트·외부 신호(2026-09-30 사용자 결정) — 요지 바로 아래. 읽을 포인트는 관심축 연관 + 확인 범위만(칭찬·추천 없음),
-    # 외부 신호는 관측값만 아주 작게. 둘 다 반응 가중치 학습 입력이 아니다.
-    point, signals = reading_point(paper), signals_text(paper)
+    # 읽을 포인트는 요지 아래, 관측값은 별도 박스로 토글 위에 둔다(2026-10-02 사용자 요청).
+    point = reading_point(paper)
     if point:
         gist_html += (f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:13px;line-height:1.6;margin:0 0 6px;">'
                       f'<span style="background-color:{_CARD_BG};color:{_ACCENT_DARK};font-weight:700;">읽을 포인트</span> — {_esc(point)}</div>')
-    if signals:
-        gist_html += (f'<div style="background-color:{_CARD_BG};color:{_MUTED};font-size:11.5px;margin:0 0 6px;">'
-                      f'<span style="background-color:{_CARD_BG};color:{_MUTED};font-weight:700;">외부 신호</span>&nbsp;&nbsp;{_esc(signals)}</div>')
     source = link.replace("https://", "") if link else ""
     source_html = (f'<a href="{_esc(link)}" style="display:inline-block;background-color:{_CARD_BG};color:{_ACCENT};font-size:12.5px;'
                    f'text-decoration:none;margin-left:2px;">원문 {_esc(source)} ↗</a>') if link else ""
@@ -2130,7 +2170,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     # 다 펼치므로(위 1) Gmail 에선 예전과 같이 전부 보이고, 접히는 클라이언트에선 **목록을 훑을 수 있게** 된다.
     # 접힘 표시(＋/－)는 시안이 CSS 가상요소로 그렸는데 메일에서 사라지므로 글자 ▸ 로 둔다.
     return (
-        f'<div style="background-color:{_CARD_BG};color:{_INK};border:1px solid {_CARD_LINE};'
+        f'<div class="ph-card" style="background-color:{_CARD_BG};color:{_INK};border:1px solid {_CARD_LINE};'
         f'border-radius:10px;padding:18px 20px 14px;margin:18px 0 0;">'
         f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:16.5px;font-weight:700;line-height:1.5;">'
         f'<span style="background-color:{_CARD_BG};color:{_ACCENT};">{idx}.</span> {title_html}{korean_html}</div>'
@@ -2366,6 +2406,9 @@ def _narrative_line_html(line: str) -> str:
     보였다. 글의 뼈대가 안 보이면 "그래서 무슨 일이 벌어지나"를 훑을 수가 없다.
     """
     text = _plain(line)
+    if text.startswith("↳ 지난 관측 "):
+        return (f'<div style="background-color:#F3F6F8;color:{_MUTED};font-size:13px;'
+                f'padding:8px 10px;margin:6px 0 10px;border-radius:6px;line-height:1.6;">{_esc(text)}</div>')
     # **정규화한 뒤 판정한다**(2026-09-08 정정). 원래 줄로 보면 `**갈래**` 가
     # 화면엔 "갈래"로 나오는데 소제목 강조만 빠졌다 — 주간 렌더러는 정규화
     # 뒤에 보고 있어 같은 글이 두 곳에서 다르게 보였다.
@@ -2387,6 +2430,75 @@ def _narrative_line_html(line: str) -> str:
         f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
         f'margin:{"14px" if _ENUM_RE.match(part) else "4px"} 0;line-height:1.7;">'
         f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
+
+
+def _narrative_boxes_html(text: str, papers: list[dict] | None = None) -> str:
+    """Python 소제목으로만 칸을 나눈다. 짧은 절 두 개만 짝짓고 옛 자유 글은 넓게 남긴다."""
+    blocks: list[tuple[str, list[str]]] = []
+    for line in text.strip().splitlines():
+        if not _plain(line):
+            continue
+        if _is_narrative_heading(_plain(line)):
+            blocks.append((line, []))
+        else:
+            if not blocks:
+                blocks.append(("", []))
+            blocks[-1][1].append(line)
+
+    def line_html(line: str) -> str:
+        html = _narrative_line_html(line)
+        if _is_narrative_heading(_plain(line)):
+            html = html.replace("margin:18px 0 6px", "margin:0 0 10px")
+        # 목록에 이미 나온 제목을 링크로 만든다. 논문 이름을 따로 반복할 필요가 없어진다.
+        links: dict[str, str] = {}
+        for paper in sorted(papers or [], key=lambda p: len(p.get("title") or ""), reverse=True):
+            title, url = (paper.get("title") or "").strip(), paper.get("link") or paper_link(paper)
+            if title and url and title in _plain(line):
+                links.setdefault(_esc(title), url)
+        if links:
+            pattern = re.compile('|'.join(re.escape(label) for label in links))
+            # 한 줄의 제목을 모두 링크로 만든다. 태그/속성이나 이미 붙인 링크는 재치환하지 않는다.
+            chunks = re.split(r'(<[^>]+>)', html)
+            html = ''.join(chunk if index % 2 else pattern.sub(
+                lambda m: f'<a href="{_esc(links[m[0]])}" style="color:{_ACCENT_DARK};text-decoration:none;">{m[0]}</a>', chunk)
+                for index, chunk in enumerate(chunks))
+        return re.sub(r"\[P\d+:(?:[ART]|S\d+)\]",
+                      lambda m: f'<span style="color:{_MUTED};font-size:11.5px;white-space:nowrap;">{m[0]}</span>', html)
+
+    out: list[str] = []
+    pending: list[str] = []
+    pending_kind = ""
+
+    def flush() -> None:
+        if pending:
+            out.append(mail_layout.columns(pending.copy()))
+            pending.clear()
+
+    for heading, lines in blocks:
+        plain = _plain(heading)
+        label = _HEADING_ORNAMENT_RE.sub("", plain)
+        content = (line_html(heading) if heading else "")
+        body = ''.join(line_html(line) for line in lines)
+        if label in _LEAD_HEADINGS:
+            body = (f'<div style="border-left:3px solid {_ACCENT};padding:6px 0 6px 14px;'
+                    f'margin:6px 0;">{body}</div>')
+        content += body
+        kind = "thread" if _THREAD_HEADING_RE.match(plain) else "aside" if label in {"우리 연구에서 볼 것", "주변 신호"} else "wide"
+        # 제목과 번역 목록도 폭을 차지한다. 긴 절은 두 칸에 억지로 넣지 않는다.
+        short = sum(len(_plain(line)) for line in lines) <= 900
+        if kind == "wide" or not short:
+            flush()
+            out.append(mail_layout.columns([content]))
+            pending_kind = ""
+        else:
+            if pending_kind != kind:
+                flush()
+            pending_kind = kind
+            pending.append(content)
+            if len(pending) == 2:
+                flush()
+    flush()
+    return ''.join(out)
 
 
 # ---------------------------------------------------------------- ⑥ 주간 리뷰
@@ -2571,18 +2683,13 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     title_only_n = len(scan_result.get("title_only_papers") or [])
     if title_only_n:
         kpis.append(("제목만 실은 논문", f"{title_only_n}편"))
-    kpi_cells = "".join(
-        f'<td style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;padding:10px 8px;'
-        f'vertical-align:top;">{_esc(k)}<br><span style="color:{_INK};font-size:19px;font-weight:700;">'
-        f'{_esc(v)}</span></td>' for k, v in kpis)
     head = (
-        f'<div style="background-color:{_PAPER_BG};color:{_ACCENT};font-size:11.5px;font-weight:700;'
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_ACCENT};font-size:11.5px;font-weight:700;'
         f'letter-spacing:.8px;">RESEARCH BRIEF · {_esc(date_str)}</div>'
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:25px;font-weight:700;'
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_INK};font-size:25px;font-weight:700;'
         f'line-height:1.35;margin:4px 0 2px;">연구 동향 브리핑</div>'
-        f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;">{_esc(profile_name)}</div>'
-        f'<table role="presentation" style="width:100%;border-collapse:collapse;margin:16px 0 4px;'
-        f'border-top:2px solid {_INK};border-bottom:1px solid {_LINE};"><tr>{kpi_cells}</tr></table>'
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_MUTED};font-size:13px;">{_esc(profile_name)}</div>'
+        + mail_layout.stats(kpis)
     )
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
@@ -2641,24 +2748,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         # 갈래 목록은 제목으로만 이뤄져 있어 실제로 읽기 어려운 자리다 — 한국어 제목을 처음 부른 자리에만 붙인다.
         text = title_ko.annotate(text, list(scan_result.get("papers") or [])
                                  + list(scan_result.get("title_only_papers") or []))
-        # 2026-09-30 시안: "오늘 눈에 띄는 것" 본문만 청록 왼쪽 줄 상자에 담는다 — 메일의 결론 한 문단이라
-        # 눈이 먼저 가야 한다. 나머지 절(갈래·만나는 지점…)은 그대로 흐른다. 갈래를 상자 두 개로 나란히
-        # 두는 시안 모양은 **하지 않는다** — 그러려면 LLM 이 쓴 자유 글의 구조를 파싱해야 해서 깨지기 쉽다.
-        lead_open, chunks = False, []
-        for ln in text.strip().splitlines():
-            if not _plain(ln):
-                continue
-            is_head = _is_narrative_heading(_plain(ln))
-            if lead_open and is_head:
-                chunks.append("</div>"); lead_open = False
-            chunks.append(_narrative_line_html(ln))
-            if is_head and _HEADING_ORNAMENT_RE.sub("", _plain(ln)) in _LEAD_HEADINGS:
-                chunks.append(f'<div style="background-color:{_PAPER_BG};border-left:3px solid {_ACCENT};'
-                              f'padding:6px 0 6px 16px;margin:6px 0 4px;">')
-                lead_open = True
-        if lead_open:
-            chunks.append("</div>")
-        paras = "".join(chunks)
+        narrative_papers = list(papers) + list(title_only)
+        paras = _narrative_boxes_html(text, narrative_papers)
         warn = ""
         if ungrounded:
             warn = (f'<div style="background-color:{_PAPER_BG};color:#B00020;font-size:12px;'
@@ -2669,6 +2760,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
         # 같은 판정(mentioned_papers)을 쓰므로 두 판이 갈라지지 않는다.
         named = ""
         for paper in mentioned_papers(scan_result):
+            if (paper.get("title") or "").strip() in text and paper_link(paper):
+                continue
             url = paper_link(paper)
             title = _esc((paper.get("title") or "").strip())
             korean = title_ko.label(paper)
@@ -2703,14 +2796,10 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     footer = ""
     if filtered:
         footer = (
+            # 맨 아래 흰 줄도 안쪽 여백을 받는다(2026-10-06) — 위 가는 줄은 바깥 폭 그대로 긋고 글자만 들인다.
             f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'border-top:1px solid {_LINE};padding-top:10px;">'
+            f'border-top:1px solid {_LINE};padding:10px 14px 0;">'
             f'이번 실행에서 걸러진 것: {_esc(filtered)}</p>'
         )
 
-    return (
-        f'<div style="background-color:#FFFFFF;color:{_INK};'
-        f'font-family:\'Noto Sans KR\',\'Apple SD Gothic Neo\',\'Malgun Gothic\',-apple-system,'
-        f'BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:880px;padding:26px 30px 30px;">'
-        f"{head}{retraction_slot}{body}{footer}</div>"
-    )
+    return mail_layout.frame(f"{head}{retraction_slot}{body}{footer}")

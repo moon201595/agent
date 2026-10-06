@@ -56,8 +56,8 @@ def test_author_limit_and_model_interpretation_are_both_kept(db, tmp_path):
     assert "야외" in parts["limits"]
     for render in (digest.generate_digest, digest.generate_digest_html):
         text = render({"papers": [paper()]}, "팀")
-        assert "저자가 명시한 한계" in text and "실내" in text
-        assert "요약자의 해석" in text and "야외" in text
+        assert "연구 한계" in text and "실내" in text
+        assert "분석 메모" in text and "야외" in text
 
 
 def test_legacy_selection_helpers_are_gone(db):
@@ -239,6 +239,42 @@ def test_scan_carries_grounded_material_through_both_mail_formats(db, tmp_path, 
         assert "서술 근거 대조" not in mail
     assert "indoors only" in result["evidence_catalog"]["[P1:S0002]"]["text"]
     assert rp.get_latest_digest(db, "team")[0] == text
+
+
+def test_scan_stores_verified_story_structure_in_existing_audit_json(db, monkeypatch):
+    """검증한 story 구조를 전달하지 않거나 저장하지 않으면 내일의 과거 후보를 잃어 실패한다. 네 항목 폴백도 유지한다."""
+    import json
+    import narrative_store
+    import server
+    monkeypatch.setattr(server, "DB_PATH", db)
+    rows = [paper(aid, "Robot " + aid, abstract="tactile sensing") for aid in ("a", "b", "c")]
+
+    async def scan(*args):
+        return {"papers": rows, "candidates_found": 3, "run_status": "done"}
+
+    async def sweep():
+        return {"checked": 0, "resolved": 0, "retracted": 0, "remaining": 0}
+
+    async def process(client, aid, **kwargs):
+        return {"status": "done", "skipped": True, "arxiv_id": aid,
+                "reproduction": {"status": "completed", "success": False, "reason": "저장소 없음"}}
+
+    structure = {"version": "story-v3", "threads": [{"name": "촉각 제어", "body": "촉각을 쓴다 [P1:A]", "titles": ["Robot a"]}]}
+
+    async def narrative(*args, **kwargs):
+        return tr.NarrativeResult("■ 1. 촉각 제어\n촉각을 쓴다 [P1:A]", [], 0, "fake", structure)
+
+    monkeypatch.setattr(rps, "scan_profile", scan)
+    monkeypatch.setattr(rps, "_summary_exists", lambda aid: True)
+    monkeypatch.setattr(rps, "is_weekly_review_day", lambda: False)
+    monkeypatch.setattr(server, "sweep_retraction_status", sweep)
+    monkeypatch.setattr(rps.batch_summarize, "_process_paper", process)
+    monkeypatch.setattr(tr, "narrative", narrative)
+    result, _ = asyncio.run(rps.scan_and_digest(db, "team", None))
+    assert result["citation_audit"]["story"] == structure
+    with sqlite3.connect(db) as con:
+        stored = json.loads(con.execute("SELECT audit_json FROM profile_narratives WHERE profile_id='team'").fetchone()[0])
+    assert stored["story"] == structure
 
 
 def test_mail_keeps_paper_toggles_without_historical_news_or_appendices(db, monkeypatch):

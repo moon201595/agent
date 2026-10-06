@@ -166,7 +166,7 @@ def test_html_carries_the_same_summary(db_with_summary_path):
     _seed(db_with_summary_path, "p1")
     html = generate_digest_html(_result([_paper("p1")]), "우리팀")
     assert "U-Net 분할과 기하 특징으로 PCB 핀 정렬 불량을 판정한다." in html
-    assert "핵심 결과" in html
+    assert "주요 결과" in html
     assert "0.990의 ROC-AUC" in html
 
 
@@ -233,7 +233,7 @@ def test_results_section_written_as_paragraph_is_captured(db_with_summary_path):
         "④ 결과 : 고정 위치 베이스라인 대비 118.5%의 총 전송률 향상을 보였다.")
     _seed(db_with_summary_path, "p1", markdown=md)
     text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "핵심 결과 :" in text
+    assert "주요 결과 :" in text
     assert "118.5%의 총 전송률 향상" in text
 
 
@@ -278,7 +278,7 @@ def test_digest_carries_method_setup_and_body_results(db_with_summary_path):
 
     assert "ResNet34 백본" in text
     assert "IoU, F1, ROC-AUC" in text
-    assert "핵심 결과 :" in text
+    assert "주요 결과 :" in text
     assert "0.990의 ROC-AUC" in text          # 근거 태그가 붙은 실제 수치
     assert "18.0초" in text
 
@@ -295,7 +295,7 @@ def test_falls_back_to_conclusion_when_body_results_missing(db_with_summary_path
     """본문 `결과` 절이 없는 요약도 있다 — 그때는 결론 ④ 로 떨어진다."""
     _seed(db_with_summary_path, "p1", markdown=SUMMARY_MD)   # 본문 결과 절 없음
     text = generate_digest(_result([_paper("p1")]), "우리팀")
-    assert "핵심 결과 :" in text
+    assert "주요 결과 :" in text
     assert "0.990의 ROC-AUC" in text
 
 

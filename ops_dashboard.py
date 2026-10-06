@@ -18,7 +18,7 @@ import feedback_links
 import mail_ledger
 import research_profile
 
-from time_policy import KST, kst_hm, kst_day   # 시각 정책은 time_policy 하나(2026-09-17)
+from time_policy import KST, kst_hm, kst_day, parse_iso   # 시각 정책은 time_policy 하나(2026-09-17)
 HIT_WINDOW_DAYS = 28
 ACTION_LABELS = {"more": "더 보고 싶음", "useful": "유용함", "out": "관심 밖"}
 STATUS_LABELS = {feedback_links.STATUS_VALID: "유효", "quarantined_prefetch": "선열람 격리(보안 스캐너)",
@@ -101,7 +101,7 @@ def system_status(db: Path, root: Path, now: datetime | None = None) -> dict:
     if next_weekly <= kst_now:
         next_weekly = datetime.combine(work_calendar.next_weekly_day(kst_now.date()), time(5, 0), tzinfo=KST)
     weekly = None
-    with sqlite3.connect(db) as con:
+    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='agent_runs'").fetchone():
             weekly = con.execute("SELECT week, status, error, started_at FROM agent_runs ORDER BY started_at DESC LIMIT 1").fetchone()
@@ -567,6 +567,7 @@ def paper_detail(db: Path, arxiv_id: str) -> dict | None:
     import sota_claims
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
         p = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
         if not p:
             return None
@@ -586,9 +587,14 @@ def paper_detail(db: Path, arxiv_id: str) -> dict | None:
         ladder = ""
     claims, _src = sota_claims.claims_for(db, arxiv_id)
     import digest
+    import paper_observations
     return {"arxiv_id": arxiv_id, "title": p["title"], "abstract": p["abstract"] or "", "published": p["published"],
+            "authors": p["authors"] or "", "categories": p["categories"] or "",
+            "source": "arXiv" if not p["source"] else ("업로드 PDF" if "manual" in p["source"] else "저널(OA)"),
+            "coverage": (s["coverage_ratio"] if s else None),
             "link": digest.paper_link(dict(p)), "summary_md": summary, "summary_engine": s["engine"] if s else None,
-            "repro": repro, "code_line": ladder, "sota_line": sota_claims.mail_line(claims)}
+            "repro": repro, "code_line": ladder, "sota_line": sota_claims.mail_line(claims),
+            "comparisons": paper_observations.stored_comparison_rows(db, arxiv_id)}
 
 
 _HTTP_ERR_RE = re.compile(r"'(\d{3}) ([^']{1,40})' for url '(https?://[^/']+)")
@@ -604,3 +610,330 @@ def short_error(detail: str | None, limit: int = 80) -> str:
         return f"{m.group(1)} {m.group(2).strip()} · {m.group(3).split('//', 1)[1]}"
     one = " ".join(str(detail).split())
     return one if len(one) <= limit else one[:limit].rstrip() + "…"
+
+
+# ── 저장된 다이제스트에서 화면이 다시 쓸 것 ─────────────────────────────────────────
+# 한국어 제목은 발송할 때 번역해 메일에만 붙고 따로 저장하지 않는다(title_ko). 그날 다이제스트 평문은 profiles.last_digest 에
+# 남으므로 화면은 거기서 읽는다 — 다시 번역(API 호출)하지 않는다. 카드 본문(메일의 펼침 요약)도 같은 곳에서 그대로 가져온다.
+_CARD_SECTION_RE = re.compile(r"^■ 오늘의 (?:신규|핵심) 논문", re.M)
+_CARD_HEAD_RE = re.compile(r"^(\d+)\. (.+)$")
+
+
+def digest_extras(text: str | None) -> dict:
+    """{"ko": [(원문 조각, 한국어)], "cards": {번호: {"head": 첫 줄, "body": [줄]}}}. 모양이 낯설면 빈 값 — 화면은 원제만 쓴다."""
+    out: dict = {"ko": [], "cards": {}}
+    if not text:
+        return out
+    lines = text.splitlines()
+    for prev, line in zip(lines, lines[1:]):
+        bullet = prev.strip()
+        if bullet.startswith("- ") and line.startswith("        ") and not line.strip().startswith(("-", "■", "·", "▸")):
+            piece = re.sub(r"\s*\[[^\]]*\]\s*$", "", bullet[2:])                       # 끝의 근거 ID
+            piece = re.sub(r"\s+—\s.*$", "", piece)                                      # 주변 신호의 " — 메모"
+            piece = re.sub(r"\s*·\s*(?:원문 분석|부분 분석|초록 기반)\s*$", "", piece)       # 흐름 목록의 깊이
+            piece = re.sub(r"\s*\((?:요약 )?논문[^)]*\)", "", piece)                       # "(요약 논문 1/5)" — title_ko._bullet_match 와 같은 꼬리
+            out["ko"].append((piece.strip(), line.strip()))
+    for line in lines:
+        m = re.match(r"^\s*· (.+) \((.+)\) — \S+$", line)
+        if m:
+            out["ko"].append((m.group(1).strip(), m.group(2).strip()))
+    start = _CARD_SECTION_RE.search(text)
+    if start:
+        section = text[start.end():]
+        end = re.search(r"^■ ", section, re.M)
+        current = None
+        for line in (section[:end.start()] if end else section).splitlines()[1:]:
+            head = _CARD_HEAD_RE.match(line)
+            if head:
+                current = int(head.group(1))
+                out["cards"][current] = {"head": head.group(2).strip(), "body": []}
+            elif current is not None and line.strip():
+                out["cards"][current]["body"].append(line[3:] if line.startswith("   ") else line)
+    return out
+
+
+def korean_title(title: str, extras: dict) -> str:
+    """원제의 한국어 — 다이제스트 목록·카드 머리에서 찾는다. 앞부분 일치는 title_ko._bullet_match 와 같은 규칙(16자 미만은 안 맞춘다)."""
+    low = " ".join((title or "").split()).casefold()
+    if len(low) < 16:
+        return ""
+    for piece, korean in extras.get("ko") or []:
+        head = " ".join(piece.split()).casefold()
+        if len(head) >= 16 and (head.startswith(low) or low.startswith(head)):
+            return korean
+    for card in (extras.get("cards") or {}).values():
+        first = card["head"]
+        if first.casefold().startswith(low) and first.endswith(")") and "(" in first[len(low):]:
+            return first[len(low):].strip()[1:-1].strip()
+    return ""
+
+
+def research_overview(db: Path, profile_id: str, now: datetime | None = None) -> dict | None:
+    """메일과 같은 개요를 저장 기록에서 조립한다. 초기화·파일 요약 로딩·네트워크 조회는 하지 않는다.
+
+    같은 회차의 카드 깊이를 우선하고, 없으면 저장 요약·서술의 근거로 보완한다.
+    카드 없는 과거 회차는 발송 당시 스냅숏이 아니다. 시스템 실행 상태는 기존 로그 판정을 재사용한다.
+    """
+    import trend_report
+    import weekly_profile_changes
+
+    db = Path(db)
+    if not db.exists():
+        return None
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+
+    def window_label(window: tuple[str, str]) -> str:
+        dates = [datetime.fromisoformat(t).astimezone(KST) for t in window]
+        return "~".join(f"{d.month}/{d.day}" for d in dates)
+
+    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "profiles" not in tables:
+            return None
+        row = con.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+        if row is None:
+            return None
+        keywords = [tuple(r) for r in con.execute(
+            "SELECT keyword, kind, weight FROM profile_keywords WHERE profile_id=?", (profile_id,))]
+        profile = research_profile.profile_from_snapshot({"keywords": keywords, "max_items": row["max_items"]})
+        profile.update(profile_id=profile_id, name=row["name"], venues=[r[0] for r in con.execute(
+            "SELECT venue FROM profile_venues WHERE profile_id=?", (profile_id,))])
+        story = None
+        if "profile_narratives" in tables:
+            narrative = con.execute("SELECT body, reader_date, engine FROM profile_narratives "
+                                    "WHERE profile_id=? AND kind='daily' ORDER BY reader_date DESC LIMIT 1",
+                                    (profile_id,)).fetchone()
+            if narrative:
+                story = {**trend_report.parse_rendered_story(narrative["body"]),
+                         "reader_date": narrative["reader_date"], "engine": narrative["engine"] or ""}
+        issue = con.execute("SELECT * FROM mail_issues WHERE profile_id=? AND recipients_sent>0 "
+                            "AND status IN ('sent','partial') ORDER BY sent_at DESC, issue_id DESC LIMIT 1",
+                            (profile_id,)).fetchone() if "mail_issues" in tables else None
+        items = list(con.execute("SELECT * FROM mail_issue_items WHERE issue_id=? ORDER BY position",
+                                 (issue["issue_id"],))) if issue else []
+        # 원문 없는 저널의 키는 doi:/title: 이다. 후보의 명시적 ID, 고유한 정규화 제목 순으로 연결한다.
+        summaries = {}
+        by_title: dict[str, list[str]] = {}
+        if "summaries" in tables:
+            summaries = {r["arxiv_id"]: dict(r) for r in con.execute("SELECT arxiv_id, coverage_ratio FROM summaries")}
+        by_ids: set[str] = set()
+        published: dict[str, str] = {}
+        if "papers" in tables:
+            for aid, title, pub in con.execute("SELECT arxiv_id, title, published FROM papers"):
+                by_title.setdefault(_norm_title(title), []).append(aid)
+                by_ids.add(aid)
+                published[aid] = (pub or "")[:10]
+        stored_depth: dict[str, set[str]] = {}
+        if story and issue and story["reader_date"] == kst_day(issue["sent_at"]):
+            for thread in story["threads"]:
+                for it in thread["items"]:
+                    if it["depth"]:
+                        stored_depth.setdefault(_norm_title(it["title"]), set()).add(it["depth"])
+        # 한국어 제목은 제목 글자로 짝짓으므로 날짜와 무관하다. 카드 본문은 **같은 회차**의 다이제스트만 — 다른 날 것이면 번호가 어긋난다.
+        extras = digest_extras(row["last_digest"] if "last_digest" in row.keys() else None)
+        generated = parse_iso(row["last_digest_at"]) if "last_digest_at" in row.keys() else None
+        sent = parse_iso(issue["sent_at"]) if issue else None
+        # 같은 날 수동 스캔도 last_digest를 덮는다. 발송 뒤 만든 본문을 보낸 회차에 붙이면 안 된다.
+        previous = con.execute("SELECT sent_at FROM mail_issues WHERE profile_id=? AND sent_at<? "
+                               "ORDER BY sent_at DESC LIMIT 1", (profile_id, issue["sent_at"])).fetchone() if issue else None
+        previous_at = parse_iso(previous[0]) if previous else None
+        same_issue = bool(generated and sent and generated <= sent
+                          and kst_day(generated) == kst_day(sent)
+                          and (previous_at is None or previous_at < generated))
+        by_norm = {t: ids[0] if len(ids) == 1 else "" for t, ids in by_title.items()}      # 화면이 제목을 논문 상세로 잇는다
+        if story:
+            for thread in story["threads"]:
+                for it in thread["items"]:
+                    it["title_ko"] = korean_title(it["title"], extras)
+                    it["paper_id"] = paper_id_for_title(it["title"], by_norm)
+            for sig in story["side_signals"]:
+                sig["title_ko"] = korean_title(sig["title"], extras) if sig.get("title") else ""
+                sig["paper_id"] = paper_id_for_title(sig["title"], by_norm) if sig.get("title") else ""
+        papers = []
+        for it in items:
+            aid = it["paper_key"]
+            if aid not in summaries and "search_candidates" in tables:
+                candidate = con.execute("SELECT arxiv_id FROM search_candidates WHERE profile_id=? AND paper_key=?",
+                                        (profile_id, it["paper_key"])).fetchone()
+                if candidate and candidate[0]:
+                    aid = candidate[0]
+            if aid not in summaries:
+                matches = by_title.get(_norm_title(it["title"]), [])
+                if len(matches) == 1:
+                    aid = matches[0]
+            summary = summaries.get(aid)
+            depth = ""
+            if summary is not None and summary["coverage_ratio"] is not None:
+                # digest.coverage_label 의 0.98 경계. depth_label 은 전역 DB·요약 파일에 의존해 직접 부를 수 없다.
+                ratio = float(summary["coverage_ratio"])
+                if 0 <= ratio <= 1:
+                    depth = "부분 분석" if ratio < 0.98 else "원문 분석"
+            elif summary is None:
+                labels = stored_depth.get(_norm_title(it["title"]), set())
+                if labels == {"초록 기반"}:
+                    depth = "초록 기반"
+            try:
+                hits = json.loads(it["core_hits"] or "[]")
+            except (TypeError, ValueError):
+                hits = []
+            card = (extras.get("cards") or {}).get(it["position"]) or {} if same_issue else {}
+            title = it["title"] or ""
+            if card and not (card["head"] == title or
+                             (card["head"].startswith(title + " (") and card["head"].endswith(")"))):
+                card = {}                                   # 번호가 같아도 제목이 다르면 다른 논문이다
+            # DB 요약은 발송 뒤 생길 수도 있다. 같은 회차 카드의 실제 라벨이 더 직접적인 근거다.
+            import digest
+            card_labels = {digest.DEPTH_FULL: "원문 분석", digest.DEPTH_PARTIAL: "부분 분석",
+                           digest.DEPTH_ABSTRACT: "초록 기반"}
+            for line in card.get("body") or []:
+                label = re.match(r"^\s*\[([^]]+)\]", line)
+                if label and label.group(1) in card_labels:
+                    depth = card_labels[label.group(1)]
+                    break
+                if line.lstrip().startswith("[초록 기반 정리"):
+                    depth = "초록 기반"
+                    break
+                if line.lstrip().startswith("[미검증") and "처리 실패:" in line:
+                    depth = ""
+                    break
+            papers.append({"position": it["position"], "title": it["title"] or "", "link": it["link"] or "", "paper_id": aid if aid in by_ids else "",
+                           "published": published.get(aid, ""),
+                           "core_hits": [h for h in hits if isinstance(h, str)] if isinstance(hits, list) else [], "depth": depth,
+                           "title_ko": korean_title(it["title"] or "", extras),
+                           "card": card.get("body") or []})
+        reactions = 0
+        if {"feedback_events", "feedback_tokens"} <= tables:
+            since = now - timedelta(days=7)
+            # 유효 반응의 중복 제거 기준은 기존 화면·학습과 같다. UTC 오프셋이 다른 기록도 시각으로 비교한다.
+            rows = _reaction_rows(con, profile_id)
+            rows = [r for r in rows if since <= datetime.fromisoformat(r["received_at"]).astimezone(timezone.utc) <= now]
+            reactions = len(latest_valid_reactions(rows))
+
+    weekly = weekly_profile_changes.collect(db, profile_id, now=now)
+    changes = []
+    if weekly:
+        for r in weekly["weights"]:
+            changes.append({"keyword": r["keyword"], "before": r["before"], "after": r["after"],
+                            "kind": "up" if r["delta"] > 0 else "down", "origin": " · ".join(r["origins"])})
+        for group, kind in (("added", "new"), ("removed", "removed")):
+            for r in weekly[group]:
+                changes.append({"keyword": r["keyword"], "before": r["weight"] if kind == "removed" else None,
+                                "after": r["weight"] if kind == "new" else None,
+                                "kind": kind, "origin": " · ".join(r["origins"])})
+    week = {"changes": changes, "window": window_label(weekly["window"]) if weekly else ""}
+    movement = None
+    if {"search_candidates", "papers", "summaries"} <= tables:
+        moved = trend_report.window_movement(db, profile, end=now, top_keywords=len(profile["core_topics"]), top_terms=0)
+        if moved:
+            deltas = [{"keyword": kw, "delta": a - b} for kw, a, b in moved["keywords"]] if moved["comparable"] else []
+            movement = {"up": sorted((r for r in deltas if r["delta"] > 0), key=lambda r: (-r["delta"], r["keyword"]))[:5],
+                        "down": sorted((r for r in deltas if r["delta"] < 0), key=lambda r: (r["delta"], r["keyword"]))[:5],
+                        "comparable": moved["comparable"], "window": window_label(moved["window"])}
+    status = system_status(db, Path(__file__).resolve().parent, now=now)
+    daily = status["daily"]
+    kpis = []
+    if issue:
+        kpis.append(("핵심 논문", f"{issue['paper_count']}편"))
+        if papers and all(p["depth"] for p in papers):
+            kpis.append(("원문 분석 · 초록 기반", f"{sum(p['depth'] in ('원문 분석', '부분 분석') for p in papers)} · "
+                         f"{sum(p['depth'] == '초록 기반' for p in papers)}"))
+    kpis.extend([("반응 7일", f"{reactions}건"), ("이번 주 프로필 변화", f"{len(changes)}건")])
+    return {"profile": {"id": profile_id, "name": profile["name"], "field": profile["name"].split(" — ")[0].strip()},
+            "date": max(story["reader_date"] if story else "", kst_day(issue["sent_at"]) if issue else ""),
+            "kpis": kpis, "story": story, "papers": papers, "week": week, "movement": movement,
+            "system": {"last_daily": kst_hm(daily.get("started_at"), missing=""),
+                       "ok": bool(daily.get("finished_at")) and daily.get("exit") == 0,
+                       "next_daily": status["next_daily_kst"]}}
+
+
+# ── 활동 기록 달력 ──────────────────────────────────────────────────────────
+def issues_by_day(issues: list[dict]) -> dict[str, dict]:
+    """{독자 날짜(KST): {"issues": [회차…], "papers": 논문 수, "reactions": 반응 수}}. 화면 달력이 날마다 점을 찍고 고른 날을 펼친다.
+    2026-10-01 사용자: 날짜별 펼침 목록은 가독성이 떨어진다 — 달력에서 눌러 본다. 같은 날 두 회차(수동 재발송)도 한 칸에 모은다."""
+    out: dict[str, dict] = {}
+    for issue in issues:
+        day = issue.get("day") or ""
+        if not day:
+            continue
+        slot = out.setdefault(day, {"issues": [], "papers": 0, "reactions": 0})
+        slot["issues"].append(issue)
+        slot["papers"] += int(issue.get("paper_count") or 0)
+        slot["reactions"] += int(issue.get("reactions") or 0)
+    return out
+
+
+def month_summary(by_day: dict[str, dict], year: int, month: int) -> dict:
+    """그 달의 보낸 메일·논문·반응 수 — 달력 아래 요약 칸."""
+    prefix = f"{year:04d}-{month:02d}-"
+    days = [v for d, v in by_day.items() if d.startswith(prefix)]
+    return {"mails": sum(len(v["issues"]) for v in days), "papers": sum(v["papers"] for v in days),
+            "reactions": sum(v["reactions"] for v in days), "days": len(days)}
+
+
+def filter_catalog(rows: list[dict], source: str = "전체", summary: str = "전체", days: int | None = None,
+                   today: str | None = None) -> list[dict]:
+    """논문 DB 필터(2026-10-01 화면 개편) — 출처(arXiv·저널(OA)·업로드 PDF)·요약 유무·최근 N일 저장. 저장일은 `fetched`(KST 날짜)로 본다."""
+    from datetime import date, timedelta
+    out = rows
+    if source != "전체":
+        out = [r for r in out if r.get("source") == source]
+    if summary != "전체":
+        want = summary == "있음"
+        out = [r for r in out if bool(r.get("summarized")) is want]
+    if days:
+        base = date.fromisoformat(today) if today else datetime.now(KST).date()
+        cutoff = (base - timedelta(days=days - 1)).isoformat()
+        out = [r for r in out if (r.get("fetched") or "") >= cutoff]
+    return out
+
+
+# ── 논문 상세(2026-10-01 화면 개편) ─────────────────────────────────────────
+def summary_sections(md: str | None) -> list[tuple[str, list[str]]]:
+    """메일과 같은 절 이름·깊이로 읽되 화면의 들여쓰기와 산문은 보존한다."""
+    import summary_parser
+    text = md or ""
+    levels = [len(m.group(1)) for m in summary_parser._HEADING_DEPTH_RE.finditer(text)]
+    if not levels:
+        return []
+    top = min(levels)
+    out: list[tuple[str, list[str]]] = []
+    for line in text.splitlines():
+        head = summary_parser._HEADING_RE.match(line)
+        if head and len(head.group(1)) == top:
+            out.append((summary_parser._canonical(head.group(2)), []))
+        elif out and line.strip() and not line.lstrip().startswith("※"):
+            # 하위 제목 뒤 본문을 별도 절로 떼면 상세 화면의 고정 절 목록에서 사라진다(2026-10-02 재현).
+            out[-1][1].append(line.rstrip())
+    return out
+
+
+def paper_id_for_title(title: str, candidates: dict[str, str]) -> str:
+    """제목 → 논문 ID. candidates 는 {정규화 제목: ID}. 정확 일치, 아니면 16자 이상 앞부분 일치가 **하나뿐일 때만**(옛 서술은 제목을 줄여 쓴다)."""
+    key = _norm_title(title)
+    if not key:
+        return ""
+    if key in candidates:
+        return candidates[key]
+    if len(key) < 16:
+        return ""
+    hits = {pid for t, pid in candidates.items() if len(t) >= 16 and (t.startswith(key) or key.startswith(t))}
+    return hits.pop() if len(hits) == 1 else ""
+
+
+def paper_core_hits(db: Path, paper_key: str) -> list[str]:
+    """그 논문이 메일에 실릴 때 걸린 핵심 키워드(가장 최근 회차). 상세 화면 칩용 — 없으면 빈 목록."""
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
+            row = con.execute("SELECT i.core_hits FROM mail_issue_items i JOIN mail_issues m ON m.issue_id=i.issue_id "
+                              "WHERE i.paper_key=? ORDER BY m.sent_at DESC LIMIT 1", (paper_key,)).fetchone()
+    except sqlite3.Error:
+        return []
+    try:
+        hits = json.loads(row[0] or "[]") if row else []
+    except (TypeError, ValueError):
+        return []
+    return [h for h in hits if isinstance(h, str)]

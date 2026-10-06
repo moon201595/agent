@@ -47,22 +47,23 @@ def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
     return _HTML_CACHE[arxiv_id]
 
 
-def _paper_row(db: Path, arxiv_id: str) -> tuple[str, str, str]:
-    """(원문, 제목, 공개일). 원문이 없으면 초록."""
+def _paper_row(db: Path, arxiv_id: str) -> tuple[str, str, str, str]:
+    """(원문/초록, 제목, 공개일, 출처). 짧은 원문도 원문이고 긴 초록도 초록이다."""
     try:
-        with sqlite3.connect(db) as con:
+        with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
             row = con.execute("SELECT text_path, abstract, title, published FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     except sqlite3.Error:
-        return "", "", ""
+        return "", "", "", "abstract"
     if not row:
-        return "", "", ""
+        return "", "", "", "abstract"
     text = ""
     if row[0]:
         try:
             text = Path(row[0]).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             text = ""
-    return text or (row[1] or ""), row[2] or "", (row[3] or "")[:10]
+    return text or (row[1] or ""), row[2] or "", (row[3] or "")[:10], "text" if text else "abstract"
 
 
 def _main_results(own: list[dict], claims: list[dict]) -> list[dict]:
@@ -119,17 +120,16 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
             # arXiv 밖 논문(DOI·합성 ID)은 HTML 표가 없어 표 분석을 **지원하지 않는다** — 조용히 빼지 않고 그 상태를 적는다(Codex 최종 검토).
             # 원문·초록이 있으면 문장 근거(원문 주장 표시)만 본다.
             try:
-                text, title, _pub = _paper_row(db, aid) if aid else ("", "", "")
+                text, title, _pub, src = _paper_row(db, aid) if aid else ("", "", "", "abstract")
                 text = text or paper.get("abstract") or ""
                 claims = paper.get("_sota_claims") or []
-                src = "text" if aid and len(text) > 3000 else "abstract"
                 paper["_frontier"] = {"main": [], "claims": claims, "external": None, "unsupported": "non_arxiv",
                                       "sentences": pr.performance_evidence(text, claims, src, pr.method_name(title or paper.get("title")))}
             except Exception as error:  # noqa: BLE001
                 print(f"  [성능 동향] {aid or 'DOI 논문'} 생략: {type(error).__name__}")
             continue
         try:
-            text, title, published = _paper_row(db, aid)
+            text, title, published, src = _paper_row(db, aid)
             texts[aid] = text
             claims = paper.get("_sota_claims") or []
             method = pr.method_name(title or paper.get("title"))
@@ -144,7 +144,6 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
             main = _main_results([r for r in results if r["own"] and r["direction"]], claims)
             for r in main:
                 r["compare"] = frontier_store.compare(db, aid, r)
-            src = "text" if text and len(text) > 3000 else "abstract"
             fr = {"main": main, "claims": claims, "external": None,
                   "sentences": [] if main else pr.performance_evidence(text, claims, src, method)}
             paper["_frontier"] = fr
@@ -362,7 +361,7 @@ def reading_point(paper: dict) -> str:
         if verified and not all(_same(c) for c in verified):
             parts.append(head + "했으나, 확인한 외부 경쟁 결과와 평가 조건이 달라 직접 우열 비교는 어려움.")
         elif verified:
-            parts.append(head + "했고, 같은 조건으로 확인한 외부 결과가 있음(조건 일치는 에이전트 판독).")
+            parts.append(head + "했고, 외부 논문 표와 일부 조건 대조 기록이 있음. 전체 평가 조건의 일치는 별도 확인이 필요함.")
         elif main["compare"]["status"] == "above_observed":
             parts.append(head + "했고, 에이전트가 관측한 다른 논문 최고값보다 높아 외부 검증 대상.")
         elif (fr.get("external") or {}).get("status") == "incomplete":
@@ -370,7 +369,7 @@ def reading_point(paper: dict) -> str:
         else:
             parts.append(head + "함.")
     elif fr.get("sentences"):
-        parts.append("성능 우위를 원문 문장으로 주장하나, 표 구조를 확인하지 못해 수치 비교는 하지 않음.")
+        parts.append("논문 내 성능 결과를 문장으로 보고하나, 표 구조를 확인하지 못해 논문 간 수치 비교는 하지 않음.")
     elif paper.get("deep_status") in ("abstract_only", "fetch_failed"):
         parts.append("본문을 확보하지 못해 결과 수치는 확인하지 않음.")
     return " ".join(parts)

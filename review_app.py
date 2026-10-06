@@ -1,8 +1,9 @@
 """⑨ 운영 화면 — 최신 연구 동향 모니터링 에이전트 (Streamlit). 관리자(운영자) 한 사람이 전체 상황을 보는 곳이다.
 
-2026-09-16 개편(사용자 요청): 하네스 시절의 "검색·요약 생성"·"요약 검토" 탭을 없애고, 켜자마자 **운영 현황**이 나오게 했다.
-페이지는 셋이다 — 운영 현황(프로필별 키워드·가중치·보낸 메일·반응·변경 이력·에이전트) / 논문 DB(저장된 논문 전체) / 시스템(새벽·주간
-실행 기록, cron, DB·백업, 로그). 숫자는 전부 `ops_dashboard.py` 가 만들고 이 파일은 그리기만 한다 — `st.` 을 쓰는 코드와 안 쓰는
+2026-10-01 개편(사용자 요청 + 판단): 메일과 같은 디자인·같은 순서. 켜자마자 **개요**(오늘의 연구 흐름 → 핵심 논문 → 이번 주)가 나온다 —
+첫 화면의 질문은 "cron 이 돌았나"가 아니라 "오늘 내 분야에서 뭐가 중요한가"다. 메뉴는 다섯 — 개요 / 논문(저장된 논문 전체) /
+프로필(키워드·가중치·추이·변경 이력·주간 관리·설정) / 활동 기록(보낸 메일·반응) / 시스템(실행 기록·프로필 표·cron·DB·로그).
+프로필은 사이드바에서 고르고 개요·프로필·활동 기록이 함께 쓴다. 그전(9/16)은 운영 현황 하나에 탭 일곱이었다. 숫자는 전부 `ops_dashboard.py` 가 만들고 이 파일은 그리기만 한다 — `st.` 을 쓰는 코드와 안 쓰는
 코드가 섞이면 Streamlit 없이는 테스트할 수 없다(§8-31).
 
 옛 화면(검색·요약·검토·수동 재현 버튼)의 로직은 git 이력에 남아 있다(`review_core.py` 는 2026-09-16 에 지웠다). 논문 검색·요약은 MCP 서버(`server.py`)와
@@ -14,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import httpx
@@ -36,131 +38,174 @@ st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon=":material/mon
 
 
 def _inject_custom_style() -> None:
-    """순수 시각 레이어 — 로직은 건드리지 않는다. 기준은 `docs/DESIGN.md`(2026-09-16): 파랑 한 계열 + 회색, Pretendard, 4px 간격,
-    그림자 한 단계, 채운 덩어리 대신 배경+테두리로 선택 표시. 그전 CSS 는 8월부터 지적을 받을 때마다 조각을 덧대 cyan(#0284C7)·
-    #4C6EF5·#3B5BDB 세 파랑이 섞이고 옛 검색 탭용 규칙이 남아 있었다 — 전부 걷어내고 토큰 하나로 다시 썼다.
-    셀렉터는 Streamlit 이 문서화한 data-testid 와 `key=` 훅(.st-key-*)만 쓴다(버전이 올라가도 잘 안 깨진다)."""
+    """순수 시각 레이어 — 로직은 건드리지 않는다. 기준은 `docs/DESIGN.md`(2026-10-01 4차 개정): **사용자 시안 다섯 장의 여백·색을 그대로**.
+    사내 연구 정보 시스템처럼 — 옅은 청회색 바탕 위 흰 카드(얇은 선·모서리 6px·그림자 없음), 카드 제목은 카드 **안**, 강조색은 차분한 청록
+    하나(선택 메뉴·오늘의 흐름 상자), 파랑은 링크에만, 초록·빨강은 상태에만. 글꼴 맑은 고딕, 굵기 400/700.
+    셀렉터는 Streamlit 이 문서화한 data-testid 와 `key=` 훅(.st-key-*)만 쓴다 — [style*=border] 같은 내부 구조 추측은 1.60 에서 안 맞았다."""
     st.markdown(
         """
         <style>
-        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
-
         :root {
-            --blue: #3B5BDB; --blue-dark: #2F4AB8; --blue-100: #EEF2FF; --blue-200: #D6DEFA;
-            --ink: #111827; --ink-2: #374151; --muted: #5B6577; --line: #E5E7EB;
-            --surface: #FFFFFF; --canvas: #F6F8FB; --canvas-2: #EDF0F5;
-            --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06); --shadow-2: 0 2px 6px rgba(16, 24, 40, 0.08);
+            --accent: #1F7A72; --accent-bar: #2B8A82; --accent-bg: #E3F1EF; --accent-soft: #EEF6F5;
+            --ink: #1E2B37; --ink2: #3A4856; --muted: #6B7A88; --line: #E3E8EC; --line2: #EEF1F4;
+            --app: #F3F6F8; --side: #FAFBFC; --card: #FFFFFF; --head: #F6F8FA; --link: #2563EB;
+            --ok: #1E7B4F; --ok-bg: #E7F5EC; --bad: #B42318; --bad-bg: #FDECEC; --chip: #F1F3F5; --chip-ink: #4B5865;
             /* 옛 이름 — 화면 코드의 인라인 style 이 아직 쓴다 */
-            --sky: var(--blue); --sky-dark: var(--blue-dark); --sky-light: var(--blue-100); --sky-border: var(--blue-200);
-            --text-main: var(--ink); --text-muted: var(--muted);
+            --text-muted: var(--muted); --text-main: var(--ink); --sky: var(--accent);
         }
-
-        /* 글꼴 — 아이콘 폰트 요소(stIconMaterial)는 제외해야 화살표가 글자로 깨지지 않는다(2026-08-14 실측). */
         html, body, [data-testid="stAppViewContainer"],
         [data-testid="stAppViewContainer"] *:not([data-testid="stIconMaterial"]) {
-            font-family: 'PretendardVariable', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-family: "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", Arial, sans-serif !important;
         }
-        html { font-size: 15px; }
+        /* 표는 캔버스로 글자를 그린다 — 자간이 먹으면 낱말 사이 빈칸이 사라졌다(10/1 캡처) */
+        canvas, [data-testid="stDataFrame"], [data-testid="stDataFrame"] * { letter-spacing: normal !important; }
         [data-testid="stAppViewContainer"] { color: var(--ink); }
-        [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { line-height: 1.55; }
-        [data-testid="stMarkdownContainer"] li { margin-bottom: 0.45em; }
-        a, a:visited { color: var(--blue-dark); }
-
-        /* 레이아웃 — 사이드바를 뺀 폭을 다 쓴다(넓은 모니터에서 오른쪽이 비지 않게). */
-        .block-container { padding: 2rem 2rem 3rem 2rem; max-width: 100%; }
-        [data-testid="stMain"] { background-color: var(--surface); align-items: flex-start !important; }
-        [data-testid="stHeader"] { background-color: var(--surface); }
+        [data-testid="stMain"], [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background-color: var(--app); }
         [data-testid="stAppDeployButton"], [data-testid="stMainMenu"], footer { display: none; }
+        .block-container { padding: 2.6rem 2.4rem 3rem 2.4rem; max-width: 100%; }
+        [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { line-height: 1.7; }
+        a, a:visited { color: var(--link); }
 
-        /* 제목 계층 — 크기 셋으로 고정(DESIGN.md §3). */
-        h1, h2, h3 { color: var(--ink); letter-spacing: -0.015em; }
-        h1 { font-size: 1.5rem; font-weight: 700; }
-        /* h3 = 페이지 제목(st.subheader)·프로필 이름, h4 = 구역 제목(####). 둘의 차이가 보여야 한다. */
-        [data-testid="stAppViewContainer"] h3 { font-size: 1.35rem; font-weight: 700; padding-bottom: 0.2rem; }
-        [data-testid="stAppViewContainer"] h2 { font-size: 1.35rem; font-weight: 700; padding: 0.4rem 0 0.2rem 0; }
-        [data-testid="stAppViewContainer"] h4 { font-size: 1.05rem; font-weight: 600; color: var(--ink); padding: 0.6rem 0 0.2rem 0; letter-spacing: -0.01em; }
-        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted); font-size: 0.8rem; }
+        /* 제목 — 페이지 제목 28px, 카드 제목 17px */
+        h1, h2, h3, h4 { color: var(--ink); letter-spacing: -0.02em; }
+        [data-testid="stAppViewContainer"] h3 { font-size: 1.75rem; font-weight: 700; padding: 0 0 .2rem 0; }
+        [data-testid="stAppViewContainer"] h4 { font-size: 1.06rem; font-weight: 700; padding: .1rem 0 .6rem 0; }
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted); font-size: .9rem; }
+        .rm-page-sub { color: var(--muted); font-size: .95rem; margin: -.2rem 0 1.1rem; }
 
-        /* 지표 — 영웅 숫자가 아니라 표의 한 칸처럼. 숫자는 tabular. */
-        [data-testid="stMetricLabel"] p { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
-        [data-testid="stMetricValue"] {
-            font-size: 1.55rem; font-weight: 600; color: var(--ink);
-            font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1.2;
-        }
-        [data-testid="stMetric"] { padding-bottom: 0.1rem; }
+        /* 탭 — 밑줄, 선택만 청록 */
+        [data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--line); }
+        [data-testid="stTabs"] button[data-baseweb="tab"] { color: var(--ink2); padding: .7rem 1.2rem; }
+        [data-testid="stTabs"] button[data-baseweb="tab"] p { font-size: 1rem; }
+        [data-testid="stTabs"] button[aria-selected="true"] p { color: var(--accent); font-weight: 700; }
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background-color: var(--accent); height: 2px; }
 
-        /* 탭 — 밑줄 표시, 선택만 진하게 */
-        [data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 2px; border-bottom: 1px solid var(--line); }
-        [data-testid="stTabs"] button[data-baseweb="tab"] { color: var(--muted); font-weight: 500; font-size: 0.92rem; padding: 0.5rem 0.75rem; }
-        [data-testid="stTabs"] button[aria-selected="true"] { color: var(--blue-dark); font-weight: 600; }
+        /* 버튼·입력 — 흰 바탕 + 얇은 선 */
+        [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button, [data-testid="stDownloadButton"] button {
+            border-radius: 4px; border: 1px solid var(--line); background: var(--card); color: var(--ink2); box-shadow: none; }
+        [data-testid="stButton"] button:hover { border-color: #C9D3DA; background: #F7F9FA; color: var(--ink); }
+        [data-testid="stBaseButton-primary"] { background-color: var(--accent) !important; border: none !important; color: #fff !important; }
+        [data-testid="stBaseButton-primary"] p { color: #fff; }
+        [data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"], [data-baseweb="select"] > div,
+        [data-testid="stTextInputRootElement"], [data-testid="stTextInputRootElement"] > div {
+            background-color: #FFFFFF !important; border-color: var(--line) !important; border-radius: 4px !important; }
+        [data-testid="stTextInputRootElement"] { border: 1px solid var(--line) !important; }
+        [data-baseweb="input"] input, [data-baseweb="base-input"] input, [data-baseweb="textarea"] textarea { background-color: #FFFFFF !important; }
+        [data-testid="stExpander"] { border: 1px solid var(--line) !important; border-radius: 6px !important; background: var(--card); box-shadow: none; }
+        [data-testid="stExpander"] summary p { font-size: .98rem; }
+        [data-testid="stMarkdownContainer"] code { background: var(--chip); color: var(--chip-ink); border-radius: 3px; padding: .05em .35em; font-size: .85em; }
+        [data-testid="stMarkdownContainer"] th { white-space: nowrap; }
+        [data-testid="stAlert"] { border-radius: 6px; }
 
-        /* 버튼 — 화면당 primary 하나. secondary 는 흰 배경 + 회색 테두리. */
-        [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button {
-            border-radius: 8px; border: 1px solid var(--line); font-weight: 500; transition: background-color .12s ease, border-color .12s ease;
-        }
-        [data-testid="stButton"] button:hover { border-color: var(--blue-200); color: var(--blue-dark); background-color: var(--blue-100); }
-        [data-testid="stBaseButton-primary"] { background-color: var(--blue); border: none; }
-        [data-testid="stBaseButton-primary"]:hover { background-color: var(--blue-dark); }
+        /* 카드 = st.container(border=True, key="box_…") — 흰 바탕, 얇은 선, 모서리 6px */
+        [class*="st-key-box_"] { background: var(--card); border-color: var(--line) !important; border-radius: 6px !important; padding: 14px 18px; }
 
-        /* 입력 */
-        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-testid="stTextArea"] textarea {
-            border-radius: 8px !important; border-color: var(--line) !important;
-        }
-        [data-testid="stTextInput"] input:focus, [data-testid="stNumberInput"] input:focus, [data-testid="stTextArea"] textarea:focus {
-            border-color: var(--blue) !important; box-shadow: 0 0 0 1px var(--blue) !important;
-        }
-        [data-testid="stRadio"] label:has(input:checked) { font-weight: 600; color: var(--blue-dark); }
-
-        /* 카드(테두리 컨테이너)·확장 패널 — 회색 테두리 + 한 단계 그림자. 카드 안 카드 금지. */
-        [data-testid="stExpander"] {
-            border: 1px solid var(--line) !important; border-radius: 12px !important;
-            box-shadow: var(--shadow-1); background-color: var(--surface);
-        }
-        /* st.container(border=True) — 테두리를 가진 stVerticalBlock 만 고른다(실측 DOM, 2026-09-16) */
-        [data-testid="stVerticalBlock"][style*="border"], [data-testid="stColumn"] > [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"]) {
-            border-radius: 12px !important;
-        }
-        [data-testid="stExpander"] { margin-bottom: 0.5rem; transition: box-shadow .12s ease; }
-        [data-testid="stExpander"]:hover { box-shadow: var(--shadow-2); }
-        [data-testid="stExpander"] summary { font-weight: 600; color: var(--ink); }
-        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p { color: var(--ink); }
-
-        /* 칩 — [S번호]·revision·id */
-        [data-testid="stMarkdownContainer"] code {
-            background-color: var(--blue-100); color: var(--blue-dark); border-radius: 6px; padding: 0.12em 0.4em; font-size: 0.85em;
-        }
-        [data-testid="stAlert"] { border-radius: 8px; }
-
-        /* 사이드바 — 탐색 영역만 옅은 배경. 내비는 텍스트만(아이콘은 2026-09-17 사용자 요청으로 뺐다), 선택은 연한 파랑 배경(채운 덩어리 아님). */
-        [data-testid="stSidebar"] { background-color: var(--canvas); border-right: 1px solid var(--line); width: 340px !important; }
-        [data-testid="stSidebar"] .sidebar-brand {
-            padding: 0.3rem 0 0.9rem 0; font-size: 1.5rem; font-weight: 700; color: var(--ink);  /* 제목은 내비(1.1rem)보다 커야 한다(2026-09-17 사용자) */
-            border-bottom: 1px solid var(--line); margin-bottom: 0.4rem; letter-spacing: -0.01em;
-        }
-        [data-testid="stSidebar"] .sidebar-brand-sub { font-size: 0.95rem; color: var(--muted); font-weight: 400; }
-        [data-testid="stSidebar"] .sidebar-nav-gap { height: 0.5rem; }
+        /* 사이드바 — 거의 흰색 + 오른쪽 선, 글자 메뉴, 선택은 옅은 청록 + 왼쪽 막대 */
+        [data-testid="stSidebar"] { background-color: var(--side); border-right: 1px solid var(--line); width: 264px !important; }
+        [data-testid="stSidebar"] .sidebar-brand { font-size: 1.3rem; font-weight: 700; color: var(--ink); letter-spacing: -.02em; }
+        [data-testid="stSidebar"] .sidebar-brand-sub { display: block; font-size: .85rem; color: #5F7182; font-weight: 400; margin-top: 2px; }
+        [data-testid="stSidebar"] .sidebar-rule { border-top: 1px solid var(--line); margin: 1rem 0 .3rem; }
+        [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size: .85rem; color: var(--muted); }
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { font-size: .85rem; color: var(--muted); }
+        [class*="st-key-nav_"] { margin-bottom: -.6rem; }
         [data-testid="stSidebar"] [data-testid="stButton"] button {
-            justify-content: flex-start; text-align: left; font-weight: 500; border: 1px solid transparent; background-color: transparent;
-            padding: 0.5rem 0.9rem; box-shadow: none;
-        }
-        /* 내비 글자 — 2026-09-17 사용자 요청: 아이콘을 빼고 글자를 키운다(기본 0.875rem 이 작았다) */
-        [data-testid="stSidebar"] [data-testid="stButton"] button p { font-size: 1.1rem; }
-        [data-testid="stSidebar"] [data-testid="stButton"] button:hover { background-color: var(--canvas-2); border-color: transparent; color: var(--ink); }
-        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
-        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
-            background-color: var(--blue-100) !important; border: 1px solid var(--blue-200) !important;
-        }
-        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p { color: var(--blue-dark) !important; font-weight: 600; }
-        /* 버튼 안 글자 상자는 기본이 가운데 정렬이라 justify 만으로는 왼쪽에 안 붙는다(실측) — 상자를 꽉 채우고 왼쪽 정렬 */
+            justify-content: flex-start; border: none; border-left: 3px solid transparent; background: transparent;
+            padding: .62rem 1rem; border-radius: 0 4px 4px 0; }
+        [data-testid="stSidebar"] [data-testid="stButton"] button p { font-size: 1.05rem; color: var(--ink2); }
         [data-testid="stSidebar"] [data-testid="stButton"] button > div { width: 100%; justify-content: flex-start; text-align: left; }
-        /* 카드 = border 를 가진 stVerticalBlock(실측 DOM: st.container(border=True) 가 그 블록에 1px 테두리를 준다). */
-        /* 선택된 프로필 카드 — "보는 중"(비활성) 버튼을 직접 품은 카드 블록만 테두리를 파랗게, 위쪽에 3px 선 */
-        [data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] > [class*="st-key-pick_"] button:disabled) {
-            border-color: var(--blue-200) !important; border-radius: 12px !important; box-shadow: inset 0 3px 0 var(--blue), var(--shadow-1);
-        }
-        [data-testid="stSidebar"] [data-testid="stExpander"] { box-shadow: none; margin-bottom: 0.35rem; }
-        [data-testid="stSidebar"] [data-testid="stExpander"] summary { font-size: 0.82rem; padding: 0.4rem 0.6rem; }
-        [data-testid="stSidebar"] .sidebar-item { font-size: 0.8rem; color: var(--ink); padding: 0.22rem 0.1rem; overflow-wrap: break-word; }
+        [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover { background: #F1F4F6; }
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"], [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
+            background: var(--accent-bg) !important; border-left: 3px solid var(--accent-bar) !important; }
+        [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p { color: var(--accent) !important; font-weight: 700; }
+
+        /* 공통 구성 요소 */
+        .rm-eyebrow { color: var(--muted); font-size: .82rem; letter-spacing: .05em; }
+        .rm-title { color: var(--ink); font-size: 1.9rem; font-weight: 700; line-height: 1.3; margin: 2px 0 0; letter-spacing: -.03em; }
+        .rm-sub { color: var(--muted); font-size: 1.08rem; margin: 4px 0 18px; }
+        .rm-card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 20px 24px; }
+        .rm-ct { font-size: 1.06rem; font-weight: 700; color: var(--ink); margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px; }
+        .rm-ct small { font-weight: 400; color: var(--muted); font-size: .82rem; }
+        .rm-ct .r { margin-left: auto; }
+        .rm-gap { height: 16px; }
+        .rm-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+        .rm-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 16px; }
+        .rm-kpi { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 22px; }
+        .rm-kpi .l { color: var(--muted); font-size: .9rem; } .rm-kpi .v { color: var(--ink); font-size: 1.6rem; font-weight: 700; margin-top: 6px; }
+        .rm-lead { background: var(--accent-soft); border: 1px solid var(--line); border-left: 4px solid var(--accent-bar); border-radius: 6px; padding: 18px 24px; }
+        .rm-lead p { margin: 0 0 4px; font-size: .98rem; line-height: 1.8; color: var(--ink2); }
+        .rm-thread h5 { margin: 0 0 8px; font-size: 1.02rem; font-weight: 700; color: var(--ink); }
+        .rm-thread h5 i { font-style: normal; margin-right: 14px; }
+        .rm-thread .body { font-size: .95rem; line-height: 1.75; color: var(--ink2); padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+        .rm-ul { margin: 0; padding-left: 18px; } .rm-ul li { font-size: .95rem; line-height: 1.7; margin: 3px 0; color: var(--ink2); }
+        .rm-ul li::marker { color: #9AA6B1; }
+        .rm-ko { display: block; color: var(--muted); font-size: .85rem; line-height: 1.5; }
+        .rm-link { color: var(--link) !important; text-decoration: underline; text-underline-offset: 2px; }
+        .rm-chip { display: inline-block; background: var(--chip); color: var(--chip-ink); border-radius: 4px; font-size: .82rem;
+                   padding: 2px 8px; margin: 1px 4px 1px 0; line-height: 1.5; white-space: nowrap; }
+        .rm-chip.ok { background: var(--ok-bg); color: var(--ok); } .rm-chip.bad { background: var(--bad-bg); color: var(--bad); }
+        .rm-chip.kw { background: var(--chip); color: var(--chip-ink); }
+        .rm-t { width: 100%; border-collapse: collapse; font-size: .92rem; }
+        .rm-t th { background: var(--head); color: #4B5865; font-weight: 700; text-align: left; padding: 9px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; }
+        .rm-t td { padding: 9px 14px; border-bottom: 1px solid var(--line2); vertical-align: top; color: var(--ink2); }
+        .rm-t td.c, .rm-t th.c { text-align: center; } .rm-t td.r, .rm-t th.r { text-align: right; } .rm-t td.n { color: var(--muted); width: 2.5em; }
+        .rm-t tbody tr:hover { background: #F8FAFB; }
+        .rm-box { border: 1px solid var(--line); border-radius: 6px; padding: 14px 18px; background: var(--card); }
+        .rm-box .l { color: var(--muted); font-size: .88rem; display: flex; align-items: center; gap: 8px; }
+        .rm-box .v { color: var(--ink); font-size: 1.25rem; font-weight: 700; margin-top: 6px; line-height: 1.35; }
+        .rm-box .v.sm { font-size: 1rem; font-weight: 400; color: var(--ink2); }
+        .rm-box .s { color: var(--muted); font-size: .85rem; margin-top: 4px; }
+        /* 아래 1rem — Streamlit 마크다운 블록은 아래 여백이 -1rem 이라 상자 줄이 바깥 카드 아래 선을 넘었다(10/1 사용자 캡처) */
+        .rm-boxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 1rem; }
+        [class*="st-key-box_"] .rm-t, [class*="st-key-box_"] .rm-grid3 { margin-bottom: 1rem; }
+        .rm-row { display: flex; align-items: center; gap: 12px; font-size: .95rem; padding: 6px 0; border-bottom: 1px solid var(--line2); }
+        .rm-row:last-child { border-bottom: none; }
+        .rm-row .k { flex: 1; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rm-row .v { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 3.2em; text-align: right; }
+        .rm-up { color: var(--ok); } .rm-down { color: var(--bad); } .rm-new { color: var(--accent); font-weight: 700; }
+        .rm-bar { width: 110px; height: 6px; background: var(--line2); position: relative; border-radius: 3px; }
+        .rm-bar span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-bar); border-radius: 3px; }
+        .rm-bar span.dn { background: #C9A9A0; }
+        .rm-empty { color: var(--muted); font-size: .95rem; line-height: 1.7; }
+        .rm-foot { color: var(--muted); font-size: .88rem; margin-top: 24px; }
+        .rm-ref { color: #98A4AE; font-size: .78em; }
+        .rm-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+        .rm-lcard { border: 1px solid var(--line); border-radius: 6px; background: var(--card); overflow: hidden; }
+        .rm-lcard .hd { background: var(--head); border-bottom: 1px solid var(--line); padding: 12px 20px; font-weight: 700; font-size: 1rem; }
+        .rm-lcard .hd span { color: var(--muted); font-weight: 400; margin-left: 10px; }
+        .rm-lcard .bd { padding: 14px 20px; font-size: .95rem; line-height: 1.9; color: var(--ink2); }
+        .rm-lcard .bd small { color: var(--muted); font-size: .82rem; } .rm-lcard .bd small.o { color: var(--accent); }
+        /* 상세 */
+        .rm-crumb { color: var(--muted); font-size: .9rem; margin-bottom: 6px; } .rm-crumb a { color: var(--muted) !important; text-decoration: none; }
+        .rm-meta { color: var(--muted); font-size: .92rem; display: flex; flex-wrap: wrap; gap: 0; margin: 8px 0 12px; }
+        .rm-meta span + span::before { content: "|"; color: var(--line); margin: 0 12px; }
+        .rm-kv { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 0 8px 6px 0; font-size: .88rem; background: var(--card); }
+        .rm-kv b { font-weight: 400; color: var(--muted); padding: 4px 10px; border-right: 1px solid var(--line); background: var(--head); }
+        .rm-kv span { padding: 4px 10px; color: var(--ink2); } .rm-kv.ok span { background: var(--ok-bg); color: var(--ok); }
+        .rm-detail { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; margin-top: 8px; }
+        .rm-detail .col { display: flex; flex-direction: column; gap: 16px; }
+        .rm-info td:first-child { color: var(--muted); width: 5.5em; white-space: nowrap; } .rm-info td { padding: 8px 6px; border-bottom: 1px solid var(--line2); font-size: .92rem; vertical-align: top; }
+        .rm-info { width: 100%; border-collapse: collapse; }
+        .rm-abs { font-size: .92rem; line-height: 1.75; color: var(--ink2); }
+        /* 달력 */
+        .rm-cal-title { text-align: center; font-size: 1.15rem; font-weight: 700; padding-top: 6px; }
+        .rm-cal-wd { text-align: center; color: var(--muted); font-size: .9rem; padding: 2px 0; }
+        .rm-cal-out { text-align: center; color: #B8C4CC; padding: 12px 0 18px; font-size: .98rem; }
+        [class*="st-key-cal_20"] button { min-height: 50px; border: none !important; background: transparent !important; padding: 2px; border-radius: 6px; }
+        [class*="st-key-cal_20"] button p { font-size: .98rem; color: var(--ink2); line-height: 1.2; }
+        [class*="st-key-cal_20"] .stMarkdownColoredText { display: block; font-size: .5rem; line-height: .7rem; color: var(--accent-bar) !important; }
+        [class*="st-key-cal_20"] [data-testid="stBaseButton-secondary"]:hover { background: #F1F4F6 !important; }
+        [class*="st-key-cal_20"] [data-testid="stBaseButton-primary"] { background: var(--accent-bg) !important; }
+        [class*="st-key-cal_20"] [data-testid="stBaseButton-primary"] p { color: var(--accent) !important; font-weight: 700; }
+        [class*="st-key-calnav_"] button, [class*="st-key-daynav_"] button { border: none !important; background: transparent !important; font-size: 1.2rem; color: var(--ink2); }
+        [class*="st-key-calnav_"] button:hover, [class*="st-key-daynav_"] button:hover { background: #F1F4F6 !important; }
+        [class*="st-key-calnav_"] button p, [class*="st-key-daynav_"] button p { font-size: 1.5rem; line-height: 1; color: var(--ink2); font-weight: 700; }
+        /* 수식($…$)은 고정폭 — 맑은 고딕은 역슬래시를 ₩ 로 그려 "\mathcal" 이 "₩mathcal" 로 보였다(캡처). 글꼴 강제 규칙보다 구체적이어야 이긴다. */
+        [data-testid="stAppViewContainer"] code.rm-math { font-family: Consolas, "Courier New", monospace !important; background: var(--head); color: var(--ink2); }
+        .rm-sum .row { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 2px; border-bottom: 1px solid var(--line2); font-size: .98rem; }
+        .rm-sum .row:last-child { border-bottom: none; } .rm-sum b { font-size: 1.1rem; } .rm-sum small { display: block; text-align: right; color: var(--muted); font-size: .82rem; font-weight: 400; }
+        .rm-mailhead { display: flex; align-items: center; gap: 10px; font-size: 1.02rem; font-weight: 700; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+        .rm-mailmeta { display: grid; grid-template-columns: 6em 1fr; row-gap: 8px; padding: 14px 4px; font-size: .92rem; }
+        .rm-mailmeta b { font-weight: 700; color: var(--ink2); } .rm-mailmeta span { color: var(--ink2); }
         </style>
         """,
         unsafe_allow_html=True,
@@ -295,7 +340,7 @@ def _render_profile_form(db_path, existing: dict | None) -> None:
                 core_weights={k: kept_weights[k] for k in new_core if k in kept_weights},
                 s2_seeds=_parse_terms(s2_seeds),
             )
-            st.session_state["_research_selected_profile"] = pid
+            st.session_state["_pending_profile"] = pid
             st.success(f"'{pid}' 저장됨")
             st.rerun()
 
@@ -324,85 +369,49 @@ _h = textutil.esc            # unsafe_allow_html 에 넣는 동적 값은 전부
 _ORIGIN_SHORT = {"user": "사용자", "feedback": "반응", "agent": "에이전트", "advisor": "제안기", "rule": "규칙"}
 
 
+def _stat_cards(items: list[tuple]) -> str:
+    """(라벨, 값, 보조[, 상태 칩 글자, 칩 종류]) 상자 줄 — 시안의 운영 상태·DB 상자. 상태는 값 옆 작은 칩(정상 초록·실패 빨강)으로만 색을 준다.
+    st.metric 은 긴 값을 "…" 로 잘랐다("2026-W40 실패 — Codex C…", 10/1 사용자 지적) — 줄바꿈되게 직접 그린다."""
+    def box(label: str, value: str, sub: str = "", chip: str = "", kind: str = "", small: bool = False) -> str:
+        return (f"<div class='rm-box'><div class='l'>{_h(label)}{_chip(chip, kind) if chip else ''}</div>"
+                f"<div class='v{' sm' if small else ''}'>{_h(value)}</div>" + (f"<div class='s'>{_h(sub)}</div>" if sub else "") + "</div>")
+    return "<div class='rm-boxes'>" + "".join(box(*item) for item in items) + "</div>"
+
+
 def _render_status_strip(status: dict) -> None:
-    """맨 위 한 줄 — 새벽 실행·다음 실행·주간 에이전트·반응 버튼. 숫자는 ops_dashboard 가 센다."""
-    c1, c2, c3, c4 = st.columns(4)
+    """운영 상태 상자 넷 — 새벽 실행·다음 실행·주간 에이전트·반응 버튼. 숫자는 ops_dashboard 가 센다."""
     d = status["daily"]
     if d.get("started_at"):
-        when = ops_dashboard._kst(d["started_at"])
         if d.get("finished_at") is None:
-            verdict = "진행 중"
+            verdict, kind = "진행 중", ""
         elif d.get("exit") == 0:
-            verdict = "정상"
+            verdict, kind = "정상", "ok"
         elif d.get("exit") == 2:
-            verdict = "발송됨 · 소스 장애"
+            verdict, kind = "소스 장애", "bad"
         elif d.get("exit") == "stopped":
-            verdict = "수동 중지"
+            verdict, kind = "수동 중지", ""
         else:
-            verdict = f"실패 (exit {d.get('exit')})"
-        c1.metric("마지막 새벽 실행", when)
-        c1.caption(verdict if status["daily_ran_today"] else f"{verdict} · 오늘 실행 기록 없음 — PC(WSL)가 켜져 있어야 cron 이 돕니다")
+            verdict, kind = f"실패 (exit {d.get('exit')})", "bad"
+        daily = (ops_dashboard._kst(d["started_at"]), "" if status["daily_ran_today"] else "오늘 실행 기록 없음 — PC(WSL)가 켜져 있어야 cron 이 돕니다",
+                 verdict, kind)
     else:
-        c1.metric("마지막 새벽 실행", "기록 없음")
-    c2.metric("다음 새벽 실행", status["next_daily_kst"])
-    c2.caption(f"주간 관리 {status['next_weekly_kst']}")
+        daily = ("기록 없음", "", "", "")
     w = status["weekly"]
-    c3.metric("주간 에이전트", ops_dashboard.agent_status_label(w) if w else "아직 실행 없음")
-    c3.caption("월요일 05:00 · 일일 스캔 직전 · Claude 제안 → Codex 판정")
-    c4.metric("반응 버튼", "활성" if status["buttons_configured"] else "비활성")
-    c4.caption("메일에 버튼이 붙습니다" if status["buttons_configured"] else "FEEDBACK_* 설정 없음")
-
-
-def _render_profile_cards(db_path, profile_ids: list[str], selected: str) -> None:
-    """프로필 카드 한 줄. 카드의 버튼이 선택을 바꾼다 — 현재 선택은 채운(primary) 버튼."""
-    cols = st.columns(len(profile_ids))
-    for col, pid in zip(cols, profile_ids):
-        o = ops_dashboard.profile_overview(db_path, pid)
-        if not o:
-            continue
-        with col.container(border=True):
-            sched = "매일 발송" if o["schedule"] == "daily" else "수동"
-            st.markdown(f"**{_h(o['field'])}** <span style='color:var(--text-muted);font-size:12px'>· {sched}</span>",
-                        unsafe_allow_html=True)
-            m = o["mails"]; r = o["reactions"]
-            st.markdown(
-                f"<div style='font-size:13px;line-height:1.7'>메일 <b>{m['issues']}</b>통 · 논문 <b>{m['papers']}</b>편<br>"
-                f"반응 <b>{r['valid']}</b> <span style='color:var(--text-muted)'>(긍정 {r['more'] + r['useful']} · 부정 {r['out']})</span><br>"
-                f"키워드 {o['keywords']['core']} · 수신자 {len(o['recipients'])}</div>", unsafe_allow_html=True)
-            # 선택된 카드는 채운 파란 버튼 대신 "보는 중"(비활성) — 선택 표시는 배경·테두리로(DESIGN.md §5).
-            if st.button("보는 중" if pid == selected else "보기", key=f"pick_{pid}", width="stretch",
-                         type="primary" if pid == selected else "secondary", disabled=(pid == selected)):
-                st.session_state["_research_selected_profile"] = pid
-                st.rerun()
-
-
-def _render_overview(db_path, pid: str, o: dict) -> None:
-    import pandas as pd
-    a, b, c, d = st.columns(4)
-    a.metric("보낸 메일", f"{o['mails']['issues']}통")
-    a.caption(f"논문 {o['mails']['papers']}편" + (f" · 실패 {o['mails']['failed_issues']}회" if o["mails"]["failed_issues"] else ""))
-    r = o["reactions"]
-    b.metric("받은 반응", f"{r['valid']}건")
-    b.caption(f"긍정 {r['more'] + r['useful']} · 부정 {r['out']}" + (f" · 격리 {r['other']}" if r["other"] else ""))
-    c.metric("마지막 메일", ops_dashboard._kst(o["mails"]["last_sent_at"]))
-    c.caption({"sent": "전원 발송", "partial": "일부 수신자 실패", "failed": "발송 실패", None: "—"}.get(o["mails"]["last_status"], ""))
-    d.metric("프로필 revision", str(o["revision"]))
-    d.caption("주간 에이전트: " + ops_dashboard.agent_status_label(o["last_agent"]))
-    st.caption("수신자: " + (", ".join(o["recipients"]) or "없음 — 메일이 나가지 않습니다"))
-
-    history = ops_dashboard.weight_history(db_path, pid)
-    moving = {k: v for k, v in history.items() if len({round(x[2], 3) for x in v}) > 1}
-    if moving:
-        st.markdown("**가중치가 움직인 키워드**")
-        _weight_chart(moving)
-        st.caption("가중치가 한 번이라도 바뀐 키워드만 그린다. 가로는 프로필 revision(변경 시점), 점에 마우스를 올리면 시각이 보인다.")
-    else:
-        st.caption("아직 가중치가 움직인 키워드가 없습니다 — 반응이 서로 다른 논문 2편 이상 쌓이면 매일 새벽 조금씩 움직입니다.")
+    head, _, tail = (ops_dashboard.agent_status_label(w) if w else "아직 실행 없음").partition(" — ")
+    week, _, state = head.partition(" ") if head.startswith("20") else ("", "", head)
+    wkind = "bad" if "실패" in state else ("ok" if ("적용" in state or "없음" in state) else "")
+    st.markdown(_stat_cards([
+        ("마지막 새벽 실행", daily[0], daily[1], daily[2], daily[3]),
+        ("다음 새벽 실행", status["next_daily_kst"], f"주간 관리 {status['next_weekly_kst']}"),
+        ("주간 에이전트", " · ".join(x for x in (week, tail) if x) or state, "", state, wkind, True),
+        ("반응 버튼", "메일에 버튼이 붙습니다" if status["buttons_configured"] else "FEEDBACK_* 설정 없음", "",
+         "활성" if status["buttons_configured"] else "비활성", "ok" if status["buttons_configured"] else "bad", True),
+    ]), unsafe_allow_html=True)
 
 
 # 꺾은선 한 줄 = 키워드 하나. 정체(identity)를 색으로 가르므로 **범주형** 팔레트를 정해진 순서로 쓴다(순환하지 않는다, dataviz 규칙).
 # 파랑을 첫 색으로 두고, 색약에서도 인접 색이 갈리도록 색상·명도를 번갈아 놓았다.
-_LINE_PALETTE = ["#3B5BDB", "#E8590C", "#2F9E44", "#9C36B5", "#0CA678", "#E64980", "#F08C00", "#1098AD", "#845EF7", "#5C940D"]
+_LINE_PALETTE = ["#086C75", "#E8590C", "#12266B", "#9C36B5", "#2F9E44", "#E64980", "#F08C00", "#1098AD", "#845EF7", "#5C940D"]
 _DIRECT_LABEL_MAX = 6      # 이 수까지는 선 끝에 키워드 이름을 바로 붙인다 — 그 이상은 범례·툴팁·범례 클릭 강조로 읽는다
 
 
@@ -463,7 +472,7 @@ def _weight_chart(moving: dict[str, list[tuple[str, int, float]]]) -> None:
     height = 340 + 20 * len(order)          # 범례가 아래에 붙어 그림 높이를 먹는다 — 선 수만큼 더 준다
     # 선 끝 라벨은 그림 영역 밖으로 뻗는다 — 오른쪽 여백을 비워 두고(범례는 아래로) 라벨이 범례와 겹치지 않게 한다.
     chart = (alt.layer(*layers).properties(height=height, padding={"left": 5, "top": 5, "right": 300, "bottom": 5})
-             .configure_view(strokeWidth=0).configure(font="Pretendard, sans-serif"))
+             .configure_view(strokeWidth=0).configure(font="Malgun Gothic, sans-serif"))
     st.altair_chart(chart, width="stretch")
 
 
@@ -503,14 +512,16 @@ def _render_keywords(db_path, pid: str) -> None:
     st.caption("가중치 칸을 눌러 고친 뒤 저장할 수 있습니다. 긍정 = 이 키워드에 걸린 논문에 온 '더 보고 싶음'·'유용함', 부정 = '관심 밖'.")
     others = [r for r in rows if r["kind"] != "core"]
     if others:
-        cols = st.columns(3)
-        for col, kind in zip(cols, ("s2_seed", "target", "exclude")):
+        # 목록 셋 — 시안처럼 회색 머리 띠(이름 · 개수) + 흰 본문 카드 세 칸
+        cards = []
+        for kind in ("s2_seed", "target", "exclude"):
             terms = [r for r in others if r["kind"] == kind]
-            col.markdown(f"**{_KIND_LABELS[kind]}** ({len(terms)})")
-            col.markdown("<div style='font-size:13px;line-height:1.8'>" + ("<br>".join(
-                f"{_h(r['term'])}" + (f" <span style='color:var(--text-muted)'>· 적중 {r['hits_28d']}</span>" if r["hits_28d"] else "")
-                + (f" <span style='color:var(--sky)'>· {_h(_ORIGIN_SHORT.get(r['origin'], r['origin']))}</span>" if r["origin"] != "user" else "")
-                for r in terms) or "<span style='color:var(--text-muted)'>없음</span>") + "</div>", unsafe_allow_html=True)
+            items = "".join(
+                f"<div>{_h(r['term'])}" + (f" <small>적중 {r['hits_28d']}</small>" if r["hits_28d"] else "")
+                + (f" <small class='o'>{_h(_ORIGIN_SHORT.get(r['origin'], r['origin']))}</small>" if r["origin"] != "user" else "") + "</div>"
+                for r in terms) or "<div class='rm-empty'>없음</div>"
+            cards.append(f"<div class='rm-lcard'><div class='hd'>{_KIND_LABELS[kind]}<span>{len(terms)}</span></div><div class='bd'>{items}</div></div>")
+        st.markdown("<div class='rm-grid3'>" + "".join(cards) + "</div>", unsafe_allow_html=True)
 
 
 def _render_issues(db_path, pid: str) -> None:
@@ -554,7 +565,7 @@ def _render_history(db_path, pid: str) -> None:
         head, body = st.columns([5, 1])
         head.markdown(f"**rev {h['revision']}** · {_h(h['when'])} · {_h(h['origin_label'])}"
                       + (f" <span style='color:var(--text-muted)'>— {_h(h['note'])}</span>" if h["note"] else ""), unsafe_allow_html=True)
-        head.markdown("<div style='font-size:13px;line-height:1.7;margin-left:8px'>" + "<br>".join(_h(c) for c in h["changes"]) + "</div>",
+        head.markdown("<div style='font-size:1rem;line-height:1.8;margin-left:8px'>" + "<br>".join(_h(c) for c in h["changes"]) + "</div>",
                       unsafe_allow_html=True)
         if h["revision"] != current:
             if body.button("이 상태로 되돌리기", key=f"rollback_{pid}_{h['revision']}"):
@@ -572,7 +583,7 @@ def _render_history(db_path, pid: str) -> None:
 def _render_agent(db_path, pid: str) -> None:
     runs = ops_dashboard.agent_history(db_path, pid)
     if not runs:
-        st.caption("아직 주간 에이전트 실행 기록이 없습니다. 월요일 새벽 일일 스캔 직전에 돌고, 볼 자료가 없는 주는 모델을 부르지 않습니다.")
+        st.caption("아직 주간 에이전트 실행 기록이 없습니다. 그 주 첫 근무일 새벽 일일 스캔 직전에 돌고, 볼 자료가 없는 주는 모델을 부르지 않습니다.")
         return
     for run in runs:
         with st.expander(f"{ops_dashboard.agent_status_label(run)} · {run['when']}", expanded=run is runs[0]):
@@ -610,7 +621,7 @@ _STATUS_COLORS = {"done": "#1E9E5A", "partial": "#E08A2E", "failed": "#D0433B"} 
 
 def _status_legend() -> None:
     """상태 원의 뜻 — 색만으로 뜻을 전하지 않게 표 위에 한 줄로 둔다."""
-    st.markdown(" &nbsp; ".join(f"<span style='color:{c};font-size:15px'>●</span> <span style='font-size:12px;color:var(--text-muted)'>{t}</span>"
+    st.markdown(" &nbsp; ".join(f"<span style='color:{c};font-size:1rem'>●</span> <span style='font-size:.9rem;color:var(--text-muted)'>{t}</span>"
                                 for c, t in ((_STATUS_COLORS["done"], "완료"), (_STATUS_COLORS["partial"], "일부"), (_STATUS_COLORS["failed"], "실패"))),
                 unsafe_allow_html=True)
 
@@ -703,53 +714,422 @@ def _render_settings(db_path, pid: str, profile: dict) -> None:
                 st.caption("아직 배달 기록이 없다.")
 
 
-def render_research_tab() -> None:
-    """운영 현황(2026-09-16 개편). 프로필별로 키워드·가중치·보낸 메일·반응·변경 이력·에이전트 실행을 본다.
-    숫자는 전부 ops_dashboard 가 만든다 — 이 함수는 그리기만 한다."""
-    st.subheader(APP_TITLE)
+# ---------------------------------------------------------------- 개요 — 메일과 같은 순서(2026-10-01 개편)
+# 첫 화면은 "cron 이 돌았나"가 아니라 "오늘 내 분야에서 뭐가 중요한가"다. 순서는 메일 그대로: 머리말·숫자 줄 → 오늘의 연구 흐름 →
+# 오늘의 핵심 논문 → 이번 주(7일 흐름·프로필 변화) → 맨 아래 한 줄 운영 상태. 숫자는 전부 ops_dashboard.research_overview 가
+# DB 에서 센 값이다 — 건강 점수 같은 새 지표, 검증 통과 수치(2026-09-14 메일에서 뺐다)는 싣지 않는다(DESIGN.md §6).
+_DEPTH_SHOW = {"원문 분석": "원문 분석 완료", "부분 분석": "원문 일부 분석", "초록 기반": "초록 기반 · 미검증"}   # 메일 카드 문구(digest.DEPTH_*)
+_ENGINE_SHOW = {"codex": "Codex", "gemini": "Gemini", "groq": "Groq"}
+
+
+def _chip(text: str, kind: str = "") -> str:
+    return f"<span class='rm-chip {kind}'>{_h(text)}</span>"
+
+
+def _detail_href(paper_id: str, pid: str | None = None) -> str:
+    """앱 안 논문 상세 주소 — 같은 탭에서 연다(쿼리 파라미터로 상세 화면·프로필을 되살린다)."""
+    from urllib.parse import urlencode
+    return "?" + urlencode({k: v for k, v in (("paper", paper_id), ("profile", pid)) if v})
+
+
+def _title_link(title: str, paper_id: str = "", pid: str | None = None, url: str = "") -> str:
+    """제목 → 파란 링크(앱 안 상세, 없으면 원문). 둘 다 없으면 글자만. 주소는 http(s)·상대(?…)만."""
+    t = _h(title)
+    if paper_id:
+        return f"<a class='rm-link' href='{_h(_detail_href(paper_id, pid))}' target='_self'>{t}</a>"
+    if url.startswith(("https://", "http://")):
+        return f"<a class='rm-link' href='{_h(url)}' target='_blank'>{t}</a>"
+    return t
+
+
+def _story_html(story: dict, pid: str | None = None, meta: str = "") -> str:
+    """되읽은 동향 글 → 시안 모양. 오늘의 흐름 상자(옅은 청록, 제목 안) → 갈래 카드 두 칸 → 우리 연구에서 볼 것 · 주변 신호 두 칸."""
+    parts: list[str] = []
+    lead = [x for x in (story.get("headline"), story.get("relation")) if x]
+    parts.append("<div class='rm-lead'><div class='rm-ct'>오늘의 연구 흐름" + (f"<small class='r'>{_h(meta)}</small>" if meta else "") + "</div>"
+                 + ("".join(f"<p>{_h(x)}</p>" for x in lead) if lead else "<p class='rm-empty'>오늘의 한 줄이 없는 글입니다.</p>") + "</div>")
+    threads = story.get("threads") or []
+    if threads:
+        cells = []
+        for i, t in enumerate(threads, start=1):
+            items = "".join(
+                f"<li>{_title_link(it.get('title') or '', it.get('paper_id') or '', pid)}"
+                + (f" {_chip(it['depth'], 'ok' if it['depth'] == '원문 분석' else '')}" if it.get("depth") else "")
+                + (f"<span class='rm-ko'>{_h(it['title_ko'])}</span>" if it.get("title_ko") else "") + "</li>"
+                for it in t.get("items") or [])
+            cells.append(f"<div class='rm-card rm-thread'><h5><i>갈래 {i}</i>{_h(t.get('name') or '')}</h5>"
+                         + (f"<div class='rm-history' style='font-size:0.9rem;color:var(--text-muted);margin-bottom:8px'>{_h(t['history_note'])}</div>" if t.get("history_note") else "")
+                         + f"<div class='body'>{_h(t.get('body') or '')}</div>" + (f"<ul class='rm-ul'>{items}</ul>" if items else "") + "</div>")
+        parts.append("<div class='rm-grid2'>" + "".join(cells) + "</div>")
+    boxes = []
+    if story.get("implications"):
+        boxes.append("<div class='rm-card'><div class='rm-ct'>우리 연구에서 볼 것</div><ul class='rm-ul'>"
+                     + "".join(f"<li>{_h(x)}</li>" for x in story["implications"]) + "</ul></div>")
+    if story.get("side_signals"):
+        boxes.append("<div class='rm-card'><div class='rm-ct'>주변 신호<small>오늘 카드 밖의 논문</small></div><ul class='rm-ul'>"
+                     + "".join("<li>" + (_title_link(x["title"], x.get("paper_id") or "", pid)
+                                         + (f"<span class='rm-ko'>{_h(x['title_ko'])}</span>" if x.get("title_ko") else "")
+                                         + (f" — {_h(x['note'])}" if x.get("note") else "")
+                                         if x.get("title") else _h(x.get("note") or "")) + "</li>"
+                               for x in story["side_signals"]) + "</ul></div>")
+    if boxes:
+        parts.append("<div class='rm-grid2'>" + "".join(boxes) + "</div>")
+    return "".join(parts)
+
+
+def _papers_table_html(papers: list[dict], pid: str | None) -> str:
+    """오늘의 핵심 논문 — 시안의 표: # · 논문 제목(파란 링크 → 상세, 한국어 제목) · 핵심 키워드(회색 칩) · 깊이 · 발표일."""
+    rows = []
+    for paper in papers:
+        depth = paper.get("depth")
+        rows.append(
+            f"<tr><td class='n'>{int(paper.get('position') or 0)}</td>"
+            f"<td>{_title_link(paper.get('title') or '', paper.get('paper_id') or '', pid, paper.get('link') or '')}"
+            + (f"<span class='rm-ko'>{_h(paper['title_ko'])}</span>" if paper.get("title_ko") else "") + "</td>"
+            f"<td>{''.join(_chip(k, 'kw') for k in paper.get('core_hits') or [])}</td>"
+            f"<td>{_chip(_DEPTH_SHOW.get(depth, depth), 'ok' if depth == '원문 분석' else '') if depth else ''}</td>"
+            f"<td class='c'>{_h(paper.get('published') or '')}</td></tr>")
+    return ("<table class='rm-t'><thead><tr><th>#</th><th>논문 제목</th><th>핵심 키워드</th><th>깊이</th><th class='c'>발표일</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table>")
+
+
+def _week_html(o: dict) -> str:
+    """이번 주 — 왼쪽 7일 키워드 흐름, 오른쪽 검색 프로필 변화. 둘 다 주간 브리프와 같은 계산이다."""
+    boxes: list[str] = []
+    mv = o.get("movement")
+    if mv and (mv.get("up") or mv.get("down")):
+        rows = mv.get("up", []) + mv.get("down", [])
+        top = max((abs(r["delta"]) for r in rows), default=1) or 1
+        body = "".join(
+            f"<div class='rm-row'><span class='{'rm-up' if r['delta'] > 0 else 'rm-down'}'>{'▲' if r['delta'] > 0 else '▼'}</span>"
+            f"<span class='k'>{_h(r['keyword'])}</span><span class='rm-bar'><span class='{'' if r['delta'] > 0 else 'dn'}' "
+            f"style='width:{max(2, int(abs(r['delta']) / top * 100))}%'></span></span>"
+            f"<span class='v'>{r['delta']:+d}</span></div>" for r in rows)
+        note = "" if mv.get("comparable", True) else "<div class='rm-empty'>이전 7일과 관측 일수가 달라 비교는 참고용이다.</div>"
+        boxes.append(f"<div class='rm-card'><div class='rm-ct'>최근 7일 키워드 흐름<small>{_h(mv.get('window') or '')} · 이전 7일 대비 편수</small></div>{body}{note}</div>")
+    changes = (o.get("week") or {}).get("changes") or []
+    if changes:
+        def _row(c: dict) -> str:
+            mark = {"up": ("rm-up", "▲"), "down": ("rm-down", "▼"), "new": ("rm-new", "NEW"), "removed": ("rm-down", "삭제")}.get(c.get("kind"), ("", "·"))
+            before, after = c.get("before"), c.get("after")
+            val = (f"{before:.2f} → {after:.2f}" if before is not None and after is not None else (f"{after:.2f}" if after is not None else ""))
+            origin = " · ".join(_ORIGIN_SHORT.get(x.strip(), x.strip()) for x in (c.get("origin") or "").split("·") if x.strip())
+            return (f"<div class='rm-row'><span class='{mark[0]}'>{mark[1]}</span><span class='k'>{_h(c.get('keyword') or '')}</span>"
+                    f"<span class='v'>{_h(val)}</span>" + (_chip(origin) if origin else "") + "</div>")
+        boxes.append(f"<div class='rm-card'><div class='rm-ct'>검색 프로필 변화<small>{_h((o.get('week') or {}).get('window') or '')}</small></div>"
+                     + "".join(_row(c) for c in changes) + "</div>")
+    elif boxes:
+        boxes.append("<div class='rm-card'><div class='rm-ct'>검색 프로필 변화</div><div class='rm-empty'>지난 보고 이후 바뀐 키워드·가중치가 없습니다."
+                     " 반응이 쌓이면 매일 새벽, 주간 관리는 그 주 첫 근무일에 바꿉니다.</div></div>")
+    return "<div class='rm-grid2'>" + "".join(boxes) + "</div>" if boxes else ""
+
+
+@st.cache_data(ttl=600, show_spinner="개요를 만드는 중…")
+def _overview_cached(db: str, pid: str) -> dict | None:
+    """개요는 새벽 스캔 때만 바뀐다. 7일 창 재채점이 프로필당 1~5초라(2026-10-01 실측, 논문 약 3천 편) 10분 캐시한다."""
+    return ops_dashboard.research_overview(Path(db), pid)
+
+
+def render_overview_page(pid: str) -> None:
+    """개요 — 사용자 시안(2026-10-01) 그대로: 눈썹 글·제목·프로필 → 숫자 카드 넷 → 오늘의 연구 흐름 상자 → 갈래 카드 두 칸 →
+    우리 연구에서 볼 것 · 주변 신호 → 오늘의 핵심 논문 표 → 이번 주. 카드 제목은 카드 안. 숫자는 research_overview 가 DB 에서 센 값만."""
     db_path = server.DB_PATH
-    root = Path(__file__).resolve().parent
     try:
-        _render_status_strip(ops_dashboard.system_status(db_path, root))
-    except Exception as e:  # noqa: BLE001 — 상태 줄이 깨져도 프로필 화면은 떠야 한다
-        st.caption(f"상태 조회 실패: {type(e).__name__}")
-
-    profile_ids = research_profile.list_profiles(db_path)
-    with st.expander("새 프로필 만들기"):
-        _render_profile_form(db_path, existing=None)
-    if not profile_ids:
-        st.info("아직 프로필이 없습니다 — 위에서 하나 만들어보세요.")
+        o = _overview_cached(str(db_path), pid)
+    except Exception as e:  # noqa: BLE001 — 개요가 깨져도 다른 메뉴는 쓸 수 있어야 한다
+        st.error(f"개요를 만들지 못했습니다: {type(e).__name__}: {e}")
         return
-    if st.session_state.get("_research_selected_profile") not in profile_ids:
-        st.session_state["_research_selected_profile"] = max(
-            profile_ids, key=lambda pid: (mail_ledger.counts(db_path, pid)["issues"], pid == "team_ai_advance"))
-    selected = st.session_state["_research_selected_profile"]
-    _render_profile_cards(db_path, profile_ids, selected)
+    if not o:
+        st.info("프로필을 찾지 못했습니다.")
+        return
+    prof = o["profile"]
+    kpis = "".join(f"<div class='rm-kpi'><div class='l'>{_h(k)}</div><div class='v'>{_h(v)}</div></div>" for k, v in o.get("kpis") or [])
+    story = o.get("story")
+    meta = ""
+    if story:
+        meta = " · ".join(x for x in (story.get("reader_date") or "",
+                                       (_ENGINE_SHOW.get(story.get("engine"), story.get("engine")) + " 작성") if story.get("engine") else "",
+                                       "이전 형식 글" if story.get("format") == "v1" else "") if x)
+    html = (f"<div class='rm-eyebrow'>RESEARCH MONITOR · {_h(o.get('date') or '')}</div>"
+            f"<div class='rm-title'>연구 동향 브리핑</div><div class='rm-sub'>{_h(prof.get('name') or '')}</div>"
+            + (f"<div class='rm-kpis'>{kpis}</div>" if kpis else "")
+            + (_story_html(story, pid, meta) if story else "<div class='rm-card'><div class='rm-ct'>오늘의 연구 흐름</div><div class='rm-empty'>아직 저장된 동향 글이 없습니다.</div></div>"))
+    papers = o.get("papers") or []
+    if papers:
+        html += (f"<div class='rm-gap'></div><div class='rm-card'><div class='rm-ct'>오늘의 핵심 논문 {len(papers)}편<small>가장 최근 보낸 메일 · 제목을 누르면 논문 상세</small></div>"
+                 + _papers_table_html(papers, pid) + "</div>")
+    html += _week_html(o)
+    sysinfo = o.get("system") or {}
+    if sysinfo:
+        html += (f"<div class='rm-foot'>마지막 새벽 실행 {_h(sysinfo.get('last_daily') or '기록 없음')} · {'정상' if sysinfo.get('ok') else '확인 필요'} · "
+                 f"다음 실행 {_h(sysinfo.get('next_daily') or '—')} — 자세한 기록은 시스템 메뉴</div>")
+    st.markdown(html, unsafe_allow_html=True)
 
-    profile = research_profile.get_profile(db_path, selected)
-    o = ops_dashboard.profile_overview(db_path, selected)
-    st.markdown(f"### {_h(o['name'])}  <span style='color:var(--text-muted);font-size:13px'>`{_h(selected)}`</span>",
-                unsafe_allow_html=True)
-    tabs = st.tabs(["한눈에", "키워드·가중치", "보낸 메일", "반응", "변경 이력", "에이전트", "설정"])
+
+def render_profile_page(pid: str) -> None:
+    """프로필 — 키워드·가중치(고칠 수 있다)·가중치 추이·변경 이력(되돌리기)·주간 관리·설정. 옛 운영 현황의 탭 다섯을 여기 모았다."""
+    db_path = server.DB_PATH
+    profile = research_profile.get_profile(db_path, pid)
+    o = ops_dashboard.profile_overview(db_path, pid)
+    st.subheader("프로필 관리")
+    st.markdown(f"<div class='rm-page-sub'>관심 키워드와 도메인을 관리합니다 — <b style='color:var(--ink2)'>{_h(o['name'])}</b> "
+                f"<code>{_h(pid)}</code> · rev {o['revision']}</div>", unsafe_allow_html=True)
+    # 맨 위 — 2026-10-01 사용자 지적("새 프로필 만들기는 당연히 맨 위… 꽁꽁 숨겨놓을 생각이야?"). 그전엔 탭 아래 맨 끝이었다.
+    with st.expander("＋ 새 프로필 만들기"):
+        _render_profile_form(db_path, existing=None)
+    tabs = st.container(border=True, key="box_profile_tabs").tabs(["키워드·가중치", "가중치 추이", "변경 이력", "주간 관리 결과", "설정"])
     with tabs[0]:
-        _render_overview(db_path, selected, o)
+        _render_keywords(db_path, pid)
     with tabs[1]:
-        _render_keywords(db_path, selected)
+        history = ops_dashboard.weight_history(db_path, pid)
+        moving = {k: v for k, v in history.items() if len({round(x[2], 3) for x in v}) > 1}
+        if moving:
+            _weight_chart(moving)
+            st.caption("가중치가 한 번이라도 바뀐 키워드만 그린다. 가로는 프로필 revision(변경 시점), 점에 마우스를 올리면 시각이 보인다.")
+        else:
+            st.caption("아직 가중치가 움직인 키워드가 없습니다 — 반응이 서로 다른 논문 2편 이상 쌓이면 매일 새벽 조금씩 움직입니다.")
     with tabs[2]:
-        _render_issues(db_path, selected)
+        _render_history(db_path, pid)
     with tabs[3]:
-        _render_reactions(db_path, selected)
+        _render_agent(db_path, pid)
     with tabs[4]:
-        _render_history(db_path, selected)
-    with tabs[5]:
-        _render_agent(db_path, selected)
-    with tabs[6]:
-        _render_settings(db_path, selected, profile)
+        _render_settings(db_path, pid, profile)
 
 
+_WEEKDAYS = ("일", "월", "화", "수", "목", "금", "토")
+_LOCAL_ID_RE = re.compile(r"^(?:\d{4}\.\d{4,5}(?:v\d+)?|pdf-[0-9a-f]{6,})$")     # papers 표에 있는 키 — doi:·title: 키는 상세가 없다
 
 
-# ---------------------------------------------------------------- 논문 DB
+def _set_cal(day=None, month=None) -> None:
+    if day is not None:
+        st.session_state["act_day"] = day
+        st.session_state["act_month"] = (day.year, day.month)
+    if month is not None:
+        st.session_state["act_month"] = month
+
+
+def _render_calendar(by_day: dict, year: int, month: int, selected) -> None:
+    """달력 한 달 — 시안 모양: "‹ 2026. 10 ›", 메일 보낸 날은 숫자 밑 청록 점, 고른 날은 옅은 청록 칸. 날짜를 누르면 오른쪽이 그날로."""
+    import calendar
+    prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_m = (year + 1, 1) if month == 12 else (year, month + 1)
+    left, mid, right = st.columns([1, 4, 1])
+    left.button("‹", key="calnav_prev", on_click=_set_cal, kwargs={"month": prev_m}, width="stretch")
+    mid.markdown(f"<div class='rm-cal-title'>{year}. {month:02d}</div>", unsafe_allow_html=True)
+    right.button("›", key="calnav_next", on_click=_set_cal, kwargs={"month": next_m}, width="stretch")
+    head = st.columns(7)
+    for col, name in zip(head, _WEEKDAYS):
+        col.markdown(f"<div class='rm-cal-wd'>{name}</div>", unsafe_allow_html=True)
+    for week in calendar.Calendar(firstweekday=6).monthdatescalendar(year, month):
+        cols = st.columns(7)
+        for col, day in zip(cols, week):
+            if day.month != month:
+                col.markdown(f"<div class='rm-cal-out'>{day.day}</div>", unsafe_allow_html=True)
+                continue
+            info = by_day.get(day.isoformat())
+            col.button(f"{day.day}" + (" :primary[●]" if info else ""), key=f"cal_{day.isoformat()}", width="stretch",
+                       on_click=_set_cal, kwargs={"day": day}, type="primary" if day == selected else "secondary")
+
+
+def _day_detail_html(day, info: dict | None, pid: str | None) -> str:
+    """고른 날 — 시안 모양: 상자 셋(보낸 메일·발송한 논문·사용자 반응) → 메일 카드(발송 일시·수신 대상·메일 제목) → 첨부 논문 표."""
+    if not info:
+        return "<div class='rm-empty' style='padding:12px 0'>이날 보낸 메일이 없습니다 — 주말·공휴일은 쉽니다.</div>"
+    pos = sum(it["reactions"]["more"] + it["reactions"]["useful"] for iss in info["issues"] for it in iss["items"])
+    neg = sum(it["reactions"]["out"] for iss in info["issues"] for it in iss["items"])
+    html = _stat_cards([("보낸 메일", f"{len(info['issues'])}통"), ("발송한 논문", f"{info['papers']}편"),
+                        ("사용자 반응", f"{info['reactions']}건", f"긍정 {pos} · 부정 {neg}")])
+    for iss in info["issues"]:
+        status = {"partial": " · 일부 수신자 실패", "failed": " · 발송 실패"}.get(iss.get("status"), "")
+        rows = []
+        for it in iss["items"]:
+            rx = it.get("reactions") or {}
+            p_, n_ = rx.get("more", 0) + rx.get("useful", 0), rx.get("out", 0)
+            react = (_chip(f"긍정 {p_}", "ok") if p_ else "") + (_chip(f"부정 {n_}", "bad") if n_ else "") or "-"
+            rows.append(f"<tr><td class='n'>{int(it.get('position') or 0)}</td>"
+                        f"<td>{_title_link(it.get('title') or '', it['paper_key'] if _LOCAL_ID_RE.match(it.get('paper_key') or '') else '', pid, it.get('link') or '')}</td>"
+                        f"<td>{_h(', '.join(it.get('core_hits') or []))}</td><td class='c'>{react}</td></tr>")
+        html += ("<div class='rm-gap'></div><div class='rm-card' style='padding:16px 20px'>"
+                 f"<div class='rm-mailhead'>{_h(iss.get('subject') or '메일')}</div>"
+                 "<div class='rm-mailmeta'>"
+                 f"<b>발송 일시</b><span>{_h(ops_dashboard._kst(iss.get('sent_at')))}{_h(status)}</span>"
+                 f"<b>수신 대상</b><span>{int(iss.get('recipients_sent') or 0)}명</span>"
+                 f"<b>메일 제목</b><span>{_h(iss.get('subject') or '')}</span></div>"
+                 f"<div class='rm-ct' style='margin-top:6px'>첨부 논문 {int(iss.get('paper_count') or 0)}편</div>"
+                 "<table class='rm-t'><thead><tr><th>#</th><th>논문</th><th>키워드</th><th class='c'>반응</th></tr></thead><tbody>"
+                 + "".join(rows) + "</tbody></table></div>")
+    return html
+
+
+def render_activity_page(pid: str) -> None:
+    """활동 기록 — 시안 모양: 왼쪽 달력 카드 + 월 요약 카드, 오른쪽 고른 날 카드. 2026-10-01 사용자: 날짜별 펼침 목록은 가독성이
+    떨어진다, 달력에서 눌러 본다. 받은 반응 전체 표는 두 번째 탭."""
+    import datetime as _dt
+    db_path = server.DB_PATH
+    o = ops_dashboard.profile_overview(db_path, pid)
+    r = o["reactions"]
+    st.subheader("활동 기록")
+    st.markdown(f"<div class='rm-page-sub'>메일 {o['mails']['issues']}통 · 논문 {o['mails']['papers']}편 · 반응 {r['valid']}건"
+                f"(긍정 {r['more'] + r['useful']} · 부정 {r['out']})</div>", unsafe_allow_html=True)
+    tabs = st.tabs(["보낸 메일", "받은 반응"])
+    with tabs[0]:
+        issues = ops_dashboard.issues_with_reactions(db_path, pid)
+        by_day = ops_dashboard.issues_by_day(issues)
+        latest = max(by_day) if by_day else None
+        if st.session_state.get("act_pid") != pid:          # 프로필을 바꾸면 그 프로필의 마지막 메일 날로
+            st.session_state["act_pid"] = pid
+            st.session_state.pop("act_day", None)
+            st.session_state.pop("act_month", None)
+        day = st.session_state.get("act_day") or (_dt.date.fromisoformat(latest) if latest else _dt.date.today())
+        year, month = st.session_state.get("act_month") or (day.year, day.month)
+        cal_col, detail_col = st.columns([2, 3], gap="medium")
+        with cal_col:
+            with st.container(border=True, key="box_calendar"):
+                _render_calendar(by_day, year, month, day)
+            m = ops_dashboard.month_summary(by_day, year, month)
+            pos = sum(it["reactions"]["more"] + it["reactions"]["useful"] for d, v in by_day.items() if d.startswith(f"{year:04d}-{month:02d}-")
+                      for iss in v["issues"] for it in iss["items"])
+            st.markdown(f"<div class='rm-card' style='margin-top:4px'><div class='rm-ct'>{year}년 {month}월 요약</div><div class='rm-sum'>"
+                        f"<div class='row'><span>보낸 메일</span><b>{m['mails']}통</b></div>"
+                        f"<div class='row'><span>메일 보낸 날</span><b>{m['days']}일</b></div>"
+                        f"<div class='row'><span>발송한 논문</span><b>{m['papers']}편</b></div>"
+                        f"<div class='row'><span>사용자 반응</span><b>{m['reactions']}건<small>긍정 {pos} · 부정 {m['reactions'] - pos}</small></b></div>"
+                        "</div></div>", unsafe_allow_html=True)
+        with detail_col:
+            with st.container(border=True, key="box_daydetail"):
+                days = sorted(by_day)
+                earlier = [d for d in days if d < day.isoformat()]
+                later = [d for d in days if d > day.isoformat()]
+                t, b1, b2 = st.columns([8, 1, 1])
+                t.markdown(f"<div class='rm-title' style='font-size:1.3rem;margin:4px 0 0'>{day.year}년 {day.month}월 {day.day}일 "
+                           f"({_WEEKDAYS[(day.weekday() + 1) % 7]})</div>", unsafe_allow_html=True)
+                b1.button("‹", key="daynav_prev", width="stretch", disabled=not earlier, help="이전 메일",
+                          on_click=_set_cal, kwargs={"day": _dt.date.fromisoformat(earlier[-1]) if earlier else None})
+                b2.button("›", key="daynav_next", width="stretch", disabled=not later, help="다음 메일",
+                          on_click=_set_cal, kwargs={"day": _dt.date.fromisoformat(later[0]) if later else None})
+                st.markdown(_day_detail_html(day, by_day.get(day.isoformat()), pid), unsafe_allow_html=True)
+    with tabs[1]:
+        _render_reactions(db_path, pid)
+
+
+def _render_profiles_table(db_path) -> None:
+    """프로필 전체를 한 표로(시안의 시스템 > 프로필). 주간 관리 결과는 칩(실패 빨강·적용 초록)."""
+    rows = []
+    for pid in research_profile.list_profiles(db_path):
+        o = ops_dashboard.profile_overview(db_path, pid)
+        if not o:
+            continue
+        m, r = o["mails"], o["reactions"]
+        label = ops_dashboard.agent_status_label(o["last_agent"])
+        kind = "bad" if "실패" in label else ("ok" if "적용" in label else "")
+        rows.append(f"<tr><td>{_h(o['field'])}</td><td>{_h(pid)}</td><td>{'매일' if o['schedule'] == 'daily' else '수동'}</td>"
+                    f"<td class='r'>{m['issues']}</td><td class='r'>{m['papers']}</td><td class='r'>{r['valid']}</td>"
+                    f"<td class='r'>{o['keywords']['core']}</td><td class='r'>{len(o['recipients'])}</td><td class='r'>{o['revision']}</td>"
+                    f"<td>{_chip(label, kind)}</td></tr>")
+    if rows:
+        st.markdown("<table class='rm-t'><thead><tr><th>분야</th><th>ID</th><th>주기</th><th class='r'>메일</th><th class='r'>논문</th>"
+                    "<th class='r'>반응</th><th class='r'>핵심 키워드</th><th class='r'>수신자</th><th class='r'>rev</th><th>주간 관리</th></tr></thead>"
+                    "<tbody>" + "".join(rows) + "</tbody></table>", unsafe_allow_html=True)
+
+
+_DETAIL_SECTIONS = (("연구 개요", "연구 개요"), ("방법 상세", "방법론"), ("실험 설정", "실험 구성"), ("결과", "주요 결과"),
+                    ("논문의 한계점", "연구 한계"), ("결론", "결론"))
+_REF_RE = re.compile(r"\s*\[(S\d{3,5}(?:\s*,\s*S\d{3,5})*)\]")
+
+
+def _summary_line_html(line: str) -> str:
+    """요약 한 줄 → <li>. "- 항목 : 값 [S0006]" 의 항목은 굵게, 근거 번호는 작은 회색(원문 문장 번호 — 쪽수가 아니다)."""
+    import mail_document
+    text = mail_document.nominal_line(line.strip())
+    sub = line.startswith(("  -", "    -", "\t-"))
+    text = re.sub(r"^[-•]\s*", "", text)
+    m = _CARD_LABEL_RE.match(text)
+    html = f"<b>{_h(m.group(1))}</b> {_h(text[m.end():])}" if m else _h(text)
+    html = _REF_RE.sub(lambda mm: f" <span class='rm-ref'>[{mm.group(1)}]</span>", html)
+    html = re.sub(r"\$([^$]{1,200})\$", lambda mm: f"<code class='rm-math'>{mm.group(1)}</code>", html)
+    return f"<li style='margin-left:{18 if sub else 0}px'>{html}</li>"
+
+
+_CARD_LABEL_RE = re.compile(r"^([^:：\n]{1,30}?)\s*[:：]\s+")
+
+
+def render_paper_detail(arxiv_id: str, pid: str | None, crumb: bool = True) -> None:
+    """논문 상세 — 사용자 시안(2026-10-01): 경로 · 제목 · 메타 줄 · 상태 칩 줄 → 왼쪽 요약 절 카드, 오른쪽 기본 정보·코드·재현·초록.
+    시안의 "근거 문장(p.1)"은 쪽수가 우리 기록에 없어 만들지 않는다 — 요약 줄의 [S번호](원문 문장 번호)를 작게 그대로 보인다."""
+    import json as _json
+    db_path = server.DB_PATH
+    d = ops_dashboard.paper_detail(db_path, arxiv_id)
+    if not d:
+        st.warning(f"논문을 찾지 못했습니다: {arxiv_id}")
+        return
+    cat = next((r for r in ops_dashboard.paper_catalog(db_path, query=arxiv_id) if r["arxiv_id"] == arxiv_id), {})
+    names = {p: (research_profile.get_profile(db_path, p) or {}).get("name", p).split(" — ")[0] for p in cat.get("profiles") or []}
+    def _list(raw: str) -> list[str]:
+        try:
+            v = _json.loads(raw) if raw else []
+            return [str(x) for x in v] if isinstance(v, list) else [str(v)]
+        except (TypeError, ValueError):
+            return [x.strip() for x in str(raw).split(",") if x.strip()]
+    authors, cats = _list(d.get("authors")), _list(d.get("categories"))
+    hits = ops_dashboard.paper_core_hits(db_path, arxiv_id)
+    link = d.get("link") or ""
+    meta = [d.get("source") or "", (d.get("published") or "")[:10]]
+    if names:
+        meta.append("보낸 프로필 " + ", ".join(names.values()))
+    head = (f"<div class='rm-crumb'><a href='?page=papers' target='_self'>논문 DB</a> &nbsp;›&nbsp; 논문 상세</div>" if crumb else "")
+    head += f"<div class='rm-title' style='font-size:1.6rem'>{_h(d['title'])}</div><div class='rm-meta'>" + "".join(
+        f"<span>{_h(x)}</span>" for x in meta if x) + (f"<span><a class='rm-link' href='{_h(link)}' target='_blank'>원문 보기 ↗</a></span>"
+                                                       if link.startswith(("https://", "http://")) else "") + "</div>"
+    kv = [("요약", "있음" if d["summary_md"] else "없음", "ok" if d["summary_md"] else ""), ("재현", cat.get("repro") or "—", ""),
+          ("코드", _TIER_SHORT.get(cat.get("code_tier"), cat.get("code_tier")) or "—", "")]
+    if hits:
+        kv.append(("키워드", ", ".join(hits), ""))
+    head += "<div>" + "".join(f"<span class='rm-kv {k}'><b>{_h(a)}</b><span>{_h(b)}</span></span>" for a, b, k in kv) + "</div>"
+    left: list[str] = []
+    sections = dict(ops_dashboard.summary_sections(d["summary_md"]))
+    import mail_document
+    def section_card(title: str, lines: list[str]) -> str:
+        """명칭을 통일해도 UI의 기존 요약 카드 구조는 유지한다."""
+        return (f"<div class='rm-card'><div class='rm-ct'>{_h(title)}</div><ul class='rm-ul'>"
+                + "".join(_summary_line_html(x) for x in lines) + "</ul></div>")
+    for key, title in _DETAIL_SECTIONS:
+        lines = [x for x in sections.get(key, []) if x.strip()]
+        notes: list[str] = []
+        if key == "논문의 한계점":
+            notes = [line for line in lines if re.match(r"^분석 메모\s*[:：]", mail_document.nominal_line(re.sub(r"^\s*[-•]\s*", "", line)))]
+            lines = [line for line in lines if line not in notes]
+        if lines:
+            left.append(section_card(title, lines))
+        if notes:
+            left.append(section_card("분석 메모", notes))
+        if key == "결과" and d.get("comparisons"):
+            body = ''.join("<li>" + (f"<a href='{_h(url)}' target='_blank'>{_h(text)} ↗</a>" if url else _h(text))
+                           + "</li>" for text, url in d["comparisons"])
+            left.append("<div class='rm-card'><div class='rm-ct'>성능 비교</div><ul class='rm-ul'>" + body + "</ul></div>")
+    if left:
+        left.append(mail_document.evidence_footer(d["summary_md"]))
+    if not left:
+        left.append("<div class='rm-card'><div class='rm-ct'>초록<small>본문 요약이 없는 논문 — 초록만 정리됐거나 본문을 받지 못했다</small></div>"
+                    f"<div class='rm-abs'>{_h(d['abstract'] or '초록 없음')}</div></div>")
+    shown_authors = ", ".join(authors[:6]) + (f" 외 {len(authors) - 6}명" if len(authors) > 6 else "")
+    info = [("저자", shown_authors), ("발표일", (d.get("published") or "")[:10]), ("출처", d.get("source") or ""), ("분야", ", ".join(cats)),
+            ("ID", arxiv_id), ("처음 발송", cat.get("first_sent") or ""),
+            ("요약 엔진", (d.get("summary_engine") or "") + (f" · 원문 {d['coverage'] * 100:.0f}% 확인" if d.get("coverage") is not None else ""))]
+    right = ["<div class='rm-card'><div class='rm-ct'>기본 정보</div><table class='rm-info'>"
+             + "".join(f"<tr><td>{a}</td><td>{_h(b)}</td></tr>" for a, b in info if b) + "</table></div>"]
+    code_bits = [x for x in (d.get("code_line"), d.get("sota_line")) if x]
+    repro = "".join(f"<li>{'성공' if r['success'] else '실패'} · {_h(r['stage'] or '')} · {_h(r['repo_url'] or '')}"
+                    + (f" <span class='rm-ref'>{_h(ops_dashboard.short_error(r['fail_detail']))}</span>" if r.get("fail_detail") else "") + "</li>"
+                    for r in d["repro"])
+    if code_bits or repro:
+        right.append("<div class='rm-card'><div class='rm-ct'>코드 · 재현</div>" + "".join(f"<div class='rm-abs'>{_h(x)}</div>" for x in code_bits)
+                     + (f"<ul class='rm-ul' style='margin-top:8px'>{repro}</ul>" if repro else "") + "</div>")
+    if d["summary_md"] and d.get("abstract"):
+        right.append(f"<div class='rm-card'><div class='rm-ct'>초록</div><div class='rm-abs'>{_h(d['abstract'])}</div></div>")
+    st.markdown(head + "<div class='rm-detail'><div class='col'>" + "".join(left) + "</div><div class='col'>" + "".join(right) + "</div></div>",
+                unsafe_allow_html=True)
+
+
 _TIER_SHORT = {"official": "공식", "author": "저자 연관", "third_party": "제3자", "analogous": "유사 구현", "none": "없음", None: "—"}
 
 
@@ -757,114 +1137,141 @@ def render_papers_page() -> None:
     """저장된 논문 전체를 한 표로 — 검색어·프로필로 거르고, 한 편을 골라 요약·재현·코드·SOTA 주장을 본다."""
     import pandas as pd
     st.subheader("논문 DB")
+    head = st.empty()                                   # "검색 결과 N편" — 필터를 읽은 뒤 채운다(사용자 시안: 제목 바로 아래)
     db_path = server.DB_PATH
     profiles = research_profile.list_profiles(db_path)
-    c1, c2 = st.columns([3, 2])
-    query = c1.text_input("검색", placeholder="제목·초록·arXiv ID", key="papers_query")
     names = {pid: (research_profile.get_profile(db_path, pid) or {}).get("name", pid).split(" — ")[0] for pid in profiles}
-    pick = c2.selectbox("보낸 프로필", ["(전체)"] + profiles, format_func=lambda v: v if v == "(전체)" else names.get(v, v),
+    filt = st.container(border=True, key="box_paper_filter")       # 검색·필터를 흰 카드 하나로(사용자 시안)
+    c1, c2, c3, c4, c5 = filt.columns([3, 1.4, 1.1, 1.1, 1.1])
+    query = c1.text_input("검색", placeholder="제목·초록·arXiv ID 로 검색", key="papers_query")
+    pick = c2.selectbox("보낸 프로필", ["(전체)"] + profiles, format_func=lambda v: "전체" if v == "(전체)" else names.get(v, v),
                         key="papers_profile")
+    source = c3.selectbox("출처", ["전체", "arXiv", "저널(OA)", "업로드 PDF"], key="papers_source")
+    summary = c4.selectbox("요약", ["전체", "있음", "없음"], key="papers_summary")
+    period = c5.selectbox("저장 기간", ["전체 기간", "최근 7일", "최근 30일", "최근 90일"], key="papers_period")
     rows = ops_dashboard.paper_catalog(db_path, query=query, profile_id=None if pick == "(전체)" else pick)
-    st.caption(f"{len(rows)}편 · 최신 저장 순")
+    rows = ops_dashboard.filter_catalog(rows, source=source, summary=summary,
+                                        days={"최근 7일": 7, "최근 30일": 30, "최근 90일": 90}.get(period))
+    head.caption(f"검색 결과 {len(rows)}편 · 최신 저장 순")
     if not rows:
         st.info("조건에 맞는 논문이 없습니다.")
         return
+    per_page = 50
+    pages = (len(rows) + per_page - 1) // per_page
+    sig = (query, pick, source, summary, period)
+    if st.session_state.get("papers_sig") != sig:          # 조건을 바꾸면 첫 쪽으로
+        st.session_state["papers_sig"] = sig
+        st.session_state["papers_page"] = 1
+    page = min(max(1, st.session_state.get("papers_page", 1)), pages)
+    shown = rows[(page - 1) * per_page: page * per_page]
     df = pd.DataFrame([{
         "제목": r["title"], "발표": r["published"], "저장": r["fetched"], "출처": r["source"],
         "요약": "있음" if r["summarized"] else "", "재현": r["repro"], "코드": _TIER_SHORT.get(r["code_tier"], r["code_tier"]),
         "보낸 프로필": ", ".join(names.get(p, p) for p in r["profiles"]) or "—", "처음 발송": r["first_sent"],
+        "원문": (f"https://arxiv.org/abs/{r['arxiv_id']}" if r["source"] == "arXiv" else ""),   # None 이면 표에 "None" 글자가 찍혔다
         "주의": ", ".join(r["flags"]), "ID": r["arxiv_id"],
-    } for r in rows])
+    } for r in shown])
+    table = st.container(border=True, key="box_paper_table")
     # 제목이 잘려 논문을 못 알아본다는 지적(Codex 검토 2026-09-16) — 제목 칸을 넓게, 짧은 칸은 좁게 고정한다.
-    event = st.dataframe(df, hide_index=True, width="stretch", height=420, on_select="rerun",
-                         selection_mode="single-row", key="papers_table",
-                         column_config={"제목": st.column_config.TextColumn(width="large"),
-                                        "요약": st.column_config.TextColumn(width="small"), "재현": st.column_config.TextColumn(width="small"),
-                                        "코드": st.column_config.TextColumn(width="small"), "주의": st.column_config.TextColumn(width="small"),
-                                        "ID": st.column_config.TextColumn(width="small")})
+    event = table.dataframe(df, hide_index=True, width="stretch", height=min(len(shown), 15) * 35 + 40, on_select="rerun",
+                            selection_mode="single-row", key=f"papers_table_{page}",
+                            column_config={"제목": st.column_config.TextColumn(width="large"),
+                                           "원문": st.column_config.LinkColumn(display_text="열기 ↗", width="small"),
+                                           "요약": st.column_config.TextColumn(width="small"), "재현": st.column_config.TextColumn(width="small"),
+                                           "코드": st.column_config.TextColumn(width="small"), "주의": st.column_config.TextColumn(width="small"),
+                                           "ID": st.column_config.TextColumn(width="small")})
+    f1, f2, f3, f4 = table.columns([6, 1, 1.2, 1])
+    f1.caption(f"{len(rows)}편 중 {(page - 1) * per_page + 1}–{min(page * per_page, len(rows))} 표시 · 한 줄을 고르면 아래에 요약·재현·코드가 나옵니다")
+    f2.button("‹ 이전", key="papers_prev", width="stretch", disabled=page <= 1,
+              on_click=lambda: st.session_state.update(papers_page=page - 1))
+    f3.markdown(f"<div style='text-align:center;padding-top:6px'><b>{page}</b> / {pages}쪽</div>", unsafe_allow_html=True)
+    f4.button("다음 ›", key="papers_next", width="stretch", disabled=page >= pages,
+              on_click=lambda: st.session_state.update(papers_page=page + 1))
     selected = event.selection.rows[0] if getattr(event, "selection", None) and event.selection.rows else None
     if selected is None:
-        st.caption("표에서 한 줄을 고르면 아래에 요약·재현·코드·SOTA 주장이 나옵니다.")
         return
-    d = ops_dashboard.paper_detail(db_path, rows[selected]["arxiv_id"])
-    if not d:
-        return
-    st.markdown(f"### {_h(d['title'])}", unsafe_allow_html=True)
-    meta = [f"`{d['arxiv_id']}`", (d["published"] or "")[:10]]
-    if d["link"]:
-        meta.append(f"[원문]({d['link']})")
-    st.markdown(" · ".join(m for m in meta if m))
-    for line in (d["code_line"], d["sota_line"]):
-        if line:
-            st.caption(line)
-    t_sum, t_abs, t_repro = st.tabs(["요약", "초록", "코드 재현 시도"])
-    with t_sum:
-        if d["summary_md"]:
-            st.caption(f"요약 엔진: {d['summary_engine'] or '—'}")
-            st.markdown(d["summary_md"])
-        else:
-            st.caption("요약 없음 — 초록만 정리됐거나 본문을 받지 못한 논문입니다.")
-    with t_abs:
-        st.write(d["abstract"] or "초록 없음")
-    with t_repro:
-        if d["repro"]:
-            st.dataframe(pd.DataFrame([{"저장소": r["repo_url"], "찾은 곳": {"in_text": "논문 본문", "github_search": "GitHub 검색"}.get(r["source"], r["source"]),
-                                        "결과": "성공" if r["success"] else "실패", "단계": r["stage"], "사유": r["fail_detail"] or "",
-                                        "시각": ops_dashboard._kst(r["created_at"])} for r in d["repro"]]),
-                         hide_index=True, width="stretch")
-        else:
-            st.caption("재현 시도 없음")
+    pick_id = shown[selected]["arxiv_id"]
+    st.markdown(f"<div class='rm-gap'></div><a class='rm-link' href='{_h(_detail_href(pick_id))}' target='_self'>이 논문 상세 화면으로 ↗</a>",
+                unsafe_allow_html=True)
+    with st.container(border=True, key="box_paper_inline"):
+        render_paper_detail(pick_id, None, crumb=False)
 
 
 # ---------------------------------------------------------------- 시스템
 _EXIT_LABELS = {0: "정상", 2: "발송됨 · 소스 장애", 1: "실패", "stopped": "수동 중지", "skipped": "스킵(이전 실행 중)", None: "종료 기록 없음(진행 중·중단)"}
-_CRON_HINTS = {"run_daily_scan.sh": "매일 새벽 스캔·메일 발송", "run_weekly_agent.sh": "금요일 DB 정리 → 주간 관리 에이전트",
+_CRON_HINTS = {"run_daily_scan.sh": "평일 새벽 스캔·메일 발송(그 주 첫 근무일엔 주간 관리 먼저)", "run_weekly_agent.sh": "손으로 돌리는 주간 관리",
                "check_daily_mail.py": "새벽 메일 부재 감시"}
 
 
 def render_system_page() -> None:
-    """실행 기록·예약 작업·DB·백업·로그 — "어젯밤에 무슨 일이 있었나"를 터미널 없이 본다."""
+    """실행 기록·예약 작업·DB·백업·로그 — "어젯밤에 무슨 일이 있었나"를 터미널 없이 본다.
+    2026-10-01 사용자 지적("눈 아파서 들어오겠냐"): 소제목과 표가 한 면에 이어져 구역이 안 갈렸다 — 구역마다 테두리 상자로 묶는다."""
     import pandas as pd
     st.subheader("시스템")
     db_path = server.DB_PATH
+    with st.container(border=True, key="box_5"):
+        st.markdown("#### 운영 상태")
+        try:
+            _render_status_strip(ops_dashboard.system_status(db_path, ROOT))
+        except Exception as e:  # noqa: BLE001 — 상태 줄이 깨져도 나머지는 뜬다
+            st.caption(f"상태 조회 실패: {type(e).__name__}")
+    with st.container(border=True, key="box_6"):
+        st.markdown("#### 프로필")
+        _render_profiles_table(db_path)
+
     dbs = ops_dashboard.db_status(Path(db_path))
-    a, b, c, d = st.columns(4)
-    a.metric("DB 크기", ops_dashboard.fmt_bytes(dbs["bytes"]))
-    a.caption(f"WAL {ops_dashboard.fmt_bytes(dbs['wal_bytes'])}")
     t = dbs["tables"]
-    b.metric("저장 논문", f"{t.get('papers') or 0}편")
-    b.caption(f"요약 {t.get('summaries') or 0}편 · 재현 시도 {t.get('repro_results') or 0}건")
-    c.metric("최신 백업", dbs["backups"][0]["when"] if dbs["backups"] else "없음")
-    c.caption(f"보관 {len(dbs['backups'])}개 · 최신 {ops_dashboard.fmt_bytes(dbs['backups'][0]['bytes'])}" if dbs["backups"] else "")
     r = dbs["retention"]
-    d.metric("마지막 DB 정리", r["when"] if r else "아직 없음")
-    d.caption((f"행 {r['rows_deleted']} · 파일 {r['files_deleted']} 삭제" + (f" · 오류 {r['error']}" if r["error"] else "")) if r else "월요일 새벽 일일 스캔 직전에 돕니다")
+    with st.container(border=True, key="box_7"):
+        st.markdown("#### DB · 백업")
+        st.markdown(_stat_cards([
+            ("DB 크기", ops_dashboard.fmt_bytes(dbs["bytes"]), f"WAL {ops_dashboard.fmt_bytes(dbs['wal_bytes'])}"),
+            ("저장 논문", f"{t.get('papers') or 0}편", f"요약 {t.get('summaries') or 0}편 · 재현 시도 {t.get('repro_results') or 0}건"),
+            ("최신 백업", dbs["backups"][0]["when"] if dbs["backups"] else "없음",
+             f"보관 {len(dbs['backups'])}개 · 최신 {ops_dashboard.fmt_bytes(dbs['backups'][0]['bytes'])}" if dbs["backups"] else ""),
+            ("마지막 DB 정리", r["when"] if r else "아직 없음",
+             (f"행 {r['rows_deleted']} · 파일 {r['files_deleted']} 삭제" + (f" · 오류 {r['error']}" if r["error"] else "")) if r
+             else "그 주 첫 근무일 새벽 일일 스캔 직전에 돕니다"),
+        ]), unsafe_allow_html=True)
 
-    st.markdown("#### 새벽 실행 기록")
-    runs = ops_dashboard.recent_runs(ROOT, limit=14)
-    if runs:
-        st.dataframe(pd.DataFrame([{
-            "시작(KST)": x["when"], "소요(분)": "—" if x["minutes"] is None else f"{x['minutes']:g}",
-            "결과": _EXIT_LABELS.get(x["exit"], str(x["exit"])),
-            "경고": x["warnings"], "API 호출": "—" if x["api_calls"] is None else str(x["api_calls"]),
-            "발송": " / ".join(f"{pid.replace('team_', '')}: {v.get('delivery', v.get('status', ''))}" for pid, v in x["profiles"].items()) or "—",
-        } for x in runs]), hide_index=True, width="stretch")
-    else:
-        st.caption("logs/daily_scan.log 기록 없음")
+    with st.container(border=True, key="box_8"):
+        st.markdown("#### 새벽 실행 기록")
+        runs = ops_dashboard.recent_runs(ROOT, limit=14)
+        if runs:
+            def _run_row(x: dict) -> str:
+                label = _EXIT_LABELS.get(x["exit"], str(x["exit"]))
+                kind = "ok" if x["exit"] == 0 else ("bad" if x["exit"] in (1, 2) else "")
+                sent = " / ".join(f"{pid.replace('team_', '')}: {v.get('delivery', v.get('status', ''))}" for pid, v in x["profiles"].items()) or "—"
+                mins = "—" if x["minutes"] is None else f"{x['minutes']:g}"
+                return (f"<tr><td>{_h(x['when'])}</td><td class='r'>{mins}</td>"
+                        f"<td class='c'>{_chip(label, kind)}</td><td class='r'>{x['warnings']}</td>"
+                        f"<td class='r'>{'—' if x['api_calls'] is None else x['api_calls']}</td><td>{_h(sent)}</td></tr>")
+            st.markdown("<table class='rm-t'><thead><tr><th>시작(KST)</th><th class='r'>소요(분)</th><th class='c'>결과</th><th class='r'>경고</th>"
+                        "<th class='r'>API 호출</th><th>발송</th></tr></thead><tbody>" + "".join(_run_row(x) for x in runs) + "</tbody></table>",
+                        unsafe_allow_html=True)
+        else:
+            st.caption("logs/daily_scan.log 기록 없음")
 
-    st.markdown("#### 주간 에이전트")
-    agent_rows = []
-    for pid in research_profile.list_profiles(db_path):
-        for run in ops_dashboard.agent_history(db_path, pid, limit=4):
-            agent_rows.append({"주차": run["week"], "프로필": pid, "결과": ops_dashboard.agent_status_label(run),
-                               "제안": len(run["proposed"]), "적용": len(run["applied"]), "기각": len(run["rejected"]), "시각": run["when"]})
-    if agent_rows:
-        st.dataframe(pd.DataFrame(sorted(agent_rows, key=lambda x: (x["주차"], x["프로필"]), reverse=True)), hide_index=True, width="stretch")
-    else:
-        st.caption("아직 실행 없음 — 월요일 새벽 첫 실행. 볼 자료가 없는 프로필은 모델을 부르지 않습니다.")
+    with st.container(border=True, key="box_9"):
+        st.markdown("#### 주간 에이전트")
+        agent_rows = []
+        for pid in research_profile.list_profiles(db_path):
+            for run in ops_dashboard.agent_history(db_path, pid, limit=4):
+                agent_rows.append({"주차": run["week"], "프로필": pid, "결과": ops_dashboard.agent_status_label(run),
+                                   "제안": len(run["proposed"]), "적용": len(run["applied"]), "기각": len(run["rejected"]), "시각": run["when"]})
+        if agent_rows:
+            body = "".join(
+                f"<tr><td>{_h(x['주차'])}</td><td>{_h(x['프로필'])}</td>"
+                f"<td>{_chip(x['결과'], 'bad' if '실패' in x['결과'] else ('ok' if '적용' in x['결과'] else ''))}</td>"
+                f"<td class='r'>{x['제안']}</td><td class='r'>{x['적용']}</td><td class='r'>{x['기각']}</td><td>{_h(x['시각'])}</td></tr>"
+                for x in sorted(agent_rows, key=lambda x: (x["주차"], x["프로필"]), reverse=True))
+            st.markdown("<table class='rm-t'><thead><tr><th>주차</th><th>프로필</th><th>결과</th><th class='r'>제안</th><th class='r'>적용</th>"
+                        "<th class='r'>기각</th><th>시각</th></tr></thead><tbody>" + body + "</tbody></table>", unsafe_allow_html=True)
+        else:
+            st.caption("아직 실행 없음 — 그 주 첫 근무일 새벽 첫 실행. 볼 자료가 없는 프로필은 모델을 부르지 않습니다.")
 
-    left, right = st.columns([3, 2])
-    with left:
+    left, right = st.columns(2)
+    with left.container(border=True, key="box_10"):
         st.markdown("#### 예약 작업(cron)")
         entries = ops_dashboard.cron_entries(ROOT)
         if entries is None:
@@ -877,53 +1284,88 @@ def render_system_page() -> None:
                 sched = " ".join(e.split()[:5])
                 st.markdown(f"- `{sched}` — {hint}")
             st.caption("PC(WSL)가 꺼져 있으면 cron 도 돌지 않습니다.")
-    with right:
+        st.markdown("#### 백업 파일")
+        if dbs["backups"]:
+            st.dataframe(pd.DataFrame([{"파일": x["name"], "크기": ops_dashboard.fmt_bytes(x["bytes"]), "시각": x["when"]} for x in dbs["backups"]]),
+                         hide_index=True, width="stretch")
+        else:
+            st.caption("백업 없음")
+    with right.container(border=True, key="box_11"):
         st.markdown("#### DB 표")
         st.dataframe(pd.DataFrame([{"표": k, "행": v if v is not None else "없음"} for k, v in t.items()]),
-                     hide_index=True, width="stretch", height=300)
+                     hide_index=True, width="stretch", height=360)
 
-    st.markdown("#### 백업")
-    if dbs["backups"]:
-        st.dataframe(pd.DataFrame([{"파일": x["name"], "크기": ops_dashboard.fmt_bytes(x["bytes"]), "시각": x["when"]} for x in dbs["backups"]]),
-                     hide_index=True, width="stretch")
-    else:
-        st.caption("백업 없음")
-
-    st.markdown("#### 로그 보기")
-    logs = sorted(p.name for p in (ROOT / "logs").glob("*") if p.is_file() and p.suffix in (".log", ".txt", ".json"))
-    if logs:
-        default = logs.index("daily_scan.log") if "daily_scan.log" in logs else 0
-        l1, l2 = st.columns([3, 1])
-        name = l1.selectbox("파일", logs, index=default, key="log_pick")
-        n = l2.number_input("마지막 줄 수", min_value=20, max_value=2000, value=200, step=50, key="log_lines")
-        st.code(ops_dashboard.log_tail(ROOT, name, int(n)) or "(비어 있음)", language="text")
+    with st.container(border=True, key="box_12"):
+        st.markdown("#### 로그 보기")
+        logs = sorted(p.name for p in (ROOT / "logs").glob("*") if p.is_file() and p.suffix in (".log", ".txt", ".json"))
+        if logs:
+            default = logs.index("daily_scan.log") if "daily_scan.log" in logs else 0
+            l1, l2 = st.columns([3, 1])
+            name = l1.selectbox("파일", logs, index=default, key="log_pick")
+            n = l2.number_input("마지막 줄 수", min_value=20, max_value=2000, value=200, step=50, key="log_lines")
+            st.code(ops_dashboard.log_tail(ROOT, name, int(n)) or "(비어 있음)", language="text")
 
 
 # ---------------------------------------------------------------- 메인
 
-_PAGES = (("research", "운영 현황"), ("papers", "논문 DB"), ("system", "시스템"))
+_PAGES = (("overview", "개요"), ("papers", "논문"), ("profile", "프로필"), ("activity", "활동 기록"), ("system", "시스템"))
+# 메뉴는 글자만 — 아이콘은 10/1 에 넣었다가 뺐다(외부 의견 "연구관리 도구는 텍스트 + 선택 막대로 충분", 9/17 사용자 결정과 같다).
 
-if st.session_state.get("nav_page") not in {k for k, _ in _PAGES}:
-    st.session_state.nav_page = "research"          # 켜자마자 운영 현황(2026-09-16 사용자 요청)
-
+_ALL_PAGES = {k for k, _ in _PAGES} | {"paper"}        # paper = 논문 상세(메뉴에는 없다 — 제목 링크로 들어온다)
+if st.session_state.get("nav_page") not in _ALL_PAGES:
+    st.session_state.nav_page = "overview"          # 켜자마자 연구 동향(2026-10-01 — 그전엔 운영 현황)
 
 
 def _go(page: str) -> None:
     st.session_state.nav_page = page
+    # URL도 현재 선택을 담아야 링크 이동·뒤로가기에서 같은 화면을 복원한다(2026-10-02).
+    params = {"page": page}
+    if st.session_state.get("_research_selected_profile"):
+        params["profile"] = st.session_state["_research_selected_profile"]
+    st.query_params.from_dict(params)
 
+
+def _select_profile() -> None:
+    """위젯 콜백에서 주소를 맞춰 다음 실행이 옛 URL로 선택을 되돌리지 않게 한다."""
+    st.query_params["profile"] = st.session_state["_research_selected_profile"]
+
+
+_profile_ids = research_profile.list_profiles(server.DB_PATH)
+# 제목 링크(같은 탭) — ?paper=ID[&profile=PID] 는 논문 상세, ?page=papers 는 논문 DB. 새 세션으로 열리므로 보던 프로필도 주소로 넘긴다.
+_qp = st.query_params
+# 폼은 사이드바 뒤에 실행된다. 위젯 생성 이후에는 그 키를 쓸 수 없으므로 다음 실행에서 적용한다.
+_pending = st.session_state.pop("_pending_profile", None)
+if _pending in _profile_ids:
+    _qp["profile"] = _pending
+if _qp.get("paper"):
+    st.session_state.nav_page = "paper"
+    st.session_state["detail_id"] = _qp.get("paper")
+else:
+    st.session_state.nav_page = _qp.get("page") if _qp.get("page") in dict(_PAGES) else "overview"
+if _qp.get("profile") in _profile_ids:
+    st.session_state["_research_selected_profile"] = _qp.get("profile")
+if _profile_ids and st.session_state.get("_research_selected_profile") not in _profile_ids:
+    st.session_state["_research_selected_profile"] = max(
+        _profile_ids, key=lambda pid: (mail_ledger.counts(server.DB_PATH, pid)["issues"], pid == "team_ai_advance"))
+_names = {pid: (ops_dashboard.profile_overview(server.DB_PATH, pid) or {}).get("field", pid) for pid in _profile_ids}
 
 with st.sidebar:
     st.markdown(
-        '<div class="sidebar-brand"><b>최신 연구 동향</b> '
-        '<span class="sidebar-brand-sub">모니터링 에이전트</span></div>',
+        '<div class="sidebar-brand">최신 연구 동향'
+        '<span class="sidebar-brand-sub">Research Monitor</span></div><div class="sidebar-rule"></div>',
         unsafe_allow_html=True,
     )
-    st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
+    if _profile_ids:
+        # 프로필은 개요·프로필·활동 기록이 함께 쓴다 — 메뉴를 옮겨도 보던 프로필이 유지된다.
+        st.selectbox("프로필", _profile_ids, key="_research_selected_profile", format_func=lambda v: _names.get(v, v),
+                     on_change=_select_profile)
+    st.markdown("<div class='sidebar-rule'></div>", unsafe_allow_html=True)
     for key, label in _PAGES:
         # on_click 콜백은 재실행 **앞에서** 돌아 그 한 번의 실행이 이미 새 페이지를 그린다. 그전(`if st.button():` 뒤에 명시적 재실행 호출)에는
         # 클릭 재실행 + 명시적 재실행으로 전환마다 스크립트가 두 번 돌았다(2026-09-17 실측: 브라우저 전환 1.6~2.8초, 첫 방문 4~9초).
+        current = "papers" if st.session_state.nav_page == "paper" else st.session_state.nav_page    # 상세에서는 "논문"이 선택돼 보인다
         st.button(label, key=f"nav_{key}", width="stretch", on_click=_go, args=(key,),
-                  type="primary" if st.session_state.nav_page == key else "secondary")
+                  type="primary" if current == key else "secondary")
     st.markdown("<div class='sidebar-nav-gap'></div>", unsafe_allow_html=True)
     try:
         _status = ops_dashboard.system_status(server.DB_PATH, ROOT)
@@ -934,9 +1376,21 @@ with st.sidebar:
     except Exception:  # noqa: BLE001 — 사이드바 상태가 깨져도 화면은 뜬다
         pass
 
-if st.session_state.nav_page == "papers":
+_page = st.session_state.nav_page
+_selected = st.session_state.get("_research_selected_profile")
+if _page == "paper":
+    render_paper_detail(str(st.session_state.get("detail_id") or ""), _selected)
+elif _page == "papers":
     render_papers_page()
-elif st.session_state.nav_page == "system":
+elif _page == "system":
     render_system_page()
+elif not _selected:
+    st.info("아직 프로필이 없습니다.")
+    with st.expander("새 프로필 만들기", expanded=True):
+        _render_profile_form(server.DB_PATH, existing=None)
+elif _page == "profile":
+    render_profile_page(_selected)
+elif _page == "activity":
+    render_activity_page(_selected)
 else:
-    render_research_tab()
+    render_overview_page(_selected)

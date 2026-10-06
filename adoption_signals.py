@@ -82,8 +82,8 @@ def hub(arxiv_id: str, get: Callable[..., object] = None) -> dict:
     if not isinstance(page, dict) or page.get("error"):
         return {"page": False}
     out = {"page": True, "upvotes": page.get("upvotes"), "github_repo": page.get("githubRepo"),
-           "github_stars": page.get("githubStars"), "n_models": page.get("numTotalModels") or 0,
-           "n_datasets": page.get("numTotalDatasets") or 0, "n_spaces": page.get("numTotalSpaces") or 0, "models": []}
+           "github_stars": page.get("githubStars"), "n_models": page.get("numTotalModels"),
+           "n_datasets": page.get("numTotalDatasets"), "n_spaces": page.get("numTotalSpaces"), "models": []}
     if out["n_models"]:
         try:
             models = get(f"https://huggingface.co/api/models?filter=arxiv:{arxiv_id}&sort=downloads&direction=-1&limit=3"
@@ -255,3 +255,65 @@ def signals_line(sig: dict, today: date | None = None) -> str:
         return f"신규 논문으로 아직 관측 없음(공개 {days}일)" if days is not None and days < 90 else " · ".join(parts) or "관측 없음"
     # 조회 실패 표시는 "관측 없음" 설명으로 덮지 않는다(Codex 최종 검토: 신규 논문 분기가 HF 다운로드 조회 실패를 지웠다).
     return " · ".join(parts)
+
+
+def signal_rows(sig: dict, today: date | None = None) -> list[tuple[str, str]]:
+    """저장 관측을 출처별로 보인다. 최대3개 조회 모델의 합을 HF 전체 합으로 부르지 않는다."""
+    from time_policy import kst_day, parse_iso, to_kst
+    today = today or to_kst(datetime.now(timezone.utc)).date()
+    s, h, g = sig.get("scholarly") or {}, sig.get("hub") or {}, sig.get("github") or {}
+    rows: list[tuple[str, str]] = []
+
+    def count(value: object) -> bool:
+        return type(value) is int and value >= 0
+
+    scholar = []
+    if s.get("error"):
+        scholar.append("조회 실패")
+    else:
+        if count(s.get("citations")):
+            scholar.append(f"인용 {s['citations']:,}회")
+        if count(s.get("influential")):
+            scholar.append(f"영향력 인용 {s['influential']:,}회")
+    days = _days_since(s.get("publication_date"), today)
+    if days is not None and days >= 0:
+        scholar.append(f"공개 {days}일")
+    if scholar:
+        rows.append(("학술", " · ".join(scholar)))
+
+    if g.get("repo") and sig.get("github_tier") in ("official", "author"):
+        repo = ["공식" if sig['github_tier'] == 'official' else "저자 연관", g['repo']]
+        if g.get("error"):
+            repo.append("조회 실패")
+        else:
+            for key, label in (("stars", "★"), ("forks", "Fork ")):
+                if count(g.get(key)):
+                    repo.append(label + f"{g[key]:,}")
+            if parse_iso(g.get("pushed_at")):
+                repo.append(f"최근 push {kst_day(g['pushed_at'])} KST")
+        rows.append(("GitHub", " · ".join(repo)))
+
+    if h.get("error"):
+        rows.append(("Hugging Face", "조회 실패"))
+    elif h.get("page"):
+        hf = []
+        if count(h.get("n_models")):
+            hf.append(f"연결 모델 {h['n_models']:,}개")
+        models = h.get("models") or []
+        if h.get("models_error"):
+            hf.append("모델 다운로드·likes 조회 실패")
+        elif models:
+            hf.append(f"조회 모델 {len(models)}개")
+            for key, label in (("downloads_30d", "30일 다운로드"), ("likes", "Likes")):
+                known = [m[key] for m in models if count(m.get(key))]
+                if known:
+                    hf.append(f"{label} {sum(known):,} (값 확인 {len(known)}개 합)")
+        if count(h.get("upvotes")):
+            hf.append(f"Paper 추천 {h['upvotes']:,}")
+        if hf:
+            rows.append(("Hugging Face", " · ".join(hf)))
+    if not rows:
+        rows.append(("관측", "관측값 없음"))
+    if sig.get("collected_on"):
+        rows.append(("관측일", str(sig["collected_on"]) + " UTC"))
+    return rows

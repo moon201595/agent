@@ -328,3 +328,153 @@ def test_skip_line_from_a_second_trigger_does_not_close_the_running_block(tmp_pa
     real = next(r for r in runs if r["pid"] == 7)
     assert (real["exit"], real["minutes"], real["warnings"]) == (0, 60.0, 1)
     assert [r["exit"] for r in runs] == ["skipped", 0]
+
+
+def test_research_overview_empty_profile_and_missing_db(tmp_path, monkeypatch):
+    """무엇을 망가뜨리면 실패하는가: 없는 프로필을 만들거나 기록 없는 프로필에 서술·논문·깊이를 지어내면 실패한다."""
+    db = tmp_path / "overview.db"
+    assert od.research_overview(db, "missing") is None
+    assert not db.exists()
+    rp.create_profile(db, "p", "분야 — 연구팀", [])
+    monkeypatch.setattr(od, "_parse_daily_log", lambda root: {})
+    got = od.research_overview(db, "p", now=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    assert od.research_overview(db, "missing") is None
+    assert got["profile"] == {"id": "p", "name": "분야 — 연구팀", "field": "분야"}
+    assert got["date"] == "" and got["story"] is None and got["papers"] == []
+    assert got["week"] == {"changes": [], "window": ""} and got["movement"] is None
+    assert got["kpis"] == [("반응 7일", "0건"), ("이번 주 프로필 변화", "0건")]
+    assert got["system"] == {"last_daily": "", "ok": False, "next_daily": "10-02 05:00"}
+
+
+def test_research_overview_records_and_no_verification_kpis(tmp_path, monkeypatch):
+    """무엇을 망가뜨리면 실패하는가: 실패 회차·주간 글을 최신 일일로 삼거나 반응을 중복 집계하거나 검증 수치를 노출하면 실패한다."""
+    import narrative_store
+    import storage
+    import weekly_profile_changes
+    db = tmp_path / "overview.db"
+    now = datetime(2026, 10, 1, 2, tzinfo=timezone.utc)
+    # revision·키워드 이력의 시각은 만들 때 정한다 — 이력 표는 append-only 라 나중에 UPDATE 하면 DB 가 막는다.
+    clock = {"t": now - timedelta(days=8)}
+    monkeypatch.setattr(rp, "_now", lambda: clock["t"].isoformat(timespec="microseconds"))
+    rp.create_profile(db, "p", "분야 — 팀", ["alpha"], core_weights={"alpha": 1.0})
+    clock["t"] = now - timedelta(days=1)
+    rp.create_profile(db, "p", "분야 — 팀", ["alpha", "beta"], core_weights={"alpha": 1.2, "beta": 0.6}, origin="agent")
+    storage.init_storage(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO summaries (arxiv_id,coverage_ratio,coverage_kind,numbers_total,numbers_matched) VALUES ('2609.00001',1,'measured',100,99)")
+    mail_ledger.record_issue(db, "sent", "p", "S", [_paper("2609.00001", "Alpha", ["alpha"])], 2, 1,
+                             when=now - timedelta(hours=6))
+    mail_ledger.record_issue(db, "failed", "p", "F", [_paper("bad", "Bad", [])], 1, 0, when=now)
+    narrative_store.save(db, "p", "daily", "■ 오늘의 한 줄\n흐름 [P1:A]\n\n■ 1. 연결\n설명 [P1:A]\n- Alpha · 원문 분석 [P1:R]",
+                         engine="codex", moment=now - timedelta(days=1))
+    narrative_store.save(db, "p", "weekly", "주간 글", moment=now)
+    _react(db, "sent", "2609.00001", "more", when=now - timedelta(days=1, hours=1))
+    _react(db, "sent", "2609.00001", "useful", when=now - timedelta(days=1))
+    _react(db, "old", "old", "more", when=now - timedelta(days=8))
+    _react(db, "prefetch", "x", "more", status="quarantined_prefetch", when=now - timedelta(days=1))
+    _react(db, "future", "future", "out", when=now + timedelta(days=1))
+    monkeypatch.setattr(od, "_parse_daily_log", lambda root: {
+        "started_at": "2026-09-30T20:00:00+00:00", "finished_at": "2026-09-30T21:00:00+00:00", "exit": 0})
+    # 호출 중 SQL 쓰기를 거부한다. 기존 init_db 를 재사용하면 DDL 시도부터 실패한다.
+    original_connect = sqlite3.connect
+    def readonly_connect(*args, **kwargs):
+        con = original_connect(*args, **kwargs)
+        con.execute("PRAGMA query_only=ON")
+        return con
+    monkeypatch.setattr(sqlite3, "connect", readonly_connect)
+    got = od.research_overview(db, "p", now=now)
+    assert set(got) == {"profile", "date", "kpis", "story", "papers", "week", "movement", "system"}
+    assert got["date"] == "2026-10-01"
+    assert got["story"]["reader_date"] == "2026-09-30" and got["story"]["engine"] == "codex"
+    assert got["story"]["headline"] == "흐름"
+    assert got["papers"] == [{"position": 1, "title": "Alpha", "link": "https://arxiv.org/abs/2609.00001",
+                               "core_hits": ["alpha"], "depth": "원문 분석", "title_ko": "", "card": [],
+                               "paper_id": "", "published": ""}]
+    weekly = weekly_profile_changes.collect(db, "p", now=now)
+    assert got["week"]["changes"] == [
+        {"keyword": "alpha", "before": 1.0, "after": 1.2, "kind": "up", "origin": ""},
+        {"keyword": "beta", "before": None, "after": 0.6, "kind": "new", "origin": "agent"}]
+    assert got["week"]["changes"][0]["after"] == weekly["weights"][0]["after"]
+    assert got["week"]["window"] == "9/24~10/1"
+    assert got["kpis"] == [("핵심 논문", "1편"), ("원문 분석 · 초록 기반", "1 · 0"),
+                           ("반응 7일", "1건"), ("이번 주 프로필 변화", "2건")]
+    assert not any("검증" in label or "건강" in label for label, _ in got["kpis"])
+    assert got["system"] == {"last_daily": "10-01 05:00", "ok": True, "next_daily": "10-02 05:00"}
+
+
+def test_research_overview_depth_uses_saved_evidence(tmp_path, monkeypatch):
+    """무엇을 망가뜨리면 실패하는가: coverage 경계·합성 ID 연결을 틀리거나 요약 없음을 초록 분석으로 추정하면 실패한다."""
+    import narrative_store
+    import storage
+    db = tmp_path / "depth.db"
+    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    rp.create_profile(db, "p", "P", ["alpha"])
+    storage.init_storage(db)
+    with sqlite3.connect(db) as con:
+        for aid, ratio in [("full", 0.98), ("pdf-part", 0.979), ("unknown", None)]:
+            con.execute("INSERT INTO summaries (arxiv_id,coverage_ratio) VALUES (?,?)", (aid, ratio))
+        con.execute("INSERT INTO papers (arxiv_id,title) VALUES ('pdf-part','Partial paper')")
+    papers = [_paper(key, title, []) for key, title in [
+        ("full", "Full"), ("doi:10.1/part", "Partial paper"), ("abs", "Abstract"), ("unknown", "Unknown"), ("none", "Missing")]]
+    mail_ledger.record_issue(db, "issue", "p", "S", papers, 1, 1, when=now)
+    narrative_store.save(db, "p", "daily", "■ 1. 흐름\n내용\n- Abstract · 초록 기반 [P1:A]", moment=now)
+    monkeypatch.setattr(od, "_parse_daily_log", lambda root: {})
+    got = od.research_overview(db, "p", now=now)
+    assert [p["depth"] for p in got["papers"]] == ["원문 분석", "부분 분석", "초록 기반", "", ""]
+    assert "원문 분석 · 초록 기반" not in dict(got["kpis"])
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM mail_issue_items WHERE position>3")
+        con.execute("UPDATE mail_issues SET paper_count=3")
+    got = od.research_overview(db, "p", now=now)
+    assert dict(got["kpis"])["원문 분석 · 초록 기반"] == "2 · 1"
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE profile_narratives SET reader_date='2026-09-30'")
+    assert od.research_overview(db, "p", now=now)["papers"][2]["depth"] == ""
+
+
+def test_digest_extras_reads_korean_titles_and_cards_from_the_saved_digest():
+    """2026-10-01 사용자 지적: 화면의 갈래 목록·핵심 논문에서 메일에 있던 한국어 제목과 펼침 요약이 사라졌다. 한국어 제목은 발송 때만
+    번역되고 따로 저장되지 않으므로 그날 다이제스트 평문에서 읽는다. 망가뜨리면 실패하는 것: 목록 다음 줄(8칸 들여쓰기)의 한국어를 놓치는 것 ·
+    "· 원제 (한국어) — 주소" 줄을 놓치는 것 · 카드 경계(다음 번호·다음 ■ 절)를 넘어 본문을 섞는 것 · 16자 미만 조각을 우연히 맞추는 것."""
+    text = ("■ 오늘의 동향 정리\n"
+            "   - Cooperative Multi-Agent Vision-Language-Action Models (요약 논문 1/5) [P1:A]\n"
+            "        협력형 멀티에이전트 VLA 모델\n"
+            "      · Differentiating Bisimulation Metrics: A Framework (이인과적 프레임워크) — https://arxiv.org/abs/1\n"
+            "■ 오늘의 신규 논문 2편 (전체 후보 9건 중)\n\n"
+            "1. Cooperative Multi-Agent Vision-Language-Action Models via Reinforced Fine Tuning (강화 미세조정 VLA)\n"
+            "   핵심 키워드: vision-language-action\n"
+            "     - 무엇을 하려 했는가 : 협력\n"
+            "2. HACo: Learning Haptic Active Compliance (햅틱 학습)\n"
+            "   [초록 기반 정리 · 본문 미확보 · 미검증]\n"
+            "■ 이번 창의 키워드별 적중 편수\n   섞이면 안 되는 줄\n")
+    ex = od.digest_extras(text)
+    assert od.korean_title("Cooperative Multi-Agent Vision-Language-Action Models via Reinforced Fine Tuning", ex) == "협력형 멀티에이전트 VLA 모델"
+    assert od.korean_title("Differentiating Bisimulation Metrics: A Framework", ex) == "이인과적 프레임워크"
+    assert od.korean_title("HACo: Learning Haptic Active Compliance", ex) == "햅틱 학습"      # 카드 머리의 괄호
+    assert od.korean_title("Cooperative", ex) == ""          # 실제 제목의 앞 조각이라도 16자 미만은 우연히 겹친다 — 맞추지 않는다
+    assert ex["cards"][1]["body"] == ["핵심 키워드: vision-language-action", "  - 무엇을 하려 했는가 : 협력"]
+    assert ex["cards"][2]["body"] == ["[초록 기반 정리 · 본문 미확보 · 미검증]"]
+    assert od.digest_extras(None) == {"ko": [], "cards": {}} and od.digest_extras("낯선 글") == {"ko": [], "cards": {}}
+
+
+def test_issues_by_day_and_month_summary_feed_the_calendar():
+    """활동 기록 달력(2026-10-01). 망가뜨리면 실패하는 것: 같은 날 두 회차를 한 칸에 모으지 않는 것 · 날짜 없는 회차를 칸으로 만드는 것 ·
+    달 요약이 다른 달 회차를 섞는 것 · 논문·반응 수를 회차 수로 세는 것."""
+    issues = [{"day": "2026-10-01", "paper_count": 5, "reactions": 1}, {"day": "2026-10-01", "paper_count": 2, "reactions": 0},
+              {"day": "2026-09-30", "paper_count": 5, "reactions": 2}, {"day": "", "paper_count": 9, "reactions": 9}]
+    by_day = od.issues_by_day(issues)
+    assert set(by_day) == {"2026-10-01", "2026-09-30"}
+    assert (len(by_day["2026-10-01"]["issues"]), by_day["2026-10-01"]["papers"], by_day["2026-10-01"]["reactions"]) == (2, 7, 1)
+    assert od.month_summary(by_day, 2026, 10) == {"mails": 2, "papers": 7, "reactions": 1, "days": 1}
+    assert od.month_summary(by_day, 2026, 9) == {"mails": 1, "papers": 5, "reactions": 2, "days": 1}
+
+
+def test_filter_catalog_by_source_summary_and_period():
+    """논문 DB 필터. 망가뜨리면 실패하는 것: 출처·요약 조건을 안 거는 것 · 기간 경계(오늘 포함 N일)를 하루 어긋나게 자르는 것."""
+    rows = [{"source": "arXiv", "summarized": True, "fetched": "2026-10-01"},
+            {"source": "저널(OA)", "summarized": False, "fetched": "2026-09-25"},
+            {"source": "arXiv", "summarized": False, "fetched": "2026-09-24"}]
+    assert len(od.filter_catalog(rows)) == 3
+    assert [r["fetched"] for r in od.filter_catalog(rows, source="arXiv")] == ["2026-10-01", "2026-09-24"]
+    assert [r["fetched"] for r in od.filter_catalog(rows, summary="없음")] == ["2026-09-25", "2026-09-24"]
+    assert [r["fetched"] for r in od.filter_catalog(rows, days=7, today="2026-10-01")] == ["2026-10-01", "2026-09-25"]
