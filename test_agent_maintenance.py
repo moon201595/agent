@@ -809,3 +809,126 @@ def test_applied_since_compares_in_utc_whatever_zone_the_caller_uses(tmp_path):
             con.execute("INSERT INTO agent_runs (profile_id, week, started_at, finished_at, status, applied_json) "
                         "VALUES ('p',?,?,?,'applied',?)", (week, stamp, stamp, json.dumps([{"term": term}])))
     assert [a["term"] for a in am.applied_since(db, "p", kst(2026, 10, 7))] == ["today"]
+
+# ---------------------------------------------------------------- 정밀도
+def _precision_world(world):
+    b = am.build_brief(world, 'p')
+    b.precision = {f'Q{i}': 'robot manipulation' for i in range(1, 5)}
+    for q in b.precision:
+        b.texts[q] = 'MRI ultrasonic spectroscopy medical imaging robot manipulation'
+    b.liked_texts = []
+    b.delivered = {}
+    b.related_texts = []
+    return b
+
+
+def test_precision_brief_window_dedup_and_delivered(world):
+    """단독 표본 중복·7일 창·Q/D 연결·개념 보호를 망가뜨리면 실패한다."""
+    import mail_ledger
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(world) as con:
+        con.execute("INSERT INTO candidate_observations (scan_id, profile_id, paper_key, title, abstract, core_hits, observed_at) VALUES ('duplicate','p','h1','robot manipulation with tactile skin','tactile skin', '[\"robot manipulation\"]', ?)", ((now-timedelta(hours=1)).isoformat(),))
+        con.execute('UPDATE candidate_observations SET core_hits=? WHERE paper_key="h3"', (json.dumps(['robot manipulation', 'tactile']),))
+        con.execute('UPDATE candidate_observations SET core_hits=?, observed_at=? WHERE paper_key="d0"',
+                    (json.dumps(['robot manipulation']), (now-timedelta(days=8)).isoformat()))
+        con.execute('UPDATE candidate_observations SET core_hits=? WHERE paper_key="d1"', (json.dumps(['robot manipulation']),))
+    mail_ledger.record_issue(world, 'sent', 'p', '테스트', [{**HITS[0], '_score': {'core_hits': ['robot manipulation']}}], 1, 1, when=now-timedelta(days=1))
+    _react(world, 'h1', 'more', issue='sent')
+    mail_ledger.record_issue(world, 'old', 'p', '테스트', [HITS[1]], 1, 1, when=now-timedelta(days=8))
+    mail_ledger.record_issue(world, 'failed', 'p', '테스트', [HITS[2]], 1, 0, when=now-timedelta(days=1))
+    b = am.build_brief(world, 'p', now)
+    assert b.data['precision']['keywords'] == [{'keyword': 'robot manipulation', 'sole_7d': 3, 'hits_7d': 4, 'samples': ['Q1', 'Q2', 'Q3']}]
+    assert len(b.precision) == 3
+    assert all(p['id'] in b.evidence_ids and p['keyword'] == b.precision[p['id']] for p in b.data['precision']['papers'])
+    assert not any('medical imaging' in p['title'] for p in b.data['precision']['papers'])
+    assert [d['id'] for d in b.data['delivered']] == ['D1']
+    assert b.delivered['D1'] == {'positive': True, 'core_concepts': 1}
+    assert b.data['delivered'][0]['more'] == 1
+    assert any('medical imaging' in t for t in b.related_texts)
+    assert am.reader_reason('Q1·D1의 근거') == '근거'
+    b.data.update(reactions=[], trend={}, external={})
+    assert b.has_signal()
+
+
+@pytest.mark.parametrize('ev,weight,why', [(['Q1','Q2'], .6, None), (['Q1'], .6, 'precision_too_few_papers'),
+                                           (['Q1','Q4'], .6, 'precision_evidence_mismatch'),
+                                           (['Q1','Q2'], 1.5, 'no_liked_evidence')])
+def test_precision_weight_rules(world, ev, weight, why):
+    """Q 하향의 키워드 일치·2편·상향 불허를 망가뜨리면 실패한다."""
+    b = _precision_world(world)
+    b.precision['Q4'] = 'another keyword'
+    ok, bad = am.validate([_act('set_weight', 'robot manipulation', ev, weight)], b)
+    if why:
+        assert not ok and bad[0]['reason'] == why
+    else:
+        assert not bad and ok[0]['basis'] == 'precision' and ok[0]['evidence_count'] == 2
+        assert ok[0]['before_weight'] == 1.0
+
+
+@pytest.mark.parametrize('guard,why', [('few','precision_too_few_papers'), ('liked','hits_liked_paper'),
+    ('positive','hits_good_delivered'), ('concepts','hits_good_delivered'), ('core','overlaps_core'),
+    ('target','overlaps_core'), ('seed','overlaps_core'), ('related','hits_related_candidates'),
+    ('umbrella','umbrella_term'), ('hygiene','precision_bad_term')])
+def test_precision_exclude_guards(world, guard, why):
+    """정밀도 제외어의 각 독립 보호 검사를 제거하면 해당 고정 거부 사유가 실패한다."""
+    b = _precision_world(world)
+    term, ev = 'MRI', ['Q1','Q2','Q3']
+    if guard == 'few': ev = ['Q1','Q2']
+    if guard == 'liked': b.liked_texts = ['MRI']
+    if guard in ('positive','concepts'):
+        b.delivered = {'D1': {'positive': guard=='positive', 'core_concepts': 2 if guard=='concepts' else 1}}
+        b.texts['D1'] = 'MRI'
+    if guard == 'core': b.data['profile']['core'].append({'term': 'MRI imaging', 'weight': 1., 'origin': 'user'})
+    if guard == 'target': b.data['profile']['target_domain'].append('MRI imaging')
+    if guard == 'seed': b.data['profile']['seeds'].append({'term': 'MRI imaging', 'origin': 'user'})
+    if guard == 'related': b.related_texts = ['MRI']
+    if guard == 'umbrella': term = 'deep learning'
+    if guard == 'hygiene': term = 'proposed method'
+    if guard in ('umbrella','hygiene'):
+        for q in b.precision: b.texts[q] = term
+    ok, bad = am.validate([_act('add_exclude',term,ev)], b)
+    assert not ok and bad[0]['reason'] == why
+
+
+def test_precision_exclude_apply_report_and_cap(world):
+    """정밀도 적용 revision·보고 편수·주당 2개 상한을 망가뜨리면 실패한다."""
+    b = _precision_world(world)
+    actions = [_act('add_exclude', t, ['Q1','Q2','Q3','Q4']) for t in ('MRI','ultrasonic','spectroscopy')]
+    ok, bad = am.validate(actions, b)
+    assert [a['term'] for a in ok] == ['MRI','ultrasonic']
+    assert bad[0]['reason'] == 'precision_weekly_cap'
+    assert all(a['basis']=='precision' and a['evidence_count']==4 for a in ok)
+    rev = am.apply(world, 'p', ok, b.base_revision, 'precision-test')
+    with sqlite3.connect(world) as con:
+        assert con.execute('SELECT origin FROM profile_revisions WHERE profile_id=? AND revision=?', ('p',rev)).fetchone() == ('agent',)
+    assert 'MRI' in rp.get_profile(world,'p')['exclude']
+    assert am.basis_label(ok[0]) == '정밀도 근거(엉뚱한 후보 4편)'
+    assert digest._reason_groups(ok)[0][1] == '정밀도 근거(엉뚱한 후보 4편)'
+    assert '정밀도 근거(엉뚱한 후보 4편)' in digest._agent_action_line(ok[0], am.OP_LABELS)
+
+
+@pytest.mark.parametrize('eid', ['Q1','D1'])
+def test_precision_cannot_add_keyword(world, eid):
+    """Q·D를 끼워 키워드 추가 요건을 우회하면 실패한다."""
+    b = _precision_world(world)
+    b.delivered['D1'] = {'positive': False, 'core_concepts': 1}
+    b.texts['D1'] = 'spectroscopy'
+    ok, bad = am.validate([_act('add_keyword','spectroscopy',[eid], .5)], b)
+    assert not ok and bad[0]['reason'] == 'precision_not_for_add'
+
+
+def test_precision_runner_weekly_and_pending_reports(world, monkeypatch):
+    """FakeRunner 결과의 정밀도 편수를 저장·주간 메일·운영 보고에서 잃으면 실패한다."""
+    import weekly_profile_changes as changes
+    b = _precision_world(world)
+    monkeypatch.setattr(am, 'build_brief', lambda *args, **kwargs: b)
+    actions = [_act('add_exclude', 'MRI', ['Q1','Q2','Q3']),
+               _act('set_weight', 'robot manipulation', ['Q1','Q2'], .6)]
+    result = am.run_profile(world, 'p', FakeRunner({'actions':actions}, {'reviews':[], 'actions':actions}))
+    assert result['status'] == 'applied'
+    lines, _ = am.pending_report(world, 'p')
+    assert any('제외어 추가: MRI' in ln and '정밀도 근거(엉뚱한 후보 3편)' in ln for ln in lines)
+    assert any('robot manipulation 1 → 0.6' in ln and '정밀도 근거(단독 적중 표본 2편)' in ln for ln in lines)
+    summary = changes._agent_summary(world, 'p', _day(1), (datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat())
+    assert [(a['basis'],a['evidence_count']) for a in summary['applied']] == [('precision',3),('precision',2)]
+    assert digest._reason_groups(summary['applied'])[0][1] == '정밀도 근거(엉뚱한 후보 3편)'

@@ -7368,6 +7368,128 @@ arXiv 경유였다는 사실은 S2 에서도 잘 나온다는 증거가 아니�
       코드 결함·댐 수중 보수·원자간력 현미경이 실렸다. 에이전트는 ACM 워크숍 소개·튜토리얼·기조연설이 카드로 실렸다. 로봇은 대체로 맞고
       `world action model`(후보 92편, 지금 키워드 `world model` 로는 낱말 사이가 달라 안 잡힘)이 빠져 있다. 에이전트는 `harness` 언급 후보 337편.
 
+219. **사용자 승인 키워드 점검과 비연구 제목 선별** (2026-10-06, Codex). 합의 후속: Claude·Codex 가 `event camera` 0.6→0.4(team_vision rev 5, 백업 `papers_20261006T072210Z_pre_event_camera.db`), `image super-resolution` 0.6 유지 — Codex 가 실제 검사 연구(변전소 로봇 점검 영상 초해상도)를 찾았고 Claude 의 "검사 관련 0편"은 abstract_ref 를 복원하지 않은 측정 오류였다.
+
+사용자 승인 변경을 공개 `research_profile.create_profile`로 각 프로필 최신 revision에서 한 번씩 적용했다. origin=user, note=`2026-10-06 사용자 승인 키워드 점검(§219)`이다. 메일 발송·스키마 변경·커밋·push는 하지 않았다.
+
+WAL 포함 sqlite3 backup API 백업: `data/backups/papers_20261006T061721404426Z_pre_keyword_review.db`. 백업의 integrity_check=ok를 확인한 뒤 썼다. 전후 get_profile과 원시 키워드 행을 대조해 아래 항목만 바뀐 것을 확인했고, target·s2_seed·다른 가중치·venues·편수·일정은 보존했다. 추가 core의 keyword_provenance와 추가 exclude의 활성 세대 provenance_origin은 모두 user다.
+
+- team_vision: revision 3→4. core `defect detection` 1.0→0.6. 추가 core: `anomaly generation` 0.6, `defect generation` 0.6. 추가 exclude: `MRI`, `ultrasonic`, `eddy current`, `code generation`.
+- team_robot: revision 8→9. core `autonomous driving` 0.6→0.4. 추가 core: `world action model` 0.7, `egocentric video` 0.4. 추가 exclude: `surgical`, `laparoscopic`.
+- team_agent: revision 7→8. core `agentic AI` 1.0→0.8. 추가 core: `agent harness` 0.6, `harness engineering` 0.6. 추가 exclude: 없음.
+
+#### 읽기 전용 top-5 반사실 재채점
+
+`impact_of`는 analyze_and_store로 쓰므로 그 계산 함수인 `profile_impact.snapshot`(mode=ro URI)와 `impact`를 직접 사용했다. 최근 28일 고유 후보에 같은 새 제목 규칙을 전후 모두 적용했다. 이미 보낸 키는 양쪽에서 동일하게 빼는 delivery_view를 다음 전달 후보 영향으로 보고, 전체 관측 영향도 구분한다. 분석 결과를 운영 DB에 쓰지 않았다. 저장 후보를 재채점한 결과이며 미래 검색·실제 발송 결과는 미실측이다.
+
+**team_vision**
+창 `2026-09-08T06:17:21.404426+00:00` 이상·`2026-10-06T06:17:21.404426+00:00` 미만, 고유 후보 3689편, 초록 손상 0편.
+
+전달 후보 top-5 이탈:
+- Comprehensive review of weld defect detection based on machine vision
+- All-In-One Nanoprobing Technique on Advance Technology Node FEOL
+- Weak defect detection on steel surfaces via uncertainty-guided sparse attention and hierarchical feature fusion
+- CMRN-DETR: A Context-Guided and Feature-Aware Model for Detecting Small-Scale Defects in Insulators
+- VarCHEKER: A Variability-Based Static Analyzer for Python Applications
+
+전달 후보 top-5 진입:
+- Traceable Point-Cloud Inspection of Variable-Diameter Steel Pipes Using Multi-Scale Residual Projection and Field-Oriented Joint Calibration
+- ToF Intensity-Guided Cross-Modal Region of Interest Generation for Metal Surface Defect Detection
+- Recent advances in structural health monitoring for offshore wind turbine blades: A review of physics-based models, data-driven methods, and surface defect detection
+- Risk-Calibrated Few-Shot Industrial Anomaly Detection with Human-in-the-Loop Inspection
+- Cleaning Contaminated Reference Sets for Few-Shot Visual Anomaly Detection
+
+전체 관측 top-5 이탈:
+- A Comparative Evaluation of Rule-Based and Deep Learning Approaches for SAM Inspection of QFN Packages
+- Comprehensive review of weld defect detection based on machine vision
+- GLA-YOLO: A Lightweight Solar Cell Defect Detection Network Based on Spatial-Channel Collaborative Attention
+- Fabric defect detection and classification via LBP–GLCM–HOG feature fusion and MRF-based segmentation
+
+전체 관측 top-5 진입:
+- Fine-Grained Hierarchical Perception Siamese Network for Battery Surface Defect Detection
+- Traceable Point-Cloud Inspection of Variable-Diameter Steel Pipes Using Multi-Scale Residual Projection and Field-Oriented Joint Calibration
+- ToF Intensity-Guided Cross-Modal Region of Interest Generation for Metal Surface Defect Detection
+- PCB-MC: Missing Component Analysis in Printed Circuit Boards
+
+**team_robot**
+창 `2026-09-08T06:17:21.404426+00:00` 이상·`2026-10-06T06:17:21.404426+00:00` 미만, 고유 후보 4480편, 초록 손상 0편.
+
+전달 후보 top-5 이탈:
+변경 없음.
+
+전달 후보 top-5 진입:
+변경 없음.
+
+전체 관측 top-5 이탈:
+변경 없음.
+
+전체 관측 top-5 진입:
+변경 없음.
+
+**team_agent**
+창 `2026-09-08T06:17:21.404426+00:00` 이상·`2026-10-06T06:17:21.404426+00:00` 미만, 고유 후보 6345편, 초록 손상 0편.
+
+전달 후보 top-5 이탈:
+- A critical assessment of the rise of agentic AI, its capabilities, task domains and open challenges
+
+전달 후보 top-5 진입:
+- VERSE: Verified Self-Evolving Optimizer for Agent Harnesses
+
+전체 관측 top-5 이탈:
+- A critical assessment of the rise of agentic AI, its capabilities, task domains and open challenges
+
+전체 관측 top-5 진입:
+- LLMA-UML: Extending the UML for Modeling LLM-Agent Systems
+
+#### 제목 선별과 검증
+
+운영 search_candidates의 workshop·tutorial·keynote·panel·proceedings 관련 고유 제목 21개를 mode=ro로 조회했다. 규칙 적중 12개·보존 9개이며, 사용자 지적 실제 제목 네 개가 모두 적중한다. selection.non_research_title은 대소문자 무시로 `Workshop on`, `Tutorial on`, `A Tutorial`, `(Keynote)`, `(Workshop)`, 제목 시작 `Keynote:`, `Panel:`, `Proceedings of` 및 숫자 서수로 시작하는 Workshop on 구문을 검사한다. 일반 workshop·tutorial 낱말은 막지 않는다. 연구를 보고하는 제목의 행사 언급을 보존하기 위해 구문을 좁혔다(2026-10-06).
+
+profile_scoring.score_paper의 제외어와 같은 적격성 경로에 붙였다. 제외 후보는 dropped, filter_reason=non_research_title, rank_pos=NULL로 기록된다. 메일은 기존 제외 규칙 합계에 포함하고 `(제외어·비연구 제목)`이라고 밝힌다. 순위 튜플·합산 재정렬은 바꾸지 않았다.
+
+실제 문제 제목 네 개는 생산 score_paper·score_and_rank에서 제외된다. 정상 연구 예인 Bee-Bot 교육 자원 사례 연구, 자동 운전의 participatory workshop 종합 연구, VidTutorAssistant의 tutorial 질문 응답 연구, Ergodic Control의 Review and Tutorial은 보존된다. 이는 제목 규칙의 오탐 확인이며 모든 논문의 연구성 수작업 전수 검증은 미실측이다. 새 통합 테스트는 실제 임시 스캔에서 네 후보의 사유·rank_pos·메일 집계까지 고정값으로 검사한다. 각 테스트 docstring에 어떤 변경이면 실패하는지 적었다.
+
+초기 집중 검증 34 passed / 2.05초(제목·순위 계약), 통합 테스트 추가 뒤 제목 테스트 14 passed / 1.21초, 경고 0. 변이 사본은 루트 *.py·pytest.ini·prompts/만 복사하고 .venv를 심볼릭 링크로 둔다. 사내 문서·.env·data는 담지 않았다. 통합 테스트까지 포함한 최종 변이 사본 `/tmp/keyword-mutations-enps08xh`에서 호출 제거는 9 failed / 1.08초, Workshop on 패턴 제거는 2 failed / 0.78초, (Keynote) 패턴 제거는 2 failed / 0.76초로 세 변이 모두 exit=1 및 FAILED를 확인했다. 나머지 5·12·12 테스트는 각각 passed였다.
+
+첫 전체 pytest는 test_briefing의 13번째 테스트에서 진행이 멈춰 중단했다. 프로젝트 밖 최소 코드 `asyncio.run(asyncio.to_thread(lambda: 42))`도 42를 반환한 뒤 shutdown_default_executor에서 멈췄다. 이 첫 시도는 green이 아니다. 종료 대기에서만 0.05초 타이머로 selector를 깨우는 외부 sitecustomize를 사용해 전체를 재실행했다. 저장소·테스트 기대값은 이 우회를 위해 바꾸지 않았다. 외부 실행 보조 하에서 인자 없는 `.venv/bin/python -m pytest` 전체는 **1,534 passed / 122.99초 / 경고 0**이다(기준선 1,520 + 새 테스트 14). 원시 실행 환경에서 보조 없는 종료 완료는 미확인이다. 테스트 결과를 green으로 만들기 위한 기대값 변경·skip 추가는 하지 않았다. 실행 로그는 `/tmp/keyword-review-pytest-final.txt`, 종료 대기 진단 로그는 `/tmp/keyword-review-debug.txt`다. 백업 대비 모든 테이블 행을 대조해 profiles·profile_keywords·profile_revisions·profile_keyword_events만 변경됐음을 확인했다. revision 행 증가는 정확히 3행, provenance 이벤트 증가는 12행이다. 프로필 updated_at 외 메타데이터는 백업과 동일하다. 테스트·분석에서 운영 .env를 읽지 않도록 외부 sitecustomize로 해당 경로의 존재 확인을 False로 반환했다. 가짜 .env를 사용하는 설정 테스트에는 영향을 주지 않는다.
+
+#### 보류 vision 키워드 독립 확인과 의견
+
+운영 candidate_observations의 team_vision, observed_at>=2026-09-15를 mode=ro로 조회하고 저장 core_hits 적중을 세었다. 복원된 제목·초록에 생산 raw_hits 매처로 다시 적중을 계산해 고유 적중 집합이 11편·24편으로 저장 적중과 차집합 0편임을 독립 확인했다. 중복 관측과 고유 paper_key를 분리하고 abstract_ref를 보유 관측으로 복원했다. image super-resolution은 31회 관측·고유 11편, 단독 28회·고유 10편이다. event camera는 94회·고유 24편, 단독 91회·고유 23편이다. 두 키워드 origin=user와 현재 core 0.6을 확인했고 변경하지 않았다.
+
+제시된 단서 정규식 그대로 검사하면 초해상도는 14회 관측·고유 4편, event camera는 11회·고유 2편이 맞는다. 초해상도는 quality가 영상 품질을 뜻하는 세 편 외에 `Motion-aware video super-resolution reconstruction network`가 실제 robotic inspection of distribution substations, equipment-defect detection을 명시한다. event camera의 두 편은 representation quality와 equality 때문에 맞아 검사 관련성 근거가 되지 않는다. 따라서 Claude의 검사 단서 0편 주장은 복원 초록 기준으로 일치하지 않는다.
+
+초해상도 outcome은 title_only 2회·reserve 23회·dropped 6회다. event camera는 reserve 90회·dropped 4회다. 두 키워드 적중 고유 논문 중 profile_shown 기록은 각각 0편이다. title_only 관측은 발송 카드 증거가 아니다. Claude의 dropped·reserve뿐이라는 주장은 초해상도 관측 전체 기준으로 일치하지 않는다.
+
+의견: image super-resolution은 검사에 연결되는 실제 후보가 있어 **0.6 유지**한다. event camera는 관측 기간 검사 연구·발송 카드 근거가 없고 단독 적중 23/24편이어서 **0.4 하향**한다. 이는 관측 범위의 판단이며 미래 검색 가치·피드백 선호는 미실측이다. 삭제하지 않고, 두 가중치는 이번 revision에서 그대로 0.6으로 보존했다. 별도 합의 적용은 남아 있다.
+
+220. **세미나 내부 구조·보안 경계·과제 계획 도식** (2026-10-06).
+
+사용자가 9/20 결과물 중심 발표 뒤 받은 피드백(전체 시스템, 모듈별 핵심 아이디어, API/코드, 신뢰·접속 허용, 이어지는 과제 계획)을 바탕으로 내부 설명 자료를 요청했다. Diagram Design 스킬을 사용했고, 사용자 선택인 현재 UI의 청록/회색 톤을 적용했다. 원본 `피드백_반영_보고_원본.pptx` 13장 텍스트와 현재 주요 호출 경로를 로컬에서 읽었다. `.env`·`docs/patent`·`docs/paper`는 읽지 않았다. 운영 DB는 프로필/키워드에 한해 URI mode=ro/query_only로 조회했다.
+
+산출물은 `data/seminar_internal_2026-10-06/`: 발표 구성/멘트/모듈·API/접속 경계/의사코드/평가 계획 Markdown, 18장 HTML, 독립 도식 HTML 12개, 실제 함수 위치 42개 및 파일 해시 JSON, 확인 한계와 배치 검증 기록이다. 전체도·일일 실행·근거·구조 동향·일일 가중치·주간 관리·정찰·메일 감사·코드 재현·shadow·과제 확장·평가 순서를 분리했다. 여섯 의사코드는 HTML 도식 아래에서 펼쳐 볼 수 있다. ‘shadow 코드’는 문맥상 의사코드로 해석했으며 실제 shadow_search 기능과 구분했다. 산업 이상 탐지 예시와 과제 확장/평가 두 도식은 향후 제안이다. 25분/10분 구성은 발표 시간 제안이며 미실측이다.
+
+현재 구현을 확대 주장하지 않았다. Python 규칙 검증/사용자 키워드 보호, 일일 가중치 하루 최대0.1, 외부만으로 키워드 추가 시 놓친2편·0.7상한·부정 충돌 없음, 선택적 과거 연결을 코드 근거로 설명했다. 영향/shadow는 자동 차단 게이트가 아니라 기록 기능이다. 최종 메일 링크 감사와 원문 다운로드/웹검색 정책을 구분했고, OA 경로 DNS 해석 사설 주소 차단의 확인 공백·반응 링크 예외 범위·clone/빌드/실행의 네트워크 경계도 표시했다. 원문 숫자 존재·같은 조건 관측 비교·설치/실행 성공·SMTP 수락을 의미/성능 진실성·논문 성능 재현·수신함 도착/읽음과 각각 구분했다.
+
+산출물 검사: Diagram Design self_check 13개 HTML 통과. 로컬 Chromium 1440/390px에서 18장·12도식·펼침 의사코드6개를 검사해 페이지 가로 넘침/글자 겹침·경계 넘침/다른 노드와 보조 문구를 통과하는 선/선 중첩/ID 중복/외부 요청이 모두0이었다. 인쇄 CSS 가로 잘림0, 함수 근거 파일 해시 일치. 전체도·주간·메일 보안·평가 도식 네 개를 캡처로 직접 확인했다. 첫 Chromium 실행은 제한 환경의 shutdown EPERM으로 실패했으며, 동일 검증기를 허용된 실행 경계에서 실행한 결과다. 메일 감사 노드 높이112→128, 전체도 하단 돌아오는 선 y592→576으로 실제 여백 결함을 고친 뒤 동일 경계 검사로 통과했다.
+
+이번 작업은 발표 산출물과 이 기록만 작성했다. 기존 공동 작업의 운영 코드/테스트 변경은 건드리지 않았다. 운영 DB·원본 PPTX 수정, 메일 발송, 스키마 변경, 커밋·push는 하지 않았다. 전체 pytest는 이번 발표 작업에서 실행하지 않았다. 실제 프로젝터/다른 OS/메일 클라이언트 배치, 장기 적응 효과·보안 공격·논문 성능 재현·과제 성과는 미실측이다.
+
+221. **단독 적중 정밀도 표본으로 가중치 하향과 신중한 제외어 추가를 허용한다** (2026-10-06)
+   - 사용자 결정: Q(최근 7일 단독 적중)·D(발송 핵심 카드)를 주간 브리프에 더한다. Python은 제외어 Q 3편·좋아요/잘 맞는 카드/28일 관련 후보 보호·핵심/도메인/검색어 보호·용어 위생·주당 2개를 강제한다. 사용자 최초 키워드도 Q 2편 근거로 하향할 수 있고 삭제 보호는 유지한다.
+   - 구현: `agent_maintenance`에 Q/D·전체 글 보호·개념 폭 재사용·별도 거부 사유·basis/편수 저장을 더했다. 실제 메일은 pending_report를 쓰지 않으므로 `weekly_profile_changes`의 적용 결과 전달과 `digest`의 근거 딱지도 연결했다. 중복 후보는 가장 최근 관측 하나로 Q를 선정하고, 28일 관련 후보 보호는 어떤 관측에서든 개념 둘이 함께 걸린 논문을 중복 제거한다. Q 검증 글은 모델에 보낸 잘린 표본, D/관련 보호 글은 전체 초록이다.
+   - 집중 테스트: 기존 43 passed/11.50초, 새 18개 포함 61 passed/36.78초. 첫 새 브리프 테스트는 발송 카드 픽스처에 _score.core_hits가 없어 실패했고 실제 카드 적중 정보를 픽스처에 넣어 수정했다. 기대값을 낮추지 않았다. 최종 보고 경로 통합 테스트까지 정밀도 19개를 검증했다.
+   - 허용 목록 사본 `/tmp/precision-mutations-zv_cpz9p`(루트 *.py·pytest.ini·prompts, .venv 심볼릭 링크)에서 기준선 18 passed, 검사 제거 변이 10개(a 편수, b 좋아요, c 발송 보호, d 겹침, e 관련 후보, f 우산어·용어 위생, g 상한, Q 키워드 일치·2편) 모두 실제 FAILED/exit1이다. 최종 코드 사본 `/tmp/precision-mutations-44geat04`에서도 기준선 19 passed/6.53초와 변이 10개 전부 FAILED/exit1을 확인했다.
+   - 초기 집중 pytest에서 공용 config import의 운영 .env 자동 읽기를 차단하지 않은 실수가 있었다(값 출력은 없음). 이후 작업 A의 `/tmp/keyword-review-guard/sitecustomize.py`를 PYTHONPATH에 두어 운영 .env 존재 확인을 차단하고, asyncio executor 종료 대기의 selector 깨우기 보조를 사용한다. 저장소 설정/기대값/skip은 이 보조를 위해 변경하지 않았다.
+   - 운영 DB는 URI mode=ro + PRAGMA query_only=ON 연결에서 sqlite backup으로 `/tmp/precision-operational.db` 사본을 만들었다. 모델 호출 없이 사본의 새 Q/D 칸 직접 실측을 완료했다. 운영 DB 쓰기·메일 발송·스키마 변경·커밋은 하지 않는다.
+   - 보고 통합까지 정밀도 집중 19 passed/12.09초. 전체 회귀 중간 실행은 1,552 passed/221.42초/경고 0이었다(작업 A 기준선 1,534 + 정밀도 18개). 보고 통합 테스트 한 개를 추가한 최종 인자 없는 `.venv/bin/python -m pytest`는 외부 가드 하에서 **1,553 passed / 174.80초 / 경고 0**이다(작업 A 1,534 + 새 19개). 로그 `/tmp/precision-pytest-complete.txt`. 보조 없는 원시 환경의 executor 종료 완료는 미확인이다. 중복 실행 첫 회귀는 종료 확인 전 중단(exit130)했으며 green으로 세지 않는다. 최종 코드 git diff --check 통과.
+   - 새 Q/D 칸 직접 실측(모델 호출 없음): 현재 revision team_vision 5/team_robot 9/team_agent 8, sent 카드 D는 각각 20편이다. 키워드별 단독/전체 적중은 아래와 같다. 자료 `/tmp/precision-fields-measure.jsonl`·`/tmp/precision-fields-validation.jsonl`. 기존 비정밀도 탈락 용어 탐색이 오래 걸려 새 생산 함수 `_precision_evidence`를 직접 호출하고 동일한 좋아요/프로필 보호 자료로 validate를 구성한 측정이다. 전체 build_brief의 두 추가 실행은 기존 term_discovery.discover의 탈락 용어 부분 포함 비교에서 지연되어 중단했다(exit130). 그 실행을 브리프 완료로 세지 않는다. 새 Q/D 생산 함수 직접 실측은 세 프로필 모두 완료했다.
+     - team_vision: vision-language model 256/262, defect detection 55/67, visual inspection 18/25, unsupervised anomaly detection 15/19, surface defect detection 9/15, vision foundation model 9/12, event camera 8/9, industrial anomaly detection 6/12. defect detection 표본은 VisAudit, Advancing Textile Membranes through Simulation, Functionalization, and AI‐Assisted Structural Monitoring, Weak defect detection on steel surfaces via uncertainty-guided sparse attention and hierarchical feature fusion, Dynamic scale fusion network for enhanced defect detection in aviation connectors, Label-free defect detection of underwater piles from sonar point clouds via topology-aware pseudo supervision이다. 직물 막/소나 표본은 확인됐지만 마지막 세 표본은 복원 초록이 비어 제목만 보인다. visual inspection 표본에는 From tumour classification to tumour margin assessment: a scoping review of intraoperative IDH-linked detection in diffuse glioma surgery가 있다.
+     - team_robot: reinforcement learning 492/573, world model 104/152, vision-language-action 68/149, digital twin 33/40, autonomous driving 24/38, spatial reasoning 21/30, robotic manipulation 19/75, robot manipulation 17/49. world model 표본: EMPIRIC: Experiment-Driven Learning of Residual World Models for Robot Planning, RoGSW4RLD: Feed-Forward 4D Gaussian Lifting for Robot World Model Rollouts, Bilinear World Models: Learning Representations with Structured Dynamics for Efficient Control.
+     - team_agent: LLM agent 188/344, multi-agent system 116/163, coding agent 102/150, agentic AI 93/141, retrieval-augmented generation 87/112, tool use 50/116, embodied agent 43/52, long-horizon task 42/72. LLM agent 표본: Verify, Don't Trust: Agentic Model Development for Video Discovery Retrieval at Scale, ArenaFlow: From Trajectory Ranking to Hierarchical Credit Propagation for Open-Ended Agent RL, Bayesian Belief Layer for Controllable Opinion Dynamics in LLM Agents.
+   - 가상 MRI/ultrasonic 제외: 세 프로필 모두 Q 텍스트에서 실제 적중 표본 0편이다. 빈 evidence는 no_evidence다. 존재하는 전체 Q를 인용하면 team_vision은 오늘 사용자 변경으로 MRI·ultrasonic이 이미 제외어라 already_known, team_robot/team_agent는 조건 a의 precision_too_few_papers로 거부된다. 9/15 이후 배경 119/66 수치는 재측정하지 않았다. 7일·최신 5편 표본에는 당시 의료 사례가 안 잡힐 수 있다. 관련 후보 보호 자료는 vision 69편/robot 534편/agent 534편이다. 후보의 의미상 분야 판정·실제 모델 제안·장기 적응 효과·수신앱/UI 실렌더는 미실측이다.
+
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

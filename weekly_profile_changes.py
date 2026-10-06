@@ -318,6 +318,8 @@ def _agent_summary(db: Path, profile_id: str, start_iso: str, end_iso: str) -> d
                     out["applied"].append({"op": action.get("op"), "term": action.get("term"),
                                            "weight": action.get("weight"),
                                            "basis": action.get("basis"),
+                                           "evidence_count": action.get("evidence_count"),
+                                           "before_weight": action.get("before_weight"),
                                            "reason": (action.get("reason") or "").strip()})
             except json.JSONDecodeError:
                 pass

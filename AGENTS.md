@@ -103,8 +103,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - `docker_runner.py` — ⑦ 격리 실행. `reproduce(arxiv_id)` 가 이 저장소의 유일한 자율 재시도 루프다(최대 3회).
 - `digest.py` · `trend_report.py` · `email_delivery.py` — ⑨ 배달.
 - `feedback_links.py`(반응 버튼 서명·수집) → `feedback_weights.py`(매일 스캔 직전 가중치 조정, Python 만) → `agent_maintenance.py`(주 1회 키워드·검색어·
-  제외어 조정). 셋 다 `create_profile` revision 으로 쓰고 origin 이 `feedback`·`agent` 로 갈린다. 에이전트 변경의 검증 규칙(좋아요 근거·제외어 2편·
-  사용자 키워드 삭제 금지)은 프롬프트가 아니라 `agent_maintenance.validate` 가 강제한다 — 두 모델이 동의해도 통과 못 한다.
+  제외어 조정). 셋 다 `create_profile` revision 으로 쓰고 origin 이 `feedback`·`agent` 로 갈린다. 에이전트 변경의 검증 규칙(좋아요 근거·관심 밖 반응 제외어 2편 또는 정밀도 Q 3편과 보호 검사·정밀도 제외어 주당 2개·
+  Q 2편에 따른 가중치 하향·사용자 키워드 삭제 금지)은 프롬프트가 아니라 `agent_maintenance.validate` 가 강제한다 — 두 모델이 동의해도 통과 못 한다.
 - `mail_ledger.py`(발송 회차·논문 기록) · `ops_dashboard.py`(운영 화면 자료 — 화면 `review_app.render_research_tab` 은 그리기만) ·
   `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시) →
   `research_frontier.py`(성능 동향 — `arxiv_tables` 표 셀 → `performance_results` → 관측 DB `frontier_store` → 하루 2편 `external_evidence` 외부 비교,

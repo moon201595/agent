@@ -373,7 +373,8 @@ async def scan_profile(
                 if outcome == research_profile.OUTCOME_FILTERED:
                     row["filter_reason"] = research_profile.FILTER_ALREADY_SHOWN
                 elif sc.get("excluded"):
-                    row["filter_reason"] = research_profile.FILTER_EXCLUDE_HIT
+                    # 제목 행사 소개와 제외어를 구분해 사후 탈락 원인을 보존한다(2026-10-06).
+                    row["filter_reason"] = sc.get("filter_reason") or research_profile.FILTER_EXCLUDE_HIT
                 elif not sc.get("core_hits"):
                     row["filter_reason"] = research_profile.FILTER_NO_CORE_HIT
                 else:

@@ -126,3 +126,18 @@ def dedupe_and_rank(papers: list[dict], top_k: int) -> dict:
         "selected_count": len(selected),
         "papers": selected,
     }
+
+
+# 행사 소개가 연구 카드 자리를 먹은 운영 사례를 막는다(2026-10-06).
+# 낱말 전체를 막으면 workshop 사례 연구·tutorial 질문 응답 연구도 사라지므로 구문만 본다.
+_NON_RESEARCH_TITLE = re.compile(
+    r"\bworkshop on\b|\btutorial on\b|\ba tutorial\b|"
+    r"\(\s*(?:keynote|workshop)\s*\)|^\s*(?:keynote|panel)\s*:|"
+    r"^\s*proceedings of\b|^\s*\d+(?:st|nd|rd|th)\s+(?:joint\s+)?workshop on\b",
+    re.IGNORECASE,
+)
+
+
+def non_research_title(title: str | None) -> bool:
+    """행사 소개의 명시적 제목 구문만 거른다. 연구 내용의 workshop 언급은 보존한다(2026-10-06)."""
+    return bool(_NON_RESEARCH_TITLE.search(title or ""))

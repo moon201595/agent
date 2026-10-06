@@ -1001,7 +1001,8 @@ def _filtered_line(scan_result: dict) -> str:
         parts.append(f"이미 보낸 논문 {seen}건")
     excluded = scan_result.get("excluded_count", 0)
     if excluded:
-        parts.append(f"제외 규칙 {excluded}건")
+        # 제목 규칙도 이 합계에 들어가므로 제외어만 센 것처럼 보이지 않게 밝힌다(2026-10-06).
+        parts.append(f"제외 규칙 {excluded}건(제외어·비연구 제목)")
     unmatched = scan_result.get("unmatched_count", 0)
     if unmatched:
         parts.append(f"조건 불일치 {unmatched}건")
@@ -1365,7 +1366,12 @@ def _agent_labels() -> tuple[dict, dict]:
 def _agent_action_line(action: dict, labels: dict) -> str:
     op = labels.get(action.get("op"), action.get("op"))
     weight = f" → {action['weight']}" if action.get("weight") is not None else ""
+    if action.get("before_weight") is not None:
+        weight = f" {action['before_weight']:g} → {action['weight']:g}"
     basis = _BASIS_LABEL.get(action.get("basis"), "")
+    if action.get("basis") == "precision":
+        from agent_maintenance import basis_label
+        basis = basis_label(action)
     return f"{op} : {action.get('term')}{weight}" + (f"  [{basis}]" if basis else "")
 
 
@@ -1432,7 +1438,7 @@ def _move_facts(w: dict) -> str:
     return f"{w['before']:.2f} → {w['after']:.2f} ({sign}{abs(w['delta']):.2f})"
 
 
-_BASIS_LABEL = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거", "maintenance": "관측 근거",
+_BASIS_LABEL = {"precision": "정밀도 근거", "feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거", "maintenance": "관측 근거",
                 "external": "외부 정찰 근거", "feedback+external": "반응·외부 정찰 근거", "trend+external": "동향·외부 정찰 근거",
                 "feedback+trend+external": "반응·동향·외부 정찰 근거"}      # agent_maintenance.BASIS_LABELS 와 같다(테스트가 본다)
 
@@ -1448,6 +1454,9 @@ def _reason_groups(applied: list) -> list[tuple[str, str, list[str]]]:
         if action.get("term") and reason:
             groups.setdefault(action["term"], []).append(reason)
             label = _BASIS_LABEL.get(action.get("basis"))
+            if action.get("basis") == "precision":
+                from agent_maintenance import basis_label
+                label = basis_label(action)
             if label:
                 basis.setdefault(action["term"], label)
     return [(term, basis.get(term, ""), reasons) for term, reasons in groups.items()]

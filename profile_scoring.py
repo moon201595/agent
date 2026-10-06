@@ -1,4 +1,4 @@
-"""profile_scoring.py — Fast Layer 2차 스코어링 (신설, selection.py 확장 아님).
+"""② 중복 제거·선별 — 프로필 적격성과 순위 설명을 결정적으로 계산한다.
 
 2026-08-24 설계 리뷰에서 확인한 것들을 전제로 짰다:
 
@@ -526,8 +526,12 @@ def score_paper(paper: dict, profile: dict, weights: Weights = Weights()) -> dic
     text = _paper_text(paper)
 
     exclude_hits = _find_hits(text, profile.get("exclude", []))
-    if exclude_hits:
+    # 행사 소개는 제외어와 같은 적격성 경로에서 막아 카드·예비 후보를 함께 지킨다(2026-10-06).
+    from selection import non_research_title
+    non_research = non_research_title(paper.get("title"))
+    if exclude_hits or non_research:
         return {"priority": 0.0, "excluded": True, "exclude_hits": exclude_hits,
+                "filter_reason": "non_research_title" if non_research else "exclude_hit",
                 "core_hits": [], "core_weight": 0.0, "top_core_weight": 0.0,
                 "domain_hits": [], "venue_hit": None, "recency": None,
                 "full_text": has_full_text_route(paper), "primary_hit": ""}

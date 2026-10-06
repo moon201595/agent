@@ -5,7 +5,8 @@
   구독 CLI 를 헤드리스로 부른다(`claude -p` · `codex exec`). API 결제를 붙이지 않는다(규칙 6).
 - 둘의 의견이 갈리면 **Codex 판정이 이긴다**(사용자 결정). Codex 가 돌려준 최종 목록만 적용 후보다 —
   Claude 가 낸 것이라도 Codex 목록에 없으면 적용하지 않는다.
-- 주당 변경 개수 상한은 두지 않는다(사용자 결정). 대신 변경 하나하나를 Python 이 브리프 증거와 대조한다.
+- 일반 변경에는 주당 개수 상한을 두지 않는다. 정밀도 제외어만 주당 2개로 제한한다(2026-10-06 사용자 결정).
+  변경 하나하나를 Python 이 브리프 증거와 대조한다.
 - 두 CLI 모두 **도구 없이** 돈다 — Claude `--tools ""`, Codex `--disable shell_tool`. 2026-09-15 실측: 도구를
   끄면 저장소 README 첫 줄을 못 읽었고(could_read=false) 켠 대조군은 읽었다. 브리프에는 논문 제목·초록(비신뢰
   입력)이 들어가므로, 모델이 거기 적힌 문장에 끌려가도 파일·네트워크에 손댈 수 없어야 한다(규칙 4·5).
@@ -47,12 +48,18 @@ MAX_REACTED_PAPERS = 40                     # 입력 크기 상한(변경 개수
 MAX_TERM_CHARS = 80
 MAX_REASON_CHARS = 200
 PROMPTS = Path(__file__).resolve().parent / "prompts"
-PROMPT_VERSION = "agent-v3-external"
+PROMPT_VERSION = "agent-v4-precision"
 # 외부 정찰 근거만으로 추가하는 키워드의 가중치 상한(2026-09-30). 사용자 반응도 동향 근거도 없이 **외부에서 본 것만으로** 사용자의 주 관심
 # (기본 1.0)과 같은 계층에 넣지 않는다 — 메일 구성이 외부 모델의 발견으로 바뀌는 폭을 줄인다. 반응이 붙으면 feedback_weights 가 올린다.
 EXTERNAL_WEIGHT_MAX = 0.7
 EXTERNAL_MIN_MISSED = 2           # 외부 근거로 키워드를 더하려면 **에이전트가 실제로 놓친** 서로 다른 외부 논문 2편 이상에 그 용어가 있어야 한다
-BASIS_LABELS = {"feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거", "maintenance": "관측 근거",
+# 모델 판단의 새 문턱이 아니라 Python이 강제하는 신중한 안전 조건이다(2026-10-06).
+PRECISION_DAYS = 7
+PRECISION_MIN_SOLE = 3
+PRECISION_EXCLUDE_MIN_PAPERS = 3
+PRECISION_EXCLUDE_COLLATERAL_MAX = 0  # 관련 후보 한 편도 막지 않는 쪽을 택한다.
+PRECISION_EXCLUDE_MAX_PER_WEEK = 2
+BASIS_LABELS = {"precision": "정밀도 근거", "feedback": "반응 근거", "trend": "동향 근거", "feedback+trend": "반응·동향 근거", "maintenance": "관측 근거",
                 "external": "외부 정찰 근거", "feedback+external": "반응·외부 정찰 근거", "trend+external": "동향·외부 정찰 근거",
                 "feedback+trend+external": "반응·동향·외부 정찰 근거"}
 
@@ -176,6 +183,10 @@ class Brief:
     external: dict[str, dict] = field(default_factory=dict)  # E id → {gap_stage} — 외부 정찰의 검증된 근거(external_scout)
     out_texts: list[str] = field(default_factory=list)      # 관심 밖 반응이 붙은 **모든** 논문(창·상한·초록 자르기 무관) — 외부 근거 보호용, 모델엔 안 간다
 
+    precision: dict[str, str] = field(default_factory=dict)
+    delivered: dict[str, dict] = field(default_factory=dict)
+    related_texts: list[str] = field(default_factory=list)
+
     @property
     def evidence_ids(self) -> set[str]:
         return set(self.texts) | set(self.keyword_ids)
@@ -185,7 +196,8 @@ class Brief:
         prof = self.data["profile"]
         stale_auto = any(k["origin"] in AUTO_ORIGINS and k["hits_28d"] == 0 for k in prof["core"]) and prof["scans_28d"] >= 7
         return bool(self.data["reactions"] or stale_auto or self.data.get("trend", {}).get("records")
-                    or self.data.get("external", {}).get("items"))
+                    or self.data.get("external", {}).get("items")
+                    or self.data.get("precision", {}).get("keywords"))
 
 
 
@@ -247,7 +259,7 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
     profile = research_profile.get_profile(db, profile_id)
     if not profile:
         return None
-    now = now or _now()
+    now = (now or _now()).astimezone(timezone.utc)
     start, end = now - timedelta(days=LOOKBACK_DAYS), now
     since = start.isoformat()
     origins = _origins(db, profile_id)
@@ -304,6 +316,9 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                                    "domain_hits": json.loads(row.get("domain_hits") or "[]"),
                                    "s2_seeds": json.loads(row.get("s2_seeds") or "[]")})
 
+    precision_data, precision_ids, delivered_data, delivered_ids, related_texts = _precision_evidence(
+        db, profile_id, now, all_rows, texts)
+
     liked_terms = [{"term": t["term"], "support": t["support"], "evidence": [e["key"] for e in t["evidence"]]}
                    for t in term_discovery.discover(liked_pool, profile,
                                                     rules={"min_papers": 2, "top_terms": 8, "evidence_per_term": 3})]
@@ -347,9 +362,73 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
         "missed_terms": missed_terms, "missed_papers": missed_papers,
         "external": {"items": external},
     }
+    data.update(precision=precision_data, delivered=delivered_data)
     return Brief(data=data, texts=texts, reactions=reaction_ids, keyword_ids=keyword_ids,
                  base_revision=research_profile.current_revision(db, profile_id), liked_texts=liked_texts,
-                 external=external_ids, out_texts=out_texts)
+                 external=external_ids, out_texts=out_texts, precision=precision_ids,
+                 delivered=delivered_ids, related_texts=related_texts)
+
+
+def _precision_evidence(db: Path, profile_id: str, now: datetime, reactions: list[dict],
+                        texts: dict[str, str]) -> tuple[dict, dict, list, dict, list]:
+    """중복 스캔은 표본 수를 부풀리지 않고, 보호 검사는 자르지 않은 글을 쓴다."""
+    since = (now - timedelta(days=PRECISION_DAYS)).isoformat()
+    precision, papers, keywords, delivered, guards, related = {}, [], [], [], {}, []
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM candidate_observations WHERE profile_id=? "
+                           "AND julianday(observed_at)>=julianday(?) AND julianday(observed_at)<julianday(?) "
+                           "ORDER BY julianday(observed_at) DESC, paper_key, scan_id DESC",
+                           (profile_id, (now-timedelta(days=28)).isoformat(), now.isoformat())).fetchall()
+        latest, related_keys = {}, set()
+        for row in rows:
+            latest.setdefault(row["paper_key"], row)
+            hs = json.loads(row["core_hits"] or "[]")
+            if row["paper_key"] not in related_keys and profile_scoring.concept_breadth(hs) >= 2:
+                abstract, _ = profile_impact._restore_abstract(con, row)
+                related.append(f"{row['title'] or ''}. {abstract or ''}")
+                related_keys.add(row["paper_key"])
+        hits, sole = {}, {}
+        for key, row in latest.items():
+            hs = list(dict.fromkeys(json.loads(row["core_hits"] or "[]")))
+            if datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00")) < now-timedelta(days=PRECISION_DAYS):
+                continue
+            for h in hs:
+                hits.setdefault(h, []).append(key)
+            if len(hs) == 1:
+                sole.setdefault(hs[0], []).append(key)
+        for kw in sorted(sole, key=lambda k: (-len(sole[k]), k.casefold())):
+            if len(sole[kw]) < PRECISION_MIN_SOLE:
+                continue
+            if len(keywords) >= 8:
+                break
+            ids = []
+            for key in sole[kw][:5]:
+                held = dict(latest[key])
+                held["abstract"], _ = profile_impact._restore_abstract(con, latest[key])
+                held["abstract"] = held["abstract"] or ""
+                qid = f"Q{len(papers)+1}"
+                precision[qid] = kw
+                ids.append(qid)
+                texts[qid] = f"{held['title'] or ''}. {_clip(held['abstract'], ABSTRACT_CHARS)}"
+                papers.append({"id": qid, "title": held["title"] or "", "abstract": _clip(held["abstract"], ABSTRACT_CHARS), "keyword": kw})
+            keywords.append({"keyword": kw, "sole_7d": len(sole[kw]), "hits_7d": len(hits[kw]), "samples": ids})
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='mail_issues'").fetchone():
+            cards = con.execute("SELECT i.issue_id, t.* FROM mail_issues i JOIN mail_issue_items t USING(issue_id) "
+                                "WHERE i.profile_id=? AND i.status='sent' AND julianday(i.sent_at)>=julianday(?) "
+                                "AND julianday(i.sent_at)<julianday(?) ORDER BY julianday(i.sent_at) DESC, i.issue_id, t.position",
+                                (profile_id, since, now.isoformat())).fetchall()
+            for card in cards:
+                did = f"D{len(delivered)+1}"
+                held = _latest_observation(con, profile_id, card["paper_key"])
+                abstract = held["abstract"] if held else ""
+                counts = _latest_reactions([r for r in reactions if r["issue_id"] == card["issue_id"]], "").get(card["paper_key"], Counter())
+                hs = json.loads(card["core_hits"] or "[]")
+                texts[did] = f"{card['title'] or ''}. {abstract}"
+                guards[did] = {"positive": sum(counts[a] for a in POSITIVE)>0, "core_concepts": profile_scoring.concept_breadth(hs)}
+                delivered.append({"id": did, "title": card["title"] or "", "abstract": _clip(abstract, ABSTRACT_CHARS),
+                                  "core_hits": hs, **{a: counts[a] for a in (*POSITIVE, "out")}})
+    return {"days": PRECISION_DAYS, "keywords": keywords, "papers": papers}, precision, delivered, guards, related
 
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
@@ -377,13 +456,22 @@ def _liked(brief: Brief, evidence_id: str) -> bool:
 
 
 # 한글 조사는 유니코드 단어 문자라 \b 가 "X4의" 사이에서 안 끊긴다 — 경계를 영숫자 기준 lookaround 로 직접 건다.
-_ID = r"(?<![A-Za-z0-9])[RXKE]\d+(?![0-9A-Za-z])"
+_ID = r"(?<![A-Za-z0-9])[RXKEQD]\d+(?![0-9A-Za-z])"
 _EVIDENCE_ID_RE = re.compile(rf"\(?{_ID}(?:\s*[·,/]\s*{_ID})*\)?(?:\s?(?:에서|의|에|는|은|이|가)(?![가-힣]))?")
 
 
 def reader_reason(reason: str) -> str:
     """메일용 사유 — 브리프 내부 id(R1·X3·K2)는 받는 사람에게 뜻이 없다(2026-09-15 실측: 'X3·X4의 제목·초록에…')."""
     return " ".join(_EVIDENCE_ID_RE.sub("", reason or "").split()).strip(" ·,")
+
+
+def basis_label(action: dict) -> str:
+    """근거 편수는 모델 사유가 아니라 검증 때 센 값을 보고한다."""
+    label = BASIS_LABELS.get(action.get("basis"), "")
+    if action.get("basis") == "precision":
+        kind = "단독 적중 표본" if action.get("op") == "set_weight" else "엉뚱한 후보"
+        label += f"({kind} {action.get('evidence_count', 0)}편)"
+    return label
 
 
 def secret_like(value: object) -> bool:
@@ -413,6 +501,7 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
     def reject(a: dict, why: str) -> None:
         bad.append({"action": a, "reason": why})
 
+    precision_excludes = 0
     for raw in actions if isinstance(actions, list) else []:
         if not isinstance(raw, dict):
             reject({"raw": str(raw)[:120]}, "not_object")
@@ -460,7 +549,10 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
             a["weight"] = None
         known_core = find(core, term)
 
+        qev = set(e for e in ev if e in brief.precision)
         if op == "add_keyword":
+            if any(e in brief.precision or e in brief.delivered for e in ev):
+                reject(a, "precision_not_for_add"); continue
             if known_core or find(exclude, term) or find(target, term):
                 reject(a, "already_known"); continue
             if term_hygiene.is_umbrella(term):
@@ -492,6 +584,12 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
             if a["weight"] > core[known_core]["weight"] and not trend_ev and not any(
                     _liked(brief, e) and _in_text(known_core, brief.texts[e]) for e in ev):
                 reject(a, "no_liked_evidence"); continue    # 올리는 것도 반응을 따른다. 내리는 것은 적중 0편(K)으로도 된다
+            if qev and a["weight"] < core[known_core]["weight"]:
+                if any(not _same(brief.precision[e], known_core) for e in qev):
+                    reject(a, "precision_evidence_mismatch"); continue
+                if len(qev) < 2:
+                    reject(a, "precision_too_few_papers"); continue
+                a.update(basis="precision", evidence_count=len(qev), before_weight=core[known_core]["weight"])
             a["term"] = known_core
             core[known_core]["weight"] = a["weight"]
         elif op == "remove_keyword":
@@ -525,11 +623,30 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
         elif op == "add_exclude":
             if find(exclude, term) or known_core:
                 reject(a, "already_known"); continue
-            if term_hygiene.overlaps_known(_norm_term(term), {_norm_term(k) for k in [*core, *target]}):
+            if term_hygiene.overlaps_known(_norm_term(term), {_norm_term(k) for k in [*core, *target, *seeds]}):
                 reject(a, "overlaps_core"); continue
             out_ev = [e for e in ev if e in brief.reactions and brief.reactions[e]["out"] > 0 and _in_text(term, brief.texts[e])]
             if not out_ev:
-                reject(a, "no_out_evidence"); continue
+                support = {e for e in qev if _in_text(term, brief.texts[e])}
+                if len(support) < PRECISION_EXCLUDE_MIN_PAPERS:
+                    reject(a, "precision_too_few_papers" if qev else "no_out_evidence"); continue
+                if any(_in_text(term, t) for t in brief.liked_texts):
+                    reject(a, "hits_liked_paper"); continue
+                if any((g["positive"] or g["core_concepts"] >= 2) and _in_text(term, brief.texts[e]) for e, g in brief.delivered.items()):
+                    reject(a, "hits_good_delivered"); continue
+                if sum(_in_text(term, t) for t in brief.related_texts) > PRECISION_EXCLUDE_COLLATERAL_MAX:
+                    reject(a, "hits_related_candidates"); continue
+                if term_hygiene.is_umbrella(term):
+                    reject(a, "umbrella_term"); continue
+                if not _norm_term(term).split() or term_hygiene.reject_reason(_norm_term(term).split()):
+                    reject(a, "precision_bad_term"); continue
+                if precision_excludes >= PRECISION_EXCLUDE_MAX_PER_WEEK:
+                    reject(a, "precision_weekly_cap"); continue
+                precision_excludes += 1
+                a.update(basis="precision", evidence_count=len(support))
+                exclude.append(term)
+                ok.append(a)
+                continue
             # 제외어는 **서로 다른 관심 밖 논문 2편 이상**에 있어야 한다. 제외된 논문은 메일에 다시 안 나오므로 사용자가 반응으로
             # 되돌릴 기회가 없다 — 한 편짜리 근거로 막으면 그 방향의 피드백이 영영 끊긴다. 2026-09-15 실측(합성 반응): Codex 가
             # 근거를 한 편으로 줄인 채 'Chain-of-thought' 를 제외어로 확정했다. 변경 개수 상한이 아니라 근거 강도 조건이다.
@@ -955,8 +1072,10 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
         lines.append(f"· {week} 변경 (revision {base} → {new}, 되돌릴 수 있음)")
         for a in json.loads(applied or "[]"):
             w = f" {a['weight']:g}" if a.get("weight") is not None else ""
+            if a.get("before_weight") is not None:
+                w = f" {a['before_weight']:g} → {a['weight']:g}"
             why = reader_reason(a.get("reason") or "")
-            basis = BASIS_LABELS.get(a.get("basis"), "")
+            basis = basis_label(a)
             lines.append(f"   - {OP_LABELS.get(a['op'], a['op'])}: {a['term']}{w}" + (f" — {why}" if why else "")
                          + (f" [{basis}]" if basis else ""))
         imp = json.loads(impact_raw) if impact_raw else None
