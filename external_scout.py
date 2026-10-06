@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import lang_guard
+
 import json
 import re
 import shutil
@@ -362,6 +364,11 @@ def apply_verdicts(items: list[dict], verdict: dict) -> None:
             it["verified"] = {"verdict": "missing"}
             continue
         text = f"{it['official']['title']}. {it['official']['abstract']}"
+        try:
+            lang_guard.require_korean(v["note"], text, "Claude(외부 정찰 검증)")
+        except lang_guard.NonKoreanOutput:
+            it["verified"] = {"verdict": "missing"}      # 이 항목만 판정 없음으로 — 정찰 전체를 멈추지 않는다
+            continue
         terms = [" ".join(t.split())[:am.MAX_TERM_CHARS] for t in v["candidate_terms"][:3]]
         terms = [t for t in terms if t and am._in_text(t, text) and not term_hygiene.is_umbrella(t)]
         it["verified"] = {"verdict": v["verdict"], "relevant": v["relevant"], "manufacturing_relation": v["manufacturing_relation"],

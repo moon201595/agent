@@ -199,7 +199,7 @@ def _inject_custom_style() -> None:
         [class*="st-key-calnav_"] button, [class*="st-key-daynav_"] button { border: none !important; background: transparent !important; font-size: 1.2rem; color: var(--ink2); }
         [class*="st-key-calnav_"] button:hover, [class*="st-key-daynav_"] button:hover { background: #F1F4F6 !important; }
         [class*="st-key-calnav_"] button p, [class*="st-key-daynav_"] button p { font-size: 1.5rem; line-height: 1; color: var(--ink2); font-weight: 700; }
-        /* 수식($…$)은 고정폭 — 맑은 고딕은 역슬래시를 ₩ 로 그려 "\mathcal" 이 "₩mathcal" 로 보였다(캡처). 글꼴 강제 규칙보다 구체적이어야 이긴다. */
+        /* 수식($…$)은 고정폭 — 맑은 고딕은 역슬래시를 ₩ 로 그려 "\\mathcal" 이 "₩mathcal" 로 보였다(캡처). 글꼴 강제 규칙보다 구체적이어야 이긴다. */
         [data-testid="stAppViewContainer"] code.rm-math { font-family: Consolas, "Courier New", monospace !important; background: var(--head); color: var(--ink2); }
         .rm-sum .row { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 2px; border-bottom: 1px solid var(--line2); font-size: .98rem; }
         .rm-sum .row:last-child { border-bottom: none; } .rm-sum b { font-size: 1.1rem; } .rm-sum small { display: block; text-align: right; color: var(--muted); font-size: .82rem; font-weight: 400; }
@@ -1040,6 +1040,12 @@ _REF_RE = re.compile(r"\s*\[(S\d{3,5}(?:\s*,\s*S\d{3,5})*)\]")
 def _summary_line_html(line: str) -> str:
     """요약 한 줄 → <li>. "- 항목 : 값 [S0006]" 의 항목은 굵게, 근거 번호는 작은 회색(원문 문장 번호 — 쪽수가 아니다)."""
     import mail_document
+    head = re.match(r"^\s{0,3}#{2,6}\s+(.+?)\s*#*\s*$", line)
+    if head:
+        # 요약의 하위 제목(`#### 학습 과정`)은 상위 절 본문으로 들어온다(`ops_dashboard.summary_sections` — 절에서 빠지지 않게).
+        # 그대로 그리면 `####` 가 글자로 보였다(2026-10-06 독립 검토 P3-3) — 기호를 떼고 글머리 없는 굵은 소제목으로 그린다.
+        label = re.sub(r"\*\*(.+?)\*\*", r"\1", head.group(1))
+        return f"<li class='rm-subhead' style='list-style:none;margin:10px 0 2px -18px'><b>{_h(label)}</b></li>"
     text = mail_document.nominal_line(line.strip())
     sub = line.startswith(("  -", "    -", "\t-"))
     text = re.sub(r"^[-•]\s*", "", text)

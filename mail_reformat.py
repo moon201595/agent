@@ -48,7 +48,8 @@ def load_snapshot(db: Path, profile_id: str, date: str, recipient: str, *, title
             paper["_feedback_links"] = {action: relay + urlencode({"t": feedback_links.make_token(token["tid"], action, token["expires_at"], secret)})
                                         for action, _label in feedback_links.ACTIONS}
         html = saved_digest.render_html(row["last_digest"], row["name"], papers, title_only_count=title_only_count)
-        return {"text": row["last_digest"], "html": html, "issue_id": issue["issue_id"],
+        # 평문 쪽도 HTML 과 같은 표시 규칙으로 보낸다(P3-1). 원 기록과 같은 글인지는 `source_text` 의 해시로 남긴다.
+        return {"text": saved_digest.plain_text(row["last_digest"]), "source_text": row["last_digest"], "html": html, "issue_id": issue["issue_id"],
                 "subject": issue["subject"] + " [형식 수정본]", "papers": len(papers),
                 "items": papers, "profile_name": row["name"]}
 
@@ -73,7 +74,7 @@ def main() -> None:
     stem.with_suffix(".html").write_text(snapshot["html"], encoding="utf-8")
     stem.with_suffix(".txt").write_text(snapshot["text"], encoding="utf-8")
     info = {"issue_id": snapshot["issue_id"], "papers": snapshot["papers"],
-            "text_sha256": hashlib.sha256(snapshot["text"].encode()).hexdigest(),
+            "text_sha256": hashlib.sha256(snapshot["source_text"].encode()).hexdigest(),
             "html_bytes": len(snapshot["html"].encode()), "preview": str(stem.with_suffix(".html")), "sent": False}
     if args.send:
         backup = stem.with_suffix(".backup.db")

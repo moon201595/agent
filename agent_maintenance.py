@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import lang_guard
+
 import hashlib
 import json
 import os
@@ -671,12 +673,12 @@ class HeadlessRunner:
     def __init__(self, timeout: int = CLI_TIMEOUT_S) -> None:
         self.timeout = timeout
 
-    def propose(self, brief_json: str) -> dict:
+    def propose(self, brief_json: str, correction: str = "") -> dict:
         exe = shutil.which("claude", path=_cli_env()["PATH"])
         if not exe:
             raise StepError("claude_missing")
         with tempfile.TemporaryDirectory(prefix="agent-claude-") as cwd:
-            rc, out, err = _run([exe, "-p", _prompt("agent_propose_v1.md"), "--output-format", "json",
+            rc, out, err = _run([exe, "-p", _prompt("agent_propose_v1.md") + correction, "--output-format", "json",
                                  "--json-schema", json.dumps(PROPOSAL_SCHEMA), "--tools", "",
                                  "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"],
                                 brief_json, self.timeout, cwd)
@@ -690,7 +692,7 @@ class HeadlessRunner:
             raise StepError("claude_error", str(data.get("subtype"))[:40])
         return data["structured_output"]
 
-    def judge(self, payload_json: str) -> dict:
+    def judge(self, payload_json: str, correction: str = "") -> dict:
         exe = shutil.which("codex", path=_cli_env()["PATH"])
         if not exe:
             raise StepError("codex_missing")
@@ -703,7 +705,7 @@ class HeadlessRunner:
                             "image_generation", "tool_suggest"):
                 argv += ["--disable", feature]
             argv += ["-c", "mcp_servers={}", "-c", 'web_search="disabled"', "--output-schema", str(schema),
-                     "-o", str(last), _prompt("agent_judge_v1.md")]
+                     "-o", str(last), _prompt("agent_judge_v1.md") + correction]
             rc, _out, _err = _run(argv, payload_json, self.timeout, cwd)
             if rc != 0:
                 raise StepError("codex_exit", f"rc={rc}")
@@ -775,6 +777,38 @@ def _fail(db: Path, profile_id: str, week: str, code: str, run_tag: str | None, 
     return out
 
 
+def _korean_step(method, payload: str, source: str, engine: str) -> dict:
+    """한 번만 보정하며, 선택 인자가 없는 기존 가짜 러너에는 JSON 안에 보정 지시를 넣는다."""
+    import inspect
+    correction = ""
+    for attempt in range(2):
+        if correction:
+            try:
+                inspect.signature(method).bind(payload, correction=correction)
+            except TypeError:
+                retry_payload = json.loads(payload)
+                retry_payload["language_correction"] = correction
+                result = method(json.dumps(retry_payload, ensure_ascii=False, sort_keys=True))
+            else:
+                result = method(payload, correction=correction)
+        else:
+            result = method(payload)
+        if secret_like(result):
+            raise StepError("secret_like_output", engine)
+        reasons = "\n".join(str(row.get("reason") or "")
+                            for field in ("actions", "reviews")
+                            for row in result.get(field) or [] if isinstance(row, dict))
+        chunks = lang_guard.foreign_script(reasons, source)
+        if not chunks:
+            return result
+        lang_guard.log_violation(engine, chunks)
+        if attempt == 1:
+            raise StepError("non_korean_output", engine)
+        sample = ", ".join(chunk[:5] for chunk in chunks[:3])
+        correction = f"\n직전 출력에 한국어가 아닌 문자({sample})가 있었다. 모든 reason 을 한국어로 다시 써라."
+    raise AssertionError("unreachable")
+
+
 def run_profile(db: Path, profile_id: str, runner, now: datetime | None = None, force: bool = False) -> dict:
     """한 프로필의 한 주. 어떤 실패도 예외로 올리지 않고 상태로 남긴다."""
     init_db(db)
@@ -792,11 +826,11 @@ def run_profile(db: Path, profile_id: str, runner, now: datetime | None = None, 
         if not brief.has_signal():
             _finish(db, profile_id, week, status="skipped_no_signal", **common)
             return {"profile_id": profile_id, "week": week, "status": "skipped_no_signal"}
-        proposal = runner.propose(brief_json)
+        proposal = _korean_step(runner.propose, brief_json, brief_json, "claude")
         if secret_like(proposal):
             raise StepError("secret_like_output", "claude")
         _finish(db, profile_id, week, status="running", proposal_json=json.dumps(proposal, ensure_ascii=False), **common)
-        verdict = runner.judge(json.dumps({"brief": brief.data, "proposal": proposal}, ensure_ascii=False, sort_keys=True))
+        verdict = _korean_step(runner.judge, json.dumps({"brief": brief.data, "proposal": proposal}, ensure_ascii=False, sort_keys=True), brief_json, "codex")
         if secret_like(verdict):
             raise StepError("secret_like_output", "codex")
         accepted, rejected = validate(verdict.get("actions") or [], brief)

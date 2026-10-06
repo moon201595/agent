@@ -44,12 +44,34 @@ def parse(text: str) -> dict:
 
 # 옛 저장 본문에는 꼬리 문구가 글자로 박혀 있다 — 2026-10-06 사용자 요청으로 뺀 `그 밖에 작게 움직인 가중치 N건`.
 # 저장 평문·운영 DB 는 **다시 쓰지 않는다**(발송된 그대로가 기록이다). 다시 그릴 때 표시에서만 지운다.
-_HIDDEN_MOVES_RE = re.compile(r"그 밖에 작게 움직인 가중치 \d+건(?:\s*·\s*)?")
+_HIDDEN_MOVES_RE = re.compile(r"그 밖에 작게 움직인 가중치 \d+건")
+_TAIL_SEP_RE = re.compile(r"\s*·\s*")
 
 
 def _without_hidden_moves(text: str) -> str:
-    """꼬리의 앞 문구만 지우고 뒤에 이어 붙은 `반영된 사용자 반응 N건` 은 **건수 그대로** 남긴다."""
-    return _HIDDEN_MOVES_RE.sub("", text).strip()
+    """꼬리의 그 문구만 지우고 같은 줄의 `반영된 사용자 반응 N건` 은 **건수 그대로** 남긴다.
+
+    꼬리 줄은 ` · ` 로 이은 조각들이다. 문구 **뒤**의 구분자만 먹으면 문구가 줄 끝에 온 순서(`반응 15건 · 그 밖에 …`)에서
+    `반응 15건 ·` 이 남는다(2026-10-06 독립 검토 P3-2) — 문구가 든 줄만 조각으로 갈라 그 조각을 빼고 다시 잇는다.
+    다른 줄은 손대지 않는다(카드 본문의 `원문 분석 · 초록 기반` 같은 구분자는 그대로)."""
+    if not _HIDDEN_MOVES_RE.search(text):
+        return text.strip()
+    parts = [x for x in _TAIL_SEP_RE.split(text.strip()) if x and not _HIDDEN_MOVES_RE.fullmatch(x)]
+    return _HIDDEN_MOVES_RE.sub("", " · ".join(parts)).strip()   # 문구 뒤에 다른 말이 붙은 조각은 문구만 지운다
+
+
+def plain_text(body: str) -> str:
+    """저장 평문을 다시 보낼 때의 평문 쪽. HTML 만 고치면 평문만 읽는 클라이언트에는 그 문구가 그대로 간다(P3-1).
+    기록(운영 DB 의 저장 평문)은 바꾸지 않는다 — 나가는 사본에서만 뺀다. 그 문구뿐이던 줄은 빈 줄도 남기지 않는다."""
+    out = []
+    for line in body.split("\n"):
+        if _HIDDEN_MOVES_RE.search(line):
+            kept = _without_hidden_moves(line)
+            if not kept:
+                continue
+            line = line[:len(line) - len(line.lstrip())] + kept       # 들여쓰기는 원래대로
+        out.append(line)
+    return "\n".join(out)
 
 
 def _line(text: str) -> str:

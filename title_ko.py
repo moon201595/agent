@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import lang_guard
+
 import re
 
 import httpx
@@ -32,6 +34,7 @@ def _prompt(titles: list[str]) -> str:
     numbered = "\n".join(f"{i}. {t}" for i, t in enumerate(titles, start=1))
     return (
         "아래는 논문 제목 목록이다. 각 제목을 자연스러운 한국어로 옮겨라.\n"
+        "한자·일본어를 쓰지 말고 한국어(한글)로만 쓴다. 영어 고유명사·약어는 그대로 둔다.\n"
         "- 번호를 그대로 붙여 한 줄에 하나씩만 출력한다. 설명·머리말·빈 줄을 넣지 않는다.\n"
         "- 고유명사·약어·모델 이름(예: MVTec-AD, VLA, LLM)은 번역하지 말고 그대로 둔다.\n"
         "- 콜론 뒤의 부제까지 포함해 제목 전체를 옮긴다.\n"
@@ -54,6 +57,10 @@ def _parse(reply: str, titles: list[str]) -> dict[str, str]:
         # 모델이 설명을 붙여 늘어지면 제목이 아니다. 한국어가 영어보다 짧아지는 게 보통이라
         # 상한만 둔다(길이 하한을 두면 약어만 있는 제목 — `M2Tok` 같은 것 — 이 죽는다).
         if not korean or len(korean) > len(source) * 2 + 60:
+            continue
+        try:
+            lang_guard.require_korean(korean, source, "제목 번역")
+        except lang_guard.NonKoreanOutput:
             continue
         out.setdefault(source, korean)
     return out

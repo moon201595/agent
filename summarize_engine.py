@@ -12,6 +12,8 @@ Gemini 무료 API가 실사용 가능한 유일한 무료 후보였다.
 
 from __future__ import annotations
 
+import lang_guard
+
 import asyncio
 import logging
 import os
@@ -249,6 +251,7 @@ def build_prompt(chunk_text: str, template: str) -> str:
     있다"까지 확인할 수 있게 한다.
     """
     return f"""다음은 한 논문의 원문 일부다. 아래 템플릿의 '## 템플릿' 항목 구조만 채워서
+한자·일본어를 쓰지 말고 한국어(한글)로만 쓴다. 영어 고유명사·약어는 그대로 둔다.
 한국어로 정리하라. 템플릿 파일의 제목·작성규칙·작업순서 설명은 출력하지 말고,
 '### 기본정보'부터 시작하는 항목만 그대로 채워 출력하라.
 숫자·수치는 반드시 원문에서 확인한 것만 쓰고, 확인되지 않은 숫자는 쓰지 마라.
@@ -437,7 +440,9 @@ async def translate_ko(client: httpx.AsyncClient, text: str) -> str:
         "정확히 그대로 옮기고, 부연 설명 없이 번역문만 출력하라.\n\n"
         f"{text}"
     )
-    return await complete(client, prompt)
+    result = await complete(client, prompt)
+    lang_guard.require_korean(result, text, "화면 번역")
+    return result
 
 
 async def complete(client: httpx.AsyncClient, prompt: str) -> str:
@@ -599,6 +604,7 @@ _ABSTRACT_BRIEF_PROMPT = """다음은 논문의 제목과 초록이다. **본문
 - 무엇을 보였는가 : 한두 문장
 
 지킬 것:
+- 한자·일본어를 쓰지 말고 한국어(한글)로만 쓴다. 영어 고유명사·약어는 그대로 둔다.
 - **초록에 없는 내용을 쓰지 않는다.** 초록이 안 밝힌 항목은 "초록에 없음"이라고 쓴다.
   본문을 봤으면 알 수 있었을 내용을 추측해 채우지 마라.
 - 숫자는 초록에 그대로 있는 것만 쓴다.
@@ -627,6 +633,10 @@ async def summarize_abstract(client: httpx.AsyncClient, title: str, abstract: st
         except Exception:  # noqa: BLE001 — 초록 정리는 부가 정보다. 실패해도 메일은 나간다.
             continue
         if (text or "").strip():
+            try:
+                lang_guard.require_korean(text, title + "\n" + abstract, engine)
+            except lang_guard.NonKoreanOutput:
+                continue
             return text.strip()
     return ""
 
@@ -838,6 +848,7 @@ async def summarize(
             client, paper_text, template, call_gemini, call_gemini_addendum,
             CHUNK_SIZE, MAX_CHUNKS, GEMINI_CHUNK_DELAY, "Gemini", on_progress,
         )
+        lang_guard.require_korean(summary, paper_text, "Gemini(본문 요약)")
         return summary, "gemini", coverage
     except Exception as e:  # noqa: BLE001
         print(f"  [경고] Gemini 실패({e}) → Groq로 전환", file=sys.stderr)
@@ -846,6 +857,7 @@ async def summarize(
             client, paper_text, template, call_groq, call_groq_addendum,
             GROQ_CHUNK_SIZE, GROQ_MAX_CHUNKS, groq_chunk_delay, "Groq", on_progress,
         )
+        lang_guard.require_korean(summary, paper_text, "Groq(본문 요약)")
         return summary, "groq", coverage
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Gemini·Groq 둘 다 실패: {e}") from e

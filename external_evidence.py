@@ -16,6 +16,8 @@ Python 이 받아 보는 것은 허용 호스트뿐이고, 그 밖(블로그·�
 """
 from __future__ import annotations
 
+import lang_guard
+
 import json
 import re
 import shutil
@@ -329,6 +331,8 @@ def verify_competitor(comp: dict, target: dict, fetch: Callable[..., str], timeo
     def in_text(q: str, text: str) -> bool:
         q = re.sub(r"\s+", " ", (q or "").strip())
         return len(q) >= 12 and q in text
+    for description in (comp.get("differences") or []) + (comp.get("match_evidence") or []):
+        lang_guard.require_korean(description.get("what", ""), body + "\n" + str(target.get("source_text") or ""), "외부 비교 조건 설명")
     diffs = [_short(d["what"]) for d in comp.get("differences") or [] if in_text(d.get("quote", ""), body)]
     # 동일 조건: 에이전트의 true 만으로는 안 된다. 조건마다 **경쟁 출처 인용 + 대상 논문 인용**이 둘 다 원문에 있어야 하고, 그런 조건이
     # 둘 이상이며, 차이가 하나도 없을 때만(Codex 재현: 근거 없는 same_conditions=true 가 "관측 범위 내 최고"가 됐다).
@@ -391,7 +395,11 @@ def check(targets: list[dict], *, budget_s: float = BUDGET_S, run_agent: Callabl
             if remaining <= 1:
                 res["reason"], complete = "검증 시간 초과", False
                 break
-            v = verify_competitor(comp, target, fetch, min(FETCH_TIMEOUT_S, remaining))
+            try:
+                v = verify_competitor(comp, target, fetch, min(FETCH_TIMEOUT_S, remaining))
+            except lang_guard.NonKoreanOutput:
+                res["reason"], complete = "비교 설명이 한국어가 아니어서 버림", False    # 이 경쟁 결과만 버리고 다음으로
+                continue
             if v["status"] == "unverified_source":
                 res["unverified_sources"] += 1
             if v["status"] == "fetch_failed":

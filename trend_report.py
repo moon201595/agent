@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import lang_guard
+
 import json
 import re
 import sqlite3
@@ -1002,7 +1004,9 @@ async def narrative(client: httpx.AsyncClient, rows: list,
     def accept(text: str) -> str:
         # 카드가 있어야 하는 글(anchors)인데 카드가 하나도 자료에 안 들었으면 빈 집합 그대로 — 어떤 흐름도 통과 못 한다.
         # None 으로 바꾸면 조건 자체가 꺼져 각주끼리의 흐름이 통과한다(Codex 2차 검토 2026-10-01 재현).
-        story = repair_story(parse_story(text), corpus, cards if anchors else None, deep, history=histories)
+        plan = parse_story(text)
+        lang_guard.require_korean(json.dumps(plan, ensure_ascii=False), corpus, "동향 서술")
+        story = repair_story(plan, corpus, cards if anchors else None, deep, history=histories)
         if story is None:
             raise ValueError("흐름 없음")
         repairs[:] = story["repairs"]
@@ -1063,8 +1067,9 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
 
 
 def collection_rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[tuple[str, str, int, str]]:
-    """(출처, 결과, 횟수, 검색 지문) — 검색 지문·완료 상태를 표본과 함께 보여 줘 출처 장애를 추세로 읽지 않게 한다."""
-    with sqlite3.connect(db) as con:
+    """(출처, 결과, 횟수, 검색 지문) — 검색 지문·완료 상태를 표본과 함께 보여 줘 출처 장애를 추세로 읽지 않게 한다.
+    조회 전용 연결로 연다 — 운영 화면도 부른다(2026-10-06 독립 검토 P3-4)."""
+    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
         rows = con.execute(
             "SELECT source, status, topic_signature, COUNT(*) FROM search_runs "
             "WHERE profile_id=? AND started_at>=? "
