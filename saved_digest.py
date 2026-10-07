@@ -106,7 +106,7 @@ def _card(card: dict, paper: dict) -> str:
             observation = None
         if line == url or line.startswith("반응 :"):
             continue
-        if line.startswith(("성능 관측 ·", "논문 간 관측", "외부 관측 신호", "논문 자체 주장 ·")):
+        if line.startswith(("성능 관측 ·", "논문 간 관측", "비교 대상 · 이 논문 표(저자 보고값)", "외부 관측 신호", "논문 자체 주장 ·")):
             observations.append((line, []))
             observation = observations[-1][1]
             continue

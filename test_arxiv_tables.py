@@ -160,6 +160,18 @@ def test_bad_geometry_and_unclosed() -> None:
     assert at.parse_tables(_html('<tr><td><table><tr><td>9</td></tr></table></td></tr>')) == []
 
 
+def test_one_bad_table_is_skipped_not_the_whole_page() -> None:
+    """2026-10-07 실측 2608.01265: 표 13개 중 하나의 머리 구조 때문에 페이지 전체가 0개가 됐다.
+    실패시키는 것: 나쁜 표 하나로 다시 페이지 전체를 버리는 것, 나쁜 표를 추측해 결과에 넣는 것, 좋은 표의 셀을 바꾸는 것."""
+    good = _html('<tr><th>Method</th><th>SR</th></tr><tr><td>A</td><td>91.5</td></tr>', 'Table 2: good', 'id="S4.T2"')
+    for bad_rows in ('<tr><td>A</td><td rowspan="2">B</td></tr><tr><td colspan="2">9</td></tr>',
+                     '<tr><td><table><tr><td>9</td></tr></table></td></tr>'):
+        bad = _html(bad_rows, 'Table 1: bad', 'id="S3.T1"')
+        tables = at.parse_tables(bad + good)
+        assert [t['id'] for t in tables] == ['S4.T2']
+        assert tables[0]['grid'] == [['Method', 'SR'], ['A', '91.5']]
+
+
 def test_input_byte_limit() -> None:
     """5MiB 상한을 문자 수로만 검사하거나 상한 초과 접두부 표를 반환하면 실패한다."""
     html = _html('<tr><td>A</td><td>1</td></tr>')

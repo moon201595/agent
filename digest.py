@@ -571,7 +571,8 @@ def signals_text(paper: dict) -> str:
         return ""
     try:
         import adoption_signals
-        return adoption_signals.signals_line(sig)
+        import paper_observations
+        return adoption_signals.signals_line(sig) if paper_observations.has_signals(sig) else ""
     except Exception:  # noqa: BLE001
         return ""
 

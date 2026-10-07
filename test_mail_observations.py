@@ -132,7 +132,7 @@ def test_cross_paper_observations_preserve_conditions_and_never_name_a_winner():
     main = {'benchmark': 'Bench', 'metric': 'Success', 'text': '85.4%', 'model': 'Ours', 'locator': 'T1:r2c2',
             'compare': {'status': 'above_observed', 'best': {'value': 84.0, 'model': 'Old', 'reported_in': '2401.00001'}}}
     fr = {'main': [main], 'external': {'status': 'done', 'competitors': [
-        {'status': 'verified', 'model': 'Other', 'text': '82.0%', 'source_url': 'https://arxiv.org/abs/2402.00001', 'differences': ['split 다름']},
+        {'status': 'verified', 'same_task': True, 'task_note': '같은 과제 지표', 'column_path': ['AUROC'], 'table_label': 'Table 1', 'model': 'Other', 'text': '82.0%', 'source_url': 'https://arxiv.org/abs/2402.00001', 'differences': ['split 다름']},
         {'status': 'not_found', 'model': 'Unverified', 'text': '99.9%'}]}}
     sections = paper_observations.sections({'_frontier': fr})
     text = str(sections)
@@ -145,7 +145,7 @@ def test_cross_paper_observations_preserve_conditions_and_never_name_a_winner():
 def test_reading_point_does_not_promote_partial_conditions_to_full_agreement():
     """외부 결과의 일부 조건 플래그만으로 모든 평가 조건이 같다고 독자에게 말하면 실패한다."""
     main = {'benchmark': 'Bench', 'metric': 'Success', 'text': '85.4%', 'compare': {'status': 'first'}}
-    external = {'status': 'done', 'competitors': [{'status': 'verified', 'same_conditions': True, 'differences': [], 'unverified_differences': 0}]}
+    external = {'status': 'done', 'competitors': [{'status': 'verified', 'same_task': True, 'task_note': '같은 과제 지표', 'column_path': ['Success'], 'table_label': 'Table 1', 'same_conditions': True, 'differences': [], 'unverified_differences': 0}]}
     point = research_frontier.reading_point({'_frontier': {'main': [main], 'external': external}})
     assert '일부 조건 대조 기록' in point and '전체 평가 조건의 일치는 별도 확인' in point
     assert '같은 조건으로 확인한' not in point

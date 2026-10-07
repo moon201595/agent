@@ -193,7 +193,7 @@ def norm_key(text: str) -> str:
 
 
 # 같은 지표의 긴 이름 — 리더보드 README 는 "Driving Score", 논문 표는 "DS" 로 쓴다(2026-09-30 실측: Bench2Drive). 뜻이 같은 것만.
-_METRIC_ALIASES = {"drivingscore": "ds", "successrate": "sr", "routecompletion": "rc", "accuracy": "acc", "top1accuracy": "top1",
+_METRIC_ALIASES = {"drivingscore": "ds", "successrate": "sr", "successrates": "sr", "routecompletion": "rc", "accuracy": "acc", "top1accuracy": "top1",
                    # 평균 열 이름 — 실측(2026-09-30): GRIM 표는 "Mean", Group3AD 표는 "Average" 로 같은 열을 부른다.
                    "average": "mean", "avg": "mean", "overall": "mean"}
 

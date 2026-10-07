@@ -47,7 +47,7 @@ def comparison_rows(paper: dict) -> list[tuple[str, str]]:
             continue
         checked = {c for c in conditions if isinstance(c, str) and c.strip()}
         number = other.get("value")
-        if (other.get("status") != "verified" or other.get("same_conditions") is not True
+        if (not external_visible(other) or other.get("same_conditions") is not True
                 or other.get("differences") or other.get("unverified_differences") != 0
                 or other.get("conditions_not_checked") or len(checked) < len(external_evidence.REQUIRED_CONDITIONS)
                 or isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number)
@@ -55,11 +55,39 @@ def comparison_rows(paper: dict) -> list[tuple[str, str]]:
                 or not other["source_url"].startswith("https://")
                 or external_evidence.comparable_values(value, number, main["metric"], main["text"], other["text"]) is None):
             continue
-        competitors.append((f"{other['model']} {other['text']} ({other['locator']}) — 대조 조건: " + ', '.join(conditions),
-                            other["source_url"]))
+        competitors.append(external_line(other))
     if not competitors:
         return []
     return [(f"{main['benchmark']} · {main['metric']} — {main['model']} {main['text']} ({main['locator']})", ""), *competitors]
+
+
+def has_signals(sig: dict) -> bool:
+    """조회 실패와 0은 보존하되 표시할 양수 근거가 있을 때만 상자를 연다."""
+    def positive(value: object) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    return bool((sig.get("github_tier") in ("official", "author") and (sig.get("github") or {}).get("repo"))
+                or positive((sig.get("scholarly") or {}).get("citations"))
+                or positive((sig.get("hub") or {}).get("n_models"))
+                or positive((sig.get("hub") or {}).get("upvotes")))
+
+
+def external_visible(candidate: dict) -> bool:
+    """과제 판독이 없거나 다른 대상에서 재사용한 캐시는 숫자가 있어도 싣지 않는다."""
+    return (candidate.get("status") == "verified" and candidate.get("same_task") is True
+            and not candidate.get("task_not_checked") and bool(candidate.get("column_path")))
+
+
+def external_line(c: dict) -> tuple[str, str]:
+    """실제 출처 헤더와 에이전트 판단을 나란히 보여 의미 판단의 책임을 드러낸다."""
+    conditions = ("조건 차이: " + ", ".join(c['differences']) if c.get("differences") else
+                  "대조한 조건: " + ", ".join(c['matched_conditions']) if c.get("matched_conditions")
+                  and not c.get("conditions_not_checked") else "조건 대조 미확인")
+    note = f" ({c['task_note']})" if c.get("task_note") else ""
+    header = " / ".join(c["column_path"])
+    cited = " · 다른 논문 표의 재인용" if c.get("third_party") else ""
+    return (f"외부 논문 표: {c.get('display_model') or c['model']} {c['text']} — 출처 표 열 \"{header}\" "
+            f"({c.get('table_label') or c.get('table_id')}){cited} · 같은 과제 판단: 에이전트 판독{note} · {conditions}",
+            c.get("source_url") or "")
 
 
 def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tuple[str, str]]]]:
@@ -77,6 +105,14 @@ def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tup
             own.append(("저자 자신의 실험 보고를 인용함. 표 구조를 확인하지 못해 논문 간 수치 비교에는 쓰지 않음.", ""))
     if own:
         out.append(("성능 관측 · 논문 내 결과", own))
+        baselines = []
+        for r in fr.get("main") or []:
+            rows = r.get("baselines") or []
+            if rows:
+                values = " · ".join(f"{b['model']} {b['text']}" for b in rows)
+                baselines.append((f"{r['benchmark']} · {r['metric']} — {values} ({r['locator'].partition(':r')[0]})", ""))
+        if baselines:
+            out.append(("비교 대상 · 이 논문 표(저자 보고값)", baselines))
         other: list[tuple[str, str]] = []
         for r in fr.get("main") or []:
             best = (r.get("compare") or {}).get("best")
@@ -85,25 +121,28 @@ def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tup
                               f"({best['reported_in']} 표). 같은 평가 조건인지 미확인.", ""))
         ext = fr.get("external") or {}
         for c in ext.get("competitors") or []:
-            if c.get("status") != "verified":
-                continue
-            conditions = ("조건 차이: " + ", ".join(c['differences']) if c.get("differences") else
-                          "대조한 조건: " + ", ".join(c['matched_conditions']) if c.get("matched_conditions")
-                          and not c.get("conditions_not_checked") else "이 논문과 조건 대조 미확인")
-            other.append((f"외부 논문 표: {c['model']} · {c['text']} — {conditions}", c.get("source_url") or ""))
+            if external_visible(c):
+                other.append(external_line(c))
         if other:
             other.append(("벤치마크·지표 외에 데이터 버전·split·backbone·추론 조건까지 같아야 비교 가능함. 여기서는 우열을 판정하지 않음.", ""))
         else:
             other.append(("동일 조건으로 확인한 논문 간 비교 결과 없음.", ""))
         if ext.get("status") == "incomplete":
-            other.append(("외부 조사 미완료.", ""))
+            # 확인된 외부 결과가 있는데 "미완료"만 붙이면 그 결과까지 못 믿을 것처럼 읽힌다(2026-10-07 실측: 1건 확인·1건 표 확보 실패).
+            # 그때는 무엇이 안 됐는지만 센다. 확인된 것이 없으면 예전처럼 미완료 한 줄이다.
+            shown = any(external_visible(c) for c in ext.get("competitors") or [])
+            missed = sum(c.get("status") in ("fetch_failed", "table_failed") for c in ext.get("competitors") or [])
+            if shown and missed:
+                other.append((f"외부 조사 일부 미완료 — 출처 표를 확인하지 못한 후보 {missed}건.", ""))
+            else:
+                other.append(("외부 조사 미완료.", ""))
         out.append(("논문 간 관측", other))
     claims = paper.get("_sota_claims") or fr.get("claims") or []
     if claims:
         import sota_claims
         out.append(("논문 자체 주장 · 미검증", [(sota_claims.mail_line(claims), "")]))
     sig = paper.get("_signals")
-    if sig:
+    if sig and has_signals(sig):
         import adoption_signals
         rows = [(f"{label} · {text}", "") for label, text in adoption_signals.signal_rows(sig, today)]
         out.append(("외부 관측 신호", rows))

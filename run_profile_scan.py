@@ -433,7 +433,7 @@ async def scan_and_digest(
             # 견준다(`research_frontier`). 외부 조사는 하루 2편·180초이고, 무엇이 실패해도 메일은 나간다.
             try:
                 import research_frontier
-                research_frontier.analyze(db_path, list(result["papers"]))
+                research_frontier.analyze(db_path, list(result["papers"]), profile_id=profile_id)
             except Exception as e:  # noqa: BLE001
                 print(f"  [성능 동향] 생략: {type(e).__name__}")
             # 지난 5일치 **동향 서술**을 맥락으로 준다(2026-09-18 사용자 결정 — 논문을 다시 읽히지 않는다).

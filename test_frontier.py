@@ -55,7 +55,7 @@ def _fetch_fixture(url, timeout, headers=None):
 
 
 def _comp(**kw):
-    c = {"source_url": f"https://arxiv.org/abs/{SYNTH}", "model": "SimLingo", "value": 85.07, "same_conditions": False,
+    c = {"source_url": f"https://arxiv.org/abs/{SYNTH}", "model": "SimLingo", "value": 85.07, "same_conditions": False, "same_task": True, "task_note": "같은 과제 지표",
          "differences": [{"what": "multi-view vs single-view", "quote": "M: Multi-view, S: Single view, L: LiDAR."},
                          {"what": "made-up difference", "quote": "this sentence is not in the source page at all"}]}
     c.update(kw)
@@ -68,8 +68,8 @@ def test_competitor_value_comes_from_the_table_cell_not_the_agent():
     ok = ee.verify_competitor(_comp(), TARGET, _fetch_fixture, 5)
     assert ok["status"] == "verified" and ok["value"] == 85.07 and "SimLingo" in ok["locator"]
     assert ok["differences"] == ["multi-view vs single-view"] and ok["unverified_differences"] == 1
-    wrong = ee.verify_competitor(_comp(value=99.9), TARGET, _fetch_fixture, 5)      # 행×열이 셀 하나로 정해지면 표 값을 쓴다
-    assert wrong["value"] == 85.07 and "99.9" in wrong["note"] and "99.9" not in wrong["text"]
+    wrong = ee.verify_competitor(_comp(value=99.9), TARGET, _fetch_fixture, 5)      # 제시값이 없으면 표 값으로 대체하지 않는다
+    assert wrong["status"] == "not_found" and wrong["reason"] == "출처 표의 그 행에 제시값 없음" and "value" not in wrong
     assert ee.verify_competitor(_comp(model="NoSuchModel"), TARGET, _fetch_fixture, 5)["status"] == "not_found"
 
 
@@ -79,7 +79,7 @@ def test_row_identity_is_decided_by_name_never_by_the_number():
     md = "# Bench2Drive\n\n| Method | DS |\n|---|---|\n| SimLingo [18] | 85.07 |\n| SimLingo-base | 80.00 |\n"
     url = "https://github.com/o/Bench2Drive"
     got = ee.verify_competitor(_comp(source_url=url, differences=[], value=80.0), TARGET, lambda *a, **k: md, 5)
-    assert got["value"] == 85.07 and "SimLingo-base" not in got["locator"] and "80.0" in got["note"]
+    assert got["status"] == "not_found" and "value" not in got
     amb = ee.verify_competitor(_comp(source_url=url, differences=[], model="Sim", value=80.0), TARGET, lambda *a, **k: md, 5)
     assert amb["status"] == "not_found"
 
@@ -140,7 +140,7 @@ def test_check_respects_the_total_budget():
 
     def agent(prompt, timeout):
         seen["timeout"] = timeout
-        now[0] += 179.5
+        now[0] += 299.5
         return json.dumps({"papers": [{"paper_id": "2609.99999", "competitors": [_comp()]}]})
 
     def fetch(*a, **k):
@@ -159,6 +159,7 @@ def _fr(ext=None, cmp_status="first", best=None, claims=None):
 
 def _verified(value, same=False, diffs=None):
     return {"status": "verified", "value": value, "text": f"{value}", "model": "R3D-AD", "source_url": "https://arxiv.org/abs/2407.10862",
+            "same_task": True, "task_note": "같은 과제 지표", "column_path": ["O-AUROC"], "table_label": "Table 1",
             "same_conditions": same, "differences": diffs if diffs is not None else ["범주별 학습"], "unverified_differences": 0,
             "locator": "R3D-AD × Real3D-AD / O-AUROC"}
 
@@ -176,9 +177,9 @@ def test_different_conditions_show_numbers_but_never_a_winner():
 
 
 def test_best_label_only_with_same_conditions_and_says_observed_range():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 조건이 확인되지 않았는데 "관측 범위 내 최고"를 붙이거나, 조건이 같아도 "현재 SOTA"라고 쓰면 실패한다."""
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 조건이 확인되지 않았는데 "관측 범위 내 최고"를 붙이거나, 조건이 같아도 숫자로 최고·SOTA를 판정하면 실패한다."""
     same = _fr(ext={"status": "done", "competitors": [_verified(80.1, same=True, diffs=[])]})
-    assert rf.status_label(same) == "관측 범위 내 최고 성능 후보"
+    assert rf.status_label(same) == "동일 조건 외부 비교 가능"
     below = _fr(ext={"status": "done", "competitors": [_verified(90.0, same=True, diffs=[])]})
     assert rf.status_label(below) == "동일 조건 외부 비교 가능"
     unchecked = _verified(80.1, same=True, diffs=[])
@@ -193,8 +194,8 @@ def test_labels_for_incomplete_and_observed_frontier_and_claim_prefix():
     assert rf.status_label(_fr(ext={"status": "incomplete", "competitors": []})) == "외부 비교 미완료"
     best = {"value": 85.9, "model": "B-net", "reported_in": "2607.00001", "own": False}
     fr = _fr(cmp_status="above_observed", best=best, claims=[{"benchmarks": ["Real3D-AD"]}])
-    assert rf.status_label(fr) == "성능 선도 주장 · 기존 관측 최고보다 높음 · 외부 검증 대상"
-    assert any("85.9" in t and "같은 조건인지는 미확인" in t for t, _ in rf.block_lines(fr))
+    assert rf.status_label(fr) == "성능 선도 주장 · 성능 결과 보고 · 외부 검증 대상"
+    assert not any("보다 높음" in t for t, _ in rf.block_lines(fr))
 
 
 def test_reading_point_has_no_praise_and_states_limits():
@@ -207,8 +208,8 @@ def test_reading_point_has_no_praise_and_states_limits():
     assert "본문을 확보하지 못해" in rf.reading_point({"_score": {"core_hits": []}, "deep_status": "abstract_only"})
 
 
-def test_analyze_selects_at_most_two_and_calls_agent_once_per_day(tmp_path):
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 하루 2편을 넘겨 조사하거나, 두 번째 프로필에서 에이전트를 또 부르거나(예산은 하루 180초),
+def test_analyze_batches_five_and_calls_once_per_profile_day(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 프로필당 5편을 넘겨 조사하거나, 두 번째 프로필의 새 결과를 조사하지 않거나,
     같은 논문의 오늘 결과를 재사용하지 않거나, 관측 최고 초과 논문보다 뒤 순위를 먼저 고르면 실패한다."""
     db = tmp_path / "p.db"
     with sqlite3.connect(db) as con:
@@ -227,9 +228,9 @@ def test_analyze_selects_at_most_two_and_calls_agent_once_per_day(tmp_path):
         calls.append([t["paper_id"] for t in targets])
         return {t["paper_id"]: {"status": "done", "competitors": []} for t in targets}
     papers = [{"arxiv_id": a, "title": f"P{i}", "_score": {"core_hits": ["x"]}} for i, a in enumerate(values)]
-    rf.analyze(db, papers, tables_of=tables_of, run_external=run_external, signals_of=lambda a: {}, now=NOW)
-    assert len(calls) == 1 and len(calls[0]) <= 2 and calls[0][0] == "2609.00002"      # 관측 최고(86.0) 초과가 먼저
-    # 두 번째 프로필: 오늘 본 논문 + **처음 보는 벤치마크**의 새 논문. 새 논문은 캐시가 없지만, 오늘 에이전트 호출을 이미 했으므로 부르지 않는다.
+    rf.analyze(db, papers, tables_of=tables_of, run_external=run_external, signals_of=lambda a: {}, now=NOW, profile_id="first")
+    assert len(calls) == 1 and len(calls[0]) == 4 and calls[0][0] == "2609.00002"      # 관측 최고(86.0) 초과가 먼저
+    # 두 번째 프로필은 오늘 확인한 논문을 재사용하고 자기 예산으로 처음 보는 벤치마크를 조사한다.
     with sqlite3.connect(db) as con:
         con.execute("INSERT INTO papers VALUES ('2609.00005', NULL, 'We evaluate on MVTec AD.', 'P5', '2026-09-29')")
 
@@ -238,10 +239,10 @@ def test_analyze_selects_at_most_two_and_calls_agent_once_per_day(tmp_path):
             return [{"id": "T1", "caption": "Results on MVTec AD", "header_rows": 1, "grid": [["Method", "AUROC"], ["Ours", "99.1"]]}]
         return tables_of(aid)
     again = [{"arxiv_id": a, "title": "", "_score": {}} for a in list(values) + ["2609.00005"]]
-    rf.analyze(db, again, tables_of=tables_of2, run_external=run_external, signals_of=lambda a: {}, now=NOW)
-    assert len(calls) == 1                                                             # 하루 호출 1회 — 예산은 하루 180초
+    rf.analyze(db, again, tables_of=tables_of2, run_external=run_external, signals_of=lambda a: {}, now=NOW, profile_id="second")
+    assert calls == [["2609.00002", "2609.00000", "2609.00001", "2609.00003"], ["2609.00005"]]
     assert again[2]["_frontier"]["external"]["status"] == "done"                        # 오늘 결과 재사용
-    assert again[4]["_frontier"]["external"] == {"status": "not_selected"}
+    assert again[4]["_frontier"]["external"]["status"] == "done"
 
 
 def test_analyze_never_raises_and_mail_still_renders(tmp_path):
@@ -258,7 +259,7 @@ def test_analyze_never_raises_and_mail_still_renders(tmp_path):
 
 
 def test_agent_is_called_once_per_day_even_without_the_db_table(tmp_path, monkeypatch):
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 운영 DB 에 기록 표가 없을 때(migrate 전) 프로필마다 에이전트를 다시 불러 하루 예산을 넘기면 실패한다."""
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: DB 기록 표가 없을 때 같은 프로필의 반복 호출로 프로필·날짜 예산을 넘기면 실패한다."""
     db = tmp_path / "p.db"
     with sqlite3.connect(db) as con:
         con.execute("CREATE TABLE papers (arxiv_id TEXT PRIMARY KEY, text_path TEXT, abstract TEXT, title TEXT, published TEXT)")
@@ -431,23 +432,22 @@ def test_css_escape_url_in_style_is_dropped():
 
 
 def test_direction_conflict_and_scale_guess_are_refused():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 외부 표의 DS ↓(반대 방향)를 같은 지표로 받거나, RMSE 처럼 비율이 아닌 지표를 0~1→% 로
-    바꿔 견주면 실패한다(Codex 재현)."""
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 외부 표의 실제 DS ↓ 헤더를 숨기거나, 별도 수치 비교 함수에서 RMSE를 비율로 변환하면 실패한다(Codex 재현)."""
     md = "# Bench2Drive\n\n| Method | DS ↓ |\n|---|---|\n| SimLingo | 85.07 |\n"
     got = ee.verify_competitor(_comp(source_url="https://github.com/o/Bench2Drive", differences=[]), TARGET, lambda *a, **k: md, 5)
-    assert got["status"] == "not_found"
+    assert got["status"] == "verified" and got["column_path"] == ["DS ↓"]
     assert ee.comparable_values(0.8, 2.0, "RMSE") is None
     assert ee.comparable_values(0.751, 87.2, "O-AUROC / Mean") == (75.1, 87.2)
     assert rf._better(0.8, 2.0, "lower", "RMSE") is None and rf._better(80.0, 80.0, "higher", "DS") is None
 
 
 def test_deadline_overrun_and_fetch_failure_are_incomplete_not_done():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 마감(180초)을 넘겨 끝났는데 done 으로 적거나, 출처 받기 실패를 "조사 완료"로 7일 캐시에
-    남기면 실패한다(Codex 재현: 185초에 done)."""
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 마감(300초)을 넘겨 끝났는데 done 으로 적거나, 출처 받기 실패를 "조사 완료"로 7일 캐시에
+    남기면 실패한다(기존 180초 경계 재현을 새 300초 경계로 옮긴다)."""
     now = [0.0]
 
     def agent(prompt, timeout):
-        now[0] += 145
+        now[0] += 265
         return json.dumps({"papers": [{"paper_id": "2609.99999", "competitors": [_comp()]}]})
 
     def slow_fetch(url, timeout, headers=None):
@@ -474,7 +474,8 @@ def test_cached_competitors_keep_values_but_drop_condition_verdicts(tmp_path):
     rf._external(db, [((False, 0), paper, main)], "2026-09-30", lambda t: pytest.fail("캐시가 있는데 불렀다"))
     fr = paper["_frontier"]
     assert fr["external"]["cached_from"] == "A" and rf.status_label(fr) != "관측 범위 내 최고 성능 후보"
-    assert any("조건 대조 안 함" in t for t, _ in rf.block_lines(fr))
+    assert fr["external"]["competitors"][0]["same_task"] is False
+    assert not any("외부 논문 표:" in t for t, _ in rf.block_lines(fr))
 
 
 def test_observed_equal_and_below_are_not_shown_as_ranking(tmp_path):

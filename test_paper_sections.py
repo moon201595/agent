@@ -17,7 +17,7 @@ MATCHED = ['dataset v1', 'test split', 'success protocol', 'frozen training']
 FRONTIER = {'main': [{'benchmark': 'Bench', 'metric': 'Success', 'value': 85.4, 'text': '85.4%',
                      'model': 'Ours', 'locator': 'T1:r2c2'}],
             'external': {'status': 'done', 'competitors': [
-                {'status': 'verified', 'same_conditions': True, 'differences': [], 'unverified_differences': 0,
+                {'status': 'verified', 'same_task': True, 'task_note': '같은 과제 지표', 'column_path': ['Success'], 'table_label': 'Table 1', 'same_conditions': True, 'differences': [], 'unverified_differences': 0,
                  'matched_conditions': MATCHED, 'value': 82.0, 'text': '82.0%', 'model': 'Other',
                  'locator': 'Other × Success', 'source_url': 'https://arxiv.org/abs/2402.00001'}]}}
 
@@ -156,7 +156,7 @@ def test_stored_comparison_reads_only_current_unambiguous_values(tmp_path, monke
     monkeypatch.setattr(paper_observations.sqlite3,'connect',connect)
     rows=paper_observations.stored_comparison_rows(path,'p')
     assert rows==[('Bench · Success — Ours 85.4% (T1:r2c2)',''),
-                  ('Other 82.0% (Other × Success) — 대조 조건: dataset v1, test split, success protocol, frozen training','https://arxiv.org/abs/2402.00001')]
+                  ('외부 논문 표: Other 82.0% — 출처 표 열 "Success" (Table 1) · 같은 과제 판단: 에이전트 판독 (같은 과제 지표) · 대조한 조건: dataset v1, test split, success protocol, frozen training','https://arxiv.org/abs/2402.00001')]
     assert opened[0][0].endswith('?mode=ro') and opened[0][1]=={'uri': True}
     assert opened[0][2].execute('PRAGMA query_only').fetchone()[0]==1
     assert path.read_bytes()==before
@@ -206,3 +206,18 @@ def test_incompatible_metric_scales_do_not_create_a_comparison(monkeypatch):
     fr['external']['competitors'][0].update(value=.82,text='0.82')
     monkeypatch.setattr(digest,'summary_sections',lambda aid:source_sections())
     assert '성능 비교' not in digest._summary_block_html('p',{'_frontier':fr},'ok')
+
+
+def test_incomplete_external_marker_does_not_cast_doubt_on_verified_result():
+    """2026-10-07 실측: 경쟁 후보 1건 확인·1건 출처 표 확보 실패인데 "외부 조사 미완료."만 붙어 확인된 결과까지 못 믿게 읽혔다.
+    실패시키는 것: 확인된 결과가 있을 때도 뭉뚱그린 미완료를 쓰는 것, 못 받은 후보 수를 틀리게 세는 것,
+    확인된 결과가 없을 때 예전 "외부 조사 미완료." 를 잃는 것."""
+    fr = copy.deepcopy(FRONTIER)
+    fr['external']['status'] = 'incomplete'
+    fr['external']['competitors'] += [{'status': 'table_failed', 'model': 'X'}, {'status': 'not_found', 'model': 'Y'}]
+    lines = dict(paper_observations.sections({'_frontier': fr}))['논문 간 관측']
+    texts = [t for t, _ in lines]
+    assert '외부 조사 일부 미완료 — 출처 표를 확인하지 못한 후보 1건.' in texts and '외부 조사 미완료.' not in texts
+    fr['external']['competitors'] = [{'status': 'table_failed', 'model': 'X'}]
+    texts = [t for t, _ in dict(paper_observations.sections({'_frontier': fr}))['논문 간 관측']]
+    assert '외부 조사 미완료.' in texts

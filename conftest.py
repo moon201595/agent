@@ -49,7 +49,7 @@ def _no_real_link_audit_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_sota_lookups(monkeypatch):
+def _no_real_sota_lookups(monkeypatch, tmp_path_factory):
     """성능 동향·외부 신호(2026-09-30)가 테스트에서 실제 네트워크·헤드리스 에이전트를 부르지 않게 한다. S2·HF·GitHub 는 조회 실패,
     arXiv HTML 표는 없음, 외부 조사 에이전트는 실패(= "외부 비교 미완료")로 간다. 각 모듈 테스트는 자기 가짜를 다시 넣는다."""
     import adoption_signals
@@ -71,6 +71,7 @@ def _no_real_sota_lookups(monkeypatch):
     monkeypatch.setattr(research_frontier, "_CALLED_ON", set())
     monkeypatch.setattr(research_frontier, "_RESULTS", {})
     monkeypatch.setattr(research_frontier, "_SIGNALS", {})
+    monkeypatch.setattr(research_frontier, "STATUS_PATH", tmp_path_factory.mktemp("frontier") / "frontier_status.jsonl")
 
 
 @pytest.fixture(autouse=True)

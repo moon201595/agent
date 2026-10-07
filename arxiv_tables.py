@@ -33,6 +33,7 @@ class _Node:
     attrs: dict[str, str] = field(default_factory=dict)
     children: list[_Node | str] = field(default_factory=list)
     closed: bool = False
+    source_tag: str = ''
 
     @property
     def classes(self) -> set[str]:
@@ -49,13 +50,21 @@ class _Parser(HTMLParser):
         self.cells = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        source_tag = tag
+        classes = set((dict(attrs).get('class') or '').split())
+        if tag in {'span', 'div'}:
+            roles = {'ltx_tabular': 'table', 'ltx_thead': 'thead', 'ltx_tbody': 'tbody',
+                     'ltx_tfoot': 'tfoot', 'ltx_tr': 'tr', 'ltx_td': 'td'}
+            tag = next((role for cls, role in roles.items() if cls in classes), tag)
+            if tag == 'td' and 'ltx_th' in classes:
+                tag = 'th'
         self.nodes += 1
         self.tables += tag == 'table'
         self.cells += tag in {'td', 'th'}
         if (self.nodes > MAX_NODES or len(self.stack) > MAX_DEPTH
                 or self.tables > MAX_TABLES or self.cells > MAX_TOTAL_CELLS):
             raise _Limit
-        node = _Node(tag, {k: v or '' for k, v in attrs})
+        node = _Node(tag, {k: v or '' for k, v in attrs}, source_tag=source_tag)
         self.stack[-1].children.append(node)
         if tag not in _VOID:
             self.stack.append(node)
@@ -64,7 +73,7 @@ class _Parser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         for i in range(len(self.stack) - 1, 0, -1):
-            if self.stack[i].tag == tag:
+            if (self.stack[i].source_tag or self.stack[i].tag) == tag:
                 self.stack[i].closed = True
                 del self.stack[i:]
                 break
@@ -96,7 +105,7 @@ def _plain(node: _Node) -> str:
     if node.tag == 'br':
         return ' '
     parts = ''.join(child if isinstance(child, str) else _plain(child) for child in node.children)
-    if node.tag in {'p', 'div'} or 'ltx_p' in node.classes:
+    if node.tag in {'p', 'div', 'tr'} or 'ltx_p' in node.classes:
         parts = ' ' + parts + ' '
     return parts
 
@@ -166,6 +175,11 @@ def _grid(table: _Node) -> tuple[list[list[str]], list[tuple[_Node, str, int]], 
         while end < len(rows) and rows[end][2] == group:
             end += 1
         for cell in cells:
+            # 칸 안에 칸·행이 또 있으면 닫힘이 빠진 HTML 이다(`<td>9<td>1.5</td>`). 글자를 이어 붙이면 없는 수치 "91.5" 가 생긴다
+            # (2026-10-07 Codex 독립 검토 P1) — 그 표는 위험한 표로 건너뛴다.
+            # 안쪽 table 노드 아래는 보지 않는다 — 머리 칸의 글자뿐인 중첩 표(§229)는 따로 검사한다.
+            if any(True for tag in ('td', 'th', 'tr') for _ in _descendants(cell, tag, ('table',))):
+                raise _Limit
             while (r, col) in occupied:
                 col += 1
             rs = _span(cell, 'rowspan', MAX_ROWS) or (end - r)
@@ -217,12 +231,39 @@ def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
     return count
 
 
+def _safe_header_tables(table: _Node) -> bool:
+    """LaTeXML 머리글의 한 열 문자 표만 펼쳐 수치가 있는 중첩 표와 구분한다.
+
+    2026-10-07 로컬 3DThinkVLA의 2행×1열 머리글에서 재현했다. 입력·노드·깊이
+    상한은 올리지 않으며 최대 4행·1열·수치 없음·추가 중첩 없음으로 제한한다.
+    """
+    allowed: set[int] = set()
+    grid, rows, originals = _grid(table)
+    headers = _header_rows(grid, rows, originals)
+    for row_index, row in enumerate(originals[:headers]):
+        for cell in row:
+            if not (rows[row_index][1] == 'thead' or 'ltx_td' in cell.classes
+                    or 'ltx_th_column' in cell.classes or cell.attrs.get('scope') == 'col'):
+                continue
+            for inner in _descendants(cell, 'table', ('table',)):
+                if ('ltx_tabular' not in inner.classes or not inner.closed
+                        or next(_descendants(inner, 'table'), None) is not None):
+                    return False
+                inner_grid, _, _ = _grid(inner)
+                if not inner_grid or len(inner_grid) > 4 or any(
+                        len(line) != 1 or cell_number(line[0]) is not None for line in inner_grid):
+                    return False
+                allowed.add(id(inner))
+    return all(id(inner) in allowed for inner in _descendants(table, 'table'))
+
+
 def parse_tables(html: str) -> list[dict]:
     """figure.ltx_table 내부 표만 반환해 일반 레이아웃 표와 구별한다.
 
     UTF-8 5MiB, 표 128개, 표당 펼친 직사각형 1만 셀, 전체 10만 셀을 넘으면
     부분 성공으로 오인하지 않도록 빈 목록을 반환한다. 노드·깊이·행·열도 제한한다.
-    잘못된 span, 겹친 셀, 행 그룹 밖 rowspan, 미완성/중첩 table 역시 빈 목록이다.
+    잘못된 span, 겹친 셀, 행 그룹 밖 rowspan, 미완성/수치 중첩 table 역시 빈 목록이다.
+    span/div의 LaTeXML 표 역할도 같은 상한·격자 규칙으로 읽는다. 문자 머리글 중첩만 제한적으로 허용한다.
     한 figure의 여러 독립 table은 같은 figure id로 각각 반환한다. 없는 id는
     반환 순서 T1부터 부여한다. 머리 판정의 한계는 _header_rows에 명시한다.
     """
@@ -240,9 +281,15 @@ def parse_tables(html: str) -> list[dict]:
             captions = list(_descendants(figure, 'figcaption', ('figure', 'table', 'figcaption')))
             caption = _text(captions[0]) if captions else ''
             for table in _descendants(figure, 'table', ('figure', 'table')):
-                if not table.closed or next(_descendants(table, 'table'), None) is not None:
-                    raise _Limit
-                grid, rows, originals = _grid(table)
+                # 구조가 위험한 표 **하나**만 건너뛴다. 예전엔 페이지 전체를 버렸다 — 2026-10-07 실측 2608.01265 는 표 13개 중
+                # S3.T1 하나의 머리 구조 때문에 0개가 됐다. 그 표를 빼도 다른 표의 셀 값·위치는 그대로라 부분 성공 오인이 아니다.
+                # 자원 상한(노드·전체 셀·표 수)은 여전히 페이지 전체를 중단한다 — 그건 잘린 결과일 수 있다.
+                try:
+                    if not table.closed or not _safe_header_tables(table):
+                        continue
+                    grid, rows, originals = _grid(table)
+                except _Limit:
+                    continue
                 if not grid or not grid[0]:
                     continue
                 total += len(grid) * len(grid[0])
