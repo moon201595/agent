@@ -171,3 +171,12 @@ def test_weekly_brief_block_is_not_drawn_when_the_section_is_empty():
     """빈 내용에 흰 상자만 남기면 "뭔가 있나" 하고 눈을 끌고 아무것도 주지 않는다 — `_h1` 만 뜬 빈 절과 같다."""
     assert digest._block("") == ""
     assert "내용" in digest._block("내용")
+
+
+def test_keyword_hits_white_strip_has_inner_padding():
+    """생산 띠의 padding을 제거하거나 좌우 12px 미만으로 줄이면 실패한다. 글자와 폭 계약도 지킨다."""
+    html = digest._keyword_hits_html("(후보 431건 기준)", "agent 12 · world model 4")
+    strip = next(n for n in _all(Tree(html).root) if n["tag"] == "p" and "background-color:#FFFFFF" in n["style"])
+    assert all(p >= 12 for p in _side_padding(strip["style"]))
+    assert "font-size:12px" in strip["style"] and "margin:0;" in strip["style"]
+    assert _text(strip) == "agent 12 · world model 4"

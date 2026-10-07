@@ -253,7 +253,9 @@ def test_plain_text_catches_glued_and_www_urls_and_never_reexposes_a_url_as_doi(
 
 def test_real_landing_hosts_from_2026_10_01_mail():
     """10-01 아침 메일에서 막힌 두 착지 호스트(실측). 망가뜨리면 실패하는 것: copernicus.org 를 목록에서 빼는 것(사용자 결정으로 허용) ·
-    여러 회사가 같이 쓰는 콘텐츠 배포 서버(sitecorecontenthub.cloud)를 출판사처럼 여는 것 · 하위 도메인 접미사 대조를 흉내 낸 도메인을 받는 것."""
+    하위 도메인 접미사 대조를 흉내 낸 도메인을 받는 것. 2026-10-06 사용자 결정으로 doi.org 착지는 자동 검사만 통과하면 싣는다 —
+    여러 회사가 같이 쓰는 콘텐츠 배포 서버(sitecorecontenthub.cloud, 미국용접학회 DOI)도 등록자가 정한 착지라 이제 통과한다(10-01 의 반대 결정).
+    다만 doi 를 거치지 않은 그 서버 직접 링크는 여전히 막힌다."""
     isprs = "https://doi.org/10.5194/isprs-annals-xii-4-w1-2026-267-2026"
     welding = "https://doi.org/10.29391/2026.105.022"
     a = _auditor(redirects={
@@ -261,5 +263,31 @@ def test_real_landing_hosts_from_2026_10_01_mail():
         welding: (302, "https://aws-p-001-delivery.sitecorecontenthub.cloud/api/public/content/x"),
     })
     assert a.check(isprs) is None
-    assert "허용 목록 밖" in a.check(welding)
+    assert a.check(welding) is None
+    assert a.check("https://aws-p-001-delivery.sitecorecontenthub.cloud/api/public/content/x") == "허용 목록 밖"
     assert a.check("https://evilcopernicus.org/x") is not None
+
+
+def test_doi_landing_on_an_unlisted_publisher_passes_only_the_automatic_checks():
+    """2026-10-06 사용자 결정: doi.org 가 넘겨준 착지는 허용 목록에 없어도 자동 검사를 통과하면 싣는다(10/6 메일 20건이 글자로만 나갔다).
+    이 테스트가 무엇을 망가뜨리면 실패하는가: 착지 예외를 지우면 첫 단언이, 예외를 doi 를 거치지 않은 일반 URL 까지 넓히면 둘째 단언이,
+    http·단축 URL·파일 공유·동적 DNS·IP·포트·예약 도메인 검사를 하나라도 빼면 해당 단언이, 착지의 DNS 공인 검사를 건너뛰면 마지막 단언이 실패한다."""
+    ok_url = "https://doi.org/10.31399/asm.cp.istfa2026p0394"
+    landings = {
+        "https://doi.org/10.1/plainhttp": "http://journal.example-pub.org/a",
+        "https://doi.org/10.1/short": "https://bit.ly/abc",
+        "https://doi.org/10.1/drive": "https://drive.google.com/file/d/x",
+        "https://doi.org/10.1/ddns": "https://paper.duckdns.org/x",
+        "https://doi.org/10.1/ip": "https://203.0.113.9/x",
+        "https://doi.org/10.1/port": "https://journal.publisher.org:8443/x",
+        "https://doi.org/10.1/reserved": "https://journal.test/x",
+        "https://doi.org/10.1/private": "https://intranet-journal.org/x",
+    }
+    redirects = {ok_url: (302, "https://dl.asminternational.org/istfa/proceedings/ISTFA2026/1/394")}
+    redirects.update({k: (302, v) for k, v in landings.items()})
+    a = _auditor(dns={"intranet-journal.org": ["10.0.0.5"]}, redirects=redirects)
+    assert a.check(ok_url) is None
+    assert a.check("https://dl.asminternational.org/istfa/proceedings/ISTFA2026/1/394") == "허용 목록 밖"   # doi 를 안 거친 직접 링크
+    for src in landings:
+        assert a.check(src) is not None, src
+    assert a.check("https://doi.org/10.1/private").startswith("공인 주소가 아님")

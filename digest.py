@@ -607,8 +607,13 @@ def _comparison_block_html(paper: dict) -> str:
 
 def _observation_blocks_html(paper: dict) -> str:
     """논문 보고와 외부 신호는 토글 밖에 둔다. 비신뢰 원문·저장소 이름을 HTML로 해석하지 않는다."""
+    return _render_observation_sections(_observation_sections(paper))
+
+
+def _render_observation_sections(sections: list[tuple[str, list[tuple[str, str]]]]) -> str:
+    """평문에서 복원한 관측도 원래 관측 상자에 넣는다. 수치와 출처는 입력 그대로다."""
     blocks = []
-    for heading, entries in _observation_sections(paper):
+    for heading, entries in sections:
         rows = ''.join('<div style="font-size:13.5px;line-height:1.7;margin-top:5px;word-break:break-word;">'
                        + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text))
                        + '</div>' for text, url in entries)
@@ -1530,87 +1535,103 @@ def _external_scout_html(scan_result: dict) -> str:
                      + (_h2("에이전트가 놓친 연구") + rows if rows else "")))
 
 
-def _profile_changes_html(scan_result: dict) -> str:
-    """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
-    ch = scan_result.get("profile_changes")
+def _profile_changes_view(ch: dict | None) -> dict | None:
+    """검색 기준 변화를 **보이는 값**으로 푼다 — 형식 수정본(`saved_digest`)이 저장 평문에서 같은 모양을 되살려
+    같은 HTML 함수(`_profile_changes_view_html`)로 그리게 하려는 것이다(2026-10-06 사용자 지적: 다시 보낸 메일의 이 절이
+    막대·표 없이 줄 나열이었다). 저장 평문에는 dict 가 아니라 이 값들(소수 둘째 자리·막대 칸 수·딱지 글자)만 남는다."""
     if not ch or not _has_auto_change(ch):
-        return ""
-    days = _window_days(ch)
+        return None
     up, down, hidden = _split_moves(ch)
     biggest = max([abs(w["delta"]) for w in up + down] or [0])
+    agent = ch.get("agent") or {}
+    failed = ""
+    if agent.get("failed"):
+        _ops, fail_labels = _agent_labels()
+        failed = str(fail_labels.get(agent["failed"], agent["failed"]))
+    return {
+        "days": _window_days(ch),
+        "moves": [{"rising": w["delta"] > 0, "keyword": w["keyword"], "tags": _origin_tags(w["origins"]),
+                   "blocks": _bar(w["delta"], biggest), "before": f'{w["before"]:.2f}', "after": f'{w["after"]:.2f}',
+                   "delta": f'{abs(w["delta"]):.2f}'} for w in up + down],
+        "added": [(a["keyword"], f'{_KIND_LABEL.get(a["kind"], a["kind"])} · {_origins_text(a["origins"])}')
+                  for a in _auto(ch.get("added"))],
+        "removed": [(r["keyword"], f'{_KIND_LABEL.get(r["kind"], r["kind"])} · {_origins_text(r["origins"])}')
+                    for r in _auto(ch.get("removed"))],
+        "groups": [(term, basis, " ".join(reasons)) for term, basis, reasons in _reason_groups(agent.get("applied"))],
+        "rows": _impact_rows(agent),
+        "failed": failed,
+        "tail": " · ".join(_changes_tail(ch, hidden)),
+    }
 
+
+def _profile_changes_html(scan_result: dict) -> str:
+    """검색 기준 변화의 HTML 판. 평문판과 **같은 dict 하나**를 읽는다 — 두 판이 갈라진 사고가 반복됐다(§8-70)."""
+    view = _profile_changes_view(scan_result.get("profile_changes"))
+    return _profile_changes_view_html(view) if view else ""
+
+
+def _profile_changes_view_html(view: dict) -> str:
+    """`_profile_changes_view` 의 값을 그린다. 일일 경로와 형식 수정본이 이 함수 하나를 쓴다."""
     head = _h2
 
     def move_row(w: dict) -> str:
-        rising = w["delta"] > 0
-        colour, arrow = (_RISE_INK, "▲") if rising else (_FALL_INK, "▼")
-        width = int(100 * _bar(w["delta"], biggest) / BAR_BLOCKS)
-        sign = "+" if rising else "−"
+        colour, arrow = (_RISE_INK, "▲") if w["rising"] else (_FALL_INK, "▼")
+        width = int(100 * w["blocks"] / BAR_BLOCKS)
+        sign = "+" if w["rising"] else "−"
         return (
             f'<div style="background-color:{_PAPER_BG};margin:0 0 10px 10px;">'
             f'<div style="color:{_INK};font-size:14px;"><span style="color:{colour};">{arrow}</span> '
             f'<b>{_esc(w["keyword"])}</b>'
-            f'<span style="color:{_MUTED};font-size:12px;"> {_esc(_origin_tags(w["origins"]))}</span></div>'
+            f'<span style="color:{_MUTED};font-size:12px;"> {_esc(w["tags"])}</span></div>'
             # 막대는 이미지 없이 배경색 div 하나다 — Gmail·Outlook 이 지우지 않는다.
             f'<div style="background-color:{_LINE};height:6px;width:100%;max-width:300px;'
             f'border-radius:3px;margin:4px 0 3px;">'
             f'<div style="background-color:{colour};height:6px;width:{width}%;border-radius:3px;'
             f'font-size:1px;line-height:6px;">&nbsp;</div></div>'
-            f'<div style="color:{_MUTED};font-size:12px;">{w["before"]:.2f} → {w["after"]:.2f}'
-            f'<span style="color:{colour};"> {sign}{abs(w["delta"]):.2f}</span></div></div>')
+            f'<div style="color:{_MUTED};font-size:12px;">{w["before"]} → {w["after"]}'
+            f'<span style="color:{colour};"> {sign}{w["delta"]}</span></div></div>')
 
     out = ""
-    if up or down:
+    if view["moves"]:
         out += head("가중치 변화")
-        out += "".join(move_row(w) for w in up + down)
-
-    added, removed = _auto(ch.get("added")), _auto(ch.get("removed"))
-    if added:
+        out += "".join(move_row(w) for w in view["moves"])
+    if view["added"]:
         out += head("신규")
-        for a in added:
+        for keyword, label in view["added"]:
             out += (f'<div style="background-color:{_PAPER_BG};margin:0 0 6px 10px;">'
                     f'<span style="background-color:#E7F4EC;color:{_NEW_INK};font-size:11px;'
                     f'font-weight:700;padding:1px 6px;border-radius:3px;">NEW</span> '
-                    f'<b style="color:{_INK};font-size:14px;">{_esc(a["keyword"])}</b>'
-                    f'<span style="color:{_MUTED};font-size:12px;"> '
-                    f'{_esc(_KIND_LABEL.get(a["kind"], a["kind"]))} · {_esc(_origins_text(a["origins"]))}</span></div>')
-    if removed:
+                    f'<b style="color:{_INK};font-size:14px;">{_esc(keyword)}</b>'
+                    f'<span style="color:{_MUTED};font-size:12px;"> {_esc(label)}</span></div>')
+    if view["removed"]:
         out += head("삭제")
-        for r in removed:
+        for keyword, label in view["removed"]:
             out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:13px;'
-                    f'margin:0 0 4px 10px;">▪ {_esc(r["keyword"])} '
-                    f'({_esc(_KIND_LABEL.get(r["kind"], r["kind"]))} · {_esc(_origins_text(r["origins"]))})</div>')
-
-    agent = ch.get("agent") or {}
-    groups = _reason_groups(agent.get("applied"))
-    if groups:
+                    f'margin:0 0 4px 10px;">▪ {_esc(keyword)} ({_esc(label)})</div>')
+    if view["groups"]:
         out += head("이유")
-        for term, basis, reasons in groups:
+        for term, basis, reasons in view["groups"]:
             tag = (f'<span style="color:{_MUTED};font-size:11px;font-weight:400;"> [{_esc(basis)}]</span>'
                    if basis else "")
             out += (f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;'
                     f'font-weight:600;margin:0 0 2px 10px;">{_esc(term)}{tag}</div>'
                     f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-                    f'margin:0 0 8px 10px;line-height:1.55;">{_esc(" ".join(reasons))}</div>')
-    rows = _impact_rows(agent)
-    if rows:
+                    f'margin:0 0 8px 10px;line-height:1.55;">{_esc(reasons)}</div>')
+    if view["rows"]:
         out += head("검색 영향")
         out += f'<table style="border-collapse:collapse;margin-left:10px;">'
-        for name, value in rows:
+        for name, value in view["rows"]:
             out += (f'<tr><td style="color:{_MUTED};font-size:12px;padding:1px 14px 1px 0;">{_esc(name)}</td>'
                     f'<td style="color:{_INK};font-size:13px;padding:1px 0;">{_esc(value)}</td></tr>')
         out += "</table>"
-    if agent.get("failed"):
-        _ops, fail_labels = _agent_labels()
+    if view["failed"]:
         out += (f'<div style="background-color:{_PAPER_BG};color:{_FLAG_INK};font-size:13px;'
                 f'margin:8px 0 0 10px;">⚠ 주간 관리 실패 : '
-                f'{_esc(str(fail_labels.get(agent["failed"], agent["failed"])))} — 키워드는 그대로입니다.</div>')
-
-    tail = _changes_tail(ch, hidden)
-    if tail:
+                f'{_esc(view["failed"])} — 키워드는 그대로입니다.</div>')
+    if view["tail"]:
         out += (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11px;'
-                f'margin:10px 0 0 10px;">{_esc(" · ".join(tail))}</div>')
-    return _h1(f"지난 {days}일 검색 기준 변화") + _block(out)
+                f'margin:10px 0 0 10px;">{_esc(view["tail"])}</div>')
+    return _h1(f'지난 {view["days"]}일 검색 기준 변화') + _block(out)
 
 
 def _changes_tail(ch: dict, hidden: int) -> list[str]:
@@ -2178,6 +2199,14 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     # 원문 링크는 늘 보이고, 긴 요약(무엇을·어떻게·방법·실험·결과·한계)만 접는다. Gmail 은 details 를 무시하고
     # 다 펼치므로(위 1) Gmail 에선 예전과 같이 전부 보이고, 접히는 클라이언트에선 **목록을 훑을 수 있게** 된다.
     # 접힘 표시(＋/－)는 시안이 CSS 가상요소로 그렸는데 메일에서 사라지므로 글자 ▸ 로 둔다.
+    return _render_card_parts(idx, title_html, korean_html, gist_html, chips, kw_chips, detail,
+                              _summary_block_html(arxiv_id, paper, deep_status), foot)
+
+
+def _render_card_parts(idx: int, title_html: str, korean_html: str, gist_html: str,
+                       chips: str, kw_chips: str, detail: str, analysis: str, foot: str) -> str:
+    """저장 글도 같은 카드 틀을 쓴다. 내용 복원 때문에 일일 메일의 모양을 바꾸지 않는다."""
+    open_attr = ""
     return (
         f'<div class="ph-card" style="background-color:{_CARD_BG};color:{_INK};border:1px solid {_CARD_LINE};'
         f'border-radius:10px;padding:18px 20px 14px;margin:18px 0 0;">'
@@ -2192,7 +2221,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
         # 시안의 ＋ 를 글자로 둔다. 2026-09-30 실측: ▶ 와 글자 ▸ 가 나란히 두 번 보였다.
         f'<summary style="display:block;list-style:none;background-color:{_CARD_BG};color:{_ACCENT_DARK};font-size:13px;font-weight:700;'
         f'cursor:pointer;padding:4px 0;">＋ 상세 분석 펼쳐보기</summary>'
-        f'{_summary_block_html(arxiv_id, paper, deep_status)}'
+        f'{analysis}'
         f'</details>'
         f'{foot}'
         f'</div>'
@@ -2692,14 +2721,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     title_only_n = len(scan_result.get("title_only_papers") or [])
     if title_only_n:
         kpis.append(("제목만 실은 논문", f"{title_only_n}편"))
-    head = (
-        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_ACCENT};font-size:11.5px;font-weight:700;'
-        f'letter-spacing:.8px;">RESEARCH BRIEF · {_esc(date_str)}</div>'
-        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_INK};font-size:25px;font-weight:700;'
-        f'line-height:1.35;margin:4px 0 2px;">연구 동향 브리핑</div>'
-        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_MUTED};font-size:13px;">{_esc(profile_name)}</div>'
-        + mail_layout.stats(kpis)
-    )
+    head = _digest_head_html(date_str, profile_name, kpis)
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
     retraction_slot = "<!-- retraction-warnings -->"
@@ -2741,11 +2763,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     empty = not papers and not title_only
     trend = "" if empty else _trend_line(scan_result)
     if trend:
-        body += (
-            _h1("이번 창의 키워드별 적중 편수", f"(후보 {candidates}건 기준)")
-            + f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;">'
-              f'{_esc(trend)}</p>'
-        )
+        body += _keyword_hits_html(f"(후보 {candidates}건 기준)", trend)
 
     details_body = body
     # 과거 논문 상태나 근거 부록을 앞뒤에 붙이지 않는다(2026-09-10 사용자 요청).
@@ -2796,19 +2814,46 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     body += details_body
     weekly = _window_html(scan_result) + _external_scout_html(scan_result) + _profile_changes_html(scan_result)
     if weekly:
-        body += (f'<div style="background-color:#E8F2F3;color:{_ACCENT_DARK};font-size:13px;font-weight:700;'
-                 f'padding:9px 14px;margin:34px 0 0;border-radius:6px;">{_esc(WEEKLY_BRIEF_TITLE)}'
-                 f'<span style="color:{_MUTED};font-weight:400;"> · {_esc(WEEKLY_BRIEF_NOTE)}</span></div>' + weekly)
+        body += _weekly_banner_html() + weekly
     body += _profile_update_html(scan_result)
 
     filtered = "" if empty else _filtered_line(scan_result)
     footer = ""
     if filtered:
-        footer = (
-            # 맨 아래 흰 줄도 안쪽 여백을 받는다(2026-10-06) — 위 가는 줄은 바깥 폭 그대로 긋고 글자만 들인다.
-            f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
-            f'border-top:1px solid {_LINE};padding:10px 14px 0;">'
-            f'이번 실행에서 걸러진 것: {_esc(filtered)}</p>'
-        )
+        footer = _saved_footer_html(f"이번 실행에서 걸러진 것: {filtered}")
 
     return mail_layout.frame(f"{head}{retraction_slot}{body}{footer}")
+
+
+
+def _keyword_hits_html(note: str, trend: str) -> str:
+    """키워드별 적중 편수 띠. 형식 수정본도 이 함수로 그려 두 경로의 모양이 갈라지지 않게 한다(2026-10-06)."""
+    return (_h1("이번 창의 키워드별 적중 편수", note)
+            + f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;padding:12px 14px;">'
+              f'{_esc(trend)}</p>')
+
+
+def _weekly_banner_html() -> str:
+    """두 경로가 같은 주간 구분선을 쓰므로 재표시만 다른 상자가 되지 않는다."""
+    return (f'<div style="background-color:#E8F2F3;color:{_ACCENT_DARK};font-size:13px;font-weight:700;'
+            f'padding:9px 14px;margin:34px 0 0;border-radius:6px;">{_esc(WEEKLY_BRIEF_TITLE)}'
+            f'<span style="color:{_MUTED};font-weight:400;"> · {_esc(WEEKLY_BRIEF_NOTE)}</span></div>')
+
+
+def _saved_footer_html(text: str) -> str:
+    """꼬리도 원래 폭 안에서 글자만 들인다. 저장 문장의 숫자는 재계산하지 않는다."""
+    return (f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
+            f'border-top:1px solid {_LINE};padding:10px 14px 0;">{_esc(text)}</p>')
+
+
+
+def _digest_head_html(date_str: str, profile_name: str, kpis: list[tuple[str, str]]) -> str:
+    """숫자는 호출자가 확인한 값만 쓰고 두 경로의 머리 모양을 공유한다."""
+    return (
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_ACCENT};font-size:11.5px;font-weight:700;'
+        f'letter-spacing:.8px;">RESEARCH BRIEF · {_esc(date_str)}</div>'
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_INK};font-size:25px;font-weight:700;'
+        f'line-height:1.35;margin:4px 0 2px;">연구 동향 브리핑</div>'
+        f'<div style="background-color:{mail_document.CANVAS_BG};color:{_MUTED};font-size:13px;">{_esc(profile_name)}</div>'
+        + mail_layout.stats(kpis)
+    )

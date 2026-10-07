@@ -138,6 +138,42 @@ def _http_probe(url: str, timeout: float) -> tuple[int, str]:
         return response.status_code, response.headers.get("location") or ""
 
 
+# doi.org 가 넘겨준 출판사 착지(2026-10-06 사용자 결정). 그전에는 착지 호스트도 허용 목록에 있어야 했고, 소규모 출판사는 일부러 뺐다
+# (9/30). 그 결과 10/6 하루 메일에서 DOI 링크 20건이 글자로만 나갔다 — 착지 13곳(ASM·Emerald·IAES·ETASR·SPG·…). 사용자: "20편 다
+# 들어오게, 위험 검증은 따로 하고 괜찮으면 쭉 허용 — 할 때마다 하는 건 말이 안 된다." DOI 는 출판사가 등록한 공식 경로라 착지는 그
+# 출판사가 정한 곳이다. 그래서 **doi.org 를 거쳐 온 착지만** 아래 자동 검사로 받는다 — 본문·초록에서 온 일반 URL 은 여전히 허용 목록만.
+# 자동 검사: https·기본 포트·userinfo 없음·IP 리터럴 아님·예약 도메인 아님·아래 범주(단축 URL·파일 공유·동적 DNS·터널) 아님, 그리고
+# 홉마다 하던 그대로 DNS 가 **공인 주소만** 가리켜야 한다(_public). 출판사의 질(약탈적 학술지 여부)은 링크 안전과 다른 문제라 여기서 가르지 않는다.
+DOI_LANDING_DENY = frozenset({
+    # 단축 URL — 착지를 숨긴다
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at", "tiny.cc",
+    # 파일 공유·임의 업로드
+    "drive.google.com", "docs.google.com", "dropbox.com", "dropboxusercontent.com", "mega.nz", "mediafire.com",
+    "wetransfer.com", "1drv.ms", "onedrive.live.com", "box.com", "pastebin.com", "transfer.sh", "file.io",
+    # 동적 DNS·터널 — 누구나 이름을 잡는다
+    "duckdns.org", "no-ip.com", "no-ip.org", "ddns.net", "hopto.org", "zapto.org", "sytes.net",
+    "ngrok.io", "ngrok-free.app", "ngrok.app", "trycloudflare.com", "loca.lt", "serveo.net",
+})
+_RESERVED_TLDS = frozenset({"example", "test", "invalid", "localhost", "local", "internal", "onion", "lan", "home", "arpa"})
+
+
+def _doi_landing_ok(url: str) -> bool:
+    """doi.org 리다이렉트의 착지가 허용 목록 밖일 때 받을 수 있는가 — 네트워크 없이 보는 부분만. DNS 공인 검사는 감사기가 따로 한다."""
+    if len(url) > MAX_LINK_LENGTH:
+        return False
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme != "https" or "@" in parsed.netloc or port not in (None, 443):
+        return False
+    if not host or "." not in host or _is_ip_literal(host) or host.rsplit(".", 1)[-1] in _RESERVED_TLDS:
+        return False
+    return not any(host == d or host.endswith(f".{d}") for d in DOI_LANDING_DENY)
+
+
 def _host(url: str) -> str:
     return (urlparse(url).hostname or "").rstrip(".").lower()
 
@@ -228,7 +264,8 @@ class MailLinkAuditor:
         """(판정, 캐시해도 되는가)."""
         current = url
         for _ in range(MAX_HOPS + 1):
-            if not _statically_safe(current):
+            # 루프는 리다이렉터(doi.org)일 때만 다음 홉으로 가므로 `current != url` 이면 doi.org 가 넘겨준 착지다.
+            if not _statically_safe(current) and not (current != url and _doi_landing_ok(current)):
                 return ("허용 목록 밖" if current == url else f"리다이렉트가 허용 목록 밖으로({_host(current) or '?'})"), True
             host = _host(current)
             public, why = self._public(host)

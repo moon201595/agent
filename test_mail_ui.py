@@ -33,7 +33,7 @@ class Elements(HTMLParser):
 
 @pytest.mark.parametrize('saved', [False, True])
 def test_both_mail_paths_use_bounded_gray_background_and_white_stat_cards(saved, monkeypatch):
-    """새 메일/저장 메일 중 한 경로가 흰 바탕으로 남거나 지표 카드·기존 숫자를 잃으면 실패한다."""
+    """새 메일/저장 메일의 바탕·지표 숫자를 잃거나 저장 카드만 별도 표 틀로 돌아가면 실패한다."""
     if saved:
         html = saved_digest.render_html(SAVED, '팀', [{'title': 'One & Paper'}], title_only_count=8)
         values = ['1편', '9건', '8편']
@@ -59,11 +59,12 @@ def test_both_mail_paths_use_bounded_gray_background_and_white_stat_cards(saved,
         assert value in text
     cards = parsed.by_class('ph-card')
     assert len(cards) == 1
-    if saved:
-        card_tables = [node for node in parsed.nodes if node['tag'] == 'table' and node['parent'] is cards[0]]
-        assert len(card_tables) == 1 and 'background-color:#FFFFFF' in card_tables[0]['attrs']['style']
-    else:
-        assert 'background-color:#FFFFFF' in cards[0]['attrs']['style']
+    # 저장 경로의 별도 box 표를 요구하던 계약을 공용 일일 카드의 정확한 스타일로 바꿨다(2026-10-06).
+    assert cards[0]['attrs']['style'] == (
+        'background-color:#FFFFFF;color:#162536;border:1px solid #E2E8EC;'
+        'border-radius:10px;padding:18px 20px 14px;margin:18px 0 0;')
+    card_tables = [node for node in parsed.nodes if node['tag'] == 'table' and node['parent'] is cards[0]]
+    assert card_tables == []
     assert Regions(html).toggles == 1 and Regions(html).open_toggles == 0
 
 

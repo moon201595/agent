@@ -231,6 +231,10 @@ def test_deliver_gives_each_recipient_own_buttons_and_marks_delivery(tmp_path, m
     import research_profile as rp
     import run_profile_scan as rps
     import email_delivery
+    import mail_ledger
+    # 하루 한 번 정책 뒤에도 버튼 실패의 fail-open 을 다음 운영일에 검증한다(2026-10-06).
+    clock = [datetime(2026, 10, 5, 20, 10, tzinfo=timezone.utc)]
+    monkeypatch.setattr(mail_ledger, "_now", lambda: clock[0])
     db = tmp_path / "p.db"
     rp.create_profile(db, "p", "P", ["alpha"])
     rp.add_recipient(db, "p", "alice@x.com")
@@ -256,6 +260,7 @@ def test_deliver_gives_each_recipient_own_buttons_and_marks_delivery(tmp_path, m
 
     monkeypatch.setattr(fl, "issue_links", boom)
     sent.clear()
+    clock[0] = datetime(2026, 10, 6, 20, 10, tzinfo=timezone.utc)
     assert rps._deliver(db, "p", {"papers": [paper], "candidates_found": 1}, "").endswith("2명")
     assert len(sent) == 2 and all("더 보고 싶음" not in html for _to, html in sent)
 

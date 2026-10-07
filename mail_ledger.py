@@ -54,6 +54,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def already_sent_today(db: Path, profile_id: str, when: datetime | None = None) -> bool:
+    """순차 재실행은 flock 으로 막히지 않아 성공 회차만 확인한다(2026-10-06).
+
+    부분 성공은 못 받은 독자를 위해 재시도한다. 조회 때문에 운영 스키마를
+    만들지 않으며, 시간대 표기가 다른 옛 행도 공용 05:00 KST 운영일로 비교한다.
+    """
+    from time_policy import operating_day, parse_iso
+
+    day = operating_day(when or _now())
+    if not db.exists():
+        return False
+    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+        con.execute("PRAGMA query_only=ON")
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='mail_issues'").fetchone():
+            return False
+        rows = con.execute("SELECT sent_at FROM mail_issues WHERE profile_id=? AND status='sent'",
+                           (profile_id,))
+        for (sent_at,) in rows:
+            instant = parse_iso(sent_at)
+            if instant is not None and operating_day(instant) == day:
+                return True
+    return False
+
+
 def record_issue(db: Path, issue_id: str, profile_id: str, subject: str, papers: list[dict],
                  recipients_total: int, recipients_sent: int, when: datetime | None = None) -> str:
     """회차 하나를 남긴다. returns status. 수신자 0명(안 보냄)은 회차가 아니다 — 호출부가 부르지 않는다."""

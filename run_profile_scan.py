@@ -509,7 +509,10 @@ async def scan_and_digest(
         print(f"  [제목] 한국어 병기 실패(무시): {type(e).__name__}")
 
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
-    research_profile.save_digest(db_path, profile_id, digest_text)
+    import mail_ledger
+    # 재수집 결과가 실제 발송한 개요를 덮지 않게 한다(2026-10-06).
+    if not mail_ledger.already_sent_today(db_path, profile_id):
+        research_profile.save_digest(db_path, profile_id, digest_text)
 
     # **소비 처리는 여기서 하지 않는다**(2026-09-08, §8-77).
     #

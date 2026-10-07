@@ -46,6 +46,7 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - **Windows 작업 스케줄러에도 같은 작업이 있다**(`paper-harness\daily-scan` 매일 05:00, XML 은 `%USERPROFILE%\paper-harness-tasks\`).
   PC 가 절전이면 WSL cron 은 그 시각을 건너뛴다(2026-09-15 실측) — Windows 작업은 깨어나는 즉시 실행(StartWhenAvailable)하고
   꺼진 WSL 도 켠다. `WakeToRun=true` 를 켰다(2026-09-18, XML 로 확인). 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
+  같은 날 순차 재실행은 발송 장부가 막는다(05:00 KST 운영일·프로필별 성공 회차, 2026-10-06).
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
@@ -193,7 +194,7 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   어차피 지운다. 실제 상한은 시간이다(clone 120초·설치 900초·실행 120초 + `--depth 1`·blob 20MB·LFS skip).
   크기는 `LARGE_REPO_KB` 를 넘으면 **로그에 남기고 그대로 진행**한다 — 재되 막지 않는다.
 - **메일 링크는 SMTP 직전에 한 번 더 감사한다**(`link_policy.audit_mail`, `email_delivery.send_digest_email` 안, 2026-09-30) — 허용 목록·DNS 공인 주소·
-  doi.org 홉별 추적·반응 버튼 정확한 출처. 막힌 링크는 글자로 남기고 메일은 보낸다. 새 링크 자리를 만들어도 이 감사를 우회하지 않는다.
+  doi.org 홉별 추적·반응 버튼 정확한 출처. **doi.org 가 넘겨준 착지만** 허용 목록 밖이어도 자동 검사(https·공인 주소·IP/예약 도메인·단축 URL·파일 공유·동적 DNS 아님)로 받는다(2026-10-06 사용자 결정 — `DOI_LANDING_DENY`). 막힌 링크는 글자로 남기고 메일은 보낸다. 새 링크 자리를 만들어도 이 감사를 우회하지 않는다.
 - 논문 본문은 `injection_scan` 이 인젝션 의심 패턴을 표시한다(차단은 안 한다). LLM 입력에서 논문은 데이터로만 다룬다.
 - LLM 입력에 넣어도 되는 것: 공개 논문 텍스트·제목·초록·저자·venue, 관심 키워드, 피드백 집계. 넣지 않는 것: 시크릿, 사내 문서.
 - 시크릿을 코드·로그·커밋 메시지에 남기지 않는다. `.env` 와 `data/` 는 `.gitignore` 에 있다.

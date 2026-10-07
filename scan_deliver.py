@@ -66,6 +66,13 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
     프로필의 스캔·발송을 막으면 안 된다.
     """
     import email_delivery
+    import mail_ledger
+
+    # SMTP·반응 링크·회차를 만들기 전에 막아 순차 재실행도 하루 한 번이다(2026-10-06).
+    if mail_ledger.already_sent_today(db_path, profile_id):
+        message = "오늘 이미 발송 — 건너뜀"
+        print(f"  [발송] {message}")
+        return message
 
     recipients = research_profile.get_recipients(db_path, profile_id)
     if not recipients:
@@ -115,7 +122,6 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             failures.append(str(error).splitlines()[0][:200])
     # 회차 기록(2026-09-16, 운영 화면용) — 실패한 회차도 남긴다. 기록 실패는 발송 결과를 바꾸지 않는다.
     try:
-        import mail_ledger
         mail_ledger.record_issue(db_path, issue_id, profile_id, subject, result.get("papers") or [],
                                  len(recipients), sent)
     except Exception as error:  # noqa: BLE001

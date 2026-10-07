@@ -2073,3 +2073,112 @@ def test_slot_log_separates_failures_from_untried_candidates(tmp_path, monkeypat
     _run_scan_and_digest(db_path)
     out = capsys.readouterr().out
     assert "[자리] 처리 실패 1편 · 자리가 차서 시도 안 한 후보 1편 — 내용 자리는 1/1편" in out
+
+
+@pytest.fixture
+def daily_mail_case(tmp_path, monkeypatch):
+    """실제 발송 함수·격리 장부를 쓰되 SMTP 와 시각만 고정한다(2026-10-06)."""
+    import mail_ledger
+    import email_delivery
+    db = tmp_path / 'daily.db'
+    _setup_profile(db)
+    rp.add_recipient(db, 'team_ai', 'reader@example.com')
+    clock = [datetime(2026, 10, 5, 20, 10, tzinfo=timezone.utc)]
+    monkeypatch.setattr(mail_ledger, '_now', lambda: clock[0])
+    calls = []
+    monkeypatch.setattr(email_delivery, 'send_digest_email', lambda *a: calls.append(a))
+    return db, clock, calls
+
+
+def test_daily_mail_second_run_and_next_day(daily_mail_case, capsys):
+    """판정 호출 제거·UTC 날짜 비교가 같은 운영일 재발송을 허용하면 실패한다(2026-10-06)."""
+    db, clock, calls = daily_mail_case
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '첫 메일') == '발송 완료 → 1명'
+    calls.clear()
+    # UTC 날짜가 달라도 KST 05:00 이후 같은 운영일이다.
+    clock[0] = datetime(2026, 10, 6, 3, tzinfo=timezone.utc)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '둘째 메일') == '오늘 이미 발송 — 건너뜀'
+    assert calls == []
+    assert '오늘 이미 발송 — 건너뜀' in capsys.readouterr().out
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT count(*) FROM mail_issues').fetchone()[0] == 1
+    clock[0] = datetime(2026, 10, 6, 20, tzinfo=timezone.utc)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '다음 날') == '발송 완료 → 1명'
+    assert len(calls) == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT count(*) FROM mail_issues').fetchone()[0] == 2
+
+
+@pytest.mark.parametrize('total,succeeded,status', [(1, 0, 'failed'), (2, 1, 'partial')])
+def test_daily_mail_retries_non_sent(daily_mail_case, total, succeeded, status):
+    """status 조건을 없애 실패·부분 성공을 이미 발송으로 세면 실패한다(2026-10-06)."""
+    import mail_ledger
+    db, clock, calls = daily_mail_case
+    assert mail_ledger.record_issue(db, 'previous', 'team_ai', '이전', [], total, succeeded) == status
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '재시도') == '발송 완료 → 1명'
+    assert len(calls) == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT count(*) FROM mail_issues').fetchone()[0] == 2
+
+
+def test_daily_mail_only_blocks_sent_profile(daily_mail_case, monkeypatch):
+    """프로필 조건을 없애 다른 프로필 메일까지 막으면 실패한다(2026-10-06)."""
+    db, clock, calls = daily_mail_case
+    rp.create_profile(db, 'other', '다른 분야', core_topics=['agent'])
+    rp.add_recipient(db, 'other', 'other@example.com')
+    _mock_empty_arxiv(monkeypatch)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '첫 메일') == '발송 완료 → 1명'
+    calls.clear()
+    summary = asyncio.run(rps.scan_all_profiles(db, None, max_pages=2, send=True))
+    assert summary['team_ai']['delivery'] == '오늘 이미 발송 — 건너뜀'
+    assert summary['other']['delivery'] == '발송 완료 → 1명'
+    assert len(calls) == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT count(*) FROM mail_issues').fetchone()[0] == 2
+
+
+def test_daily_mail_keeps_sent_digest_and_still_scans(daily_mail_case, monkeypatch):
+    """두 번째 스캔을 막거나 실제 보낸 개요·시각을 덮어쓰면 실패한다(2026-10-06)."""
+    db, clock, calls = daily_mail_case
+    _mock_empty_arxiv(monkeypatch)
+    _, first_text = _run_scan_and_digest(db)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, first_text) == '발송 완료 → 1명'
+    before = rp.get_latest_digest(db, 'team_ai')
+    monkeypatch.setattr(rps.digest, 'generate_digest', lambda *a: '두 번째 수집 결과')
+    result, text = _run_scan_and_digest(db)
+    assert text == '두 번째 수집 결과'
+    assert result['run_status'] == 'done'
+    assert rp.get_latest_digest(db, 'team_ai') == before
+
+
+def test_daily_mail_five_am_boundary(daily_mail_case):
+    """KST 자정으로 날짜를 끊어 05:00 이전에 다시 보내면 실패한다(2026-10-06)."""
+    db, clock, calls = daily_mail_case
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '') == '발송 완료 → 1명'
+    clock[0] = datetime(2026, 10, 6, 19, 59, tzinfo=timezone.utc)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '') == '오늘 이미 발송 — 건너뜀'
+    clock[0] = datetime(2026, 10, 6, 20, tzinfo=timezone.utc)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '') == '발송 완료 → 1명'
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_daily_mail_failed_smtp_then_retry(daily_mail_case, monkeypatch, partial):
+    """실제 발송 실패·부분 수락 뒤 재시도를 막으면 실패한다(2026-10-06)."""
+    import email_delivery
+    db, clock, calls = daily_mail_case
+    if partial:
+        rp.add_recipient(db, 'team_ai', 'second@example.com')
+    attempts = []
+    def fail(*args):
+        attempts.append(args)
+        if not partial or len(attempts) == 2:
+            raise RuntimeError('가짜 SMTP 거절')
+    monkeypatch.setattr(email_delivery, 'send_digest_email', fail)
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '').startswith('발송 실패')
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT status FROM mail_issues').fetchone()[0] == ('partial' if partial else 'failed')
+    monkeypatch.setattr(email_delivery, 'send_digest_email', lambda *a: calls.append(a))
+    assert rps._deliver(db, 'team_ai', {'papers': []}, '').startswith('발송 완료')
+    assert len(calls) == (2 if partial else 1)
+    with sqlite3.connect(db) as con:
+        assert con.execute('SELECT count(*) FROM mail_issues').fetchone()[0] == 2

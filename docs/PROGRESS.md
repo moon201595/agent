@@ -7475,6 +7475,11 @@ profile_scoring.score_paper의 제외어와 같은 적격성 경로에 붙였다
 
 이번 작업은 발표 산출물과 이 기록만 작성했다. 기존 공동 작업의 운영 코드/테스트 변경은 건드리지 않았다. 운영 DB·원본 PPTX 수정, 메일 발송, 스키마 변경, 커밋·push는 하지 않았다. 전체 pytest는 이번 발표 작업에서 실행하지 않았다. 실제 프로젝터/다른 OS/메일 클라이언트 배치, 장기 적응 효과·보안 공격·논문 성능 재현·과제 성과는 미실측이다.
 
+추가 사용자 요청으로 PPTX `data/seminar_internal_2026-10-06/paper-harness_내부구조_과제계획_2026-10-06.pptx`를 완성했다. 16:9 본편18장·부록10장, 편집 가능한 도형/텍스트, 전 장 발표자 노트다. HTML 그림을 평면 이미지로 붙이지 않고 자유형 경로·도형·텍스트로 변환했다. 모듈/API·접속 경계 표·의사코드6장·근거 부록을 넣었다. 작성 중 갱신된 Q/D 정밀도 근거의 Python 검증 경로를 읽어 하향Q2편·제외어Q3편/보호 규칙/주당2개와 현재 함수 위치를 반영했다. §221의 구현을 이 발표 작업에서 수정한 것은 아니다.
+
+Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 영역591개에서 최종 가로·세로 넘침0·오류0이다. 최초 폭 초과17곳과 기본 테마 그림자를 발견해 단어 기준 줄바꿈·글자 크기/폭 여유·effectLst로 보완했다. 검사 허용치는 늘리지 않았다. 28장 전체 연락판 및 주요 장 원본 크기 캡처를 직접 확인했다. ZIP CRC·python-pptx 다시 열기·전 장 노트·한국어·평면 이미지 슬라이드0 검사도 통과했다. 검수/측정/최종 SHA256은 같은 폴더의 pptx_previews·pptx_powerpoint_verification.json·pptx_delivery_verification.json에 있다. 본편 HTML도 최신 설명으로 다시 검사해 배치 오류0·근거 해시 일치를 확인했다. 원본 PPTX·운영 소스/테스트/DB는 이 작업에서 수정하지 않았다. 실제 발표·프로젝터·다른 OS/Office 버전의 배치는 미실측이다.
+
+
 221. **단독 적중 정밀도 표본으로 가중치 하향과 신중한 제외어 추가를 허용한다** (2026-10-06)
    - 사용자 결정: Q(최근 7일 단독 적중)·D(발송 핵심 카드)를 주간 브리프에 더한다. Python은 제외어 Q 3편·좋아요/잘 맞는 카드/28일 관련 후보 보호·핵심/도메인/검색어 보호·용어 위생·주당 2개를 강제한다. 사용자 최초 키워드도 Q 2편 근거로 하향할 수 있고 삭제 보호는 유지한다.
    - 구현: `agent_maintenance`에 Q/D·전체 글 보호·개념 폭 재사용·별도 거부 사유·basis/편수 저장을 더했다. 실제 메일은 pending_report를 쓰지 않으므로 `weekly_profile_changes`의 적용 결과 전달과 `digest`의 근거 딱지도 연결했다. 중복 후보는 가장 최근 관측 하나로 Q를 선정하고, 28일 관련 후보 보호는 어떤 관측에서든 개념 둘이 함께 걸린 논문을 중복 제거한다. Q 검증 글은 모델에 보낸 잘린 표본, D/관련 보호 글은 전체 초록이다.
@@ -7489,6 +7494,99 @@ profile_scoring.score_paper의 제외어와 같은 적격성 경로에 붙였다
      - team_agent: LLM agent 188/344, multi-agent system 116/163, coding agent 102/150, agentic AI 93/141, retrieval-augmented generation 87/112, tool use 50/116, embodied agent 43/52, long-horizon task 42/72. LLM agent 표본: Verify, Don't Trust: Agentic Model Development for Video Discovery Retrieval at Scale, ArenaFlow: From Trajectory Ranking to Hierarchical Credit Propagation for Open-Ended Agent RL, Bayesian Belief Layer for Controllable Opinion Dynamics in LLM Agents.
    - 가상 MRI/ultrasonic 제외: 세 프로필 모두 Q 텍스트에서 실제 적중 표본 0편이다. 빈 evidence는 no_evidence다. 존재하는 전체 Q를 인용하면 team_vision은 오늘 사용자 변경으로 MRI·ultrasonic이 이미 제외어라 already_known, team_robot/team_agent는 조건 a의 precision_too_few_papers로 거부된다. 9/15 이후 배경 119/66 수치는 재측정하지 않았다. 7일·최신 5편 표본에는 당시 의료 사례가 안 잡힐 수 있다. 관련 후보 보호 자료는 vision 69편/robot 534편/agent 534편이다. 후보의 의미상 분야 판정·실제 모델 제안·장기 적응 효과·수신앱/UI 실렌더는 미실측이다.
 
+
+222. **같은 운영일 순차 재실행의 일일 메일을 발송 장부로 막는다** (2026-10-06)
+
+    - 사용자 결정 “하루 한 번으로 막아”. `mail_ledger.already_sent_today`가 같은 프로필의 `mail_issues.status='sent'`만 읽기 전용으로 조회하고, `time_policy.operating_day`의 05:00 KST 경계로 저장 시각과 현재 시각을 비교한다. 새 스키마·운영 DB 변경은 없다.
+    - `_deliver`는 SMTP·반응 링크·회차 생성 전에 판정하며, 이미 보냈으면 `오늘 이미 발송 — 건너뜀`을 로그·delivery 결과에 남긴다. 새 회차와 소비 처리는 없다. 스캔·요약·관측 기록은 계속하고, 이미 보낸 운영일에는 `last_digest`·`last_digest_at`을 보존한다.
+    - `record_issue`는 수신자 전부 수락이면 sent, 일부 수락이면 partial, 0명이면 failed다. failed·partial은 재발송한다. partial 재시도는 기존 전체 수신자 루프이므로 이미 받은 독자에게도 다시 갈 수 있다. 형식 수정본 `mail_reformat.py`는 별도 발송 경로라 그대로 허용한다. 일일 우회 옵션은 추가하지 않았다.
+    - 격리 DB·가짜 SMTP로 첫 발송/같은 운영일 재실행/다음 운영일/05:00 경계/실패·부분 성공 후 재시도/프로필별 차단/개요 보존·재수집을 검증한다. 허용 목록(루트 *.py·pytest.ini·prompts, .venv 심볼릭 링크) 사본에서 판정 제거·UTC 날짜 비교·status 제거·프로필 제거 변이 모두 FAILED로 검출했다. 변이 로그는 `/tmp/ph-daily-mutations-afvotdsa/`에 있다.
+    - 실측: 신규 회귀 8 passed, 관련 두 파일 112 passed. `PYTHONPATH=/tmp/ph-no-env .venv/bin/python -m pytest`(pytest 인자 없음)는 현재 동시 작업 포함 트리에서 **1,562 passed · 경고 0 · 135.32초**다. 기존 반응 버튼 테스트가 같은 날 두 번 발송하던 전제로 실패해, 버튼 실패에도 발송한다는 단언은 유지하고 두 번째 시각만 다음 운영일로 고정했다(`test_feedback_links.py`).
+    - 운영 `.env` 자동 읽기는 `/tmp/ph-no-env/sitecustomize.py`가 해당 경로의 `Path.read_text`를 빈 문자열로 대체해 차단했다(가짜 설정 파일 테스트는 그대로). 최초 전체 실행·단일 진단은 asyncio 종료 대기로 중단했다. 단일 스택에서 `shutdown_default_executor` 대기를 확인했고, 같은 테스트는 이벤트 루프 깨우기 진단 보조로 11.07초에 통과했다. 최종 전체 검사는 이 보조가 종료 단계에 1초 간격 빈 콜백을 예약해 진행했다. 작업·단언·timeout은 바꾸지 않았다. 보조 없는 전체 완료는 미확인이다.
+    - 실제 메일·Windows/cron 순차 실행은 미실측이다. SMTP 성공 뒤 장부 기록 자체가 실패하면 다음 실행의 차단 근거가 없다는 기존 한계는 남는다. 동시 실행 차단은 기존 flock의 몫이다.
+
+223. **DOI 착지는 자동 검사로 받는다, 저장된 중국어를 한국어로 옮겼다, 이력 백업 삭제·논문 제목 확정·불안정 테스트 조사** (2026-10-06, 사용자 결정, Claude·Codex).
+
+    - **DOI 착지**(사용자: "20편 다 들어오게, 위험 검증은 따로 하고 괜찮으면 쭉 허용 — 할 때마다 하는 건 말이 안 된다"): 10/6 메일에서 doi.org 링크
+      20건이 착지 13곳(ASM International·Emerald·IAES(beei)·ETASR·Science Publishing Group·impactfactor·sitecorecontenthub(미국용접학회)·
+      nubip·AccScience·EWA·ioro·dipscie·libguides)이 허용 목록 밖이라 글자로만 나갔다. 호스트를 하나씩 더하는 대신 `link_policy._doi_landing_ok` —
+      **doi.org 를 거쳐 온 착지만** https·기본 포트·userinfo 없음·IP 리터럴 아님·예약 도메인(.example·.test·.local 등) 아님·`DOI_LANDING_DENY`(단축 URL·
+      파일 공유·동적 DNS·터널) 아님이면 받고, 기존처럼 홉마다 DNS 가 공인 주소만 가리켜야 한다. DOI 는 출판사가 등록한 공식 경로라 착지는 등록자가
+      정한 곳이다. 본문·초록에서 온 일반 URL 은 여전히 허용 목록만. 출판사의 질(약탈적 학술지)은 링크 안전과 다른 문제라 가르지 않았다.
+      9/30 의 "소규모 출판사는 일부러 뺀다"와 10/1 의 "공용 배포 서버(sitecorecontenthub)는 열지 않는다"를 뒤집는 결정이다 — 10/1 테스트 기대를
+      바꿨다(그 서버의 doi 를 거치지 않은 직접 링크는 계속 막는지 함께 본다). 실측: 9/20 이후 발송·저장 메일의 DOI 링크 89개를 실제로 감사해
+      새 규칙 전 13곳 막힘 → 후 89/89 통과. 새 회귀 1개(http·단축·파일 공유·동적 DNS·IP·포트·예약 도메인·사설 DNS·직접 링크), 변이 5개
+      (예외 제거·직접 링크까지 확대·거부 목록 제거·https 검사 제거·예약 도메인 검사 제거) 모두 FAILED.
+    - **저장된 중국어 → 한국어**(사용자 결정, §217 은 기록을 고치지 않았다): 운영 DB 백업 `papers_20261006T082931Z_pre_korean_fix.db`
+      (integrity ok), 요약 파일 백업 `data/backups/summaries_pre_korean_fix_*`. agent_runs 판정 사유 3건(W41 agent·ai_advance 는 전체 중국어 문장 →
+      한국어로 옮기고 "(원문 중국어 — 2026-10-06 한국어로 옮김)" 표시, W39 robot 은 한 글자 "在"), profiles.last_digest 2건(显微镜 → 현미경),
+      요약 파일 6편(实例化·非·駆動·铅·等級·重点实验室 → 구체화·(삭제)·구동·무연(납 없는)·등급·중점실험실 — 숫자·[S번호]는 그대로). 남은 한자 0.
+      `code_ladder.description` 3건(GitHub 저장소의 중국어 소개글)은 LLM 출력이 아니라 외부 원문이라 두었다.
+    - **이력 백업 삭제**(사용자 결정): §218 의 `~/paper-harness-history-backup-2026-10-06.git` 을 지웠다 — 옛 메일 주소가 남은 유일한 사본이었다.
+      GitHub 의 옛 커밋 캐시는 두기로 했다(사용자: "그 정도는 아니야").
+    - **논문 제목 확정**: "연구 동향 모니터링을 위한 적응형 인공지능 에이전트에 관한 연구".
+    - **불안정 테스트 조사**(`test_observations.py::test_초록은_바뀐_경우에만_저장하고_같으면_실제_보유_행을_참조한다`, §217 에서 세 번 중 한 번 실패):
+      Codex 읽기 전용 조사(job task-muwf1xpg-xmnuas)는 샌드박스가 임시 디렉터리를 못 만들어 실험 0회 — 정적 가설만 냈다. 1순위: 테스트가
+      `ORDER BY observed_at, paper_key` 로 읽고 네 실행의 삽입 순서를 기대하는데 paper_key 가 모두 같아 시각 동률·역행이면 순서가 갈린다
+      (test_observations.py:48·136, research_profile.py:331 의 datetime.now). 운영 초록 참조 오류로는 이어지지 않는다(research_profile.py:1061~1067).
+      Claude 재현: 단독 60회 + 그중 일부는 전체 pytest 와 동시 실행 — 실패 0회. 미재현이라 고치지 않았다. 다시 실패하면 출력을 남기고, 고칠 때는
+      운영 코드가 아니라 테스트가 실행 순서를 명시적으로(scan_id 를 잡아) 확인하게 한다.
+    - **6 ACM 403**(초록 기반 카드)은 보류, **실제 메일 앱 확인**은 하지 않기로(사용자 결정).
+    전체 1,562 passed / 경고 0(§222 의 하루 한 번 발송 변경 포함).
+
+224. **저장 메일도 일일 카드 틀로 다시 그린다 — 내용 보존·주간 흰 영역 여백, 화면 실측은 실행환경 차단** (2026-10-06, Codex).
+
+    - **범위와 일일 경로 확인**: AGENTS.md·CLAUDE.md, 인계 실행 문서·독립 검토 §5, §215·218·219·221을 읽었다. 지정 기준 `3f19e24`는 현재 Git에 없다(§218의 이력 재작성과의 관계는 미확인). 따라서 그 커밋·05:44 수신 HTML 대비 완전 동일하다고 단정하지 않는다. 확인 가능한 `73a3ed8..HEAD`의 digest 변경은 제외 규칙 설명, 정밀도 근거·변경 전후 가중치 보고, "오늘의 요점" 인식이다. 하단 여백·작은 가중치 문구 제거는 73a3ed8에 포함되어 있다. 이번 변경은 머리·카드·관측 상자·주간 구분선·꼬리의 기존 HTML을 공용 함수로 추출했다. 수정 전 HEAD의 digest와 수정본을 같은 현실적 합성 입력(흐름 2개·카드 5편·원문 분석 4편·초록 기반 1편·성능/논문 간/외부 관측·코드·주간 브리프 전체)으로 실행해 **일일 HTML 바이트 동일**을 확인했다. 회색 최대 1056px·본문 최대 1040px, 주간 흰 영역 12px 14px·꼬리 10px 14px 0은 유지된다. 실제 문자 위치와 넘침은 아래 제한 때문에 미실측이다.
+    - **공용 렌더러**: saved_digest가 저장 평문의 들여쓰기·흐름 소제목·관측 문장·상태·코드·분석 절을 복원해 digest._render_card_parts·_render_observation_sections·_narrative_boxes_html·_digest_head_html·_weekly_banner_html·_block·_saved_footer_html과 mail_document의 상세 표를 재사용한다. 현재 DB 관측·요약으로 과거 문장·수치를 덮지 않는다. 구형 호출자가 명시적으로 건넨 저장 관측 보강 계약은 보존하되, 저장 관측 문장이 있으면 그것을 우선한다. load_snapshot의 수신자 대조·기존 서명 토큰 계약은 유지된다. 기존 test_mail_ui의 "저장 카드만 별도 표를 가진다" 기대는 이번 요구와 충돌하여, 두 경로의 **정확한 일일 카드 스타일과 별도 표 부재**를 고정값으로 검사하도록 강화했다. 기존 숫자·상자·토글 검사는 남겼다.
+    - **운영 저장본 미리보기**: mail_reformat에 발송과 함께 쓸 수 없는 --offline-preview를 추가했다. mode=ro·PRAGMA query_only=ON으로 회차·명세·기존 토큰을 읽는다. team_robot은 17:11 형식 수정본 HTML의 버튼 URL 전체를 그대로 재사용하고 논문·만료값·단일 수신자 해시와 대조했다(서명 재검증은 미실측). team_vision은 기존 HTML과 OS 서명 설정이 없어 반응 버튼을 복원하지 못했다. 새 토큰을 만들지 않고 feedback_restored=false를 보고한다. 일반 load_snapshot의 인증을 우회해 발송할 수 없다. 저장 글만으로 복원할 수 없는 제목만 실은 논문 KPI·원래의 구조화된 주간 막대/하위 배치는 새 숫자를 만들지 않고 공유 주간 줄 렌더러와 흰 블록으로 가까이 표시한다. 두 프로필 모두 기존 문장·숫자를 기준으로 그리며 재요약·재검색·LLM을 호출하지 않았다. source_text 해시는 미리보기 생성 때 남겼다. URL/반응 줄을 제외한 본문에서 robot 숫자 값 100종·S번호 20종, vision 숫자 값 61종·S번호 7종의 누락 0을 확인했다(모든 문장의 의미 동일성 검증으로 확대하지 않는다).
+    - **브라우저 실패와 산출물**: 외부 요청을 모두 abort하도록 준비한 로컬 Playwright/Chromium은 headless shell의 shutdown EPERM, 전체 Chromium의 setsockopt EPERM으로 시작에 실패했다. **1600px·390px 캡처와 DOM의 문자 왼쪽 거리 ≥12px·가로 넘침 0은 미실측**이며 PNG를 만들었다고 보고하지 않는다. 실제 수신 앱 화면도 미실측이다. 자료는 data/mail_previews/format_fix_1006/의 team_robot_2026-10-06_reformatted.html·team_vision_2026-10-06_reformatted.html, daily_fixture.html·saved_fixture.html, daily_refactor_check.json·structure_checks.json·content_preservation.json이다. HTML 전문과 반응 URL은 로그에 출력하지 않았다.
+    - **검증과 실패 기록**: 새 회귀 7개를 추가했다. 관련 회귀 249개 통과 후 꼬리·UI 계약 회귀를 포함한 26개도 통과했다. 변이는 루트 *.py·pytest.ini·prompts만 복사하고 .venv를 심볼릭 링크한 사본에서 검사했다(.env·docs 부재 확인). 기준선 exit0, 카드 틀/관측 상자/토큰 변경/숫자 변경/주간 여백 제거 **5개 모두 실제 FAILED·exit1**, collection 오류 0. 첫 토큰 변이는 부분문자열 검사 때문에 살아남아 기존 URL 전체를 검사하도록 새 테스트를 강화했다. 첫 여백 변이의 치환 대상을 잘못 지정한 준비 실패는 검출로 세지 않았다. 결과는 mutation_results.json과 대응 로그에 있다. 첫 전체 실행은 executor 종료 대기로 중단, 진단 단독 실행도 중단했다. 이후 전체 실행의 5실패(config 보조 2·구형 관측 계약 1·옛 카드 틀 기대 1·저장 꼬리 반응 건수 누락 1)를 확인해 각각 수정했고, 코드 수정 중인 실행은 최종 검증으로 세지 않았다. 최종 **인자 없는 .venv/bin/python -m pytest: 1,569 passed / 경고 0 / 121.26초**. 로그 final_pytest.log를 미리보기 폴더에 보관했다.
+    - **테스트 안전 보조**: /tmp/mail_safe/sitecustomize.py를 PYTHONPATH로 적용했다. 운영 .env의 read_text는 파일을 열지 않고 빈 문자열을 반환하며 직접 open은 audit hook으로 거부한다. 실제 config 파서는 그대로 실행되어 임시 가짜 .env 파서 테스트도 통과한다. 첫 보조는 config 전체를 가짜로 대어 파서 회귀 2개가 실패했으므로 최종 보조를 바꿨다. 제한 환경의 asyncio executor 종료에서 self-pipe 알림으로 큐가 깨어나지 않는 대기는 실제 shutdown_default_executor를 그대로 기다리면서 50ms 타이머로 큐를 처리하여 해결했다. 이 보조는 제품 코드·테스트 파일에 넣지 않았다. 메일 발송·운영 DB 쓰기/스키마 변경·커밋·push를 하지 않았고, 다른 미커밋 코드·기존 §222·223을 수정하지 않았다. docs/patent·docs/paper·운영 .env를 열거나 복사하지 않았다.
+
+225. **형식 수정본의 이번 주 브리프도 실제 메일 함수로 그린다 — 저장 평문을 역파싱한다** (2026-10-06, Claude).
+
+    - **무엇이 남아 있었나**: §224 뒤 Claude 가 Playwright(로컬 Chromium, 외부 요청 차단)로 1600·390px 를 캡처해 사용자가 보낸 아침 메일 캡처와 맞대 봤다.
+      카드·흐름 두 칸은 같아졌는데 **이번 주 브리프 아래**가 달랐다 — 최근 7일 흐름이 상승·하락 두 칸·칩 없이 한 칸 줄 나열, 자리 밖 후보가 `▸`·굵은 글씨 줄,
+      외부 정찰이 주황 딱지 없이 `- 제목 — 사유` 와 날 URL, 검색 기준 변화가 막대 대신 `━━━` 글자·라벨과 값이 따로 도는 줄. 원인: `saved_digest.render_html` 이 이 절들을
+      `_weekly_line_html` 줄 렌더러로만 그렸다. 또 `▶ 외부 정찰` 은 `■` 머리가 아니라 앞 절 줄에 섞여 저장되므로, 창 집계가 없는 주에는 브리프 띠 절에 붙어 **통째로 버려질** 수 있었다.
+    - **고친 것**: 저장 평문은 digest 평문 함수가 결정적으로 쓴 것이라 그 역을 푼다 — `_window_from_lines`(→ `trend_window`·`reserve_terms`, 증감은 `prev = now − 저장 증감`),
+      `_scout_from_lines`(→ `external_scout`), `_changes_view_from_lines`. digest 의 `_window_html`·`_external_scout_html` 은 그대로 부르고, 검색 기준 변화는
+      dict(origins·basis 코드)가 평문에 남지 않아 `_profile_changes_html` 을 **보이는 값**(`_profile_changes_view`: 소수 둘째 자리 문자열·막대 칸 수·딱지 글자)과
+      그리기(`_profile_changes_view_html`)로 갈라 두 경로가 같은 그리기를 쓴다. 키워드별 적중 편수 띠도 `_keyword_hits_html` 하나로 모았다. 한 줄이라도 형식이 맞지 않으면
+      `ValueError` 로 **그 절만** 옛 줄 렌더러로 떨어진다 — 모르는 줄을 버리거나 추측해 채우지 않는다. 학회명은 평문에서 제목 끝 괄호로만 남아, 제목이 괄호로 끝나면 그 괄호를 흐린 글자로 그린다(글자는 같다).
+    - **일일 경로 불변 확인**: §224 의 현실적 합성 입력으로 `generate_digest_html` 결과가 §224 산출물(daily_fixture.html)과 **바이트 동일**. 상승·하락·신규·삭제·정밀도 근거·영향 표·실패를
+      모두 채운 입력에서 HEAD 의 `_profile_changes_html`·`_window_html` 과도 동일.
+    - **왕복**: 같은 입력을 digest 평문 → 역파싱 → 공용 HTML 로 돌린 결과가 digest 직접 HTML 과 **문자열 동일**(비교 가능·불가·실패 문구 세 경우).
+    - **오늘 저장본**: team_robot·team_vision 을 `--offline-preview`(발송 없음, 운영 DB mode=ro)로 다시 만들어 data/mail_previews/format_fix_1006/claude_round/ 에 두었다. 두 프로필 모두 역파싱 실패로 떨어진 절 0.
+      캡처 shots/ — 가로 넘침 0(1600·390), 흐름 두 칸 표 6, 칩 16(robot·vision), 가중치 막대 2(robot; vision 은 그 주 자동 가중치 변화가 없다), 흰 블록 글자 왼쪽 거리 14px.
+      team_vision 반응 버튼은 §224 대로 복원되지 않는다(기존 HTML·서명 설정 없음).
+    - **테스트·변이**: test_saved_digest_parity.py 에 4개 — 저장 브리프에 실제 경로 HTML 조각이 그대로 들어감(세 경우), 모르는 줄은 그 절만 떨어지고 글자 보존, 창 없는 주의 외부 정찰 보존,
+      적중 편수 띠 공용. 변이(허용 목록 사본): 정찰 분리 제거·흐름 역파싱 끔·증감 부호 뒤집기·막대 칸 +1·띠 절에서 정찰 버림·모르는 줄 삼킴·실패 문구 버림 **7개 모두 FAILED**
+      (모르는 줄 변이는 처음에 살아남았다 — 테스트가 넣은 줄이 다른 검사에 먼저 걸렸다. 넣는 자리를 머리 바로 뒤로 옮겨 잡았다). 전체 **1,573 passed / 경고 0 / 116초**.
+    - **남은 것**: "이번 창의 키워드별 적중 편수" 띠는 흰 바탕에 글자가 왼쪽 경계에 붙어 있다(실제 경로·수정본 공통, 지금은 같은 함수). 사용자 지시로 여백 조정은 Codex 몫이다 —
+      Codex 사용 한도(20:15 재개) 뒤 맡긴다. 재발송·커밋은 사용자 확인 전이다.
+
+
+226. **키워드 적중 흰 띠의 안쪽 여백과 §225 독립 검토** (2026-10-06, Codex).
+
+    - **허용 수정**: digest._keyword_hits_html의 흰 p에 `padding:12px 14px` 한 항목만 추가했다. 글자 12px·색·margin·1056/1040px 폭은 그대로다. 생산 출력의 좌우 padding ≥12px를 확인하는 테스트 두 개를 test_mail_canvas.py·test_saved_digest_parity.py에 추가했다. 이전 미커밋 변경·기존 테스트는 보존했다.
+    - **미리보기·브라우저 제한**: 지정 명령으로 robot(기존 버튼 HTML 사용)·vision(버튼 복원 없음)을 `data/mail_previews/format_fix_1006/codex_round3/`에 생성했다(sent=false). Playwright에 지정 LD_LIBRARY_PATH와 외부 요청 abort를 적용했으나 headless shell은 shutdown EPERM, 전체 Chromium 재시도는 setsockopt EPERM으로 시작 실패했다. 따라서 **1600·390px DOM 글자 거리·가로 넘침·PNG 캡처는 미실측이며 캡처 파일 없음**이다. CSS 선언값 좌우 14px와 실제 글자 위치를 혼동하지 않는다. browser_retry.log와 browser_checks.py에 실패 기록·측정 준비가 있다.
+    - **일일 경로 확인**: HEAD의 digest.py를 메모리 모듈로 실행하고 동일 입력·동일 요약/관측 대역을 적용했다. 비교 가능·비교 불가·timeout 세 합성 입력 모두 이번 padding 한 항목을 제거한 일일 전체 HTML과 바이트 동일했다(review_checks.log). 이는 §225 분리의 회귀가 이 입력에서 없다는 확인이며 모든 운영 입력/실제 수신 앱의 동일성을 증명하지 않는다.
+    - **운영 저장본 확인**: mode=ro·PRAGMA query_only=ON으로 profiles.last_digest와 성공 mail_issues·mail_issue_items 명세를 읽었다(주소·토큰 출력 없음). team_ai_advance·team_robot·team_agent는 적중 띠/최근7일/정찰/지난8일 변화, team_vision은 적중 띠/최근7일/정찰이 전부 공용 렌더러로 복원됐다. 현재 네 프로필 대상 절의 역파싱 실패 0. 회차 테이블에는 평문/body/digest 컬럼이 없다(전체 스키마 확인에서 완성 메일 평문은 profiles.last_digest뿐). 따라서 **회차별 과거 저장 평문은 DB에서 확인 불가**이며 현재 last_digest를 과거 전체 회차 검증으로 확대하지 않는다. mail_storage_checks.log·review_checks.log에 범위가 있다.
+    - **P2 — 브리프 띠에 붙은 알 수 없는 줄이 조용히 사라진다**: saved_digest.py:392~395. _split_scout가 나눈 section_lines는 이 분기에서 전혀 그리지 않고 continue한다. 정상 생산 평문에서 브리프 띠 바로 아래 `보존해야 할 추가 근거 77`을 삽입한 재현에서 HTML에 그 줄이 없다(BANNER_LOSS=True). 현재 운영 네 프로필에 해당 일반 줄은 없었다. 제안: 남은 줄이 있으면 보존 렌더러로 출력하며 정찰만 별도로 공용 렌더링한다. 검토 범위라 고치지 않았다.
+    - **P2 — 중복 자리 밖 후보 머리를 받아 저장 숫자를 덮는다**: saved_digest.py:215~218, 231~240. 같은 흐름 절에 reserve 머리 12편/7편을 차례로 넣으면 count=7로 덮고 두 용어 목록은 합친다. 반환 HTML에서 저장 숫자 12편 머리가 사라진다(COUNT12_LOST=True). 비정규 저장 입력의 직접 재현이며 현재 운영 발생은 확인되지 않았다. 제안: 절별 머리의 중복/순서를 검증해 ValueError로 원문 보존 폴백한다.
+    - **P3 — 화살표와 부호가 모순인 줄을 검증하지 않는다**: saved_digest.py:219~224. `상승 / ▲ agent 12   −3`은 정상으로 받아들여 공용 함수에서 `하락 / ▼`로 바뀐다. 저장 문자열 의미를 바꾸는 직접 재현이며 현 생산 함수는 이런 모순을 만들지 않는다(digest.py:1803~1808). 제안: 화살표와 증감 부호 일치도 검사해 폴백한다. edge_checks.log에 중복 머리·부호 재현을 기록했다.
+    - **P3 — 기존 네 회귀의 한계**: test_saved_digest_parity.py:115~156은 공용 생산 함수의 현재 출력을 기대값으로 써 두 경로가 동시에 바뀌면 통과할 수 있다. HEAD 대비 일일 바이트 불변은 이 테스트로 고정되지 않는다. 알 수 없는 줄 테스트는 최근 창 본문만 다뤄 브리프 띠 분기의 누락·중복 reserve 머리·모순 부호를 잡지 않는다. 정상 세 왕복 입력, 창 없는 정찰, 공용 띠 호출은 확인한다. 제안: 해당 경계 입력의 고정 원문 보존 기대와 별도 일일 기준 조각을 추가한다. 이번에는 허용된 여백 회귀만 추가했다. P1은 이번 검토에서 확인되지 않았다.
+    - **테스트·변이**: 관련 13 passed / 1.22초. 허용 목록(루트 *.py·pytest.ini·prompts/만 복사, .venv 심볼릭 링크; .env·docs 복사 없음) 사본 `/tmp/codex-round3-mutation-ipznc9ps`에서 _keyword_hits_html의 padding을 `12px 0`으로 변이해 새 두 테스트 모두 실제 FAILED(exit1), 수집 오류 0(mutation.log). 인자 없는 `.venv/bin/python -m pytest` 전체 **1,575 passed / 경고 0 / 120.10초 / exit0**(full_pytest.log). 운영 .env 접근 차단과 executor 종료 대기 보조는 기존 /tmp/mail_safe/sitecustomize.py만 적용했다. 메일 발송·운영 DB 쓰기·커밋·push·사내 문서 접근은 하지 않았다.
+
+227. **§226 지적 반영과 띠 여백 실측** (2026-10-06, Claude).
+
+    - **지적 확인·반영**: §226 의 P2 두 건·P3 한 건을 코드로 확인했고 모두 맞았다. ① 브리프 띠 절의 일반 줄은 이제 흰 블록 줄 렌더러로 그린다(버리지 않는다).
+      ② 최근 7일 흐름의 소제목(상승·하락·키워드·반복 관측·자리 밖 후보)이 한 절에 두 번 나오면 `ValueError` 로 그 절을 줄 렌더러로 떨어뜨린다 — 뒤 머리가 앞 편수를 덮지 않는다.
+      ③ 증감 줄의 화살표와 부호가 어긋나면 같은 방식으로 떨어진다. 세 경계 입력의 원래 글자 보존 테스트 1개를 추가했다(변이 3개 — 띠 줄 버림·중복 머리 허용·부호 검사 제거 — 모두 FAILED).
+    - **남긴 지적**: P3 "공용 함수 출력을 기대값으로 쓰면 두 경로가 함께 바뀌는 회귀를 못 잡는다"는 맞다. 일일 HTML 불변은 고정 기대값이 아니라 §225·§226 의 HEAD 대비 바이트 비교로만 확인했다 — 테스트로 고정하지 않았다.
+    - **띠 여백 실측**: Codex 환경에서 Chromium 이 안 떠 미실측이던 것을 Claude 환경의 Playwright 로 쟀다. team_robot·team_vision 형식 수정본(claude_round2/, 발송 없음)에서 적중 편수 띠 글자 왼쪽 − 띠 왼쪽 **14px**(1600·390px), 가로 넘침 0. 캡처 claude_round2/shots/.
+    - 전체 **1,576 passed / 경고 0 / 114초**.
 
 ## 9. 폐기된 것
 
