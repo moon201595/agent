@@ -1515,7 +1515,38 @@ def _external_scout_lines(scan_result: dict) -> list[str]:
         lines.append(f"   - {m['title']}" + (f" ({m['venue']})" if m["venue"] else "") + f" — {m['stage']}")
         if m["link"]:
             lines.append(f"     {m['link']}")
+    for line in _axis_lines(sc.get("axes") or []):
+        lines.append(f"   {line}")
     return lines
+
+
+AXES_HEADING = "관심 분야의 신규 연구축 후보 (현재 키워드 밖 · 분야 성장세는 확인하지 않음)"
+_MISS_LABELS = {"not_retrieved": "검색 못 가져옴", "no_core_hit": "핵심어 불일치", "ranked_out": "순위에서 밀림"}
+
+
+def _axis_rows(a: dict) -> list[str]:
+    """연구축 하나의 근거 줄들(2026-10-08 외부 검토 반영). 무엇을 확인했고 무엇은 모르는지 가른다:
+    근거 논문 = Python 이 공식 제목·초록에서 용어를 확인한 논문 수 · 미포착 = 그 근거 중 우리 검색이 놓친 단계 ·
+    우리 검색 관측 = 같은 창에 우리 검색에 처음 들어온 후보 중 용어 포함 편수/전체(키워드가 바뀌면 두 창의 조건이 달라 성장세가 아니다)."""
+    rows = []
+    if a.get("summary"):
+        rows.append(f"정찰 설명: {a['summary']}")
+    missed = a.get("missed") or {}
+    miss = (f" · 미포착 {sum(missed.values())}편(" + " · ".join(f"{_MISS_LABELS.get(k, k)} {n}" for k, n in missed.items()) + ")"
+            if missed else "")
+    rows.append(f"근거 논문 {a['papers']}편{miss}")
+    if isinstance(a.get("recent"), int) and isinstance(a.get("previous"), int):
+        total = lambda n: f"/{n}" if isinstance(n, int) else ""
+        rows.append(f"우리 검색 관측: 최근 4주 {a['recent']}{total(a.get('recent_total'))}편 · "
+                    f"직전 4주 {a['previous']}{total(a.get('previous_total'))}편")
+    return rows
+
+
+def _axis_lines(axes: list[dict]) -> list[str]:
+    out = [AXES_HEADING] if axes else []
+    for a in axes:
+        out += [f"* {a['term']}"] + [f"    {row}" for row in _axis_rows(a)]
+    return out
 
 
 def _external_scout_html(scan_result: dict) -> str:
@@ -1530,10 +1561,16 @@ def _external_scout_html(scan_result: dict) -> str:
            if m["link"] else _esc(m["title"]))
         + (f' <span style="background-color:{_PAPER_BG};color:{_MUTED};">({_esc(m["venue"])})</span>' if m["venue"] else "")
         + f' {_chip(m["stage"], "warn")}</div>' for m in sc["missed"])
+    axes = "".join(
+        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;">'
+        f'<b>{_esc(a["term"])}</b>'
+        + "".join(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(row)}</div>'
+                  for row in _axis_rows(a)) + '</div>' for a in sc.get("axes") or [])
     return (_h1("외부 정찰", f"이번 주 검증된 외부 연구 {sc['verified']}편")
             + _block(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;">판정 가능 {c["evaluable"]}편 중 '
                      f'검색 소스가 가져온 것 {c["retrieved"]} · 핵심어에 걸린 것 {c["core_hit"]} · 메일까지 간 것 {c["delivered"]}</div>'
-                     + (_h2("에이전트가 놓친 연구") + rows if rows else "")))
+                     + (_h2("에이전트가 놓친 연구") + rows if rows else "")
+                     + (_h2(AXES_HEADING) + axes if axes else "")))
 
 
 def _profile_changes_view(ch: dict | None) -> dict | None:

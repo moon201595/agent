@@ -270,7 +270,42 @@ def _scout_from_lines(lines: list[str]) -> dict:
     if not head or not capture:
         raise ValueError("외부 정찰 머리 형식이 다름")
     missed: list[dict] = []
+    axes: list[dict] = []
+    in_axes = False
     for line in body[2:]:
+        if line == digest.AXES_HEADING:
+            in_axes = True
+            continue
+        if in_axes:
+            # digest._axis_lines 의 역(2026-10-08): `* 용어` 다음에 설명·근거·관측 줄. 안 맞으면 절 전체를 줄로 떨어뜨린다.
+            if line.startswith("* "):
+                axes.append({"term": line[2:], "summary": "", "papers": None, "recent": None, "previous": None,
+                             "recent_total": None, "previous_total": None, "missed": {}})
+                continue
+            if not axes:
+                raise ValueError("연구축 이름보다 근거 줄이 먼저 나옴")
+            a = axes[-1]
+            m_ev = re.fullmatch(r"근거 논문 (\d+)편(?: · 미포착 (\d+)편\((.+)\))?", line)
+            m_obs = re.fullmatch(r"우리 검색 관측: 최근 4주 (\d+)(?:/(\d+))?편 · 직전 4주 (\d+)(?:/(\d+))?편", line)
+            if line.startswith("정찰 설명: "):
+                a["summary"] = line[len("정찰 설명: "):]
+            elif m_ev:
+                a["papers"] = int(m_ev[1])
+                labels = {v: k for k, v in digest._MISS_LABELS.items()}
+                for part in (m_ev[3].split(" · ") if m_ev[3] else []):
+                    label, _, n = part.rpartition(" ")
+                    if label not in labels or not n.isdigit():
+                        raise ValueError("미포착 내역 형식이 다름")
+                    a["missed"][labels[label]] = int(n)
+                if m_ev[2] and sum(a["missed"].values()) != int(m_ev[2]):
+                    raise ValueError("미포착 합계가 다름")
+            elif m_obs:
+                a["recent"], a["previous"] = int(m_obs[1]), int(m_obs[3])
+                a["recent_total"] = int(m_obs[2]) if m_obs[2] else None
+                a["previous_total"] = int(m_obs[4]) if m_obs[4] else None
+            else:
+                raise ValueError("연구축 줄 형식이 다름")
+            continue
         if re.fullmatch(r"https?://\S+", line) and missed and not missed[-1]["link"]:
             missed[-1]["link"] = line
             continue
@@ -280,7 +315,9 @@ def _scout_from_lines(lines: list[str]) -> dict:
         venue = re.fullmatch(r"(.+) \(([^()]+)\)", title)
         missed.append({"title": venue[1] if venue else title, "venue": venue[2] if venue else "",
                        "stage": stage, "link": ""})
-    return {"verified": int(head[1]), "missed": missed,
+    if any(a["papers"] is None for a in axes):
+        raise ValueError("연구축 근거 편수가 없음")
+    return {"verified": int(head[1]), "missed": missed, "axes": axes,
             "capture": dict(zip(("evaluable", "retrieved", "core_hit", "delivered"), map(int, capture.groups())))}
 
 

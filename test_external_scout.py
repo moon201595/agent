@@ -57,6 +57,8 @@ def _db(tmp_path):
                     "filter_reason TEXT, observed_at TEXT)")
         con.executemany("INSERT INTO scan_runs VALUES (?,?,?)", [("s1", "p", "2026-10-01T20:00:00+00:00"),
                                                                 ("s2", "p", "2026-10-09T20:00:00+00:00")])
+        con.execute("CREATE TABLE search_runs (profile_id TEXT, window_from TEXT, started_at TEXT)")
+        con.execute("INSERT INTO search_runs VALUES ('p','2026-08-01','2026-10-01')")
         con.execute("CREATE TABLE mail_issues (issue_id TEXT, profile_id TEXT, sent_at TEXT, status TEXT)")
         con.execute("CREATE TABLE mail_issue_items (issue_id TEXT, paper_key TEXT)")
     return db
@@ -138,6 +140,8 @@ def _world(tmp_path):
         con.execute("CREATE TABLE IF NOT EXISTS scan_runs (scan_id TEXT, profile_id TEXT, started_at TEXT)")
         con.execute("INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version) "
                     "VALUES ('s1','p','2026-10-01T20:00:00+00:00','{}','t')")
+        con.execute("INSERT INTO search_runs (run_id, profile_id, source, query, window_from, window_to, status, started_at) "
+                    "VALUES ('base', 'p', 'arxiv', 'q', '2026-09-01', '2026-10-01', 'done', '2026-10-01')")
     return db
 
 
@@ -284,10 +288,11 @@ def test_performance_check_must_match_the_claimed_metric():
     assert es.check_performance(it, lambda *a, **k: html, float("inf")) is True
 
 
-def test_verify_cap_is_shared_across_profiles_and_marks_partial(tmp_path):
+def test_verify_cap_is_shared_across_profiles_and_marks_partial(tmp_path, monkeypatch):
     """이 테스트가 무엇을 망가뜨리면 실패하는가: 검증 상한을 앞에서부터 잘라 뒤쪽 프로필이 0편이 되거나, 검증 못 한 항목이 남았는데 done 으로 적으면
     실패한다(Codex 재현: 5·5·2·0 인데 done)."""
     import research_profile
+    monkeypatch.setattr(es, "MAX_VERIFY", 12)   # 상한값 자체가 아니라 돌아가며 채우는 방식을 본다(2026-10-08 상한 12→30)
     db = _world(tmp_path)
     for pid in ("q", "r", "s"):
         research_profile.create_profile(db, pid, pid, core_topics=["defect detection"], s2_seeds=["defect detection"])
@@ -316,3 +321,432 @@ def test_old_out_reaction_outside_the_brief_still_blocks_external_keyword():
     b = _brief({"E1": "not_retrieved", "E2": "no_core_hit"}, texts={"E1": TXT, "E2": TXT})
     b.out_texts = [f"An old paper about {TERM} that the user marked as out of interest."]
     assert am.validate([_add(["E1", "E2"])], b)[1][0]["reason"] == "conflicts_user_reaction"
+
+
+# ── 관심 분야의 떠오르는 연구축(2026-10-08) ───────────────────────────────────────────
+
+AXIS = "visual anomaly reasoning"
+
+
+def _axis_paper(i, published="2026-09-20"):
+    return {"title": f"Visual Anomaly Reasoning for Inspection {i}", "arxiv_id": f"2609.2222{i}", "url": f"https://arxiv.org/abs/2609.2222{i}",
+            "published": published}
+
+
+def _axis_raw(items, axes):
+    return json.dumps({"profiles": items, "axes": axes})
+
+
+def test_sanitize_axes_keeps_only_new_specific_terms_with_two_papers():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 이미 보는 키워드(겹침 포함)·우산어·근거 1편짜리를 연구축으로 받거나, 한국어가 아닌 요약을 싣으면 실패한다."""
+    profiles = [{"id": "p", "name": "비전", "core": ["defect detection"], "exclude": ["MRI"]}]
+    papers = [_axis_paper(0), _axis_paper(1)]
+    axes = {"p": [{"term": AXIS, "summary_ko": "결함 원인을 설명하는 이상 탐지", "papers": papers}]}
+    got = es.sanitize_axes(_axis_raw({}, axes), profiles)["p"]
+    assert [a["term"] for a in got] == [AXIS] and got[0]["summary"] == "결함 원인을 설명하는 이상 탐지"
+    # 프로필당 상한(2)에 가리지 않게 거를 용어는 하나씩 따로 본다 — 겹치는 키워드, 제외어, 우산어
+    for bad in ("defect detection models", "MRI slice segmentation", "deep learning"):
+        assert es.sanitize_axes(_axis_raw({}, {"p": [{"term": bad, "summary_ko": "요약", "papers": papers}]}), profiles)["p"] == [], bad
+    one = {"p": [{"term": AXIS, "summary_ko": "요약", "papers": papers[:1]}]}
+    assert es.sanitize_axes(_axis_raw({}, one), profiles)["p"] == []
+    english = {"p": [{"term": AXIS, "summary_ko": "explains anomalies", "papers": papers}]}
+    assert es.sanitize_axes(_axis_raw({}, english), profiles)["p"][0]["summary"] == ""
+    assert es.sanitize_axes("not json", profiles) == {}
+
+
+def _axis_world(tmp_path):
+    db = _world(tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS search_candidates (profile_id TEXT, paper_key TEXT, title TEXT, abstract TEXT, first_seen TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS search_runs (run_id TEXT, profile_id TEXT, window_from TEXT)")
+        con.execute("INSERT INTO search_runs (run_id, profile_id, source, query, window_from, window_to, status, started_at) "
+                    "VALUES ('r1', 'p', 'arxiv', 'q', '2026-09-01', '2026-09-02', 'done', '2026-09-02')")
+        for i, seen in enumerate(["2026-09-25", "2026-10-01", "2026-09-01"]):
+            con.execute("INSERT INTO search_candidates (profile_id, paper_key, title, abstract, first_seen, last_seen) VALUES ('p', ?, ?, 'x', ?, ?)",
+                        (f"k{i}", f"Visual anomaly reasoning paper {i}", seen + "T00:00:00+00:00", seen + "T00:00:00+00:00"))
+    return db
+
+
+def test_axes_flow_to_mail_with_python_checked_evidence_and_keep_capture_comparable(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 근거 논문을 정찰 항목과 같은 신원·검증 경로로 보내지 않거나, 공식 초록에 용어가 없는 논문까지
+    근거로 세거나, 근거 논문을 "외부 정찰 대비 수집률" 분모에 섞거나, 우리 후보의 최근·직전 편수를 못 세면 실패한다."""
+    db = _axis_world(tmp_path)
+    items = [{**ITEM, "arxiv_id": f"2609.1111{i}", "title": f"Zero-Shot Surface Defect Segmentation Study {i}"} for i in range(2)]
+    third = {**_axis_paper(2), "title": "Inspection Robots in Smart Factories 2"}     # 공식 제목·초록 어디에도 용어가 없는 근거
+    axes = {"p": [{"term": AXIS, "summary_ko": "결함 원인을 설명하는 이상 탐지", "papers": [_axis_paper(0), _axis_paper(1), third]}]}
+
+    def official(ids):
+        rows = []
+        for key in ids:
+            aid = key.split(":", 1)[1]
+            if aid.startswith("2609.2222"):
+                i = int(aid[-1])
+                abstract = "We study visual anomaly reasoning for factories." if i < 2 else "A different topic."
+                title = f"Visual Anomaly Reasoning for Inspection {i}" if i < 2 else "Inspection Robots in Smart Factories 2"
+                rows.append({"title": title, "abstract": abstract, "publicationDate": "2026-09-20",
+                             "venue": "arXiv", "externalIds": {"ArXiv": aid}})
+            else:
+                i = int(aid[-1])
+                rows.append({"title": f"Zero-Shot Surface Defect Segmentation Study {i}", "abstract": "zero-shot surface defect segmentation",
+                             "publicationDate": "2026-09-10", "venue": "CVPR", "externalIds": {"ArXiv": aid}})
+        return rows
+    sent = []
+
+    def verdict(payload, t):
+        got = json.loads(payload)["items"]
+        sent.extend(got)
+        return {"items": [{"id": x["id"], "verdict": "verified", "relevant": True, "manufacturing_relation": "direct",
+                           "claim_supported": True, "candidate_terms": [], "note": "근거 일치"} for x in got]}
+    res = es.run_weekly(db, NOW, scout=lambda p, t: _axis_raw({"p": items}, axes), verify=verdict, s2_batch=official, fetch=lambda *a, **k: "")
+    assert res["status"] == "done"
+    assert any(x["axes"] == [AXIS] for x in sent)                              # 근거 논문도 Claude 검증을 탔다
+    assert json.loads(res["capture_json"])["p"]["evaluable"] == 2              # 정찰 항목만 분모
+    sc = es.mail_summary(db, "p", NOW)
+    assert sc["capture"]["evaluable"] == 2 and sc["verified"] == 2
+    # 정찰 설명은 판정어가 없으면 싣는다. 미포착 내역은 근거 논문의 놓침 단계, 분모는 같은 창에 우리 검색에 처음 들어온 후보 전체(2026-10-08 외부 검토).
+    assert sc["axes"] == [{"term": AXIS, "summary": "결함 원인을 설명하는 이상 탐지", "papers": 2, "recent": 2, "previous": 1,
+                           "recent_total": 2, "previous_total": 1, "missed": {"not_retrieved": 2}}]
+
+
+def test_axis_needs_two_verified_papers_and_old_papers_are_not_misses(tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: Claude 가 근거 하나를 rejected 했는데 연구축을 남기거나, 관측 시작(가장 이른 검색 창) 전에 나온
+    논문을 "검색이 못 가져옴"으로 세면 실패한다 — 그건 놓친 것이 아니라 잡을 기회가 없던 것이다."""
+    db = _axis_world(tmp_path)
+    axes = {"p": [{"term": AXIS, "summary_ko": "요약", "papers": [_axis_paper(0), _axis_paper(1, "2026-08-01")]}]}
+    official = lambda ids: [{"title": f"Visual Anomaly Reasoning for Inspection {k[-1]}", "abstract": "visual anomaly reasoning",
+                             "publicationDate": "2026-09-20" if k.endswith("0") else "2026-08-01", "venue": "arXiv",
+                             "externalIds": {"ArXiv": k.split(":", 1)[1]}} for k in ids]
+    verdict = lambda payload, t: {"items": [{"id": x["id"], "verdict": "rejected" if x["official"]["published"] == "2026-08-01" else "verified",
+                                             "relevant": True, "manufacturing_relation": "direct", "claim_supported": True,
+                                             "candidate_terms": [], "note": "판정"} for x in json.loads(payload)["items"]]}
+    es.run_weekly(db, NOW, scout=lambda p, t: _axis_raw({"p": []}, axes), verify=verdict, s2_batch=official, fetch=lambda *a, **k: "")
+    with sqlite3.connect(db) as con:
+        stages = dict(con.execute("SELECT published_at, gap_stage FROM external_observations").fetchall())
+    assert stages["2026-08-01"] == "before_monitoring" and stages["2026-09-20"] == "not_retrieved"
+    sc = es.mail_summary(db, "p", NOW)
+    assert sc is not None and sc["axes"] == []
+
+
+def test_axes_render_in_plain_html_and_saved_mail_identically():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 연구축 절이 평문·HTML 중 하나에서 빠지거나, 형식 수정본 역파싱이 그 줄을 못 읽어 외부 정찰 절 전체가
+    옛 줄 렌더러로 떨어지면 실패한다."""
+    import digest
+    import saved_digest
+    sc = {"verified": 2, "capture": {"evaluable": 2, "retrieved": 1, "core_hit": 1, "delivered": 0}, "missed": [],
+          "axes": [{"term": AXIS, "summary": "결함 원인을 설명하는 이상 탐지 (설명형)", "papers": 2, "recent": 2, "previous": 1,
+                    "recent_total": 40, "previous_total": 31, "missed": {"not_retrieved": 1, "no_core_hit": 1}},
+                   {"term": "event camera inspection", "summary": "", "papers": 3, "recent": None, "previous": None,
+                    "recent_total": None, "previous_total": None, "missed": {}}]}
+    lines = digest._external_scout_lines({"external_scout": sc})
+    assert any(digest.AXES_HEADING in line for line in lines) and "성장세는 확인하지 않음" in digest.AXES_HEADING
+    html = digest._external_scout_html({"external_scout": sc})
+    for row in ("정찰 설명: 결함 원인을 설명하는 이상 탐지 (설명형)", "근거 논문 2편 · 미포착 2편(검색 못 가져옴 1 · 핵심어 불일치 1)",
+                "우리 검색 관측: 최근 4주 2/40편 · 직전 4주 1/31편", "근거 논문 3편"):
+        assert row in html and any(row in line for line in lines), row
+    assert "떠오르" not in html
+    assert saved_digest._scout_from_lines(lines) == sc
+    assert saved_digest._scout_html(lines) == html
+    assert saved_digest._scout_from_lines(lines) == {**sc, "missed": []}
+    assert saved_digest._scout_html(lines) == html
+
+
+def _axis_verdict(payload, timeout):
+    return {"items": [{"id": x["id"], "verdict": "verified", "relevant": True,
+                       "manufacturing_relation": "indirect", "claim_supported": False,
+                       "candidate_terms": [AXIS], "note": "관심 분야의 근거"}
+                      for x in json.loads(payload)["items"]]}
+
+
+def _axis_official(ids):
+    return [{"title": _axis_paper(int(k[-1]))["title"], "abstract": AXIS,
+             "publicationDate": "2026-09-20", "externalIds": {"ArXiv": k.split(":", 1)[1]}}
+            for k in ids]
+
+
+@pytest.mark.parametrize("axes", [None, [], {"p": 3}, {"p": [{"term": AXIS, "papers": 3}]},
+                                     {"p": [{"term": AXIS, "papers": {"a": 1}}]}])
+def test_malformed_axes_preserve_paper_scout(tmp_path, axes):
+    """연구축 자료형 오류를 논문 정찰까지 전파하거나 정상 논문을 잃으면 실패한다."""
+    db = _axis_world(tmp_path)
+    got = es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({"p": [_axis_paper(0)]}, axes),
+                        s2_batch=_axis_official, verify=_axis_verdict)
+    assert got["status"] == "done" and got["verified_count"] == 1
+    assert es.mail_summary(db, "p", NOW)["verified"] == 1
+
+
+def test_axis_only_profile_and_bad_evidence_urls(tmp_path):
+    """profiles 에 빈 프로필이 생략됐거나 URL 목록이 잘못돼도 유효한 연구축 신원 검증을 잃으면 실패한다."""
+    db = _axis_world(tmp_path)
+    papers = [{**_axis_paper(i), "evidence_urls": {"bad": True}} for i in (0, 1)]
+    got = es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({}, {"p": [{"term": AXIS, "papers": papers}]}),
+                        s2_batch=_axis_official, verify=_axis_verdict)
+    assert got["status"] == "done"
+    assert es.mail_summary(db, "p", NOW)["axes"][0]["papers"] == 2
+
+
+def test_official_aliases_merge_before_verification_and_brief(tmp_path):
+    """arXiv·DOI 중복을 2편으로 세거나 병합 때 정찰 출처·축·기존 주장을 잃으면 실패한다."""
+    db = _axis_world(tmp_path)
+    first = {**_axis_paper(0), "contribution": "original claim", "source_type": "conference"}
+    alias = {**first, "arxiv_id": None, "url": None, "doi": "10.1234/alias", "contribution": None, "source_type": "other"}
+    captured = []
+
+    def verify(payload, timeout):
+        captured.extend(json.loads(payload)["items"])
+        return _axis_verdict(payload, timeout)
+
+    # 두 응답의 ID 가 서로 연결되지 않아도 같은 공식 제목은 같은 논문이다.
+    def official(ids):
+        return [{"title": first["title"], "abstract": AXIS, "publicationDate": "2026-09-20",
+                 "externalIds": {"DOI": "10.1234/alias"} if k.startswith("DOI:") else {"ArXiv": "2609.22220"}}
+                for k in ids]
+
+    got = es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({"p": [first]},
+                        {"p": [{"term": AXIS, "papers": [alias, first]}]}), s2_batch=official, verify=verify)
+    assert got["candidate_count"] == 1 and len(captured) == 1
+    assert captured[0]["axes"] == [AXIS]
+    assert captured[0]["scout_claims"]["contribution"] == "original claim"
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT source_type, source_url FROM external_observations").fetchone() == (
+            "conference", "https://arxiv.org/abs/2609.22220")
+    ev = es.evidence_for_brief(db, "p", NOW)
+    assert len(ev) == 1 and ev[0]["from_scout"] is True and ev[0]["axes"] == [AXIS]
+    sc = es.mail_summary(db, "p", NOW)
+    assert sc["verified"] == 1 and sc["axes"] == [] and sc["capture"]["evaluable"] == 1
+
+
+def _save_axis_observation(db, oid, key, at, *, run="current", term=AXIS, verdict="verified", title=None):
+    official = {"title": title or f"Visual anomaly reasoning study {key}", "abstract": AXIS,
+                "published": "2026-09-20", "arxiv_id": key}
+    evidence = {"identity": "verified", "official": official, "axes": [term] if term else [],
+                "from_scout": True, "axis_summaries": {AXIS: "최고 성능 100점 추천"}}
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO external_observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (oid, run, "p", key, official["title"], "arxiv", None, "2026-09-20", "not_retrieved", "s1",
+                     json.dumps(evidence), json.dumps({"verdict": verdict, "relevant": True}), at))
+
+
+def test_brief_uses_latest_identity_and_latest_axis_run_only(tmp_path):
+    """7일 경계·이전 회차·미래 자료를 이번 연구축에 섞거나 최신 거절을 옛 승인으로 덮으면 실패한다."""
+    db = _axis_world(tmp_path)
+    es.init_db(db)
+    _save_axis_observation(db, "boundary", "k0", "2026-09-28T20:00:00+00:00", run="old")
+    _save_axis_observation(db, "old", "k1", "2026-09-30T20:00:00+00:00", run="old")
+    _save_axis_observation(db, "new", "k1", NOW.isoformat(), term=None)
+    _save_axis_observation(db, "stale", "k2", "2026-10-01T20:00:00+00:00", run="old")
+    _save_axis_observation(db, "fresh", "k3", NOW.isoformat())
+    _save_axis_observation(db, "future", "k4", "2026-10-06T00:00:00+00:00", run="future")
+    _save_axis_observation(db, "rejected-old", "k5", "2026-10-01T20:00:00+00:00", run="old")
+    _save_axis_observation(db, "rejected-new", "k5", NOW.isoformat(), verdict="rejected")
+    ev = es.evidence_for_brief(db, "p", NOW)
+    assert {e["paper_key"] for e in ev} == {"k1", "k2", "k3"}
+    assert {e["paper_key"] for e in ev if e["axes"]} == {"k3"}
+    assert es.emerging_axes(db, "p", ev, NOW) == []
+
+
+def test_axis_counts_bound_time_and_hide_unverified_prose(tmp_path):
+    """미래·시간대 경계 후보를 잘못 세거나 공식 날짜 밖 근거·자유 요약의 판정어를 메일에 싣으면 실패한다."""
+    db = _axis_world(tmp_path)
+    es.init_db(db)
+    for i in (0, 1):
+        _save_axis_observation(db, f"e{i}", f"a{i}", NOW.isoformat())
+    with sqlite3.connect(db) as con:
+        for key, at in [("future", "2026-10-06T00:00:00+00:00"),
+                        ("offset", "2026-09-08T02:00:00+09:00")]:  # UTC 9/7 17:00 은 직전 창이다.
+            con.execute("INSERT INTO search_candidates (profile_id,paper_key,title,abstract,first_seen,last_seen) VALUES ('p',?,?,?, ?,?)",
+                        (key, AXIS, "", at, at))
+    sc = es.mail_summary(db, "p", NOW)
+    assert sc["axes"] == [{"term": AXIS, "summary": "", "papers": 2, "recent": 2, "previous": 2,
+                           "recent_total": 2, "previous_total": 2, "missed": {"not_retrieved": 2}}]   # 판정어 섞인 설명은 버린다
+    ev = es.evidence_for_brief(db, "p", NOW)
+    ev[0]["published"] = "2025-01-01"
+    assert es.emerging_axes(db, "p", ev, NOW) == []
+    ev[0]["published"] = "2026-10-06"
+    assert es.emerging_axes(db, "p", ev, NOW) == []
+    with sqlite3.connect(db) as con:
+        con.execute("DROP TABLE search_candidates")
+    axes = es.mail_summary(db, "p", NOW)["axes"]
+    assert axes[0]["recent"] is None and axes[0]["previous"] is None
+
+
+def test_before_monitoring_uses_only_prior_windows_and_official_dates(tmp_path):
+    """미래 검색 창·빈 창·정찰이 적은 날짜로 오래된 논문을 놓침 근거로 바꾸면 실패한다."""
+    db = _axis_world(tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO search_runs (run_id,profile_id,source,query,window_from,window_to,status,started_at) "
+                    "VALUES ('future','p','arxiv','q','2020-01-01','2026-10-10','done','2026-10-10')")
+    assert es.gap_stage(db, "p", _it("old", "2026-08"), NOW)[0] == "before_monitoring"
+    assert es.gap_stage(db, "p", _it("unknown-day", "2026-09"), NOW)[0] == "not_yet_evaluable"
+    assert es.gap_stage(db, "p", {**_it("old", ""), "published": "2026-09-20"}, NOW)[0] == "not_yet_evaluable"
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE search_runs SET window_from='' WHERE run_id!='future'")
+    assert es.gap_stage(db, "p", _it("old", "2026-08-01"), NOW)[0] == "not_yet_evaluable"
+
+
+def test_axis_evidence_reuses_existing_keyword_rules(tmp_path):
+    """실제 브리프 E 근거로 추가 규칙을 우회하거나 before_monitoring 1편을 놓친 2편으로 세면 실패한다."""
+    db = _axis_world(tmp_path)
+    axes = {"p": [{"term": AXIS, "papers": [_axis_paper(0), _axis_paper(1)]}]}
+    es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({"p": []}, axes),
+                  s2_batch=_axis_official, verify=_axis_verdict)
+    brief = am.build_brief(db, "p", NOW)
+    ev = list(brief.external)
+    action = {"op": "add_keyword", "term": AXIS, "weight": 0.7, "evidence": ev, "reason": "외부 논문 근거"}
+    assert len(ev) == 2
+    assert len(am.validate([action], brief)[0]) == 1
+    assert am.validate([{**action, "weight": 0.8}], brief)[0] == []
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_observations SET gap_stage='before_monitoring' WHERE paper_key='2609.22220'")
+    assert am.validate([action], am.build_brief(db, "p", NOW))[0] == []
+
+
+def test_verify_missing_and_database_failure_do_not_escape(tmp_path, monkeypatch):
+    """검증 항목 누락을 done 으로 숨기거나 DB 조회 오류가 정찰 밖으로 전파되면 실패한다."""
+    db = _axis_world(tmp_path)
+    got = es.run_weekly(db, NOW, scout=lambda *a: _scout_json({"p": [_axis_paper(0)]}),
+                        s2_batch=_axis_official, verify=lambda *a: {"items": []})
+    assert got["status"] == "partial" and es.evidence_for_brief(db, "p", NOW) == []
+    monkeypatch.setattr(es, "gap_stage", lambda *a: (_ for _ in ()).throw(sqlite3.OperationalError()))
+    got = es.run_weekly(db, NOW, force=True, scout=lambda *a: _scout_json({"p": [_axis_paper(0)]}),
+                        s2_batch=_axis_official, verify=_axis_verdict)
+    assert got["status"] == "failed" and got["error"] == "scout_processing:OperationalError"
+    assert got["scout_calls"] == 1 and got["verify_calls"] == 0
+
+
+def test_real_verify_caps_cover_four_profiles_without_losing_scout_items(tmp_path):
+    """실제 30항목 상한이 없어지거나 연구축 때문에 기존 20편이 밀리거나 초과를 done 으로 기록하면 실패한다."""
+    import research_profile
+    db = _axis_world(tmp_path)
+    ids = ["p", "q", "r", "s"]
+    for pid in ids[1:]:
+        research_profile.create_profile(db, pid, pid, core_topics=["defect detection"])
+    papers, axes, official_by_id = {}, {}, {}
+    for i, pid in enumerate(ids):
+        all_papers = [{"title": f"Visual anomaly reasoning study {pid} {j}", "arxiv_id": f"2609.{i}{j:04d}"}
+                      for j in range(11)]
+        papers[pid] = all_papers[:5]
+        axes[pid] = [{"term": AXIS, "papers": all_papers[5:8]},
+                     {"term": "causal defect reasoning", "papers": all_papers[8:]}]
+        for paper in all_papers:
+            official_by_id["ARXIV:" + paper["arxiv_id"]] = {
+                "title": paper["title"], "abstract": AXIS, "publicationDate": "2026-09-20",
+                "externalIds": {"ArXiv": paper["arxiv_id"]}}
+    calls = []
+
+    def verify(payload, timeout):
+        assert timeout == 300 and len(payload) <= 120_000
+        calls.append(json.loads(payload)["items"])
+        return _axis_verdict(payload, timeout)
+
+    got = es.run_weekly(db, NOW, scout=lambda *a: _axis_raw(papers, axes),
+                        s2_batch=lambda keys: [official_by_id[k] for k in keys], verify=verify)
+    # 최대 적재(4×(정찰 5 + 연구축 2×근거 3) = 44)가 두 호출로 나뉘어 하나도 빠지지 않는다(2026-10-08 — 예전 단일 30 상한은 14항목을 버렸다).
+    assert [len(c) for c in calls] == [20, 24] and got["status"] == "done" and got["verify_calls"] == 2
+    assert all(not e["axes"] for e in calls[0]) and all(e["axes"] for e in calls[1])
+    assert sorted(Counter(e["profile"]["name"] for e in calls[0]).values()) == [5, 5, 5, 5]
+
+    # 연구축 쪽 호출이 실패해도 논문 정찰 검증은 남는다 — 한 호출이면 둘 다 사라졌다.
+    db2 = _axis_world(tmp_path / "iso")
+    for pid in ids[1:]:
+        research_profile.create_profile(db2, pid, pid, core_topics=["defect detection"])
+    state = {"n": 0}
+
+    def flaky(payload, timeout):
+        state["n"] += 1
+        if state["n"] == 2:
+            raise TimeoutError()
+        return _axis_verdict(payload, timeout)
+    got = es.run_weekly(db2, NOW, scout=lambda *a: _axis_raw(papers, axes),
+                        s2_batch=lambda keys: [official_by_id[k] for k in keys], verify=flaky)
+    assert got["status"] == "partial" and "axis_verify:TimeoutError" in got["error"] and got["verified_count"] == 20
+
+
+def test_verify_payload_size_is_bounded(tmp_path, monkeypatch):
+    """항목 수만 제한하고 긴 프로필 때문에 검증 입력 크기를 무제한으로 보내면 실패한다."""
+    db = _axis_world(tmp_path)
+    monkeypatch.setattr(es, "_profiles", lambda db: [{"id": "p", "name": "비전", "domain": [], "core": ["x" * 70000]}])
+    payloads = []
+
+    def verify(payload, timeout):
+        payloads.append(payload)
+        return _axis_verdict(payload, timeout)
+
+    got = es.run_weekly(db, NOW, scout=lambda *a: _scout_json({"p": [_axis_paper(0), _axis_paper(1)]}),
+                        s2_batch=_axis_official, verify=verify)
+    assert got["status"] == "partial" and got["error"] == "verify_cap:1"
+    assert len(payloads) == 1 and len(payloads[0]) <= 120_000
+    assert len(json.loads(payloads[0])["items"]) == 1
+
+
+def test_axes_require_official_date_and_corrupt_cache_is_ignored(tmp_path):
+    """정찰이 쓴 날짜로 공식 날짜 누락을 메우거나 손상된 저장 JSON 때문에 브리프가 중단되면 실패한다."""
+    db = _axis_world(tmp_path)
+    def official(keys):
+        return [{**row, "publicationDate": None} for row in _axis_official(keys)]
+    axes = {"p": [{"term": AXIS, "papers": [_axis_paper(0), _axis_paper(1)]}]}
+    es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({"p": []}, axes), s2_batch=official, verify=_axis_verdict)
+    assert es.mail_summary(db, "p", NOW)["axes"] == []
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_observations SET verified_json='{broken'")
+    assert es.evidence_for_brief(db, "p", NOW) == []
+
+
+def test_prompt_includes_keywords_after_twenty_five_and_axis_lines_round_trip():
+    """키워드 26번째부터 숨겨 이미 보는 연구축을 다시 찾게 하거나 기존 저장 메일을 못 읽으면 실패한다."""
+    import digest
+    import saved_digest
+    prompt = es.scout_prompt([{"id": "p", "name": "비전", "core": [f"topic {i}" for i in range(26)], "domain": []}], NOW)
+    assert "topic 25" in prompt
+    # 옛 한 줄 형식은 메일로 나간 적이 없어(연구축은 10/12 첫 운행) 역파싱을 두지 않는다 — 대신 깨진 줄이면 절 전체가 줄 렌더러로 떨어지는지 본다.
+    sc = {"verified": 0, "capture": {"evaluable": 0, "retrieved": 0, "core_hit": 0, "delivered": 0}, "missed": [],
+          "axes": [{"term": AXIS, "summary": "", "papers": 2, "recent": 2, "previous": 1, "recent_total": None, "previous_total": None,
+                    "missed": {}}]}
+    lines = digest._external_scout_lines({"external_scout": sc})
+    assert saved_digest._scout_from_lines(lines) == sc
+    with pytest.raises(ValueError):
+        saved_digest._scout_from_lines([*lines, "    근거 논문 2편 · 미포착 3편(검색 못 가져옴 1)"])
+
+
+def test_alias_merge_does_not_move_scout_papers_behind_axis_only_items(tmp_path, monkeypatch):
+    """별칭 병합 뒤 순서가 바뀌어 기존 정찰 논문이 검증 상한 밖으로 밀리면 실패한다."""
+    db = _axis_world(tmp_path)
+    monkeypatch.setattr(es, "MAX_VERIFY", 5)
+    papers = [_axis_paper(i) for i in range(5)]
+    alias = {**papers[0], "arxiv_id": None, "url": None, "doi": "10.1234/alias"}
+    axes = {"p": [{"term": AXIS, "papers": [_axis_paper(5), _axis_paper(6), alias]}]}
+    calls = []
+
+    def official(keys):
+        return _axis_official(["ARXIV:2609.22220" if k.startswith("DOI:") else k for k in keys])
+
+    def verify(payload, timeout):
+        calls.append({x["official"]["title"] for x in json.loads(payload)["items"]})
+        return _axis_verdict(payload, timeout)
+
+    result = es.run_weekly(db, NOW, scout=lambda *a: _axis_raw({"p": papers}, axes), s2_batch=official, verify=verify)
+    # 별칭(DOI)으로 다시 들어온 정찰 논문은 정찰 쪽 호출에 남고, 연구축 근거로만 들어온 2편만 두 번째 호출로 간다.
+    assert calls[0] == {p["title"] for p in papers} and len(calls[1]) == 2 and not calls[0] & calls[1]
+    assert result["status"] == "done"
+
+
+def test_empty_new_run_does_not_resurrect_old_axes(tmp_path):
+    """최신 정찰이 0건인데 최근 7일 안의 이전 연구축을 이번 결과로 되살리면 실패한다."""
+    from datetime import timedelta
+    db = _axis_world(tmp_path)
+    axes = {"p": [{"term": AXIS, "papers": [_axis_paper(0), _axis_paper(1)]}]}
+    es.run_weekly(db, NOW - timedelta(days=1), scout=lambda *a: _axis_raw({"p": []}, axes),
+                  s2_batch=_axis_official, verify=_axis_verdict)
+    assert es.mail_summary(db, "p", NOW)["axes"][0]["papers"] == 2
+    got = es.run_weekly(db, NOW, force=True, scout=lambda *a: _scout_json({"p": []}),
+                        s2_batch=_axis_official, verify=_axis_verdict)
+    assert got["status"] == "done" and got["candidate_count"] == 0
+    assert es.mail_summary(db, "p", NOW)["axes"] == []
+
+
+def test_same_instant_retry_uses_last_inserted_verdict(tmp_path):
+    """같은 시각의 강제 재시도에서 무작위 관측 ID 순서가 최신 거절을 덮으면 실패한다."""
+    db = _axis_world(tmp_path)
+    es.init_db(db)
+    _save_axis_observation(db, "z-old", "k0", NOW.isoformat())
+    _save_axis_observation(db, "a-new", "k0", NOW.isoformat(), verdict="rejected")
+    assert es.evidence_for_brief(db, "p", NOW) == []
