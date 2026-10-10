@@ -932,3 +932,37 @@ def test_precision_runner_weekly_and_pending_reports(world, monkeypatch):
     summary = changes._agent_summary(world, 'p', _day(1), (datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat())
     assert [(a['basis'],a['evidence_count']) for a in summary['applied']] == [('precision',3),('precision',2)]
     assert digest._reason_groups(summary['applied'])[0][1] == '정밀도 근거(엉뚱한 후보 3편)'
+
+
+@pytest.mark.parametrize("catch_up", [False, True])
+@pytest.mark.parametrize("broken", [False, True])
+def test_weekly_sync_precedes_scout_and_management(tmp_path, monkeypatch, catch_up, broken):
+    """동기화를 정찰·주간 관리 뒤로 옮기거나 수집 예외로 주간 관리를 중단하면 실패한다."""
+    import external_scout
+    import httpx
+    events = []
+
+    async def sync(db, client):
+        assert db == tmp_path / "weekly.db" and isinstance(client, httpx.AsyncClient)
+        events.append("sync")
+        if broken:
+            raise RuntimeError("fake sync failure")
+        return Counter({"valid": 1})
+
+    monkeypatch.setattr(fl, "sync", sync)
+    monkeypatch.setattr(am, "catch_up_targets", lambda db: ["p"])
+    monkeypatch.setattr(external_scout, "run_weekly", lambda *a, **k: events.append("scout") or {})
+    monkeypatch.setattr(am, "run_week", lambda *a, **k: events.append("week") or [])
+    assert am.main(["--db", str(tmp_path / "weekly.db")] + (["--catch-up"] if catch_up else [])) == 0
+    assert events == ["sync", "scout", "week"]
+
+
+def test_brief_only_never_syncs_even_with_catch_up(tmp_path, monkeypatch):
+    """브리프만 출력하는 읽기 경로에서 반응 수집·정찰·주간 실행을 호출하면 실패한다."""
+    def refuse(*a, **k):
+        pytest.fail("brief-only called a mutating path")
+    monkeypatch.setattr(fl, "sync", refuse)
+    monkeypatch.setattr(am, "catch_up_targets", refuse)
+    monkeypatch.setattr(am, "run_week", refuse)
+    monkeypatch.setattr(am, "build_brief", lambda *a: None)
+    assert am.main(["--db", str(tmp_path / "absent.db"), "--brief-only", "--catch-up", "--profile", "p"]) == 0

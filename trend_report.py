@@ -258,6 +258,9 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 글은 Python 이 이 구조로 조립한다. 칸을 채우는 것이 목적이 아니다 — 없는 흐름을 만들지 않는다.
 
 1. threads(흐름): **같은 문제를 다루는 논문 2편 이상**의 묶음. 1~3개. 공통 문제가 하나뿐이면 하나만 낸다.
+   예외 — 지난 흐름의 후속: 오늘 논문 **1편**이 제공된 지난 흐름(H)을 직접 잇는다면 papers 1개 + history(필수)로 낼 수 있다.
+   이때 body 는 지난 흐름의 접근 대비 이 논문이 무엇을 다르게 하는지만 쓴다 — 1편을 "흐름이 이어진다/커진다"로 일반화하지 않는다.
+   history 가 검증되지 않으면 Python 이 그 흐름을 버린다.
    - name: 흐름 이름. 무엇에 관한 흐름인지 짧은 명사구(예: "합성 결함 데이터의 역할 확대").
    - history: 오늘의 연구 문제를 지난 관측과 연결하는 것이 읽는 데 도움이 될 때만 낸다. 연결할 이유가 없으면 null.
      실제 제공된 H번호 하나(ref), continuing(이어짐)·expanding(확장)·branching(갈라짐) 중 relation, note 한 문장.
@@ -291,6 +294,8 @@ _NARRATIVE_PROMPT = """아래는 이번 수집 표본에 포함된 논문들의 
 - 지난 관측 H번호가 있으면 연구 문제의 의미적 연결만 history에 제안한다. 없는 H번호·과거 날짜·수치를 만들지 않는다.
   지난 관측이 없거나 오늘과 이어지지 않으면 history는 null이다. 연결은 선택이며 매일 넣을 의무가 없다.
   증가·급부상·쇠퇴 같은 정량적 시간 변화는 기간 비교 근거 없이 단정하지 않는다.
+  지난 관측의 "그날의 해석"은 그날 모델이 쓴 글이다 — 오늘의 사실 근거가 아니다. 오늘 논문(P·R·S)이 직접 보여주는 것만으로 관계를 쓰고,
+  지난 해석을 되풀이해 흐름이 확산·성장·자리 잡는다고 쓰지 않는다(이런 표현이 있으면 Python 이 그 연결을 버린다).
 - 증가·전환·부상 같은 표현을 관측 밖의 추세로 일반화하지 않는다. H연결은 두 관측의 연구 문제 관계에만 쓴다.
 - 저자 명시 한계와 요약자 해석을 구분한다. 논문에서 확인하지 않은 적용 가능성은 문장 끝에 "(해석)" 을 붙인다 —
   "해석이다" 같은 서술어로 쓰지 않는다. 표본 밖의 것은 "~는 이 표본으로는 알 수 없다." 로 끝낸다.
@@ -478,7 +483,8 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
     """모델이 낸 구조를 자료에 비춰 손질한다. 흐름이 하나도 안 남으면 None(서술 없음 — 메일은 나간다).
 
     - 흐름: 자료에 있는 논문만, 한 논문은 한 흐름에만. **body 가 근거로 부른 논문만** 흐름에 남긴다
-      (목록에만 끼워 넣은 논문은 뺀다). 그렇게 남은 논문이 2편 미만이면 흐름이 아니다.
+      (목록에만 끼워 넣은 논문은 뺀다). 그렇게 남은 논문이 2편 미만이면 흐름이 아니다 — 단, 1편이라도 **검증된 지난 흐름 연결**이 있으면
+      "지난 흐름의 후속 관측"으로 남긴다(`follow_up`, 2026-10-10).
     - anchors(메일 카드 논문의 **P 번호 집합**)가 있으면 흐름마다 그중 1편 이상이 있어야 한다. 아래 카드와 이어지지 않는 흐름은
       오늘 메일의 이야기가 아니다. 개수가 아니라 번호 집합이다 — 제목 없는 행은 자료에서 빠져 번호가 밀린다(Codex 검토).
     - deep(원문을 분석한 논문의 P 번호)은 **자격이 아니라 발언권**이다: 그런 논문이 든 흐름을 앞에 두고, 목록에 깊이를 적는다.
@@ -495,8 +501,9 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
     repairs: list[str] = []
     used: set[int] = set()
     threads: list[dict] = []
+    followups: list[tuple[int, dict]] = []
     for raw in plan.get("threads") or []:
-        if len(threads) >= STORY_MAX_THREADS:
+        if len(threads) + len(followups) >= STORY_MAX_THREADS:
             repairs.append("thread_cap")
             break
         listed: list[int] = []
@@ -508,13 +515,12 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
         body, cited = _fit(raw.get("body") or "", set(listed), tags, _STORY_LIMITS["body"])
         papers = [n for n in listed if n in cited]
         name = _label(raw.get("name") or "", _STORY_LIMITS["name"])
-        if len(papers) < 2 or not name:
+        if not papers or not name:
             repairs.append("thread_too_thin")
             continue
         if anchors is not None and not any(n in anchors for n in papers):
             repairs.append("thread_without_anchor")
             continue
-        used.update(papers)
         thread = {"name": name, "papers": papers, "body": _mark_abstract_results(body)}
         proposed = raw.get("history")
         if proposed:
@@ -522,12 +528,31 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
             source = (history or {}).get(proposed.get("ref")) if isinstance(proposed, dict) else None
             note, cited_now = _fit(proposed.get("note") or "", set(papers), tags, 220) if source else ("", set())
             if (source and proposed.get("relation") in trend_history.RELATIONS and note and cited_now
-                    and not re.search(r"증가|감소|급증|급부상|쇠퇴|최초|\d+(?:\.\d+)?\s*(?:%|배|편|건)", note)):
+                    and not _HISTORY_INFLATION_RE.search(note)):
                 thread["history"] = {"ref": proposed["ref"], "relation": proposed["relation"],
                                      "note": _mark_abstract_results(note), "source": dict(source)}
             else:
                 repairs.append("history_unverified")
+        # 오늘 논문 1편은 공통 흐름이 아니다. 다만 **검증된 지난 흐름**을 직접 잇는 후속이면 남긴다(2026-10-10 외부 검토:
+        # "지난 논문 2편 + 오늘 1편"을 설명 못 하면 연구 문제의 변화를 놓친다). 지난 연결이 검증 안 되면 예전처럼 버린다 — 1편으로 흐름을 지어내지 않는다.
+        if len(papers) < 2:
+            # 1편 후속은 본문도 지난 흐름과의 관계를 말하는 글이라 강화 표현을 같이 막는다(Codex 검토 2026-10-10).
+            if not thread.get("history") or _HISTORY_INFLATION_RE.search(body):
+                repairs.append("thread_too_thin")
+                continue
+            thread["follow_up"] = True
+            followups.append((len(threads) + len(followups), thread))       # 여러 편 흐름이 논문을 먼저 가진다 — 아래에서 붙인다
+            continue
+        used.update(papers)
         threads.append(thread)
+    # 1편 후속이 앞에 나와 뒤 여러 편 흐름의 논문을 먼저 가져가면 그 공통 흐름이 1편으로 줄어 버려진다(Codex 검토 2026-10-10) —
+    # 여러 편 흐름이 끝난 뒤, 남은 논문으로만 후속을 붙이고 모델이 낸 순서 자리에 되돌려 놓는다. 흐름 상한은 그대로 지킨다.
+    for slot, thread in followups:
+        if thread["papers"][0] in used or len(threads) >= STORY_MAX_THREADS:
+            repairs.append("follow_up_dropped")
+            continue
+        used.update(thread["papers"])
+        threads.insert(min(slot, len(threads)), thread)
     if not threads:
         return None
     if deep:
@@ -609,7 +634,7 @@ def render_story(story: dict) -> str:
         lines += [f"■ {i}. {thread['name']}"]
         if thread.get("history"):
             import trend_history
-            lines.append(trend_history.display(thread["history"]))
+            lines.append(trend_history.display(thread["history"], follow_up=bool(thread.get("follow_up"))))
         lines.append(thread["body"])
         lines += [f"- {titles[n]}{_depth_mark(n, story.get('deep'))} {_best_tag(n, tags)}".rstrip() for n in thread["papers"]]
         lines.append("")
@@ -894,6 +919,14 @@ def _weekly_context(weekly: str | None, max_chars: int = 2500) -> str:
             + "\n--- 여기까지가 주간 수치다 ---\n"
             "이 표는 우리가 DB 에서 센 값이다. 필요하면 **그대로** 인용하되 새 수치를 만들지 않는다.\n"
             "오늘이 한 주의 시작이므로, 오늘 논문이 지난 주 흐름을 잇는지 꺾는지를 이 표에 비추어 말한다.\n")
+
+
+# 지난 흐름 연결 문장에서 버리는 표현(정량적 시간 변화·강화 표현). 2026-10-10 외부 검토: 지난 서술이 다음 날 맥락으로 다시 들어가면
+# 새 근거 없이 "관측됐다 → 확장되고 있다 → 자리 잡고 있다" 로 강해질 수 있다 — 관계(이어짐·확장·갈라짐)는 남기고 강화 표현은 막는다.
+_HISTORY_INFLATION_RE = re.compile(
+    # 낱말이 아니라 **서술형**으로 잡는다 — "확산 모델"·"가속 추론" 같은 기술 용어를 막지 않게(Codex 독립 검토 P2). 정량 변화·숫자는 예전처럼 막는다.
+    r"증가|감소|급증|급부상|쇠퇴|최초|확산되|확산하|확산 중|퍼지|퍼져|성장하|성장세|성장 중|자리\s*잡|정착하|정착되|주류|대세|본격화|본격적|"
+    r"가속화|가속되|활발해|활발하게|부상하|부상 중|커지|커졌|늘어나|늘어났|늘고|\d+(?:\.\d+)?\s*(?:%|배|편|건)")
 
 
 def _history_context(past: list[dict] | None, max_chars: int = 1200) -> str:

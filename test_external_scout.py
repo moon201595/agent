@@ -405,7 +405,9 @@ def test_axes_flow_to_mail_with_python_checked_evidence_and_keep_capture_compara
     assert sc["capture"]["evaluable"] == 2 and sc["verified"] == 2
     # 정찰 설명은 판정어가 없으면 싣는다. 미포착 내역은 근거 논문의 놓침 단계, 분모는 같은 창에 우리 검색에 처음 들어온 후보 전체(2026-10-08 외부 검토).
     assert sc["axes"] == [{"term": AXIS, "summary": "결함 원인을 설명하는 이상 탐지", "papers": 2, "recent": 2, "previous": 1,
-                           "recent_total": 2, "previous_total": 1, "missed": {"not_retrieved": 2}}]
+                           "recent_total": 2, "previous_total": 1, "missed": {"not_retrieved": 2},
+                           "evidence": [{"title": "Visual Anomaly Reasoning for Inspection 1", "link": "https://arxiv.org/abs/2609.22221", "stage": "검색 소스가 못 가져옴"},
+                                        {"title": "Visual Anomaly Reasoning for Inspection 0", "link": "https://arxiv.org/abs/2609.22220", "stage": "검색 소스가 못 가져옴"}]}]
 
 
 def test_axis_needs_two_verified_papers_and_old_papers_are_not_misses(tmp_path):
@@ -437,6 +439,9 @@ def test_axes_render_in_plain_html_and_saved_mail_identically():
                     "recent_total": 40, "previous_total": 31, "missed": {"not_retrieved": 1, "no_core_hit": 1}},
                    {"term": "event camera inspection", "summary": "", "papers": 3, "recent": None, "previous": None,
                     "recent_total": None, "previous_total": None, "missed": {}}]}
+    sc["watch"] = []
+    for axis in sc["axes"]:
+        axis["evidence"] = []
     lines = digest._external_scout_lines({"external_scout": sc})
     assert any(digest.AXES_HEADING in line for line in lines) and "성장세는 확인하지 않음" in digest.AXES_HEADING
     html = digest._external_scout_html({"external_scout": sc})
@@ -557,7 +562,9 @@ def test_axis_counts_bound_time_and_hide_unverified_prose(tmp_path):
                         (key, AXIS, "", at, at))
     sc = es.mail_summary(db, "p", NOW)
     assert sc["axes"] == [{"term": AXIS, "summary": "", "papers": 2, "recent": 2, "previous": 2,
-                           "recent_total": 2, "previous_total": 2, "missed": {"not_retrieved": 2}}]   # 판정어 섞인 설명은 버린다
+                           "recent_total": 2, "previous_total": 2, "missed": {"not_retrieved": 2},
+                           "evidence": [{"title": "Visual anomaly reasoning study a1", "link": "https://arxiv.org/abs/a1", "stage": "검색 소스가 못 가져옴"},
+                                        {"title": "Visual anomaly reasoning study a0", "link": "https://arxiv.org/abs/a0", "stage": "검색 소스가 못 가져옴"}]}]   # 판정어 섞인 설명은 버린다
     ev = es.evidence_for_brief(db, "p", NOW)
     ev[0]["published"] = "2025-01-01"
     assert es.emerging_axes(db, "p", ev, NOW) == []
@@ -634,7 +641,7 @@ def test_real_verify_caps_cover_four_profiles_without_losing_scout_items(tmp_pat
     calls = []
 
     def verify(payload, timeout):
-        assert timeout == 300 and len(payload) <= 120_000
+        assert timeout == (es.VERIFY_TIMEOUT_S if not calls else es.AXIS_VERIFY_TIMEOUT_S) and len(payload) <= 120_000
         calls.append(json.loads(payload)["items"])
         return _axis_verdict(payload, timeout)
 
@@ -701,6 +708,9 @@ def test_prompt_includes_keywords_after_twenty_five_and_axis_lines_round_trip():
     sc = {"verified": 0, "capture": {"evaluable": 0, "retrieved": 0, "core_hit": 0, "delivered": 0}, "missed": [],
           "axes": [{"term": AXIS, "summary": "", "papers": 2, "recent": 2, "previous": 1, "recent_total": None, "previous_total": None,
                     "missed": {}}]}
+    sc["watch"] = []
+    for axis in sc["axes"]:
+        axis["evidence"] = []
     lines = digest._external_scout_lines({"external_scout": sc})
     assert saved_digest._scout_from_lines(lines) == sc
     with pytest.raises(ValueError):
@@ -750,3 +760,198 @@ def test_same_instant_retry_uses_last_inserted_verdict(tmp_path):
     _save_axis_observation(db, "z-old", "k0", NOW.isoformat())
     _save_axis_observation(db, "a-new", "k0", NOW.isoformat(), verdict="rejected")
     assert es.evidence_for_brief(db, "p", NOW) == []
+
+
+def _adopt_axis(db, now=NOW):
+    return es.run_weekly(db, now, force=True,
+                         scout=lambda *a: _axis_raw({"p": []}, {"p": [{"term": AXIS, "papers": [_axis_paper(0), _axis_paper(1)]}]}),
+                         s2_batch=_axis_official, verify=_axis_verdict)
+
+
+def test_brief_axes_reuse_e_ids_and_shared_counts(tmp_path):
+    """축의 E 번호가 같은 브리프 논문과 다르거나 메일·브리프 편수 및 미포착 규칙이 갈라지면 실패한다."""
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_observations SET gap_stage='not_delivered' WHERE paper_key='2609.22221'")
+    brief = am.build_brief(db, "p", NOW)
+    axes = brief.data["external"]["axes"]
+    assert axes == [{"term": AXIS, "evidence": ["E1", "E2"], "verified_papers": 2, "missed_papers": 1,
+                     "missed_stages": {"not_retrieved": 1}, "watch": {"first_week": "2026-W41", "status": "watching"}}]
+    assert axes[0]["evidence"] == [e["id"] for e in brief.data["external"]["items"]]
+    assert all(AXIS in brief.texts[eid].lower() for eid in axes[0]["evidence"])
+    emerging = es.emerging_axes(db, "p", es.evidence_for_brief(db, "p", NOW), NOW)[0]
+    assert emerging["papers"] == axes[0]["verified_papers"] == 2
+    assert emerging["missed"] == axes[0]["missed_stages"] == {"not_retrieved": 1}
+
+
+def test_axis_mail_evidence_prefers_missed_then_latest_and_limits_two(tmp_path, monkeypatch):
+    """미포착보다 이미 발송 논문을 먼저 고르거나 발표일 순서·최대 두 편·한국어 단계·기존 링크 규칙이 깨지면 실패한다."""
+    db = _axis_world(tmp_path)
+    rows = [{"paper_key": key, "title": title, "abstract": AXIS, "published": date, "axes": [AXIS],
+             "gap_stage": stage, "from_scout": False}
+            for key, title, date, stage in [
+                ("2609.99990", "Captured newest", "2026-10-05", "already_captured"),
+                ("2609.99991", "Missed oldest", "2026-09-01", "not_retrieved"),
+                ("doi:10.1234/new", "Missed newest", "2026-10-01", "no_core_hit"),
+                ("2609.99992", "Missed second", "2026-09-25", "ranked_out"),
+                ("2609.99993", "Wrong term", "2026-10-04", "not_retrieved")]]
+    rows[-1]["abstract"] = "unrelated topic"
+    monkeypatch.setattr(es, "evidence_for_brief", lambda *a: rows)
+    got = es.mail_summary(db, "p", NOW)["axes"][0]
+    assert got["papers"] == 4
+    assert got["evidence"] == [
+        {"title": "Missed newest", "link": "https://doi.org/10.1234/new", "stage": "가져왔으나 핵심어에 안 걸림"},
+        {"title": "Missed second", "link": "https://arxiv.org/abs/2609.99992", "stage": "관련인데 자리에서 밀림"}]
+
+
+def test_watchlist_survives_empty_week_dormancy_and_profile_adoption(tmp_path):
+    """이번 회차가 비어도 지난 채택을 남기고 4주 무근거·핵심어 편입 상태 및 8주 경계를 지키지 못하면 실패한다."""
+    from datetime import timedelta
+    import research_profile
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    expected = {"term": AXIS, "first_week": "2026-W41", "last_evidence_week": "2026-W41", "papers_total": 2,
+                "new_this_week": 0, "status": "watching"}
+    later = NOW + timedelta(days=7)
+    es.run_weekly(db, later, scout=lambda *a: _axis_raw({"p": []}, {}), s2_batch=_axis_official, verify=_axis_verdict)
+    assert es.watchlist(db, "p", later) == [expected]
+    assert es.watched_terms(db, "p", later) == [AXIS]
+    mail = es.mail_summary(db, "p", later)
+    assert mail["axes"] == [] and mail["watch"] == [expected]
+    dormant = NOW + timedelta(days=28)
+    assert es.watchlist(db, "p", dormant) == [{**expected, "status": "dormant"}]
+    assert es.watched_terms(db, "p", dormant) == []
+    research_profile.create_profile(db, "p", "비전", core_topics=["visual-anomaly reasoning"])
+    assert es.watchlist(db, "p", dormant) == [{**expected, "status": "in_profile"}]
+    assert es.mail_summary(db, "p", dormant)["watch"][0]["status"] == "in_profile"
+    assert es.watchlist(db, "p", NOW + timedelta(weeks=8)) == []
+
+
+def test_watch_response_allowlist_and_verification_path(tmp_path):
+    """목록 밖 축을 받거나 추적 근거가 공식 신원·검증을 건너뛰거나 정찰 수집률 분모에 섞이면 실패한다."""
+    from datetime import timedelta
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    now = NOW + timedelta(days=7)
+    prompts, calls, identified = [], [], []
+    def scout(prompt, timeout):
+        prompts.append(prompt)
+        return json.dumps({"profiles": {"p": []}, "watch": {"p": [
+            {"term": AXIS, "papers": [_axis_paper(2), _axis_paper(3), _axis_paper(4)]},
+            {"term": "unknown research direction", "papers": [_axis_paper(5)]}]}})
+    def official(keys):
+        identified.extend(keys)
+        return [{**row, "publicationDate": "2026-10-08"} for row in _axis_official(keys)]
+    def verify(payload, timeout):
+        calls.append(json.loads(payload)["items"])
+        return _axis_verdict(payload, timeout)
+    got = es.run_weekly(db, now, scout=scout, s2_batch=official, verify=verify)
+    assert got["status"] == "done" and got["verify_calls"] == 1
+    assert '"status": "watching"' in prompts[0] and AXIS in prompts[0]
+    assert 'last_scout_at: 2026-10-05T20:00:00+00:00' in prompts[0]
+    assert identified == ["ARXIV:2609.22222", "ARXIV:2609.22223"]
+    assert len(calls) == 1 and len(calls[0]) == 2 and all(e["axes"] == [AXIS] for e in calls[0])
+    with sqlite3.connect(db) as con:
+        rows = con.execute("SELECT evidence_json, gap_stage FROM external_observations WHERE run_id=?", (got["run_id"],)).fetchall()
+    assert all(json.loads(e)["from_scout"] is False for e, stage in rows)
+    assert all(stage == "not_yet_evaluable" for e, stage in rows)
+    assert json.loads(got["capture_json"])["p"]["evaluable"] == 0
+    assert es.watchlist(db, "p", now) == [{"term": AXIS, "first_week": "2026-W41", "last_evidence_week": "2026-W42",
+                                          "papers_total": 4, "new_this_week": 2, "status": "watching"}]
+    assert es.mail_summary(db, "p", now)["watch"] == []  # 이번 연구축으로 이미 표시한다.
+
+
+def test_watched_terms_is_read_only_and_returns_empty_on_errors(tmp_path, monkeypatch):
+    """조회가 DB를 새로 만들거나 초기화하거나 선택적 일일 대조에서 예외를 전파하면 실패한다."""
+    import research_profile
+    missing = tmp_path / "missing.db"
+    assert es.watched_terms(missing, "p", NOW) == [] and not missing.exists()
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    monkeypatch.setattr(research_profile, "init_db", lambda *a: pytest.fail("watch initialized schema"))
+    assert es.watched_terms(db, "p", NOW) == [AXIS]
+    monkeypatch.setattr(es, "watchlist", lambda *a: (_ for _ in ()).throw(RuntimeError("broken")))
+    assert es.watched_terms(db, "p", NOW) == []
+
+
+def test_watch_reobserved_papers_do_not_refresh_new_evidence(tmp_path):
+    """같은 논문 재관측을 새 근거로 세어 휴면을 무한 연장하거나 미래·오프셋 경계를 잘못 다루면 실패한다."""
+    from datetime import timedelta
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    later = NOW + timedelta(weeks=4)
+    _adopt_axis(db, later)
+    assert es.watchlist(db, "p", later) == [{"term": AXIS, "first_week": "2026-W41", "last_evidence_week": "2026-W41",
+                                            "papers_total": 2, "new_this_week": 0, "status": "dormant"}]
+    assert es.watchlist(db, "p", NOW - timedelta(seconds=1)) == []
+    assert es.watchlist(db, "p", NOW.astimezone(timezone(timedelta(hours=9))))[0]["new_this_week"] == 2
+    # 최신 거절은 옛 승인을 복원하지 않지만, 과거 회차의 채택 사실 자체는 남는다.
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_observations SET verified_json=? WHERE discovered_at=? AND paper_key='2609.22221'",
+                    (json.dumps({"verdict": "rejected"}), later.isoformat()))
+    assert es.watchlist(db, "p", later)[0]["papers_total"] == 1
+
+
+def test_watch_cap_covers_new_axes_and_three_watches_per_profile(tmp_path, monkeypatch):
+    """추적 응답이 프로필당 세 축·축당 두 편 상한을 넘거나 옛 24편 검증 상한 때문에 최대 적재를 버리면 실패한다."""
+    db = _axis_world(tmp_path)
+    import research_profile
+    ids = ["p", "q", "r", "s"]
+    terms = ["causal visual reasoning", "sensor fusion planning", "latent action reasoning", "unknown surplus term"]
+    for pid in ids[1:]:
+        research_profile.create_profile(db, pid, pid, core_topics=["defect detection"])
+    monkeypatch.setattr(es, "watchlist", lambda *a: [{"term": term, "status": "watching", "first_week": "2026-W40",
+                                                    "last_evidence_week": "2026-W40", "papers_total": 2, "new_this_week": 0}
+                                                   for term in terms])
+    paper_lists, axes, watches, official = {}, {}, {}, {}
+    for i, pid in enumerate(ids):
+        papers = [{"title": f"Inspection research {pid} {j}", "arxiv_id": f"2610.{i}{j:04d}"} for j in range(17)]
+        paper_lists[pid] = papers[:5]
+        axes[pid] = [{"term": AXIS, "papers": papers[5:8]}, {"term": "causal defect reasoning", "papers": papers[8:11]}]
+        watches[pid] = [{"term": t, "papers": papers[11+2*j:13+2*j]} for j, t in enumerate(terms[:3])]
+        watches[pid].append({"term": terms[3], "papers": [_axis_paper(9)]})
+        for paper in papers:
+            official["ARXIV:" + paper["arxiv_id"]] = {"title": paper["title"], "abstract": AXIS, "publicationDate": "2026-10-01",
+                                                       "externalIds": {"ArXiv": paper["arxiv_id"]}}
+    calls = []
+    def scout(prompt, timeout):
+        assert terms[3] not in prompt
+        return json.dumps({"profiles": paper_lists, "axes": axes, "watch": watches})
+    def verify(payload, timeout):
+        calls.append(json.loads(payload)["items"])
+        return _axis_verdict(payload, timeout)
+    got = es.run_weekly(db, NOW, scout=scout, s2_batch=lambda keys: [official[k] for k in keys], verify=verify)
+    assert got["status"] == "done" and [len(c) for c in calls] == [20, 48]
+    assert all(len(c) == 12 for c in [[e for e in calls[1] if e["profile"]["name"] == name] for name in ["비전", "q", "r", "s"]])
+
+
+def test_watch_keeps_historical_axis_when_rescout_omits_axis_tag(tmp_path):
+    """일반 논문 정찰 재관측에 axes가 없다는 이유로 과거 근거 편수를 지우면 실패한다."""
+    from datetime import timedelta
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    later = NOW + timedelta(days=7)
+    es.run_weekly(db, later, scout=lambda *a: _scout_json({"p": [_axis_paper(0)]}),
+                  s2_batch=_axis_official, verify=_axis_verdict)
+    assert es.watchlist(db, "p", later) == [{"term": AXIS, "first_week": "2026-W41", "last_evidence_week": "2026-W41",
+                                            "papers_total": 2, "new_this_week": 0, "status": "watching"}]
+
+
+def test_watch_rejected_evidence_does_not_accumulate(tmp_path):
+    """추적 목록에 있다는 이유만으로 Claude가 거절한 새 근거를 누적 편수에 넣으면 실패한다."""
+    from datetime import timedelta
+    db = _axis_world(tmp_path)
+    _adopt_axis(db)
+    later = NOW + timedelta(days=7)
+    def reject(payload, timeout):
+        result = _axis_verdict(payload, timeout)
+        for item in result["items"]:
+            item["verdict"] = "rejected"
+        return result
+    got = es.run_weekly(db, later,
+                        scout=lambda *a: json.dumps({"profiles": {}, "watch": {"p": [{"term": AXIS, "papers": [_axis_paper(2)]}]}}),
+                        s2_batch=_axis_official, verify=reject)
+    assert got["verify_calls"] == 1 and got["verified_count"] == 0
+    assert es.watchlist(db, "p", later)[0]["papers_total"] == 2
+    assert es.watchlist(db, "p", later)[0]["new_this_week"] == 0

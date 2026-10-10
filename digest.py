@@ -1517,6 +1517,8 @@ def _external_scout_lines(scan_result: dict) -> list[str]:
             lines.append(f"     {m['link']}")
     for line in _axis_lines(sc.get("axes") or []):
         lines.append(f"   {line}")
+    for line in _watch_lines(sc.get("watch") or []):
+        lines.append(f"   {line}")
     return lines
 
 
@@ -1537,8 +1539,13 @@ def _axis_rows(a: dict) -> list[str]:
     rows.append(f"근거 논문 {a['papers']}편{miss}")
     if isinstance(a.get("recent"), int) and isinstance(a.get("previous"), int):
         total = lambda n: f"/{n}" if isinstance(n, int) else ""
-        rows.append(f"우리 검색 관측: 최근 4주 {a['recent']}{total(a.get('recent_total'))}편 · "
-                    f"직전 4주 {a['previous']}{total(a.get('previous_total'))}편")
+        # 분모가 0 이면 "0편 나왔다"가 아니라 그 창의 후보 기록이 없는 것이다(2026-10-10 실측: 후보 기록이 9/15 부터라 첫 몇 주의 직전 창은 비어 있다).
+        window = lambda n, d: "관측 없음" if d == 0 else f"{n}{total(d)}편"
+        rows.append(f"우리 검색 관측: 최근 4주 {window(a['recent'], a.get('recent_total'))} · "
+                    f"직전 4주 {window(a['previous'], a.get('previous_total'))}")
+    # 대표 근거 논문(2026-10-10 외부 검토: "그래서 어떤 논문이 이 연구축을 뒷받침하나"). 링크는 발송 직전 감사를 다시 거친다.
+    for e in (a.get("evidence") or [])[:2]:
+        rows.append(f"근거: {e['title']} ({e['stage']})" + (f" {e['link']}" if e.get("link") else ""))
     return rows
 
 
@@ -1546,6 +1553,23 @@ def _axis_lines(axes: list[dict]) -> list[str]:
     out = [AXES_HEADING] if axes else []
     for a in axes:
         out += [f"* {a['term']}"] + [f"    {row}" for row in _axis_rows(a)]
+    return out
+
+
+WATCH_HEADING = "외부 정찰이 추적 중인 연구축"
+_WATCH_STATUS = {"watching": "추적 중", "in_profile": "검색어로 채택 — 이제 일일 검색이 본다", "dormant": "4주째 새 근거 없음"}
+
+
+def _watch_row(w: dict) -> str:
+    """추적 목록 한 항목(2026-10-10 사용자 결정: 정찰이 찾은 연구축은 채택되지 않아도 계속 본다). 값은 external_scout.watchlist 가 센 것."""
+    return (f"처음 발견 {w['first_week']} · 누적 근거 {w['papers_total']}편 · 이번 주 새 근거 {w['new_this_week']}편 · "
+            f"{_WATCH_STATUS.get(w['status'], w['status'])}")
+
+
+def _watch_lines(watch: list[dict]) -> list[str]:
+    out = [WATCH_HEADING] if watch else []
+    for w in watch:
+        out += [f"* {w['term']}", f"    {_watch_row(w)}"]
     return out
 
 
@@ -1566,11 +1590,16 @@ def _external_scout_html(scan_result: dict) -> str:
         f'<b>{_esc(a["term"])}</b>'
         + "".join(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(row)}</div>'
                   for row in _axis_rows(a)) + '</div>' for a in sc.get("axes") or [])
+    watch = "".join(
+        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;"><b>{_esc(w["term"])}</b>'
+        f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(_watch_row(w))}</div></div>'
+        for w in sc.get("watch") or [])
     return (_h1("외부 정찰", f"이번 주 검증된 외부 연구 {sc['verified']}편")
             + _block(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;">판정 가능 {c["evaluable"]}편 중 '
                      f'검색 소스가 가져온 것 {c["retrieved"]} · 핵심어에 걸린 것 {c["core_hit"]} · 메일까지 간 것 {c["delivered"]}</div>'
                      + (_h2("에이전트가 놓친 연구") + rows if rows else "")
-                     + (_h2(AXES_HEADING) + axes if axes else "")))
+                     + (_h2(AXES_HEADING) + axes if axes else "")
+                     + (_h2(WATCH_HEADING) + watch if watch else "")))
 
 
 def _profile_changes_view(ch: dict | None) -> dict | None:
@@ -1724,6 +1753,38 @@ def _profile_update_text(scan_result: dict) -> str:
     # 개별 반응 변경의 이유를 다시 풀어 쓰는 계약은 없다. 무엇이 어떻게 바뀌었고 언제부터인지만 말한다.
     feedback = f"{lead}{' · '.join(moves)}{more}로 조정했고 오늘 검색부터 적용했다."
     return f"{parts[0]} {feedback}" if parts else feedback
+
+
+DAILY_LINKS_TITLE = "최근 검색 기준 변화·정찰과 오늘 논문"
+
+
+def _daily_links_texts(scan_result: dict) -> list[str]:
+    """`daily_links.collect` 가 센 **실제 겹침**만 정해진 문장으로(2026-10-10). 인과(키워드 덕분에 찾았다)는 주장하지 않는다 —
+    이전 검색 조건으로 같은 날을 다시 돌려 보지 않았기 때문이다. 겹침이 없으면 빈 목록이고 절도 없다."""
+    links = scan_result.get("daily_links") or {}
+    out = []
+    for a in links.get("added") or []:
+        origin = f"({a['origin']})" if a.get("origin") else ""
+        out.append(f"최근 7일 안에 더해진 검색어 '{a['keyword']}'{origin} — 오늘 핵심 논문 {a['cards']}편에 적중. "
+                   f"이 변경 덕분에 새로 찾은 논문인지는 이전 검색 조건과 비교하지 않았다.")
+    for w in links.get("watched") or []:
+        out.append(f"외부 정찰이 추적 중인 연구축 '{w['term']}' — 오늘 우리 검색 후보 {w['candidates']}편(핵심 논문 {w['cards']}편)의 "
+                   f"제목·초록에 이 용어가 나왔다. 관련 연구인지는 확인하지 않았다. 아직 핵심 키워드는 아니다.")
+    return out
+
+
+def _daily_links_lines(scan_result: dict) -> list[str]:
+    texts = _daily_links_texts(scan_result)
+    return (["", f"■ {DAILY_LINKS_TITLE}"] + [f"   · {t}" for t in texts] + [""]) if texts else []
+
+
+def daily_links_html(texts: list[str]) -> str:
+    """문장 목록에서 바로 그린다 — 형식 수정본이 저장 평문의 문장으로 같은 상자를 다시 그릴 수 있게."""
+    if not texts:
+        return ""
+    rows = "".join(f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.6;margin:3px 0;">· {_esc(t)}</div>'
+                   for t in texts)
+    return _h1(DAILY_LINKS_TITLE) + _block(rows)
 
 
 def _profile_update_lines(scan_result: dict) -> list[str]:
@@ -1935,6 +1996,7 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
         lines += [outage, ""]
     if not empty:
         lines += _narrative_section(scan_result)
+        lines += _daily_links_lines(scan_result)
     if empty:
         # 빈 다이제스트일수록 **왜** 비었는지가 중요하다. 2026-09-01 에 후보
         # 0편 메일이 나갔을 때 사람이 제일 먼저 물은 게 "이게 정상이냐"였고,
@@ -2849,6 +2911,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             + f'{paras}{warn}{named}'
         )
 
+    if not empty:
+        body += daily_links_html(_daily_links_texts(scan_result))
     body += details_body
     weekly = _window_html(scan_result) + _external_scout_html(scan_result) + _profile_changes_html(scan_result)
     if weekly:

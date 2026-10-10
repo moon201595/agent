@@ -344,7 +344,9 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
     # 외부 정찰(2026-09-30) — Claude 가 검증한 외부 연구만. 검증용 글(texts)은 S2 공식 제목·초록이다(정찰이 쓴 문장이 아니다).
     import external_scout
     external, external_ids = [], {}
-    for i, e in enumerate(external_scout.evidence_for_brief(db, profile_id, now), start=1):
+    external_items = external_scout.evidence_for_brief(db, profile_id, now)
+    for i, e in enumerate(external_items, start=1):
+        e["id"] = f"E{i}"
         eid = f"E{i}"
         texts[eid] = f"{e['title']}. {_clip(e['abstract'], ABSTRACT_CHARS)}"
         external_ids[eid] = {"gap_stage": e["gap_stage"]}
@@ -360,7 +362,7 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                     "target_domain": list(profile["target_domain"]), "exclude": list(profile["exclude"])},
         "reactions": reactions, "liked_terms": liked_terms,
         "missed_terms": missed_terms, "missed_papers": missed_papers,
-        "external": {"items": external},
+        "external": {"items": external, "axes": external_scout.brief_axes(db, profile_id, external_items, now)},
     }
     data.update(precision=precision_data, delivered=delivered_data)
     return Brief(data=data, texts=texts, reactions=reaction_ids, keyword_ids=keyword_ids,
@@ -1110,7 +1112,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="주간 관리일 바로 다음 근무일에, 이번 주 주간 관리가 실패했거나 못 돈 프로필만 다시(run_daily_scan.sh 가 부른다)")
     args = ap.parse_args(argv)
     db = Path(args.db)
-    if args.catch_up:
+    if not args.brief_only:
+        # 주말 반응도 정찰·주간 판단에 먼저 넣는다. 일일 재수집은 feedback_events의 event_id로 중복 제거된다.
+        import asyncio
+        import httpx
+
+        async def collect_reactions() -> None:
+            async with httpx.AsyncClient() as client:
+                counts = await feedback_links.sync(db, client)
+                if counts:
+                    print("  [반응] 수집: " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+
+        try:
+            asyncio.run(collect_reactions())
+        except Exception as e:  # 반응 수집 실패가 주간 관리·아침 배달을 막지 않는다.
+            print(f"  [반응] 수집 실패(무시): {type(e).__name__}")
+    if args.catch_up and not args.brief_only:
         targets = catch_up_targets(db)
         if not targets:
             print("  [주간 따라잡기] 할 일 없음")

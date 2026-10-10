@@ -1,7 +1,7 @@
 """② 주간 외부 정찰(External Scout) — 우리 검색 소스 **밖**의 중요한 연구를 찾아, 에이전트가 무엇을 왜 놓쳤는지 잰다(2026-09-30).
 
 흐름(사용자 결정 2026-09-30, 무인):
-  GPT 정찰(Codex, 웹검색 켬, 4개 프로필 한 번) → Python 정규화(신원·중복·링크·당시 스캔 대조) → Claude 검증(도구 없음, 한 번)
+  GPT 정찰(Codex, 웹검색 켬, 4개 프로필 한 번) → Python 정규화(신원·중복·링크·당시 스캔 대조) → Claude 검증(도구 없음, 논문 정찰·축 근거 별도)
   → 검증된 사실만 주간 관리 브리프에 `E` 근거로 → 기존 Claude 제안·**GPT(Codex) 최종 판정** → `agent_maintenance.validate` → 적용.
 
 역할을 나누는 이유:
@@ -11,7 +11,7 @@
 - 주간 관리가 키워드를 검증할 때 쓰는 글은 **정찰이 쓴 문장이 아니라** Python 이 S2 에서 받은 공식 제목·초록이다 — 정찰이 용어를 끼워 넣지 못한다.
 - "놓쳤다"는 **발견 시점 직전 스캔의 관측**으로 판정한다(시점 누수 방지). 그 뒤에 나온 논문은 잡을 기회가 없었으므로 `not_yet_evaluable`.
 
-호출: 정찰 1회 + 검증 1회 / 주. Gemini 는 쓰지 않는다(일일 요약 몫). 무엇이 실패해도 주간 관리·일일 메일은 그대로 돈다(규칙 6).
+호출: 정찰 1회 + 검증 최대 2회 / 주. Gemini 는 쓰지 않는다(일일 요약 몫). 무엇이 실패해도 주간 관리·일일 메일은 그대로 돈다(규칙 6).
 """
 from __future__ import annotations
 
@@ -30,15 +30,21 @@ from typing import Callable
 
 SCOUT_TIMEOUT_S = 480            # 웹검색 4개 프로필 한 번. 실측 전 설정값 — 넘으면 그 주 외부 근거 0건
 VERIFY_TIMEOUT_S = 300
+# 연구축·추적 근거 검증 호출의 상한. 2026-10-10 운영 DB 사본 실측: 정찰 항목 검증 114초, 연구축 근거 검증 54초(약 8초/항목) —
+# 최대 적재 48항목이면 300초를 넘는다. 넘으면 그 묶음 근거가 통째로 빠지므로 이 호출만 480초로 둔다(월요일 체인 최악 +180초).
+AXIS_VERIFY_TIMEOUT_S = 480
 PERF_BUDGET_S = 60.0             # 벤치마크 주장 표 검증(arXiv HTML) 전체 상한
 MAX_PER_PROFILE = 5              # 입력 품질 상한(프로필 변경 개수 상한이 아니다)
 MAX_VERIFY = 20                  # 논문 정찰 항목 검증 상한(4프로필 × 5) — 한 번의 Claude 호출
-MAX_VERIFY_AXES = 24             # 연구축 근거로만 들어온 항목의 검증 상한(4프로필 × 연구축 2 × 근거 3) — 따로 한 번 더 부른다(2026-10-08)
+MAX_VERIFY_AXES = 48             # 4프로필 × (신규 축 2×3 + 추적 축 3×2). axis_verify 한 호출에 함께 넣고 초과는 partial이다.
+# 48편·120,000자가 300초 안에 끝나는지는 미실측이다. 논문 정찰 호출과 실패 격리는 유지한다.
+MAX_WATCH = 3
+MAX_WATCH_PAPERS = 2
 MAX_VERIFY_CHARS = 120_000      # 직렬화한 검증 입력 상한이다. 300초 내 완료 보장은 실측 전이다.
 MAX_AXES = 2                     # 프로필당 떠오르는 연구축 상한
 AXIS_MIN_PAPERS = 2              # 연구축 하나를 받으려면 그 용어가 공식 제목·초록에 그대로 있는 서로 다른 근거 논문 2편 이상
 AXIS_MAX_PAPERS = 3
-AXIS_WINDOW_DAYS = 28            # "요즘 뜨는가" 를 우리 후보 안에서 셀 때 최근 창과 직전 창의 길이
+AXIS_WINDOW_DAYS = 28            # 우리 검색에 처음 들어온 후보 편수를 셀 때 최근 창과 직전 창의 길이
 CLIP = {"title": 300, "venue": 120, "contribution": 400, "change_from_prior": 400, "manufacturing_use": 300, "published": 20}
 SOURCE_TYPES = ("conference", "journal", "arxiv", "openreview", "report", "leaderboard", "repository", "model_hub", "other")
 MISSED_STAGES = ("not_retrieved", "no_core_hit", "ranked_out")
@@ -79,7 +85,7 @@ def week_of(now: datetime) -> str:
 
 
 # ── ① 정찰(GPT = 헤드리스 Codex, 웹검색만) ─────────────────────────────────────
-def scout_prompt(profiles: list[dict], now: datetime) -> str:
+def scout_prompt(profiles: list[dict], now: datetime, watches: dict | None = None) -> str:
     """공개 정보만 넣는다 — 프로필 이름·핵심 키워드·대상 분야(관심 키워드는 LLM 입력 허용 목록, AGENTS.md). 반응 원문·수신자는 넣지 않는다."""
     since = (now - timedelta(days=60)).date().isoformat()
     axis_since = (now - timedelta(days=183)).date().isoformat()
@@ -89,6 +95,8 @@ def scout_prompt(profiles: list[dict], now: datetime) -> str:
         # 키워드 안의 논문을 다시 찾을 뿐 새 연구축을 못 찾는다).
         lines.append(f"- profile_id={p['id']} | name={p['name']} | already covered keywords: {', '.join(p['core'])}"
                      + (f" | target domain: {', '.join(p['domain'][:10])}" if p["domain"] else ""))
+        lines.append("  last_scout_at: " + str(p.get("last_scout_at")))
+        lines.append("  watch: " + json.dumps((watches or {}).get(p["id"], []), ensure_ascii=False))
     template = (Path(__file__).resolve().parent / "prompts" / "external_scout_v1.md").read_text(encoding="utf-8")
     return template.format(max_per_profile=MAX_PER_PROFILE, since=since, source_types=", ".join(SOURCE_TYPES),
                            max_axes=MAX_AXES, axis_since=axis_since, axis_min=AXIS_MIN_PAPERS,
@@ -137,6 +145,14 @@ def sanitize(raw: str, profile_ids: list[str]) -> dict[str, list[dict]]:
     return out
 
 
+def _evidence_paper(it: object) -> dict | None:
+    """연구축·추적 근거 논문. 튜토리얼·워크숍 소개 같은 비연구 글은 연구축이 있다는 근거가 아니다 — 일일 선별과 같은 규칙으로 뺀다
+    (2026-10-10 운영 DB 사본 실측: "semantic communication" 근거 3편 중 하나가 "A Tutorial on …" 이었다)."""
+    import selection
+    c = _clean_item(it)
+    return c if c and not selection.non_research_title(c["title"]) else None
+
+
 def _clean_item(it: object) -> dict | None:
     """정찰 항목 하나 → 화이트리스트 필드만, 길이 자르고 식별자 정규화. 제목이 없으면 None."""
     if not isinstance(it, dict):
@@ -171,6 +187,26 @@ def _covered(term: str, keywords: list[str]) -> bool:
     return any((k := f" {am._norm_term(kw)} ").strip() and (k in t or t in k) for kw in keywords)
 
 
+# 연구축 용어의 가장자리 검사(2026-10-10). term_hygiene 의 가장자리 목록은 n-gram 조각("model training")을 막으려고 "training" 도 담는데,
+# 정찰이 고른 정식 방법 이름 "Test-Time Training" 까지 막았다(운영 DB 사본 실측 — 로봇 프로필 연구축이 이 때문에 빠졌다). 그 낱말만 풀고
+# **나머지 검사(잡음·상투 구절·상투 낱말)는 원래 순서대로 다 돈다** — 첫 수정은 가장자리에 걸리면 뒤 검사를 건너뛰어 "our method" 등을 통과시켰다
+# (Codex 독립 검토 P2).
+_AXIS_EDGE_ALLOWED = frozenset({"training"})
+
+
+def _axis_term_rejected(words: list[str]) -> bool:
+    import term_hygiene as th
+    if any(w.startswith("-") or w.endswith("-") for w in words):
+        return True
+    norm = th.norm_tokens(words)
+    if any(t in th.HARD_NOISE for t in norm):
+        return True
+    edges = {words[0].lower(), words[-1].lower()}
+    if any(e in th.EDGE_STOP and e not in _AXIS_EDGE_ALLOWED for e in edges):
+        return True
+    return bool(th._has_phrase(norm) or any(t in th.BOILERPLATE_WORDS for t in norm))
+
+
 def sanitize_axes(raw: str, profiles: list[dict]) -> dict[str, list[dict]]:
     """정찰이 준 "떠오르는 연구축"(2026-10-08) → 프로필별 [{term, summary, papers}]. Python 이 먼저 거른다:
     이미 보는 키워드와 겹치거나, 우산어·상투 구절이거나, 너무 길거나, 근거 논문이 2편 미만이면 버린다. JSON 이 아니면 빈 dict —
@@ -193,7 +229,7 @@ def sanitize_axes(raw: str, profiles: list[dict]) -> dict[str, list[dict]]:
             term = " ".join(ax["term"].split())
             words = term.lower().split()
             if (not (2 <= len(words) <= 5) or len(term) > am.MAX_TERM_CHARS or term_hygiene.is_umbrella(term)
-                    or term_hygiene.reject_reason(words) or _covered(term, p["core"] + p.get("exclude", []))):
+                    or _axis_term_rejected(words) or _covered(term, p["core"] + p.get("exclude", []))):
                 continue
             summary = " ".join(str(ax.get("summary_ko") or "").split())[:80]
             try:
@@ -205,10 +241,36 @@ def sanitize_axes(raw: str, profiles: list[dict]) -> dict[str, list[dict]]:
             raw_papers = ax.get("papers")
             if not isinstance(raw_papers, list):
                 continue
-            papers = [c for c in (_clean_item(x) for x in raw_papers[:AXIS_MAX_PAPERS]) if c]
+            papers = [c for c in (_evidence_paper(x) for x in raw_papers[:AXIS_MAX_PAPERS]) if c]
             if len(papers) >= AXIS_MIN_PAPERS:
                 clean.append({"term": term, "summary": summary, "papers": papers})
         out[p["id"]] = clean
+    return out
+
+
+def sanitize_watch(raw: str, watches: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """추적 목록 밖 용어로 검증 예산을 쓰지 않으며 축당 새 근거 두 편만 받는다."""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    try:
+        data = json.loads(m.group(0)).get("watch") if m else None
+    except (ValueError, AttributeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for pid, watched in watches.items():
+        allowed = {w["term"] for w in watched}
+        rows = data.get(pid)
+        clean = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not isinstance(row.get("term"), str) or row["term"] not in allowed:
+                continue
+            term = row["term"]
+            if term in clean or not isinstance(row.get("papers"), list):
+                continue
+            clean[term] = {"term": term, "summary": "", "papers": [c for x in row["papers"][:MAX_WATCH_PAPERS]
+                                                                       if (c := _evidence_paper(x))]}
+        out[pid] = list(clean.values())
     return out
 
 
@@ -558,13 +620,21 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
     try:
         profiles = _profiles(db)
         ids = [p["id"] for p in profiles]
+        with sqlite3.connect(db) as con:
+            previous_scout = con.execute("SELECT started_at FROM external_scout_runs WHERE run_id!=? "
+                                         "AND julianday(started_at)<=julianday(?) ORDER BY julianday(started_at) DESC, rowid DESC LIMIT 1",
+                                         (run_id, now.isoformat())).fetchone()
+        for profile in profiles:
+            profile["last_scout_at"] = previous_scout[0] if previous_scout else None
+        watches = {pid: [w for w in watchlist(db, pid, now) if w["status"] != "in_profile"][:MAX_WATCH] for pid in ids}
         try:
             scout_calls = 1
-            raw = (scout or _run_codex_scout)(scout_prompt(profiles, now), SCOUT_TIMEOUT_S)
+            raw = (scout or _run_codex_scout)(scout_prompt(profiles, now, watches), SCOUT_TIMEOUT_S)
             found = sanitize(raw, ids)
         except Exception as error:  # noqa: BLE001
             return finish("failed", scout_calls=1, error=f"scout:{getattr(error, 'code', None) or type(error).__name__}")
         axes = sanitize_axes(raw, profiles)
+        watched = sanitize_watch(raw, watches)
         items: list[dict] = []
         for pid, lst in found.items():
             seen: dict[str, dict] = {}
@@ -576,7 +646,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
                 items.append(seen[key])
             # 떠오르는 연구축의 근거 논문도 같은 신원·놓침·검증 경로를 탄다. 이미 정찰 항목으로 있는 논문이면 그 항목에 연구축만 붙인다.
             # 근거 논문만으로 들어온 항목(from_scout=False)은 "외부 정찰 대비 수집률"에서 뺀다 — 정의가 바뀌면 주별 추이를 못 견준다.
-            for ax in axes.get(pid, []):
+            for ax in axes.get(pid, []) + watched.get(pid, []):
                 for paper in ax["papers"]:
                     key = paper.get("arxiv_id") or paper.get("doi") or _norm_title(paper["title"])
                     if key not in seen:
@@ -598,7 +668,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
             else:
                 it["gap_stage"], it["last_scan"] = "not_yet_evaluable", None
         # 검증은 두 번 부른다(2026-10-08 외부 검토 "근거 검증 예산과 기존 정찰 예산의 충돌"): 논문 정찰 항목과, 연구축 근거로만 들어온 항목.
-        # 한 번에 보내면 최대 44항목이 300초 한 호출을 넘어 그 주 검증이 통째로 사라질 수 있다 — 나누면 연구축 쪽이 실패해도 논문 정찰은 남는다.
+        # 한 번에 보내면 최대 68항목이 300초 한 호출을 넘어 그 주 검증이 통째로 사라질 수 있다 — 나누면 연구축 쪽이 실패해도 논문 정찰은 남는다.
         verified_items = [it for it in items if it["identity"] == "verified"]
         unresolved = any(it["identity"] != "verified" and (it.get("arxiv_id") or it.get("doi")) for it in items)
         # 신원 조회가 실패해 확인 못 한 항목이 있으면 "done" 이 아니다 — 사실대로 partial(실측: S2 429 인데 done 으로 적혔다).
@@ -627,7 +697,8 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
             sent_any = True
             try:
                 verify_calls += 1
-                apply_verdicts(batch, (verify or _run_claude_verify)(json.dumps(payload, ensure_ascii=False), VERIFY_TIMEOUT_S))
+                apply_verdicts(batch, (verify or _run_claude_verify)(json.dumps(payload, ensure_ascii=False),
+                                                                     VERIFY_TIMEOUT_S if label == "verify" else AXIS_VERIFY_TIMEOUT_S))
                 if any(it.get("verified", {}).get("verdict") == "missing" for it in batch):
                     problems.append(f"{label}:missing")
             except Exception as error_:  # noqa: BLE001 — 검증이 없으면 그 묶음의 외부 근거를 쓰지 않는다
@@ -669,16 +740,17 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
     공식 제목·초록, 놓친 단계, 후보 용어(공식 글에 있는 것), 출처 종류만."""
     since = (now - timedelta(days=days)).isoformat()
     try:
-        with sqlite3.connect(db) as con:
+        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
             rows = con.execute("SELECT observation_id, paper_key, title, source_type, published_at, gap_stage, evidence_json, verified_json, run_id "
                                "FROM external_observations WHERE profile_id=? AND julianday(discovered_at)>julianday(?) AND julianday(discovered_at)<=julianday(?) "
                                "ORDER BY julianday(discovered_at) DESC, rowid DESC", (profile_id, since, now.isoformat())).fetchall()
     except sqlite3.Error:
         return []
-    out, seen = [], set()
     latest_run = rows[0][-1] if rows else None
     try:
-        with sqlite3.connect(db) as con:
+        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
             run = con.execute("SELECT run_id FROM external_scout_runs WHERE julianday(started_at)>julianday(?) "
                               "AND julianday(started_at)<=julianday(?) ORDER BY julianday(started_at) DESC, rowid DESC LIMIT 1",
                               (since, now.isoformat())).fetchone()
@@ -686,7 +758,14 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
             latest_run = run[0]  # 최신 회차가 빈 결과여도 지난 회차 연구축을 되살리지 않는다.
     except sqlite3.Error:
         pass
-    for oid, key, title, stype, pub, stage, ev_json, v_json, run_id in rows:
+    return _observation_items(rows, latest_run)
+
+
+def _observation_items(rows: list, latest_run: str | None = None) -> list[dict]:
+    """최신 거절이 옛 승인을 되살리지 않도록 판정 전에 같은 논문을 제거한다."""
+    out, seen = [], set()
+    for row in rows:
+        oid, key, title, stype, pub, stage, ev_json, v_json, run_id = row[:9]
         try:
             v = json.loads(v_json or "{}")
             ev = json.loads(ev_json or "{}")
@@ -706,9 +785,119 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
                     "venue": official.get("venue") or "", "source_type": stype, "published": official.get("published") or "", "gap_stage": stage,
                     "manufacturing_relation": v.get("manufacturing_relation"), "candidate_terms": v.get("candidate_terms") or [],
                     "performance_verified": ev.get("performance_verified"), "from_scout": ev.get("from_scout", True),
-                    "axes": (ev.get("axes") or []) if run_id == latest_run else [],
-                    "axis_summaries": ev.get("axis_summaries") or {}})
+                    "axes": (ev.get("axes") or []) if latest_run is None or run_id == latest_run else [],
+                    "axis_summaries": ev.get("axis_summaries") or {}, "_aliases": sorted(aliases), **({"_observed_at": row[9]} if len(row) > 9 else {})})
     return out
+
+
+def _axis_groups(items: list[dict], now: datetime, minimum: int = AXIS_MIN_PAPERS) -> list[dict]:
+    """브리프·메일·추적의 근거를 같은 공식 글·발표일·논문 신원 규칙으로 센다."""
+    import agent_maintenance as am
+    groups = {}
+    now = now.astimezone(timezone.utc)
+    for e in items:
+        try:
+            published = datetime.fromisoformat(e.get("published") or "").date()
+        except (ValueError, TypeError):
+            continue
+        observed = datetime.fromisoformat(e["_observed_at"]).astimezone(timezone.utc) if e.get("_observed_at") else now
+        if not (observed.date() - timedelta(days=183) <= published <= observed.date()):
+            continue
+        for term in e.get("axes") or []:
+            if not isinstance(term, str) or not am._in_text(term, f"{e['title']}. {e.get('abstract') or ''}"):
+                continue
+            g = groups.setdefault(term, {"term": term, "summary": "", "items": [], "missed": {}, "seen": set()})
+            aliases = set(e.get("_aliases") or []) or {e.get("paper_key") or "title:" + _norm_title(e["title"])}
+            duplicate = bool(g["seen"] & aliases)
+            g["seen"].update(aliases)
+            if duplicate:
+                continue
+            g["items"].append(e)
+            if e.get("gap_stage") in MISSED_STAGES:
+                stage = e["gap_stage"]
+                g["missed"][stage] = g["missed"].get(stage, 0) + 1
+            summary = (e.get("axis_summaries") or {}).get(term) or ""
+            if not g["summary"] and not _JUDGMENT_RE.search(summary):
+                g["summary"] = summary
+    return sorted((g for g in groups.values() if len(g["items"]) >= minimum),
+                  key=lambda g: (-len(g["items"]), g["term"]))
+
+
+def brief_axes(db: Path, profile_id: str, items: list[dict], now: datetime) -> list[dict]:
+    """E 번호는 호출자가 붙인 같은 브리프 번호를 써 검증 문장과 편수가 어긋나지 않는다."""
+    watches = {w["term"]: w for w in watchlist(db, profile_id, now)}
+    return [{"term": g["term"], "evidence": [e["id"] for e in g["items"]],
+             "verified_papers": len(g["items"]), "missed_papers": sum(g["missed"].values()),
+             "missed_stages": g["missed"],
+             "watch": {k: watches.get(g["term"], {"first_week": week_of(now), "status": "watching"})[k]
+                       for k in ("first_week", "status")}}
+            for g in _axis_groups(items, now)]
+
+
+def watchlist(db: Path, profile_id: str, now: datetime, weeks: int = 8) -> list[dict]:
+    """주간 키워드 채택과 별개로 회차별 확인된 축을 보존한다. 조회만 하며 스키마를 만들지 않는다."""
+    now = now.astimezone(timezone.utc)
+    since = now - timedelta(weeks=weeks)
+    try:
+        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
+            rows = con.execute("SELECT observation_id, paper_key, title, source_type, published_at, gap_stage, evidence_json, "
+                               "verified_json, run_id, discovered_at FROM external_observations WHERE profile_id=? "
+                               "AND julianday(discovered_at)>julianday(?) AND julianday(discovered_at)<=julianday(?) "
+                               "ORDER BY julianday(discovered_at) DESC, rowid DESC",
+                               (profile_id, since.isoformat(), now.isoformat())).fetchall()
+        if not rows:
+            return []
+        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
+            core = [r[0] for r in con.execute("SELECT keyword FROM profile_keywords WHERE profile_id=? AND kind='core'",
+                                             (profile_id,))]
+    except sqlite3.Error:
+        return []
+    runs = {}
+    for row in rows:
+        runs.setdefault(row[8], []).append(row)
+    adopted, first_seen = {}, {}
+    # 과거 회차의 채택 여부는 그때의 공식 날짜와 근거로 판단한다. 같은 주 재시도도 독립 회차다.
+    for run_rows in reversed(list(runs.values())):
+        when = datetime.fromisoformat(run_rows[0][-1]).astimezone(timezone.utc)
+        items = _observation_items([r[:-1] for r in run_rows])
+        for g in _axis_groups(items, when, minimum=1):
+            term = g["term"]
+            if len(g["items"]) >= AXIS_MIN_PAPERS:
+                adopted.setdefault(term, when)
+            for e in g["items"]:
+                for alias in e["_aliases"]:
+                    first_seen.setdefault((term, alias), when)
+    # 누적 편수도 최신 관측 우선이다. 최신 거절·미검증을 옛 승인으로 채우지 않는다.
+    latest = _observation_items(rows)
+    historical_items = []
+    for e in latest:
+        for term in adopted:
+            dates = [first_seen[(term, a)] for a in e["_aliases"] if (term, a) in first_seen]
+            if dates:
+                # 나중 논문 정찰이 축 표시 없이 재관측해도 근거 연결은 남는다. 최신 공식 글·판정은 그대로 대조한다.
+                historical_items.append({**e, "axes": [term], "_observed_at": min(dates).isoformat()})
+    current = {g["term"]: g for g in _axis_groups(historical_items, now, minimum=1)}
+    result = []
+    for term, first in adopted.items():
+        evidence_times = [min(first_seen[(term, a)] for a in e["_aliases"] if (term, a) in first_seen)
+                          for e in current.get(term, {}).get("items", [])]
+        last = max(evidence_times, default=first)
+        status = ("in_profile" if _covered(term, core) else
+                  "dormant" if last <= now - timedelta(weeks=4) else "watching")
+        result.append({"term": term, "first_week": week_of(first), "last_evidence_week": week_of(last),
+                       "papers_total": len(evidence_times), "new_this_week": sum(week_of(t) == week_of(now) for t in evidence_times),
+                       "status": status})
+    return sorted(result, key=lambda w: (w["first_week"], w["term"]))
+
+
+def watched_terms(db: Path, profile_id: str, now: datetime) -> list[str]:
+    """일일 검색의 선택적 대조가 저장소 오류 때문에 배달을 막지 않는다."""
+    try:
+        return [w["term"] for w in watchlist(db, profile_id, now) if w["status"] == "watching"]
+    except Exception:
+        return []
 
 
 def emerging_axes(db: Path, profile_id: str, items: list[dict], now: datetime) -> list[dict]:
@@ -716,32 +905,9 @@ def emerging_axes(db: Path, profile_id: str, items: list[dict], now: datetime) -
     **그 용어가 공식 제목·초록에 그대로 있는** 것이 2편 이상. 떠오르는 연구축인지의 판단은 에이전트 몫이다.
     Python 편수는 최근 28일과 그 전 28일에 우리 검색에 처음 들어온 후보 중 해당 용어가 있는 수이며 분야 전체의 인기도가 아니다."""
     import agent_maintenance as am
-    import collections
-    papers: dict[str, set[str]] = {}
-    summaries: dict[str, str] = {}
-    misses: dict[str, collections.Counter] = {}
-    for e in items:
-        text = f"{e['title']}. {e.get('abstract') or ''}"
-        try:
-            published = datetime.fromisoformat(e.get("published") or "").date()
-        except (ValueError, TypeError):
-            continue
-        if not (now.date() - timedelta(days=183) <= published <= now.date()):
-            continue
-        for term in e.get("axes") or []:
-            if am._in_text(term, text):
-                key = e["paper_key"] or e["title"]
-                if key not in papers.setdefault(term, set()):
-                    papers[term].add(key)
-                    if e.get("gap_stage") in MISSED_STAGES:
-                        misses.setdefault(term, collections.Counter())[e["gap_stage"]] += 1
-                # 정찰 설명은 한 줄 정의만 싣는다 — 판정어(추천·유망·주목 …)가 섞이면 버린다(2026-10-08 Codex 검토: 자유 글에 점수·추천이 들어갈 수 있다).
-                text_ko = (e.get("axis_summaries") or {}).get(term) or ""
-                summaries.setdefault(term, "" if _JUDGMENT_RE.search(text_ko) else text_ko)
     out = []
-    for term, keys in papers.items():
-        if len(keys) < AXIS_MIN_PAPERS:
-            continue
+    for group in _axis_groups(items, now):
+        term = group["term"]
         recent = previous = recent_total = previous_total = None
         try:
             with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
@@ -758,9 +924,9 @@ def emerging_axes(db: Path, profile_id: str, items: list[dict], now: datetime) -
             previous_total = len(rows) - recent_total
         except sqlite3.Error:
             pass
-        out.append({"term": term, "summary": summaries.get(term, ""), "papers": len(keys), "recent": recent, "previous": previous,
+        out.append({"term": term, "summary": group["summary"], "papers": len(group["items"]), "recent": recent, "previous": previous,
                     "recent_total": recent_total, "previous_total": previous_total,
-                    "missed": {k: misses.get(term, {}).get(k, 0) for k in MISSED_STAGES if misses.get(term, {}).get(k)}})
+                    "missed": group["missed"]})
     return sorted(out, key=lambda a: (-a["papers"], a["term"]))
 
 
@@ -777,13 +943,23 @@ def mail_summary(db: Path, profile_id: str, now: datetime, days: int = 7) -> dic
     """이번 주 이 프로필의 외부 정찰 요약 — capture 세 수치와 **놓친 검증 연구** 목록(최대 5편, 공식 제목·링크). 없으면 None.
     정찰의 평가·순위는 싣지 않는다. 링크는 발송 직전 감사(`link_policy.audit_mail`)를 한 번 더 거친다."""
     items = evidence_for_brief(db, profile_id, now, days)
-    if not items:
+    watches = watchlist(db, profile_id, now)
+    if not items and not watches:
         return None
     scouted = [e for e in items if e.get("from_scout", True)]
     missed = [e for e in scouted if e["gap_stage"] in MISSED_STAGES]
     link = lambda e: (f"https://arxiv.org/abs/{e['paper_key']}" if e["paper_key"] and not e["paper_key"].startswith("doi:")
                       else f"https://doi.org/{e['paper_key'][4:]}" if e["paper_key"] else "")
+    groups = {g["term"]: g for g in _axis_groups(items, now)}
+    axes = emerging_axes(db, profile_id, items, now)
+    for axis in axes:
+        # 미포착 근거를 먼저, 같은 단계군에서는 공식 발표일이 최신인 두 편을 보여준다.
+        evidence = sorted(groups[axis["term"]]["items"], key=lambda e: e["published"], reverse=True)
+        evidence.sort(key=lambda e: e["gap_stage"] not in MISSED_STAGES)
+        axis["evidence"] = [{"title": e["title"], "link": link(e), "stage": STAGE_LABELS.get(e["gap_stage"], e["gap_stage"])}
+                            for e in evidence[:2]]
     return {"capture": capture_summary([e["gap_stage"] for e in scouted]), "verified": len(scouted),
-            "axes": emerging_axes(db, profile_id, items, now),
+            "axes": axes,
+            "watch": [w for w in watches if w["term"] not in groups],
             "missed": [{"title": e["title"], "venue": e["venue"], "stage": STAGE_LABELS.get(e["gap_stage"], e["gap_stage"]),
                         "link": link(e)} for e in missed[:5]]}

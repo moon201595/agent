@@ -47,15 +47,21 @@ def context(records: dict[str, dict]) -> str:
     """과거의 P번호는 오늘과 충돌하므로 후보의 H번호만 준다."""
     if not records:
         return ""
-    blocks = [f"[{key}] {r['reader_date']}\n연구 문제: {r['name'] or '(이름 없음)'}\n관측 요지: {r['body']}"
+    # "그날의 해석"은 그날 모델이 쓴 글이고 "그날 논문"이 실제 관측이다(2026-10-10) — 둘을 갈라 줘야 다음 날 모델이 지난 해석을 사실처럼
+    # 되풀이해 흐름을 키우지 않는다(외부 검토의 자기 강화 지적).
+    blocks = [f"[{key}] {r['reader_date']}\n연구 문제: {r['name'] or '(이름 없음)'}\n"
+              + (f"그날 논문: {' / '.join(r['titles'])}\n" if r.get("titles") else "")
+              + f"그날의 해석(근거 아님): {r['body']}"
               for key, r in records.items()]
     return ("\n\n--- 저장된 지난 연구 흐름(H번호만 참조) ---\n" + "\n\n".join(blocks)
             + "\n--- 여기까지가 지난 관측이다 ---\n")
 
 
-def display(history: dict) -> str:
-    """날짜·흐름 이름은 원본 관측에서 붙인다. 의미 관계는 모델의 해석이다."""
+def display(history: dict, follow_up: bool = False) -> str:
+    """날짜·흐름 이름은 원본 관측에서 붙인다. 의미 관계는 모델의 해석이다. 오늘 1편짜리 후속이면 그렇다고 적는다 —
+    여러 편의 공통 흐름으로 읽히면 안 된다(2026-10-10)."""
     source = history["source"]
     name = f" · {source['name']}" if source.get("name") else ""
-    return (f"{HISTORY_PREFIX}{source['reader_date']}{name} · {RELATIONS[history['relation']]} — "
+    single = " · 오늘 1편의 후속 관측" if follow_up else ""
+    return (f"{HISTORY_PREFIX}{source['reader_date']}{name} · {RELATIONS[history['relation']]}{single} — "
             f"{history['note']} (해석)")

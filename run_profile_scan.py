@@ -402,6 +402,20 @@ async def scan_and_digest(
             print(f"  [주간] 외부 정찰 요약 실패(무시): {type(e).__name__}")
 
 
+    # 이번 주 검색 기준 변화·정찰 추적과 오늘 논문의 **실제 겹침**(2026-10-10 — 결정적 집계, 동향 서술 모델에는 넣지 않는다).
+    if profile and result.get("papers"):
+        try:
+            import daily_links
+            import external_scout
+            watched = external_scout.watched_terms(db_path, profile_id, datetime.now(timezone.utc)) \
+                if hasattr(external_scout, "watched_terms") else []
+            links = daily_links.collect(db_path, profile_id, result.get("scan_id"), list(result["papers"]),
+                                        datetime.now(timezone.utc), watched)
+            if links:
+                result["daily_links"] = links
+        except Exception as e:  # noqa: BLE001 — 부가 절이다
+            print(f"  [연결] 검색 기준·정찰 겹침 집계 실패(무시): {type(e).__name__}")
+
     if profile and result.get("papers"):
         try:
             shown = list(result["papers"]) + list(result.get("title_only_papers") or [])
