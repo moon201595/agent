@@ -6,6 +6,7 @@ send_digest_email()은 engine.ENV(=.env)에서 계정을 읽으므로, 테스트
 가짜로 바꿔서 실제 네트워크 연결은 절대 안 나간다."""
 
 import smtplib
+import ssl
 
 import pytest
 
@@ -53,8 +54,9 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-        def starttls(self):
+        def starttls(self, context=None):
             calls["starttls"] = True
+            calls["tls_context"] = context
 
         def login(self, user, password):
             calls["login"] = (user, password)
@@ -70,6 +72,12 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     assert calls["host"] == email_delivery.SMTP_HOST
     assert calls["port"] == email_delivery.SMTP_PORT
     assert calls["starttls"] is True
+    # 인증서·호스트 이름을 확인하는 컨텍스트로 붙어야 한다 — context 를 빼면 smtplib 기본값은 CERT_NONE 이다.
+    # 이 줄은 email_delivery 가 starttls() 를 인자 없이 부르거나 검증을 끈 컨텍스트를 넘기면 실패한다.
+    ctx = calls["tls_context"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
     assert calls["login"] == ("me@gmail.com", "app-password")
     assert calls["sent_from"] == "me@gmail.com"
     assert calls["sent_to"] == "a@x.com, b@x.com"
@@ -136,7 +144,7 @@ def test_send_strips_spaces_from_app_password(monkeypatch):
         def __init__(self, host, port): pass
         def __enter__(self): return self
         def __exit__(self, *exc): return False
-        def starttls(self): pass
+        def starttls(self, context=None): pass
         def login(self, user, password): seen["password"] = password
         def send_message(self, msg): seen["multipart"] = msg.is_multipart()
 

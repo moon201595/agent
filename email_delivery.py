@@ -27,6 +27,7 @@ GOOGLE_API_KEY/GROQ_API_KEY와 같은 자리) — 코드에 직접 안 적는다
 from __future__ import annotations
 
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 import summarize_engine as engine
@@ -103,7 +104,10 @@ def send_digest_email(
         except Exception:  # noqa: BLE001
             print(f"[링크 감사] {len(blocked)}건을 링크 없이 보냄")
     msg = build_message(digest_text, subject, sender, recipients, digest_html)
+    # STARTTLS 에 인증서 검증 컨텍스트를 명시한다(2026-10-10) — context 없이 부르면 smtplib 이
+    # ssl._create_stdlib_context() 를 써서 CERT_NONE·호스트 이름 미확인으로 붙는다(3.11·3.13 실측).
+    # 그러면 중간자가 아무 인증서나 내밀어도 그 위로 앱 비밀번호를 보낸다 — 암호화는 되지만 상대 확인이 없다.
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(sender, password)
         server.send_message(msg)

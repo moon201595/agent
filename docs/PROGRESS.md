@@ -7735,6 +7735,18 @@ Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 �
       ② 1편 후속의 **본문**은 강화 표현 검사를 안 받았다 → 후속 본문에도 같은 검사. 테스트 1개, 변이 3개 FAILED. 전체 **1,686 passed / 경고 0**. 의미적 타당성(정말 이어지는 연구인지)은
       자동으로 증명할 수 없다 — 연결 문장은 계속 "(해석)"으로 표시하고 실제 메일에서 잘못 이은 사례를 센다. 이 버전이 2026-10-12 운영 기준선이다.
 
+239. **메일 발송 STARTTLS 가 상대 인증서를 확인하지 않았다 — 검증 컨텍스트를 명시** (2026-10-10, 외부 검토 지적 → 코드 확인).
+
+    - **확인**: `email_delivery.send_digest_email` 이 `server.starttls()` 를 인자 없이 불렀다. 이때 smtplib 은 `ssl._create_stdlib_context()` 를 쓰고,
+      그 컨텍스트는 `verify_mode=CERT_NONE`·`check_hostname=False` 다(Python 3.11·3.13 에서 실측. 운영 3.14 는 이 환경에 없어 미실측). 암호화는 되지만
+      상대가 smtp.gmail.com 인지 확인하지 않아, 경로 중간에서 아무 인증서나 내밀면 그 위로 앱 비밀번호와 메일 본문이 나간다.
+    - **수정**: `starttls(context=ssl.create_default_context())` — 시스템 신뢰 저장소로 인증서와 호스트 이름을 확인한다. 실패하면 예외로 발송이 멈춘다
+      (조용히 평문으로 내려가지 않는다). 발송 실패 처리 경로는 그대로다.
+    - **테스트**: 가짜 SMTP 가 받은 컨텍스트가 `SSLContext`·`CERT_REQUIRED`·`check_hostname=True` 인지 본다. 수정 전 코드로 돌리면 이 테스트가 실패하는 것을 확인했다.
+      가짜 SMTP 3곳(`test_email_delivery`·`test_mail_link_audit`)은 `context` 인자를 받도록 시그니처만 맞췄다.
+    - **검증 환경**: 이 클라우드 세션에는 `.venv` 가 없어 Python 3.13 가상환경을 따로 만들었다(3.14 rc2 는 pydantic 과 맞지 않아 수집 단계에서 깨졌다). 전체 **1,678 passed · 5 skipped · 3 failed** —
+      실패 3건은 `test_review_handoff` 의 Streamlit `query_params` 형식 차이로, 이 수정 전 같은 환경에서도 똑같이 실패했다(운영 `.venv` 에서는 §238 기준 1,686 passed). 실제 Gmail 발송은 하지 않았다 — 운영에서 첫 발송 로그로 확인한다.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

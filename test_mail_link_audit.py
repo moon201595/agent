@@ -141,7 +141,7 @@ def test_a_blocked_link_never_stops_the_mail(monkeypatch):
         def __init__(self, host, port): pass
         def __enter__(self): return self
         def __exit__(self, *exc): return False
-        def starttls(self): pass
+        def starttls(self, context=None): pass
         def login(self, user, password): pass
         def send_message(self, msg): sent["msg"] = msg
 
@@ -205,7 +205,7 @@ def test_blocked_log_with_unparseable_url_still_sends(monkeypatch):
         def __init__(self, host, port): pass
         def __enter__(self): return self
         def __exit__(self, *exc): return False
-        def starttls(self): pass
+        def starttls(self, context=None): pass
         def login(self, user, password): pass
         def send_message(self, msg): sent.append(msg)
 
