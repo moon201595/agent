@@ -100,6 +100,18 @@ def _subsumed(term: str, others: set[str]) -> bool:
     return any(term != o and term_hygiene.token_sequence_contains(o, term) for o in others)
 
 
+def _subsumed_terms(terms: set[str]) -> set[str]:
+    """포함 관계를 한 번 색인해 후보 수의 제곱만큼 반복 비교하지 않는다(2026-10-10 운영 브리프 지연)."""
+    normalized = {term: tuple(term_hygiene.norm_tokens(term.split())) for term in terms}
+    owners: dict[tuple[str, ...], set[str]] = {}
+    for term, tokens in normalized.items():
+        for start in range(len(tokens)):
+            for end in range(start + 1, len(tokens) + 1):
+                owners.setdefault(tokens[start:end], set()).add(term)
+    # 정규화가 같은 서로 다른 표기도 기존 _subsumed처럼 서로 포함된 것으로 본다.
+    return {term for term, tokens in normalized.items() if owners.get(tokens, set()) - {term}}
+
+
 def emerging_terms(rows: list[sqlite3.Row], profile: dict,
                    prev_rows: list[sqlite3.Row] | None = None,
                    min_papers: int = 3, top_n: int = 12) -> list[tuple[str, int, int]]:
@@ -124,7 +136,7 @@ def emerging_terms(rows: list[sqlite3.Row], profile: dict,
     now, prev = count(rows), count(prev_rows)
     cand = {g for g, n in now.items()
             if n >= min_papers and not term_hygiene.overlaps_known(g, known)}
-    cand = {g for g in cand if not _subsumed(g, cand)}
+    cand -= _subsumed_terms(cand)
     ranked = sorted(cand, key=lambda g: (-now[g], g))
     return [(g, now[g], prev.get(g, 0)) for g in ranked[:top_n]]
 
@@ -503,7 +515,7 @@ def repair_story(plan: dict, corpus: str, anchors: set[int] | None = None,
     threads: list[dict] = []
     followups: list[tuple[int, dict]] = []
     for raw in plan.get("threads") or []:
-        if len(threads) + len(followups) >= STORY_MAX_THREADS:
+        if len(threads) >= STORY_MAX_THREADS:
             repairs.append("thread_cap")
             break
         listed: list[int] = []

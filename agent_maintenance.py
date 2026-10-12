@@ -930,11 +930,16 @@ def _korean_step(method, payload: str, source: str, engine: str) -> dict:
 
 def run_profile(db: Path, profile_id: str, runner, now: datetime | None = None, force: bool = False) -> dict:
     """한 프로필의 한 주. 어떤 실패도 예외로 올리지 않고 상태로 남긴다."""
-    init_db(db)
     now = now or _now()
     week = week_of(now)
-    if not _reserve(db, profile_id, week, now, force):
-        return {"profile_id": profile_id, "week": week, "status": "already_ran"}
+    try:
+        init_db(db)
+        if not _reserve(db, profile_id, week, now, force):
+            return {"profile_id": profile_id, "week": week, "status": "already_ran"}
+    except Exception as error:
+        # 예약하지 못한 실행은 기존 회차 상태를 덮지 않고 다음 프로필로 넘어간다.
+        return {"profile_id": profile_id, "week": week, "status": "failed",
+                "error": f"reserve:{type(error).__name__}"}
     run_tag = f"weekly-agent {week} {now.isoformat()}"     # 같은 주 --force 재실행과도 구별된다
     try:
         brief = build_brief(db, profile_id, now)
@@ -1134,11 +1139,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"  [주간 따라잡기] 이번 주 미완료 {len(targets)}개 프로필: {', '.join(targets)}")
         # 정찰은 주간 관리의 근거라 다시 돌 프로필이 있을 때만 — 이번 주 정찰이 끝났으면(done·partial) run_weekly 가 스스로 건너뛴다.
-        try:
-            import external_scout
-            print(json.dumps(external_scout.run_weekly(db), ensure_ascii=False))
-        except Exception as e:  # noqa: BLE001
-            print(f"  [외부 정찰] 생략: {type(e).__name__}")
+        if not args.no_scout:
+            try:
+                import external_scout
+                print(json.dumps(external_scout.run_weekly(db), ensure_ascii=False))
+            except Exception as e:  # noqa: BLE001
+                print(f"  [외부 정찰] 생략: {type(e).__name__}")
         results = run_week(db, profile_ids=targets)
         for r in results:
             print(json.dumps(r, ensure_ascii=False))

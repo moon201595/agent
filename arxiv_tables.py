@@ -117,6 +117,9 @@ def _text(node: _Node) -> str:
 def cell_number(text: str) -> float | None:
     """오차·개선량보다 먼저 쓰인 유한 수치를 택하며 방법명 속 숫자는 수치로 보지 않는다."""
     text = text.strip()
+    # 시행 횟수 13/20을 13점으로 읽으면 분모가 사라진다(2026-10-12 Human2Dex).
+    if re.search(r"\d\s*/\s*\d", text):
+        return None
     if text.lower() in _MISSING:
         return None
     match = _NUMBER.search(text)

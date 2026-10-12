@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
+from functools import lru_cache
 import re
 
 # ── 낱말 목록 ────────────────────────────────────────────────────────────
@@ -166,11 +167,15 @@ def is_umbrella(term: str) -> bool:
     return bool(toks) and all(t in GENERIC_WORDS for t in toks)
 
 
-def _tokens(value: str | list[str] | tuple[str, ...]) -> list[str]:
-    """포함 판정용 토큰열을 만든다 — 표시 문자열은 이 정규화 결과로 바꾸지 않는다."""
-    if isinstance(value, str):
-        return norm_tokens(value.split())
-    return norm_tokens(list(value))
+@lru_cache(maxsize=8192)
+def _cached_tokens(words: tuple[str, ...]) -> tuple[str, ...]:
+    """같은 용어의 반복 정규화가 주간 브리프를 지연시켜 불변 결과만 유한 캐시에 둔다(2026-10-10)."""
+    return tuple(norm_tokens(list(words)))
+
+
+def _tokens(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """표시 문자열은 보존하고 호출자가 바꿀 수 없는 판정용 토큰열만 재사용한다."""
+    return _cached_tokens(tuple(value.split()) if isinstance(value, str) else tuple(value))
 
 
 def token_sequence_contains(container: str | list[str] | tuple[str, ...],

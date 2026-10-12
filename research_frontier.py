@@ -58,7 +58,10 @@ def _baselines(results: list[dict], main: dict, method: str = "") -> list[dict]:
     table, _, cell = main["locator"].partition(":r")
     col = cell.partition("c")[2]
     rows = [r for r in results if not r["own"] and r["locator"].partition(":r")[0] == table
-            and r["locator"].partition(":r")[2].partition("c")[2] == col
+            and (r["locator"].partition(":r")[2].partition("c")[0] == cell.partition("c")[0]
+                 and r["model"].rsplit(" / ", 1)[0] == main["model"].rsplit(" / ", 1)[0]
+                 if main.get("orientation") == "transposed" else
+                 r["locator"].partition(":r")[2].partition("c")[2] == col)
             and not re.search(r"(?i)\bours\b|\bproposed\b|\bw/|\bwithout\b", r["model"])
             and not (len(own_key) >= 2 and re.sub(r"[^0-9a-z]", "", r["model"].casefold()).startswith(own_key))]
     if main.get("direction") in ("higher", "lower"):
@@ -113,7 +116,11 @@ def _main_results(own: list[dict], claims: list[dict]) -> list[dict]:
         # 평균 열을 앞세우지 않는다 — 범주별 열은 추출 단계에서 이미 평균만 남고, 앞세우면 뒤쪽 보조 표(능력별 평균)가 주 결과를 밀어낸다
         # (2026-09-30 실측: FIVE-VLA 가 Bench2Drive DS 90.95 대신 "DS / Ability / Mean 78.75" 를 골랐다).
         tno = int(tbl.rsplit("#", 1)[1]) if "#" in tbl else 0
-        return (claimed.index(r["bench_key"]) if r["bench_key"] in claimed else len(claimed), tno, int(col or 0), bool(re.search(r"(?i)\bw/|\bw/o|\bwithout|\bablation|\bvariant", r.get("model", ""))), int(row or 0))
+        # 전치 표는 같은 표 안의 평균 행을 과제 행보다 앞세운다. 표 순서는 바꾸지 않는다.
+        task_row = r.get("orientation") == "transposed" and not pr._MEAN_RE.search(r["metric"].rsplit(" / ", 1)[-1])
+        return (claimed.index(r["bench_key"]) if r["bench_key"] in claimed else len(claimed), tno,
+                bool(task_row), int(col or 0),
+                bool(re.search(r"(?i)\bw/|\bw/o|\bwithout|\bablation|\bvariant", r.get("model", ""))), int(row or 0))
     seen: set[str] = set()
     ranked = sorted(own, key=order)
     out = []
@@ -173,13 +180,13 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
             text, title, published, src = _paper_row(db, aid)
             texts[aid] = text
             claims = paper.get("_sota_claims") or []
-            method = pr.method_name(title or paper.get("title"))
+            method = pr.method_name(title or paper.get("title"), paper.get("abstract") or text[:6000])
             benches = pr.benchmark_candidates(text, claims)
             try:
                 tables = get_tables(aid) if benches else []
             except Exception:
                 tables = None
-            results = pr.table_results(tables, method=method, benchmarks=benches) if tables else []
+            results = pr.table_results(tables, method=method, benchmarks=benches, context=text) if tables else []
             try:
                 if tables is not None:                          # 받았다면(빈 결과 포함) 그 논문 관측을 이번 추출로 바꾼다. 받기 실패면 그대로 둔다
                     frontier_store.record(db, aid, results, published, now)

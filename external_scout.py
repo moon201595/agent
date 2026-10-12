@@ -795,7 +795,11 @@ def _axis_groups(items: list[dict], now: datetime, minimum: int = AXIS_MIN_PAPER
     import agent_maintenance as am
     groups = {}
     now = now.astimezone(timezone.utc)
+    import selection
     for e in items:
+        # 정찰 제목이 축약됐거나 일반 정찰에서 병합돼도 공식 제목으로 같은 제외 규칙을 적용한다.
+        if selection.non_research_title(e.get("title") or ""):
+            continue
         try:
             published = datetime.fromisoformat(e.get("published") or "").date()
         except (ValueError, TypeError):

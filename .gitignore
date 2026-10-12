@@ -34,3 +34,9 @@ docs/DECK_*.md
 # CC BY 인 2609.35059 만 출처를 밝혀 커밋한다. 없으면 실제 값 테스트는 건너뛰고, 구조 계약은 합성 픽스처로 돈다.
 fixtures/arxiv_tables/2609.21424.html
 fixtures/arxiv_tables/2609.18623.html
+# 2026-10-12 추출 보강 발췌: arXiv 기본 라이선스(nonexclusive-distrib)라 재배포하지 않는다 — 로컬 전용, 없으면 해당 테스트는 건너뛴다.
+# CC BY 4.0 인 2610.12861·2610.13058·2610.13105 발췌만 출처를 밝혀 커밋한다.
+fixtures/arxiv_tables/2610.12877-excerpt.html
+fixtures/arxiv_tables/2610.12914-excerpt.html
+fixtures/arxiv_tables/2610.13064-excerpt.html
+fixtures/arxiv_tables/2610.13119-excerpt.html

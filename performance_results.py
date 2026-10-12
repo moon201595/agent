@@ -22,7 +22,7 @@ _METRIC_ABBR = re.compile(
     r"(?<!\w)(AUROC|AUPRO|AUPR|mAP(?:@[\d.:]+)?|AP(?:50|75)?|mIoU|FB-IoU|IoU|F1|PSNR|SSIM|LPIPS|FID|BLEU|ROUGE(?:-[L12])?|EM|"
     r"SR|DS|RC|WER|CER|MRR|nDCG(?:@\d+)?|Dice|PCK|ADE|FDE|EPE|MAE|RMSE|NDS|HOTA|MOTA)(?![\w-])")
 _METRIC_PHRASE = re.compile(
-    r"\b(accuracy|success(?: rates?)?|driving score|route completion|error rates?|collision rates?|top-1|top-5|recall@\d+|pass@\d+|"
+    r"\b(accuracy|solve rates?|success(?: rates?)?|driving score|route completion|error rates?|collision rates?|top-1|top-5|recall@\d+|pass@\d+|"
     r"precision|recall|f1[- ]score|exact match|win rate)\b", re.IGNORECASE)
 # 수치 — 소수 또는 백분율만. 정수는 "Table 1"·"[41]"·연도와 구별이 안 된다.
 _VALUE_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s?%|(?<![\w.])\d+\.\d+(?![\w.%])")   # 백분율을 먼저 — "10.5" 만 잡고 "%" 를 흘리지 않게
@@ -88,10 +88,16 @@ def _about_this_paper(sentence: str, method: str) -> bool:
     return bool(_SELF_RE.search(sentence)) and not _OTHERS_RE.search(sentence)
 
 
-def method_name(title: str | None) -> str:
-    """제목 앞 `FIVE-VLA: …` 의 기법 이름. 없으면 빈 문자열 — 지어내지 않는다."""
+def method_name(title: str | None, opening: str = "") -> str:
+    """제목의 이름을 우선하고 도입부의 직접 제안 토큰만 보충해 일반 제목을 이름으로 만들지 않는다."""
     head = (title or "").split(":", 1)[0].strip()
-    return head if ":" in (title or "") and 2 <= len(head) <= 30 and len(head.split()) <= 3 else ""
+    if ":" in (title or "") and 2 <= len(head) <= 30 and len(head.split()) <= 3:
+        return head
+    # 도입부에서 저자가 직접 제안한 단일 고유 토큰만 받는다. 일반 명사와 여러 제안은 추측하지 않는다.
+    names = re.findall(r"\bwe\s+(?:propose|introduce|present)\s+([A-Za-z][A-Za-z0-9-]{1,29})(?=\s*[,(])",
+                       " ".join(opening[:6000].split()), re.I)
+    names = list(dict.fromkeys(n for n in names if sum(c.isupper() for c in n) >= 2))
+    return names[0] if len(names) == 1 else ""
 
 
 def performance_evidence(text: str, claims: list[dict], source: str, method: str = "") -> list[dict]:
@@ -233,10 +239,81 @@ def benchmark_candidates(text: str, claims: list[dict] | None = None) -> list[st
     for sent in sentence_grounding.segment_sentences(text or "")[:4000]:
         if len(sent) <= 600:
             out.extend(sota_claims._benchmarks(sent))
-    return list(dict.fromkeys(b for b in out if b))[:30]
+    # 실제 2026-10-12 재생에서 나온 서지·구현 후보다. 임의의 새 금지어를 늘리지 않는다.
+    out.extend(re.findall(r"(?<![\w-])([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+) benchmark\b", text or ""))
+    return list(dict.fromkeys(b for b in out if b and not _BENCH_NOISE.search(b)))[:30]
 
 
-def table_results(tables: list[dict], *, method: str, benchmarks: list[str]) -> list[dict]:
+# diag.json의 후보 및 그 원문 문맥을 확인한 잡음만 제외한다.
+_BENCH_NOISE = re.compile(
+    r"(?i)conference|learning representations|information processing systems|robotics and automation|"
+    r"^(?:Task Group \d+|Tasks \d+|CPU|GPU|TRL|HuggingFace Transformers|GPT-5|Qwen2|FULL|Robot Learning|"
+    r"Intelligent Robots|Robotics 39|Computer Vision|Pattern Recognition|Machine Learning|"
+    r"Autonomous Agents|Multiagent Systems|Artificial Intelligence|World Wide Web|"
+    r"Language Modeling|Knowledge Discovery|Data Mining|Empirical Methods|Intelligent Transportation Systems)$")
+
+
+def _unique_metric(text: str) -> str:
+    """서로 다른 지표가 함께 있으면 첫 지표를 표 전체에 씌우지 않는다."""
+    names = [m.group(1) for pattern in (_METRIC_ABBR, _METRIC_PHRASE) for m in pattern.finditer(text)]
+    keys = {metric_key(n) for n in names}
+    return names[0] if len(keys) == 1 else ""
+
+
+def _context_metric(context: str, bench: str) -> str:
+    """벤치마크가 직접 나온 문장 또는 On X로 한정한 다음 문장까지만 읽는다.
+
+    문서 전체의 가까운 숫자나 다른 벤치마크 문장을 임의로 연결하지 않는다.
+    서로 다른 지표의 근거가 있으면 모두 버린다.
+    """
+    sentences = [clause.strip() for sentence in sentence_grounding.segment_sentences(context)
+                 for clause in sentence.split(";") if clause.strip()]
+    evidence = []
+    for i, sentence in enumerate(sentences):
+        if len(sentence) > 600 or not _bench_re(bench).search(sentence):
+            continue
+        evidence.append(sentence)
+        if re.match(r"On\s+" + re.escape(bench) + r",", sentence, re.I) and i + 1 < len(sentences):
+            following = sentences[i + 1]
+            if len(following) < 600 and not re.match(r"On\b|Table\b", following, re.I):
+                evidence.append(following)
+    return _unique_metric(" ".join(evidence))
+
+
+def _transposed_results(t: dict, ti: int, method: str, benchmarks: list[str]) -> list[dict] | None:
+    """자기 열과 Task N 행이 명시된 표만 축을 교환하고 원래 셀 위치를 보존한다."""
+    import arxiv_tables as at
+    paths = [at.column_path(t, c) for c in range(len(t["grid"][0]))]
+    if not any(_OURS_RE.search(" / ".join(p)) or (method and p and _bench_re(method).fullmatch(p[-1])) for p in paths):
+        return None
+    # 자기 열이 있는데 구조가 모호하면 일반 행 해석으로 되돌리지 않는다.
+    labels = [at.row_label(t, r) for r in range(t["header_rows"], len(t["grid"]))]
+    if not labels or not all(re.fullmatch(r"Task \d+|Average|Avg\.?|Mean", label, re.I) for label in labels):
+        return []
+    caption = t.get("caption", "")
+    named = [b for b in benchmarks if re.search(r"(?<![\w-])" + re.escape(b) + r" benchmark\b", caption)]
+    metric = _unique_metric(caption)
+    if len(named) != 1 or not metric:
+        return []
+    bench = named[0]
+    out = []
+    for cell in at.find_cells(t, lambda _: True, lambda _: True):
+        path = cell["column_path"]
+        model = clean_label(" / ".join(path))
+        if cell["col"] == 0 or not path:
+            continue
+        task = cell["row_label"]
+        label = metric + " / " + task
+        out.append({"benchmark": bench, "metric": label, "bench_key": norm_key(bench),
+                    "metric_key": metric_key(label), "direction": direction(metric),
+                    "value": cell["value"], "text": cell["text"], "model": model,
+                    "own": bool(_OURS_RE.search(model) or (method and _bench_re(method).fullmatch(path[-1]))),
+                    "orientation": "transposed",
+                    "locator": f"{t.get('id')}#{ti}:r{cell['row']}c{cell['col']}", "caption": caption[:160]})
+    return out
+
+
+def table_results(tables: list[dict], *, method: str, benchmarks: list[str], context: str = "") -> list[dict]:
     """표의 교차 셀마다 (벤치마크, 지표, 값, 행). own=True 는 이 논문 행(제목의 기법 이름·"Ours"·"proposed").
 
     [{benchmark, metric, bench_key, metric_key, direction, value, text, model, own, locator, caption}]
@@ -244,19 +321,34 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str]) -> 
     지어내지 않는다. 실측(2026-09-30): P³-SAM 표는 데이터셋 이름이 열이 아니라 **행** 앞 칸에 있다(`Surface Defects-4i Ours ResNet50`)."""
     import arxiv_tables
     out: list[dict] = []
+    context_metrics: dict[str, str] = {}
     for ti, t in enumerate(tables):
         if not t.get("grid"):
             continue
         caption = t.get("caption") or ""
-        cap_metric = metric_token(caption)
+        cap_metric = _unique_metric(caption)
         if _ABLATION_RE.search(caption):
             continue                                        # 절제 실험 표 — 변형 행은 경쟁 결과가 아니다(행 이름도 "✓" 뿐이다)
+        transposed = _transposed_results(t, ti, method, benchmarks)
+        if transposed is not None:
+            out.extend(transposed)
+            continue
         in_caption = [b for b in benchmarks if _bench_re(b).search(caption)]
+        # 벤치마크별 열이 있으면 독립 Avg를 캡션의 한 후보에 배정하지 않는다.
+        if any(_bench_in(arxiv_tables.column_path(t, c), benchmarks) for c in range(len(t["grid"][0]))):
+            in_caption = []
         rows: list[dict] = []
         for cell in arxiv_tables.find_cells(t, lambda _lbl: True, lambda _path: True):
             path = [p for p in cell["column_path"] if p]
-            if path and not _is_metric(" / ".join(path)) and cap_metric and _MEAN_RE.search(path[-1]):
-                path = [cap_metric] + path          # 지표가 캡션에만 있고 열은 범주·평균인 표 — 평균 열만 캡션 지표로 읽는다(Codex 검토)
+            bench_hint = _bench_in(path, benchmarks) or (in_caption[0] if len(in_caption) == 1 else "")
+            if not _is_metric(caption) and context and bench_hint and bench_hint not in context_metrics:
+                context_metrics[bench_hint] = _context_metric(context, bench_hint)
+            inferred = cap_metric or (context_metrics.get(bench_hint, "") if not _is_metric(caption) else "")
+            # 지표 없는 열은 평균·벤치마크 자체·캡션이 명시한 시행 설정에만 보충한다.
+            if path and not _is_metric(" / ".join(path)) and inferred and (
+                    (_MEAN_RE.fullmatch(path[-1].rstrip(".")) or all(_bench_re(bench_hint).fullmatch(p) for p in path)
+                     or (cap_metric and re.fullmatch(r"[PT]@\d+", path[-1]) and path[-1] in caption))):
+                path = [inferred] + path
             joined = " / ".join(path)
             if not _is_metric(joined) or not path:
                 continue

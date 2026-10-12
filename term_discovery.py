@@ -138,10 +138,13 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None,
     안 들어간다(build_input 이 term·evidence 만 싣는다)."""
     r = {**DEFAULT_RULES, **(rules or {})}
     known = _known_terms(profile)
+    overlaps: dict[str, bool] = {}
     papers_of: dict[str, list[dict]] = defaultdict(list)
     for p in pool:
         for g in _grams(f"{p['title']}. {p['abstract']}", diag):
-            if term_hygiene.overlaps_known(g, known):
+            if g not in overlaps:
+                overlaps[g] = term_hygiene.overlaps_known(g, known)
+            if overlaps[g]:
                 if diag is not None:
                     diag["known_overlap"] += 1
                 continue
@@ -149,7 +152,8 @@ def discover(pool: list[dict], profile: dict, rules: dict | None = None,
     cand = [g for g, ps in papers_of.items() if len(ps) >= r["min_papers"]]
     if diag is not None:
         diag["min_papers"] += len(papers_of) - len(cand)
-    kept = [g for g in cand if not trend_report._subsumed(g, set(cand))]
+    subsumed = trend_report._subsumed_terms(set(cand))
+    kept = [g for g in cand if g not in subsumed]
     if diag is not None:
         diag["subsumed"] += len(cand) - len(kept)
     cand = kept

@@ -230,6 +230,10 @@ def _overload_wait_seconds(attempt: int) -> float:
 # 보충 청크(청크 2 이후)에서 감수할 최대 429 대기(초). 이보다 긴 대기를 요구받으면
 # 그 청크를 포기하고 지금까지 만든 요약으로 마무리한다 — 아래 _summarize_chunked 참고.
 ADDENDUM_MAX_WAIT = 120.0
+# 보충 청크가 아닌 호출의 기본 상한(2026-10-11). 그전엔 None 이라 서버 Retry-After 를 상한 없이 따랐다 — 합성 86,400 이면 하루를 잔다
+# (Codex 전체 검토 P2). 이보다 길게 기다리라는 건 "오늘 한도가 끝났다"는 뜻이고, 호출부마다 다음 엔진(Gemini→Groq, 서술은 Codex→Gemini→Groq)·
+# 초록 경로가 있다 — 기다리지 않고 넘긴다(규칙 6: 메일은 나가야 한다). arXiv·S2 쪽 http_client 는 이미 상한이 있다.
+DEFAULT_MAX_WAIT = 180.0
 
 
 def load_env() -> dict:
@@ -669,6 +673,8 @@ async def _call_with_rate_limit_retry(coro_fn, label: str, max_wait: float | Non
     커루틴 객체는 재사용할 수 없어서 함수로 받는다). 이렇게 하면 청크 1개짜리
     호출이든 보충 청크 호출이든 시그니처 상관없이 그대로 감쌀 수 있다.
     """
+    if max_wait is None:
+        max_wait = DEFAULT_MAX_WAIT
     last: Exception | None = None
     overload_attempts = 0
     attempt = 0

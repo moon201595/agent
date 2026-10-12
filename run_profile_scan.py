@@ -444,7 +444,7 @@ async def scan_and_digest(
                     known = {e["id"] for e in paper["_evidence"]}
                     paper["_evidence"] = paper["_evidence"] + [e for e in sota_claims.evidence_packets(claims) if e["id"] not in known]
             # 성능 동향(2026-09-30): SOTA 라는 말이 없어도 **내용 자리 논문 전부**의 표 결과를 관측 DB 에 쌓고, 다른 논문 관측값·외부 근거와
-            # 견준다(`research_frontier`). 외부 조사는 하루 2편·180초이고, 무엇이 실패해도 메일은 나간다.
+            # 견준다(`research_frontier`). 외부 조사는 프로필·날짜마다 한 호출(최대 5편·180초, §228·232)이고, 무엇이 실패해도 메일은 나간다.
             try:
                 import research_frontier
                 research_frontier.analyze(db_path, list(result["papers"]), profile_id=profile_id)
