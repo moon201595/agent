@@ -215,9 +215,9 @@ def test_incomplete_external_marker_does_not_cast_doubt_on_verified_result():
     fr = copy.deepcopy(FRONTIER)
     fr['external']['status'] = 'incomplete'
     fr['external']['competitors'] += [{'status': 'table_failed', 'model': 'X'}, {'status': 'not_found', 'model': 'Y'}]
-    lines = dict(paper_observations.sections({'_frontier': fr}))['논문 간 관측']
-    texts = [t for t, _ in lines]
-    assert '외부 조사 일부 미완료 — 출처 표를 확인하지 못한 후보 1건.' in texts and '외부 조사 미완료.' not in texts
+    first = lambda f: [t for t, _ in paper_observations.sections({'_frontier': f})[0][1]]
+    texts = first(fr)
+    assert '→ 웹 검색 후보 중 1건은 출처 표를 확인하지 못해 싣지 않았다.' in texts
+    assert not any('이번에 확인하지 못했다' in t for t in texts)
     fr['external']['competitors'] = [{'status': 'table_failed', 'model': 'X'}]
-    texts = [t for t, _ in dict(paper_observations.sections({'_frontier': fr}))['논문 간 관측']]
-    assert '외부 조사 미완료.' in texts
+    assert '→ 저자가 비교하지 않은 더 최근 결과(웹 검색)는 이번에 확인하지 못했다.' in first(fr)

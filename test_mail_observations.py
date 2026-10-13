@@ -136,10 +136,14 @@ def test_cross_paper_observations_preserve_conditions_and_never_name_a_winner():
         {'status': 'not_found', 'model': 'Unverified', 'text': '99.9%'}]}}
     sections = paper_observations.sections({'_frontier': fr})
     text = str(sections)
-    assert sections[0][0] == '성능 관측 · 논문 내 결과' and sections[1][0] == '논문 간 관측'
+    # 2026-10-13 카드 개편: 벤치마크·지표마다 한 상자(비교 표 + 문장). 조건이 다른 외부 값·기존 관측과는 차이를 말하지 않는다.
+    assert sections[0][0] == '성능 비교 · Bench · Success (방향 미상)'
     assert '85.4%' in text and '84' in text and '82.0%' in text and '99.9%' not in text
-    assert 'split 다름' in text and 'https://arxiv.org/abs/2402.00001' in text and '우열을 판정하지 않음' in text
-    assert '최고' not in text and 'SOTA' not in text and 'backbone' in text
+    assert 'split 다름' in text and 'https://arxiv.org/abs/2402.00001' in text and '평가 조건 미확인' in text
+    assert '확인되지 않아 차이를 말하지 않는다' in text and '높다' not in text and '낮다' not in text
+    assert '최고' not in text and 'SOTA' not in text
+    higher = paper_observations.sections({'_frontier': {**fr, 'main': [{**main, 'direction': 'higher', 'value': 85.4}]}})
+    assert '높다' not in str(higher) and '낮다' not in str(higher)          # 방향을 알아도 조건이 다른 값과는 차이를 내지 않는다
 
 
 def test_reading_point_does_not_promote_partial_conditions_to_full_agreement():
@@ -159,8 +163,11 @@ def test_digest_keeps_grounded_results_and_full_signals_above_detail_toggle(monk
     html = digest._paper_entry_html(1, paper)
     text = ''.join(VisibleText(html).data)
     for expected in ['성능 관측 · 논문 내 결과', '76.3%', '3.7%', '[S0002]', '32.7%', '85.4%', '[S0003]',
-                     '외부 관측 신호', 'owner/project', 'Fork 73', 'Likes 186', '영향력 인용 3회']:
+                     '코드 저장소', 'owner/project']:
         assert expected in text and html.index(expected) < html.index('<details')
+    # 2026-10-13 사용자 결정: 새 논문의 인용·HF·포크 수는 카드에 싣지 않는다(공개 며칠 된 논문에서는 읽을거리가 아니다).
+    for dropped in ['외부 관측 신호', 'Fork 73', 'Likes 186', '영향력 인용']:
+        assert dropped not in text
     assert '<script>' not in html and '&lt;script&gt;' in html and '분석 내용' in text
     assert '논문 간 수치 비교에는 쓰지 않음' in text
     plain = digest._paper_entry(1, paper)

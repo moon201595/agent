@@ -13,6 +13,10 @@
   (CLAUDE.md 규칙 6).
 
 가중치 반영(계획 v2 §3)은 이 모듈의 일이 아니다. 여기서는 링크를 만들고, 반응을 모으고, 검증해 상태를 붙인다.
+
+2026-10-12: 주간 메일의 **외부 정찰 연구축**에도 같은 버튼(더 보고 싶음 · 관심 밖)을 단다(`axis_links`). 같은 토큰·서명·웹앱이고
+표만 같이 쓴다 — `paper_key` 자리에 `axis:<용어>` 를 둔다(스키마 변경 없음). 논문 반응을 읽는 곳(`valid_reactions`·운영 화면·형식 수정본)은
+이 키를 빼고, 연구축 반응은 `axis_reactions` 로만 읽는다.
 """
 from __future__ import annotations
 
@@ -28,6 +32,10 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 ACTIONS: tuple[tuple[str, str], ...] = (("more", "더 보고 싶음"), ("useful", "유용함"), ("out", "관심 밖"))
+# 연구축 버튼은 둘이다 — "유용함"은 읽은 논문에 대한 말이라 아직 읽지 않은 연구 방향에는 맞지 않는다. 종류 이름이 논문 버튼과 같아서
+# 웹앱(apps_script)을 다시 배포하지 않아도 된다. 버튼이 둘이라 "셋이 30초 안에" 연타 격리는 걸리지 않고, 발송 직후 선열람 격리는 그대로다.
+AXIS_ACTIONS: tuple[tuple[str, str], ...] = (("more", "더 보고 싶음"), ("out", "관심 밖"))
+AXIS_PREFIX = "axis:"
 UNDO = "undo"
 TOKEN_VERSION = "v1"
 TOKEN_TTL_DAYS = 14          # 메일을 늦게 열어도 누를 수 있게 2주. 운영 시작값.
@@ -194,6 +202,44 @@ def issue_links(db: Path, profile_id: str, issue_id: str, recipient: str, papers
     return links
 
 
+def axis_links(db: Path, profile_id: str, issue_id: str, recipient: str, terms: list[str],
+               now: datetime | None = None) -> dict[str, dict[str, str]]:
+    """수신자 한 명의 메일에 실을 연구축 버튼 {용어: {action: url}}. 설정이 없으면 빈 dict. 토큰 규칙은 `issue_links` 와 같다."""
+    cfg = config()
+    terms = list(dict.fromkeys(t for t in terms if isinstance(t, str) and t.strip()))
+    if not cfg or not terms:
+        return {}
+    url, secret = cfg
+    page, did = page_url(), deploy_id(url)
+    relay = f"{page}?" + urlencode({"d": did}) + "&" if page and did else ""
+    init_db(db)
+    now = now or _now()
+    expires = int((now + timedelta(days=TOKEN_TTL_DAYS)).timestamp())
+    rhash = recipient_hash(recipient, secret)
+    links: dict[str, dict[str, str]] = {}
+    with sqlite3.connect(db) as con:
+        for position, term in enumerate(terms, start=1):
+            tid = secrets.token_urlsafe(12)
+            con.execute("INSERT INTO feedback_tokens (tid, issue_id, profile_id, item_no, paper_key, recipient_hash, "
+                        "position, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (tid, issue_id, profile_id, f"A{position}", AXIS_PREFIX + term, rhash, position, now.isoformat(), expires))
+            links[term] = {
+                action: (f"{relay}{urlencode({'t': make_token(tid, action, expires, secret)})}" if relay
+                         else f"{url}?{urlencode({'t': make_token(tid, action, expires, secret)})}")
+                for action, _label in AXIS_ACTIONS}
+    return links
+
+
+def is_axis_key(key: object) -> bool:
+    return str(key or "").startswith(AXIS_PREFIX)
+
+
+def axis_key(term: object) -> str:
+    """연구축 반응의 식별 키 — 대소문자·하이픈·밑줄·여러 칸 공백 차이를 하나로 본다(2026-10-12 Codex 검토: 정찰이 다음 주에
+    "Visual Anomaly Reasoning" 으로 적으면 "visual anomaly reasoning" 에 누른 관심 밖이 안 걸려 다시 추적됐다). 표시는 원래 표기를 쓴다."""
+    return " ".join(re.split(r"[\s_\-‐-―/]+", str(term or "").lower())).strip()
+
+
 def mark_delivered(db: Path, issue_id: str, recipient: str, when: datetime | None = None) -> None:
     """발송이 수락된 뒤에만 부른다 — 선열람 격리의 기준 시각이다."""
     cfg = config()
@@ -239,7 +285,7 @@ def import_rows(db: Path, rows: list[dict], secret: str, now: datetime | None = 
                 status = STATUS_BAD_SIGNATURE
             else:
                 tid, action, expires = parsed
-                token_row = con.execute("SELECT delivered_at FROM feedback_tokens WHERE tid=?", (tid,)).fetchone()
+                token_row = con.execute("SELECT delivered_at, paper_key FROM feedback_tokens WHERE tid=?", (tid,)).fetchone()
                 if received.timestamp() > expires:
                     status = STATUS_EXPIRED
                 elif token_row is None:
@@ -258,7 +304,10 @@ def import_rows(db: Path, rows: list[dict], secret: str, now: datetime | None = 
                         near = con.execute("SELECT event_id, action FROM feedback_events WHERE tid=? AND "
                                            "received_at>=? AND action IN ('more','useful','out')",
                                            (tid, window_lo)).fetchall()
-                        if len({a for _eid, a in near} | {action}) >= len(ACTIONS):
+                        # 그 토큰에 달린 버튼을 **전부** 짧은 창 안에 연 것은 사람이 아니다. 연구축은 버튼이 둘이라 둘을 다 연 것이 기준이다
+                        # (2026-10-12 Codex 검토: 2분 뒤 두 버튼을 차례로 여는 지연 스캐너가 "관심 밖" 을 마지막으로 남겨 추적을 멈췄다).
+                        buttons = AXIS_ACTIONS if is_axis_key(token_row[1]) else ACTIONS
+                        if len({a for _eid, a in near} | {action}) >= len(buttons):
                             status = STATUS_BURST
                             con.executemany("UPDATE feedback_events SET status=? WHERE event_id=?",
                                             [(STATUS_BURST, eid) for eid, _a in near])
@@ -298,4 +347,40 @@ def valid_reactions(db: Path, profile_id: str) -> list[dict]:
         return [dict(r) for r in con.execute(
             "SELECT t.paper_key, e.action, t.recipient_hash, t.item_no, t.issue_id, e.received_at "
             "FROM feedback_events e JOIN feedback_tokens t ON t.tid = e.tid "
-            "WHERE t.profile_id=? AND e.status=? ORDER BY e.received_at", (profile_id, STATUS_VALID))]
+            "WHERE t.profile_id=? AND e.status=? AND substr(t.paper_key, 1, ?) != ? ORDER BY e.received_at",
+            (profile_id, STATUS_VALID, len(AXIS_PREFIX), AXIS_PREFIX))]
+
+
+AXIS_WANTED = "wanted"
+AXIS_STOPPED = "stopped"
+
+
+def axis_reactions(db: Path, profile_id: str) -> dict[str, dict]:
+    """연구축 반응 {axis_key(용어): {term, more, out, state}} — 수신자마다 **마지막 유효 반응** 하나(지난주 관심 밖을 이번 주 더 보고 싶음으로 바꾸면 뒤의 것).
+    state: 더 보고 싶음이 많으면 `wanted`, 관심 밖이 많으면 `stopped`, 같으면 None. 읽기 전용이고 표가 없으면 빈 dict 다
+    (정찰 추적 목록이 이 함수를 부른다 — 반응 표가 없다고 추적이 멈추면 안 된다)."""
+    try:
+        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
+            rows = con.execute(
+                "SELECT t.paper_key, t.recipient_hash, e.action, e.received_at FROM feedback_events e "
+                "JOIN feedback_tokens t ON t.tid = e.tid WHERE t.profile_id=? AND e.status=? AND substr(t.paper_key, 1, ?) = ? "
+                "ORDER BY e.received_at", (profile_id, STATUS_VALID, len(AXIS_PREFIX), AXIS_PREFIX)).fetchall()
+    except sqlite3.Error:
+        return {}
+    last: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for key, rhash, action, received in rows:
+        if action not in {a for a, _ in AXIS_ACTIONS}:
+            continue
+        term = key[len(AXIS_PREFIX):]
+        k = (axis_key(term), rhash)
+        if k not in last or str(received) >= last[k][1]:
+            last[k] = (action, str(received), term)
+    out: dict[str, dict] = {}
+    for (norm, _rhash), (action, _at, term) in sorted(last.items(), key=lambda kv: kv[1][1]):
+        c = out.setdefault(norm, {"term": term, "more": 0, "out": 0, "state": None})
+        c["term"] = term                                  # 표시 표기는 가장 최근 반응의 것
+        c[action] += 1
+    for c in out.values():
+        c["state"] = AXIS_WANTED if c["more"] > c["out"] else AXIS_STOPPED if c["out"] > c["more"] else None
+    return out

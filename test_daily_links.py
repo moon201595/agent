@@ -104,7 +104,7 @@ def test_empty_observation_window_reads_as_no_record_not_zero():
           "axes": [{"term": "latent reasoning", "summary": "", "papers": 3, "recent": 2, "previous": 0, "recent_total": 3994,
                     "previous_total": 0, "missed": {}, "evidence": []}], "watch": []}
     lines = digest._external_scout_lines({"external_scout": sc})
-    assert any("최근 4주 2/3994편 · 직전 4주 관측 없음" in line for line in lines)
+    assert any("최근 4주 2편(전체 3994편 중) · 직전 4주 기록 없음" in line for line in lines)
     assert saved_digest._scout_from_lines(lines) == {**sc, "missed": []}
 
 

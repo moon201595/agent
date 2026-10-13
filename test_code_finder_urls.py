@@ -68,3 +68,25 @@ def test_ordinary_author_repo_is_not_excluded():
                 "https://github.com/facebookresearch/some-paper-code",
                 "https://github.com/huggingface-user/my-paper"):
         assert cf._is_tool_repo(url) is False
+
+
+def test_line_boundaries_do_not_become_repository_suffixes():
+    """무엇을 망가뜨리면 실패하는가: 단독 문장부호·절 번호·절 제목·다음 문장을 URL에 붙이거나 끝 마침표를 남기면 실패한다."""
+    root = 'https://github.com/example/ExampleRepo'
+    for suffix in ('\n.\n1\nIntroduction\nTo explore a task.', '.\n1\nIntroduction',
+                   '\n1\nIntroduction', '\nIntroduction\nTo explore a task.',
+                   '\n2.3\nMethods', '\nMethods\nWe test a system.', '\r\n.\r\n1\r\nResults'):
+        assert [c.url for c in cf.find_links_in_text('Code available at ' + root + suffix)] == [root]
+
+
+def test_explicitly_wrapped_url_parts_are_restored():
+    """무엇을 망가뜨리면 실패하는가: 슬래시·하이픈·호스트 경계에서 잘린 진짜 URL 복원을 없애면 실패한다."""
+    pairs = [
+        ('https://github.com/\nexample/ExampleRepo', 'https://github.com/example/ExampleRepo'),
+        ('https://github.com/example/\nExampleRepo', 'https://github.com/example/ExampleRepo'),
+        ('https://github.\ncom/example/ExampleRepo', 'https://github.com/example/ExampleRepo'),
+        ('https://github.com/example\n/ExampleRepo', 'https://github.com/example/ExampleRepo'),
+        ('https://github.com/example/Example-\nRepo', 'https://github.com/example/Example-Repo'),
+    ]
+    for broken, expected in pairs:
+        assert [c.url for c in cf.find_links_in_text('Code available at ' + broken + '.\n1\nIntroduction')] == [expected]

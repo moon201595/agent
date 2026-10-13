@@ -43,3 +43,21 @@ def test_offline_preview_cannot_enter_send_path(monkeypatch):
     with pytest.raises(SystemExit) as error:
         mail_reformat.main()
     assert error.value.code == 2
+
+
+def test_offline_preview_rejects_half_restored_axis_buttons(original, tmp_path):
+    """2026-10-12 Codex 검토. 이 테스트가 무엇을 망가뜨리면 실패하는가: 원 HTML 에 연구축 버튼이 하나만 남았는데(예: "더 보고 싶음" 만) 복원 완료로
+    보고해 반쪽 버튼을 그리면 실패한다. 연구축 토큰이 논문 토큰 대조를 깨도 실패한다."""
+    from datetime import datetime, timezone
+    db, links, cfg = original
+    when = datetime(2026, 10, 1, 20, tzinfo=timezone.utc)
+    axis = feedback_links.axis_links(db, "p", "original-issue", "user@example.com", ["visual anomaly reasoning"], now=when)
+    feedback_links.mark_delivered(db, "original-issue", "user@example.com", when=when)
+    paper_urls = list(next(iter(links.values())).values())
+    axis_urls = axis["visual anomaly reasoning"]
+    source = tmp_path / "original.html"
+    source.write_text("".join(f'<a href="{u}">x</a>' for u in paper_urls + list(axis_urls.values())))
+    assert mail_reformat.load_preview(db, "p", "2026-10-02", source)["feedback_restored"]
+    source.write_text("".join(f'<a href="{u}">x</a>' for u in paper_urls + [axis_urls["more"]]))
+    with pytest.raises(ValueError, match="연구축"):
+        mail_reformat.load_preview(db, "p", "2026-10-02", source)

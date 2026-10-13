@@ -313,6 +313,40 @@ def _transposed_results(t: dict, ti: int, method: str, benchmarks: list[str]) ->
     return out
 
 
+_LATEX_SPACING_RE = re.compile(r"^\\{0,2}\[\s*-?[\d.]+\s*(?:pt|em|ex|mm)(?:\s*/\s*-?[\d.]+\s*(?:pt|em|ex|mm))?\s*\]\s*")
+
+
+def model_label(text: str) -> str:
+    """행 이름의 LaTeX 조판 찌꺼기를 뗀다 — `\\[4pt/2pt] POrchestra` 의 `[4pt/2pt]`(2026-10-13 메일 실측: 카드에 그대로 나갔다)."""
+    return _LATEX_SPACING_RE.sub("", (text or "").strip()).strip()
+
+
+_MISSING_CELL_RE = re.compile(r"[-–—−]+|n/?a|N/?A")
+
+
+def row_blocks(table: dict) -> dict[int, tuple[str, str]]:
+    """표 안의 구획 {본문 행 번호: (구획 식별자, 표시 이름)}. **구획 머리 행 자체는 이 dict 에 없다** — 호출부가 그 행의 칸을 값으로 읽지 않게
+    (2026-10-13 Codex 검토 P1: 병합된 "Gemini-3-Flash" 머리에서 3.0 을 SWE-Bench 값으로 저장했다).
+
+    구획 머리: 첫 칸에 글자가 있고 나머지가 모두 비었거나 같은 글(LaTeXML colspan 을 파서가 모든 열에 채운 꼴), 또는 모두 결측 표시("-"·N/A).
+    결측 표시뿐인 행은 결과 없는 방법일 수도 있다 — 그래도 **경계로** 본다(구획을 잘못 잇느니 비교 대상을 줄인다, Codex 검토 P2).
+    식별자는 행 번호를 포함한다 — 떨어져 되풀이되는 같은 이름("Results")을 한 구획으로 합치지 않는다. 숫자 판정(cell_number)은 쓰지 않는다 —
+    "Gemini-3-Flash" 를 3.0 으로 읽어 구획 머리를 놓쳤다(2026-10-13 재생). 글자가 있으면 이름이다."""
+    grid = table.get("grid") or []
+    block, out = ("", ""), {}
+    for r in range(table.get("header_rows") or 0, len(grid)):
+        row = grid[r]
+        first = row[0].strip() if row else ""
+        rest = [c.strip() for c in row[1:]]
+        if first and re.search(r"[^\W\d_]{2,}", first) and rest and (
+                all(not c or c == first for c in rest) or all(_MISSING_CELL_RE.fullmatch(c) for c in rest)):
+            label = model_label(first)
+            block = (f"{r}:{label}", label)
+            continue
+        out[r] = block
+    return out
+
+
 def table_results(tables: list[dict], *, method: str, benchmarks: list[str], context: str = "") -> list[dict]:
     """표의 교차 셀마다 (벤치마크, 지표, 값, 행). own=True 는 이 논문 행(제목의 기법 이름·"Ours"·"proposed").
 
@@ -338,7 +372,10 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str], con
         if any(_bench_in(arxiv_tables.column_path(t, c), benchmarks) for c in range(len(t["grid"][0]))):
             in_caption = []
         rows: list[dict] = []
+        blocks = row_blocks(t)
         for cell in arxiv_tables.find_cells(t, lambda _lbl: True, lambda _path: True):
+            if cell["row"] not in blocks:
+                continue                                    # 구획 머리 행 — 이름 속 숫자("Gemini-3-Flash")를 값으로 읽지 않는다
             path = [p for p in cell["column_path"] if p]
             bench_hint = _bench_in(path, benchmarks) or (in_caption[0] if len(in_caption) == 1 else "")
             if not _is_metric(caption) and context and bench_hint and bench_hint not in context_metrics:
@@ -361,7 +398,7 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str], con
                 continue
             bpat = _bench_re(bench)
             metric = clean_label(" / ".join(p for p in path if not bpat.fullmatch(clean_label(p)))) or clean_label(joined)
-            model = re.sub(r"\s+", " ", bpat.sub("", label_row)).strip() or label_row
+            model = model_label(re.sub(r"\s+", " ", bpat.sub("", label_row)).strip() or label_row)
             if len(re.findall(r"[A-Za-z]", model)) < 2:
                 continue                                    # 이름 없는 행(빈칸·체크 표시뿐) — 누구의 값인지 모른다
             own = bool((method and re.search(r"(?<![\w-])" + re.escape(method) + r"(?![\w-])", model, re.IGNORECASE))
@@ -369,7 +406,8 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str], con
             rows.append({"benchmark": bench, "metric": metric, "bench_key": norm_key(bench), "metric_key": metric_key(metric),
                          "direction": direction(joined), "value": cell["value"], "text": cell["text"], "model": model, "own": own,
                          # 표 순번을 넣는다 — 한 figure 에 표가 둘이면 파서가 같은 id 를 준다(Codex 재현: DS 표·SR 표가 같은 키로 덮였다).
-                         "locator": f"{t.get('id')}#{ti}:r{cell['row']}c{cell['col']}", "caption": caption[:160], "_col": cell["col"]})
+                         "locator": f"{t.get('id')}#{ti}:r{cell['row']}c{cell['col']}", "caption": caption[:160], "_col": cell["col"],
+                         **({"block_id": blocks[cell["row"]][0], "block": blocks[cell["row"]][1]} if blocks[cell["row"]][0] else {})})
         # 범주·fold 별 열은 쌓지 않는다. 같은 머리 아래(마지막 칸만 다른 열들)에 평균 열(Mean·Avg)이 있으면 **그 평균 열만**, 없는데 열이
         # MAX_COLUMNS_PER_KEY 보다 많으면 범주별 표로 보고 버린다(2026-09-30 실측: P³-SAM 표가 Fold-0/1/2/MEAN 을 따로 두었다).
         groups: dict[tuple[str, str], set[int]] = {}

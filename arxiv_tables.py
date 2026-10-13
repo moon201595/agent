@@ -135,7 +135,18 @@ def _numeric_cell(text: str) -> bool:
 
 
 def _span(cell: _Node, key: str, maximum: int) -> int:
-    raw = cell.attrs.get(key, '1').strip()
+    # 클래스형 병합도 같은 검사를 거쳐야 열 이동과 자원 상한 우회를 막는다(2026-10-13).
+    prefix = f'ltx_{key}_'
+    declared = [c[len(prefix):] for c in cell.classes if c.startswith(prefix)]
+    if key in cell.attrs:
+        declared.append(cell.attrs[key].strip())
+    if not declared:
+        if f'ltx_{key}' in cell.classes:
+            raise _Limit
+        return 1
+    if len(set(declared)) != 1:
+        raise _Limit
+    raw = declared[0]
     if not raw.isascii() or not raw.isdigit() or len(raw) > 6:
         raise _Limit
     value = int(raw)
@@ -226,7 +237,7 @@ def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
         if section == 'thead' or explicit:
             count += 1
             continue
-        if r and len(cells) == 1 and int(cells[0].attrs.get('colspan', '1')) == len(grid[r]):
+        if r and len(cells) == 1 and _span(cells[0], 'colspan', MAX_COLUMNS) == len(grid[r]):
             break
         if any(_numeric_cell(t) or t.lower() in _MISSING for t in texts):
             break

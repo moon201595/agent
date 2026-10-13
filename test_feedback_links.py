@@ -332,7 +332,8 @@ def test_deploy_id_only_accepts_the_apps_script_web_app_form():
 
 
 def test_relay_page_source_has_no_endpoint_or_secret():
-    """이 테스트가 잡는 것: 공개 저장소의 정적 페이지에 웹앱 주소·비밀키·배포 id 가 박히는 것, 페이지가 임의 호스트를 부르게 되는 것."""
+    """이 테스트가 잡는 것: 공개 저장소의 정적 페이지에 웹앱 주소·비밀키·배포 id 가 박히는 것, 페이지가 임의 호스트를 부르게 되는 것,
+    리퍼러 차단 meta 가 빠져 서명 토큰이 든 주소가 다른 출처로 실려 가는 것."""
     from pathlib import Path
     src = Path("web/reaction/index.html").read_text(encoding="utf-8")
     assert '"https://script.google.com/macros/s/" + deployId + "/exec"' in src     # 주소는 배포 id 로 조립한다
@@ -340,6 +341,7 @@ def test_relay_page_source_has_no_endpoint_or_secret():
     code = src.split("<script>", 1)[1]                                             # 주석이 아니라 코드에서 세어야 한다
     assert code.count('"https://') == 1                                            # 코드가 부를 수 있는 절대 주소는 하나뿐
     assert "mode=json" in src and 'name="robots" content="noindex' in src
+    assert '<meta name="referrer" content="no-referrer">' in src.split("</head>", 1)[0]   # 2026-10-12: 주소창 토큰이 Referer 로 새지 않게
 
 
 def test_relay_page_must_be_github_pages(configured, db, monkeypatch):

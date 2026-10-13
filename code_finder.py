@@ -189,11 +189,36 @@ def _drop_prefix_duplicates(candidates: list[RepoCandidate]) -> list[RepoCandida
     return [c for c in candidates if c.url in keep]
 
 
+def _join_url_lines(text: str) -> str:
+    """URL 구분자에서 끊긴 줄만 복구해 절 번호·제목을 저장소 이름으로 만들지 않는다."""
+    lines = text.splitlines()
+    joined: list[str] = []
+    for line in lines:
+        continuation = line.strip()
+        previous = joined[-1] if joined else ""
+        matches = list(_URL_RE.finditer(previous))
+        url = matches[-1].group() if matches and matches[-1].end() == len(previous) else ""
+        # 단독 문장부호·절 번호는 구분자 뒤에서도 URL 조각으로 삼지 않는다.
+        token = re.match(r"[\w./#?=-]+", continuation)
+        piece = token.group() if token else ""
+        boundary = bool(url) and (url.endswith(("/", "-", "_")) or piece.startswith("/"))
+        # github. / com/...처럼 호스트 중간에서 잘린 경우도 명시된 호스트만 복구한다.
+        host_split = bool(url) and any(
+            (url + piece).startswith(f"{scheme}://{host}/")
+            and len(url) < len(f"{scheme}://{host}")
+            for scheme in ("http", "https") for host in _KNOWN_HOSTS)
+        if (piece and re.search(r"[a-zA-Z]", piece)
+                and (boundary or host_split)
+                and not re.fullmatch(r"[\W\d_]+", continuation)):
+            joined[-1] += continuation
+        else:
+            joined.append(line)
+    return "\n".join(joined)
+
+
 def find_links_in_text(text: str) -> list[RepoCandidate]:
-    """원문에서 코드 링크로 보이는 URL을 찾는다. 줄바꿈 제거는 필수 —
-    PDF 추출 결과에서 URL이 줄 경계로 끊기는 사례가 실측으로 확인됐다.
-    """
-    flat = text.replace("\n", "")
+    """PDF의 URL 구분자에서 끊긴 줄을 복원하되 다음 절의 본문은 별도로 남긴다."""
+    flat = _join_url_lines(text)
     seen: set[str] = set()
     candidates: list[RepoCandidate] = []
     for m in _URL_RE.finditer(flat):

@@ -19,6 +19,9 @@ from __future__ import annotations
 import lang_guard
 
 import json
+import copy
+import hashlib
+from datetime import datetime, timezone
 import math
 import re
 import shutil
@@ -33,6 +36,8 @@ BUDGET_S = 180.0                 # 프로필별 한 호출(최대 5편)·검증 
 VERIFY_RESERVE_S = 35.0          # 에이전트 호출 뒤 검증 내려받기에 남겨 둘 시간
 FETCH_TIMEOUT_S = 15.0
 MAX_FETCH_BYTES = 8 * 1024 * 1024
+AGENT_LOG_DIR = Path(__file__).resolve().parent / "logs" / "frontier_agent"
+MAX_AGENT_LOG_BYTES = 200 * 1024
 MAX_COMPETITORS = 3             # 논문 한 편에 받는 경쟁 후보 상한
 
 # Python 이 직접 받아 검증하는 호스트. 구조(표)를 읽을 수 있는 곳만 수치를 인정한다: arXiv HTML 표, GitHub README 의 마크다운 표.
@@ -72,6 +77,25 @@ SCHEMA = {
                         "properties": {"what": {"type": "string", "maxLength": 400},
                                        "quote": {"type": "string", "maxLength": 400}}}}}}}}}}},
 }
+
+
+# 기존 단독 검증 API는 엄격하게 두고 운행 경로만 경쟁자별 격리를 선택한다.
+COMPETITOR_SCHEMA = SCHEMA["properties"]["papers"]["items"]["properties"]["competitors"]["items"]
+ENVELOPE_SCHEMA = copy.deepcopy(SCHEMA)
+ENVELOPE_SCHEMA["properties"]["papers"]["items"]["properties"]["competitors"]["items"] = {}
+
+
+def _save_agent_response(text: str) -> None:
+    """형식 오류도 재현할 수 있게 제한된 원문을 남기되 저장 실패로 비교를 멈추지 않는다."""
+    try:
+        raw = text.encode("utf-8", errors="replace")
+        name = f"{datetime.now(timezone.utc):%Y-%m-%d}_{hashlib.sha256(raw).hexdigest()[:12]}.txt"
+        AGENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        # UTF-8 문자 중간에서 자르지 않으며 파일 바이트 상한은 그대로 지킨다.
+        clipped = raw[:MAX_AGENT_LOG_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
+        (AGENT_LOG_DIR / name).write_bytes(clipped)
+    except Exception:
+        pass
 
 
 def _host_in(host: str, hosts: tuple[str, ...]) -> bool:
@@ -130,15 +154,33 @@ def _run_agent(prompt: str, timeout: float) -> str:
         return last.read_text(encoding="utf-8")
 
 
-def parse_proposal(text: str) -> dict:
-    """에이전트 출력 → 스키마를 통과한 dict. 앞뒤 잡글·코드펜스는 떼고, 통과 못 하면 ValueError."""
+def parse_proposal(text: str, *, isolate_competitors: bool = False) -> dict:
+    """최상위 구조를 검증하고 운행에서는 경쟁자 한 명의 오류를 다른 후보와 격리한다."""
     import jsonschema
     raw = (text or "").strip()
     start = raw.find("{")
     if start < 0:
         raise ValueError("JSON 없음")
     data, _end = json.JSONDecoder().raw_decode(raw[start:])
-    jsonschema.validate(data, SCHEMA)
+    jsonschema.validate(data, ENVELOPE_SCHEMA if isolate_competitors else SCHEMA)
+    if isolate_competitors:
+        validator = jsonschema.Draft7Validator(COMPETITOR_SCHEMA)
+        for paper_index, paper in enumerate(data["papers"]):
+            valid = []
+            invalid = 0
+            first_reason = ""
+            for index, comp in enumerate(paper["competitors"]):
+                error = next(validator.iter_errors(comp), None)
+                if error is None:
+                    valid.append(comp)
+                    continue
+                invalid += 1
+                if not first_reason:
+                    path = ["papers", paper_index, "competitors", index, *error.path]
+                    first_reason = f"{json.dumps(path, ensure_ascii=False)}: {error.message[:120]}"
+            paper["competitors"] = valid
+            paper["invalid_competitors"] = invalid
+            paper["invalid_reason"] = first_reason
     return data
 
 
@@ -467,7 +509,8 @@ def check(targets: list[dict], *, budget_s: float = BUDGET_S, run_agent: Callabl
                 res["reason"] = str(getattr(error, "code", None) or type(error).__name__)
             return out
         try:
-            items = parse_proposal(raw)["papers"]
+            _save_agent_response(raw)
+            items = parse_proposal(raw, isolate_competitors=True)["papers"]
             break
         except (json.JSONDecodeError, ValueError) as error:
             # 스키마 위반·도구 실패는 재실행하지 않고 JSON 결손만 한 번 더 시도한다.
@@ -493,7 +536,11 @@ def check(targets: list[dict], *, budget_s: float = BUDGET_S, run_agent: Callabl
             continue                                         # 묻지 않은 논문·중복 — 무시
         answered.add(item["paper_id"])
         res = out[item["paper_id"]]
-        complete = True
+        res["invalid_competitors"] = item["invalid_competitors"]
+        res["invalid_reason"] = item["invalid_reason"]
+        complete = not res["invalid_competitors"]
+        if not complete:
+            res["reason"] = "경쟁 후보 스키마 위반"
         for comp in item["competitors"]:
             remaining = deadline - clock()
             if remaining <= 1:

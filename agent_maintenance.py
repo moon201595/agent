@@ -186,6 +186,7 @@ class Brief:
     precision: dict[str, str] = field(default_factory=dict)
     delivered: dict[str, dict] = field(default_factory=dict)
     related_texts: list[str] = field(default_factory=list)
+    axis_reactions: dict[str, dict] = field(default_factory=dict)  # A id → {term, more, out, state} — 메일 연구축 버튼(2026-10-12)
 
     @property
     def evidence_ids(self) -> set[str]:
@@ -196,7 +197,7 @@ class Brief:
         prof = self.data["profile"]
         stale_auto = any(k["origin"] in AUTO_ORIGINS and k["hits_28d"] == 0 for k in prof["core"]) and prof["scans_28d"] >= 7
         return bool(self.data["reactions"] or stale_auto or self.data.get("trend", {}).get("records")
-                    or self.data.get("external", {}).get("items")
+                    or self.data.get("external", {}).get("items") or self.data.get("external", {}).get("axis_reactions")
                     or self.data.get("precision", {}).get("keywords"))
 
 
@@ -354,6 +355,17 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                          "source_type": e["source_type"], "published": e["published"], "gap_stage": e["gap_stage"],
                          "manufacturing_relation": e["manufacturing_relation"], "candidate_terms": e["candidate_terms"],
                          "performance_verified": e["performance_verified"]})
+    # 메일 연구축 버튼 반응(2026-10-12). 수신자마다 마지막 반응 하나로 센 뒤 우세한 쪽만 근거가 된다 — 같으면 신호가 아니다.
+    # 검증용 글은 연구축 이름이다. 그 이름 자체가 정찰 근거 논문 2편 이상의 공식 제목·초록에서 Python 이 확인한 말이다(external_scout._axis_groups).
+    axis_reactions, axis_ids = [], {}
+    for _key, c in sorted(feedback_links.axis_reactions(db, profile_id).items()):
+        if not c["state"]:
+            continue
+        term = c["term"]
+        aid = f"A{len(axis_ids) + 1}"
+        axis_ids[aid] = dict(c)
+        texts[aid] = f"메일 연구축 반응: {term}"
+        axis_reactions.append({"id": aid, "term": term, "more": c["more"], "out": c["out"], "state": c["state"]})
     data = {
         "trend": trend,
         "profile": {"id": profile_id, "name": profile["name"], "scans_28d": scans,
@@ -362,13 +374,14 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
                     "target_domain": list(profile["target_domain"]), "exclude": list(profile["exclude"])},
         "reactions": reactions, "liked_terms": liked_terms,
         "missed_terms": missed_terms, "missed_papers": missed_papers,
-        "external": {"items": external, "axes": external_scout.brief_axes(db, profile_id, external_items, now)},
+        "external": {"items": external, "axes": external_scout.brief_axes(db, profile_id, external_items, now),
+                     "axis_reactions": axis_reactions},
     }
     data.update(precision=precision_data, delivered=delivered_data)
     return Brief(data=data, texts=texts, reactions=reaction_ids, keyword_ids=keyword_ids,
                  base_revision=research_profile.current_revision(db, profile_id), liked_texts=liked_texts,
                  external=external_ids, out_texts=out_texts, precision=precision_ids,
-                 delivered=delivered_ids, related_texts=related_texts)
+                 delivered=delivered_ids, related_texts=related_texts, axis_reactions=axis_ids)
 
 
 def _precision_evidence(db: Path, profile_id: str, now: datetime, reactions: list[dict],
@@ -452,13 +465,24 @@ def _same(a: str, b: str) -> bool:
     return _norm_term(a) == _norm_term(b)
 
 
+def _axis_stopped(brief: "Brief", term: str) -> bool:
+    """메일 연구축에 "관심 밖" 이 우세한 축과 겹치는 말인가 — 키워드 추가·검색 시드 추가·가중치 상향을 모두 막는다(2026-10-12)."""
+    return any(r["state"] == feedback_links.AXIS_STOPPED and _axis_overlap(term, r["term"]) for r in brief.axis_reactions.values())
+
+
+def _axis_overlap(term: str, axis: str) -> bool:
+    """같은 말이거나 낱말 단위로 한쪽이 다른 쪽을 품는다 — 관심 밖 연구축의 표기 변형·세부어·상위어를 같이 막는다."""
+    a, b = _norm_term(term), _norm_term(axis)
+    return a == b or term_hygiene.token_sequence_contains(a, b) or term_hygiene.token_sequence_contains(b, a)
+
+
 def _liked(brief: Brief, evidence_id: str) -> bool:
     c = brief.reactions.get(evidence_id)
     return bool(c) and sum(c[x] for x in POSITIVE) > c["out"]
 
 
 # 한글 조사는 유니코드 단어 문자라 \b 가 "X4의" 사이에서 안 끊긴다 — 경계를 영숫자 기준 lookaround 로 직접 건다.
-_ID = r"(?<![A-Za-z0-9])[RXKEQD]\d+(?![0-9A-Za-z])"
+_ID = r"(?<![A-Za-z0-9])[RXKEQDA]\d+(?![0-9A-Za-z])"
 _EVIDENCE_ID_RE = re.compile(rf"\(?{_ID}(?:\s*[·,/]\s*{_ID})*\)?(?:\s?(?:에서|의|에|는|은|이|가)(?![가-힣]))?")
 
 
@@ -539,7 +563,7 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
         # 외부 근거: 이 용어가 공식 제목·초록에 있는 E. "놓친" 것(검색이 못 가져옴·핵심어 미적중·자리 탈락)만 세어 둔다.
         ext_ev = [e for e in ev if e in brief.external and _in_text(term, brief.texts.get(e, ""))]
         missed_ev = {e for e in ext_ev if brief.external[e]["gap_stage"] in ("not_retrieved", "no_core_hit", "ranked_out")}
-        parts = [name for name, on in (("feedback", any(e in brief.reactions for e in ev)), ("trend", bool(trend_ev)),
+        parts = [name for name, on in (("feedback", any(e in brief.reactions or e in brief.axis_reactions for e in ev)), ("trend", bool(trend_ev)),
                                        ("external", bool(ext_ev))) if on]
         a["basis"] = "+".join(parts) or "maintenance"
         if op in ("add_keyword", "set_weight"):
@@ -565,12 +589,20 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                 reject(a, "overlaps_exclude"); continue
             if not any(e in brief.texts and _in_text(term, brief.texts[e]) for e in ev):
                 reject(a, "term_not_in_evidence"); continue
+            # 메일 연구축에 "관심 밖"이 우세하면 그 말(과 그 말을 품거나 그 말에 들어가는 말)은 어느 경로로도 더하지 않는다(2026-10-12, 규칙 1).
+            # 모델이 그 반응을 근거로 인용하지 않아도 막는다 — 반응을 안 부르는 것으로 비켜 가면 안 된다.
+            if _axis_stopped(brief, term):
+                reject(a, "conflicts_axis_reaction"); continue
             # 2026-09-18 사용자 결정: 반응 우선은 유지하되, 명시적으로 인용한 동향 근거도 허용한다.
             liked_ok = any(_liked(brief, e) and _in_text(term, brief.texts[e]) for e in ev)
+            # 메일 연구축에 "더 보고 싶음"이 우세하고 그 연구축 **이름 그대로**를 더하는 경우 — 놓친 외부 논문 2편 조건 대신 사용자 반응을 근거로 받는다.
+            # 가중치 상한(0.7)과 관심 밖 논문 충돌 검사는 외부 근거와 같다: 읽은 논문이 아니라 연구 방향에 대한 반응이기 때문이다.
+            axis_wanted = any(e in brief.axis_reactions and brief.axis_reactions[e]["state"] == feedback_links.AXIS_WANTED
+                              and _same(term, brief.axis_reactions[e]["term"]) for e in ev)
             if not trend_ev and not liked_ok:
                 # 2026-09-30: 외부 정찰 근거로도 된다 — 단 **에이전트가 실제로 놓친 서로 다른 외부 논문 2편 이상**(일회성·이미 잡은 것 제외),
                 # 가중치 상한, 그리고 사용자가 관심 밖으로 표시한 논문의 말이면 안 된다(규칙 1 — 사용자 반응이 외부 발견보다 먼저다).
-                if len(missed_ev) < EXTERNAL_MIN_MISSED:
+                if len(missed_ev) < EXTERNAL_MIN_MISSED and not axis_wanted:
                     reject(a, "no_liked_evidence" if not ext_ev else "external_not_missed_twice"); continue
                 if a["weight"] > EXTERNAL_WEIGHT_MAX:
                     reject(a, "external_weight_too_high"); continue
@@ -583,6 +615,8 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
                 reject(a, "not_core"); continue
             if abs(core[known_core]["weight"] - a["weight"]) < 1e-9:
                 reject(a, "no_op"); continue
+            if a["weight"] > core[known_core]["weight"] and _axis_stopped(brief, known_core):
+                reject(a, "conflicts_axis_reaction"); continue   # 내리는 것은 된다 — 사용자 키워드를 지우지는 않는다(규칙 1)
             if a["weight"] > core[known_core]["weight"] and not trend_ev and not any(
                     _liked(brief, e) and _in_text(known_core, brief.texts[e]) for e in ev):
                 reject(a, "no_liked_evidence"); continue    # 올리는 것도 반응을 따른다. 내리는 것은 적중 0편(K)으로도 된다
@@ -608,6 +642,8 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
         elif op == "add_seed":
             if find(seeds, term):
                 reject(a, "already_seed"); continue
+            if _axis_stopped(brief, term):                 # 관심 밖으로 멈춘 방향으로 검색을 넓히지 않는다(2026-10-12 Codex 검토)
+                reject(a, "conflicts_axis_reaction"); continue
             if not known_core:
                 reject(a, "seed_not_core"); continue
             a["term"] = known_core

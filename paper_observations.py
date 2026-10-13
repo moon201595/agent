@@ -90,60 +90,158 @@ def external_line(c: dict) -> tuple[str, str]:
             c.get("source_url") or "")
 
 
+# ── 카드의 성능 비교(2026-10-13 사용자 지적) ─────────────────────────────────────────────────
+# "논문 내 결과도 이 논문 표도 그렇고 저걸 어떻게 보고 사용자가 이해를 해? 표 형태로 주던가, 어느 논문의 어느 방법이 어느 수치였는데 그거 대비
+# 이건 어떻다 이런 식으로". 예전 카드는 "SWE-Bench · success rates / Average 53.8 — 논문 표 … 행 (S3.T1#0:r10c3)" 처럼 내부 위치 표기와 값을
+# 줄로 나열했고 비교 문장이 없었다. 이제 벤치마크·지표마다 **한 상자 = 비교 표 + 한 문장**이다.
+# 표 행 문법(평문 저장 → 형식 수정본 역파싱 → 같은 HTML 표): "<구분> · <방법> · <값>[ · <출처·조건>]". 문장 행은 "→ " 로 시작한다.
+# 문장은 계산이 아니라 **같은 표·같은 열·같은 구획**의 두 값의 차이와 지표 방향만 말한다(규칙 7 — 조건이 다른 값끼리는 차이를 말하지 않는다).
+ROW_KINDS = ("이 논문", "같은 표", "외부 논문", "기존 관측")
+COMPARISON_PREFIX = "성능 비교 · "
+CODE_HEADING = "코드 저장소"
+DIRECTION_LABEL = {"higher": "높을수록 좋음", "lower": "낮을수록 좋음"}
+
+
+def table_label(r: dict) -> str:
+    """"표 1" 처럼 논문에 적힌 번호. 캡션에 번호가 없으면 "논문 표"."""
+    import re
+    m = re.match(r"\s*(?:Table|Tab\.?)\s*(\d+)", r.get("caption") or "", re.I)
+    return f"표 {m[1]}" if m else "논문 표"
+
+
+def _decimals(text: str) -> int | None:
+    """값 문자열의 소수 자릿수. 지수 표기(1.2e-3)는 None — 자릿수로 차이를 말할 수 없다(Codex 검토 P2: ".85" 를 정수로 읽어 0.05 차이를 "같다" 고 했다)."""
+    import re
+    text = text or ""
+    if re.search(r"\d\s*[eE][-+]?\d|×\s*10", text):
+        return None
+    m = re.search(r"\d*\.(\d+)|\d+", text)
+    return len(m[1]) if m and m[1] else 0
+
+
+def conditions_verified(c: dict) -> bool:
+    """외부 결과의 평가 조건 4가지가 출처 인용으로 모두 대조됐는가 — `comparison_rows` 와 같은 기준(Codex 검토 P2: 카드 표가 더 느슨했다)."""
+    import external_evidence
+    conditions = c.get("matched_conditions")
+    if not isinstance(conditions, list) or any(not isinstance(x, str) or not x.strip() for x in conditions):
+        return False
+    return (c.get("same_conditions") is True and not c.get("differences") and c.get("unverified_differences") == 0
+            and not c.get("conditions_not_checked") and len(set(conditions)) >= len(external_evidence.REQUIRED_CONDITIONS))
+
+
+def difference_sentence(main: dict, other: dict, where: str, *, same_column: bool) -> str:
+    """같은 조건이 확인된 두 값의 차이 한 문장. 방향을 모르거나 척도가 다르면 빈 문자열 — 대소를 말하지 않는다.
+    같은 표·같은 열이면 척도가 같다 — 그대로 뺀다. 다른 표(외부)는 두 값의 척도(0~1·%)가 같을 때만 견준다: `comparable_values` 의 ×100 은
+    "0.8%" 같은 명시 % 값까지 80 으로 바꿔 우열을 뒤집는다(Codex 검토 P1)."""
+    direction = main.get("direction")
+    a, b = main.get("value"), other.get("value")
+    if direction not in DIRECTION_LABEL or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in (a, b)):
+        return ""
+    a_text, b_text = main.get("text") or "", other.get("text") or ""
+    if not same_column and (("%" in a_text) != ("%" in b_text) or (abs(a) <= 1.0) != (abs(b) <= 1.0)):
+        return ""
+    found = [_decimals(a_text), _decimals(b_text)]
+    if None in found:
+        return ""
+    places = max(found)
+    diff = a - b
+    if diff == 0:
+        verdict = "같다"
+    else:
+        while round(abs(diff), places) == 0 and places < 12:   # 표시 자릿수 때문에 차이가 사라지면 늘린다 — 다른 값을 같다고 하지 않는다
+            places += 1
+        better = diff > 0 if direction == "higher" else diff < 0
+        verdict = f"{abs(diff):.{places}f} {'높다' if diff > 0 else '낮다'}({'더 좋음' if better else '더 나쁨'})"
+    return (f"→ {where} {main['model']} {main['text']}은(는) {other['model']} {other['text']}보다 {verdict}. "
+            f"지표는 {DIRECTION_LABEL[direction]}.")
+
+
+def _field(text: object) -> str:
+    """표 행 문법의 구분자(" · ")가 칸 안에 들어가면 방법 이름이 값 칸으로 밀린다(Codex 검토 P2) — 칸 안의 것은 붙여 쓴다."""
+    return str(text or "").replace(" · ", "·").strip()
+
+
+def _external_row(c: dict) -> tuple[str, str]:
+    """외부 결과 한 행. 출처 표의 실제 열 이름과 "같은 과제" 가 에이전트 판독이라는 것을 그대로 적는다(2026-10-07 설계 — 의미 판단의 책임을 드러낸다)."""
+    if conditions_verified(c):
+        conditions = "평가 조건 4가지 대조함"
+    elif c.get("differences"):
+        conditions = "조건 차이: " + ", ".join(c["differences"])
+    else:
+        conditions = "평가 조건 대조 못 함"
+    where = f'{c.get("table_label") or c.get("table_id") or "출처 표"} 열 "{" / ".join(c.get("column_path") or [])}"'
+    cited = " · 다른 논문 표의 재인용" if c.get("third_party") else ""
+    judged = f" · 같은 과제: 에이전트 판독({c['task_note']})" if c.get("task_note") else " · 같은 과제: 에이전트 판독"
+    return (f"외부 논문 · {_field(c.get('display_model') or c['model'])} · {_field(c['text'])} · {where}{cited}{judged} · {conditions}",
+            c.get("source_url") or "")
+
+
+def _comparison_section(r: dict, ext: dict, first: bool) -> tuple[str, list[tuple[str, str]]]:
+    where = table_label(r) + (f" {r['block']} 구획" if r.get("block") else "")
+    direction = DIRECTION_LABEL.get(r.get("direction") or "", "방향 미상")
+    rows: list[tuple[str, str]] = [(f"이 논문 · {_field(r['model'])} · {_field(r['text'])} · {where}", "")]
+    baselines = r.get("baselines") or []
+    rows += [(f"같은 표 · {_field(b['model'])} · {_field(b['text'])}", "") for b in baselines]
+    shown_ext = [c for c in (ext.get("competitors") or []) if external_visible(c)] if first else []
+    rows += [_external_row(c) for c in shown_ext]
+    best = (r.get("compare") or {}).get("best")
+    if best:
+        rows.append((f"기존 관측 · {_field(best['model'])} · {best['value']:g} · {best['reported_in']} 표 · 평가 조건 미확인", ""))
+    # 한 문장 — 같은 표·같은 열·같은 구획의 가장 좋은 비교 방법 대비(`_baselines` 가 방향대로 정렬해 둔다).
+    if baselines:
+        line = difference_sentence(r, baselines[0], f"{where}에서", same_column=True)
+        if line:
+            rows.append((line, ""))
+    for c in shown_ext:
+        if conditions_verified(c):
+            line = difference_sentence(r, {**c, "model": c.get("display_model") or c["model"]}, "평가 조건이 같다고 대조한 외부 결과와 견주면",
+                                       same_column=False)
+            if line:
+                rows.append((line, c.get("source_url") or ""))
+        else:
+            rows.append((f"→ 외부 결과 {c.get('display_model') or c['model']} {c['text']}는 평가 조건이 같은지 확인되지 않아 차이를 말하지 않는다.", ""))
+    missed = sum(c.get("status") in ("fetch_failed", "table_failed") for c in ext.get("competitors") or []) if first else 0
+    if first and ext.get("status") == "incomplete" and shown_ext and missed:
+        # 확인된 외부 결과가 있는데 뭉뚱그린 "미완료" 만 붙이면 그 결과까지 못 믿게 읽힌다(2026-10-07 실측) — 못 본 후보 수만 센다.
+        rows.append((f"→ 웹 검색 후보 중 {missed}건은 출처 표를 확인하지 못해 싣지 않았다.", ""))
+    elif first and ext.get("status") == "incomplete" and not shown_ext:
+        rows.append(("→ 저자가 비교하지 않은 더 최근 결과(웹 검색)는 이번에 확인하지 못했다.", ""))
+    elif first and ext.get("status") == "done" and not shown_ext:
+        rows.append(("→ 저자가 비교하지 않은 더 최근 결과를 웹에서 찾았지만 출처 표에서 확인된 것이 없다.", ""))
+    return (f"{COMPARISON_PREFIX}{r['benchmark']} · {r['metric']} ({direction})", rows)
+
+
+def code_rows(sig: dict | None) -> list[tuple[str, str]]:
+    """이 논문의 공식·저자 저장소. 새 논문의 인용 수·HF 내려받기 수는 싣지 않는다(2026-10-13 사용자: "왜 최신 논문에 대한 인용수 이런 게
+    아직도 있어") — 공개 며칠 된 논문에서는 거의 늘 0이라 읽을거리가 아니다. 수집은 그대로 하고 운영 화면이 쓴다."""
+    g = (sig or {}).get("github") or {}
+    if (sig or {}).get("github_tier") not in ("official", "author") or not g.get("repo"):
+        return []
+    tier = "공식 저장소" if sig["github_tier"] == "official" else "저자 연관 저장소(공식 여부 미확인)"
+    return [(f"{tier} · {g['repo']}", f"https://github.com/{g['repo']}")]
+
+
 def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tuple[str, str]]]]:
-    """숫자는 저장 근거 그대로 쓴다. 벤치마크·지표만 같은 값으로 우열을 표시하지 않는다."""
+    """숫자는 저장 근거 그대로 쓴다. 차이 문장은 같은 표·같은 열·같은 구획이나 조건 대조가 끝난 외부 값과만 만든다."""
     fr = paper.get("_frontier") or {}
     out: list[tuple[str, list[tuple[str, str]]]] = []
-    own: list[tuple[str, str]] = []
-    for r in fr.get("main") or []:
-        own.append((f"{r['benchmark']} · {r['metric']} {r['text']} — 논문 표 {r['model']} 행 ({r['locator']})", ""))
-    if not own:
+    mains = fr.get("main") or []
+    ext = fr.get("external") or {}
+    for i, r in enumerate(mains):
+        out.append(_comparison_section(r, ext, first=i == 0))   # 외부 조사는 analyze 가 고른 첫 관측 하나가 대상이다
+    if not mains:
+        own: list[tuple[str, str]] = []
         for s in (fr.get("sentences") or [])[:2]:
             where = f"[S{s['index']:04d}]" if s.get("source") == "text" and s.get("index") else "(초록)"
             own.append((f"“{s['sentence']}” {where}", ""))
         if own:
             own.append(("저자 자신의 실험 보고를 인용함. 표 구조를 확인하지 못해 논문 간 수치 비교에는 쓰지 않음.", ""))
-    if own:
-        out.append(("성능 관측 · 논문 내 결과", own))
-        baselines = []
-        for r in fr.get("main") or []:
-            rows = r.get("baselines") or []
-            if rows:
-                values = " · ".join(f"{b['model']} {b['text']}" for b in rows)
-                baselines.append((f"{r['benchmark']} · {r['metric']} — {values} ({r['locator'].partition(':r')[0]})", ""))
-        if baselines:
-            out.append(("비교 대상 · 이 논문 표(저자 보고값)", baselines))
-        other: list[tuple[str, str]] = []
-        for r in fr.get("main") or []:
-            best = (r.get("compare") or {}).get("best")
-            if best:
-                other.append((f"기존 관측: {r['benchmark']} · {r['metric']} {best['value']:g} — {best['model']} "
-                              f"({best['reported_in']} 표). 같은 평가 조건인지 미확인.", ""))
-        ext = fr.get("external") or {}
-        for c in ext.get("competitors") or []:
-            if external_visible(c):
-                other.append(external_line(c))
-        if other:
-            other.append(("벤치마크·지표 외에 데이터 버전·split·backbone·추론 조건까지 같아야 비교 가능함. 여기서는 우열을 판정하지 않음.", ""))
-        else:
-            other.append(("동일 조건으로 확인한 논문 간 비교 결과 없음.", ""))
-        if ext.get("status") == "incomplete":
-            # 확인된 외부 결과가 있는데 "미완료"만 붙이면 그 결과까지 못 믿을 것처럼 읽힌다(2026-10-07 실측: 1건 확인·1건 표 확보 실패).
-            # 그때는 무엇이 안 됐는지만 센다. 확인된 것이 없으면 예전처럼 미완료 한 줄이다.
-            shown = any(external_visible(c) for c in ext.get("competitors") or [])
-            missed = sum(c.get("status") in ("fetch_failed", "table_failed") for c in ext.get("competitors") or [])
-            if shown and missed:
-                other.append((f"외부 조사 일부 미완료 — 출처 표를 확인하지 못한 후보 {missed}건.", ""))
-            else:
-                other.append(("외부 조사 미완료.", ""))
-        out.append(("논문 간 관측", other))
+            out.append(("성능 관측 · 논문 내 결과", own))
     claims = paper.get("_sota_claims") or fr.get("claims") or []
     if claims:
         import sota_claims
         out.append(("논문 자체 주장 · 미검증", [(sota_claims.mail_line(claims), "")]))
-    sig = paper.get("_signals")
-    if sig and has_signals(sig):
-        import adoption_signals
-        rows = [(f"{label} · {text}", "") for label, text in adoption_signals.signal_rows(sig, today)]
-        out.append(("외부 관측 신호", rows))
+    code = code_rows(paper.get("_signals"))
+    if code:
+        out.append((CODE_HEADING, code))
     return out

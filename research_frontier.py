@@ -57,11 +57,15 @@ def _baselines(results: list[dict], main: dict, method: str = "") -> list[dict]:
     own_key = re.sub(r"[^0-9a-z]", "", method.casefold())
     table, _, cell = main["locator"].partition(":r")
     col = cell.partition("c")[2]
+    parent = lambda m: m.rsplit(" / ", 1)[0] if " / " in m else ""     # 단일 머리 전치 표는 부모 경로가 없다(Codex 검토 P2 — 이름 전체를 비교해 다 버렸다)
     rows = [r for r in results if not r["own"] and r["locator"].partition(":r")[0] == table
             and (r["locator"].partition(":r")[2].partition("c")[0] == cell.partition("c")[0]
-                 and r["model"].rsplit(" / ", 1)[0] == main["model"].rsplit(" / ", 1)[0]
+                 and parent(r["model"]) == parent(main["model"])
                  if main.get("orientation") == "transposed" else
                  r["locator"].partition(":r")[2].partition("c")[2] == col)
+            # 같은 열이어도 행마다 벤치마크가 다른 표가 있다(Codex 검토 P1 — Dataset 열이 있는 표). 지표·벤치마크·구획까지 같아야 비교 대상이다.
+            and r.get("bench_key") == main.get("bench_key") and r.get("metric_key") == main.get("metric_key")
+            and r.get("block_id", "") == main.get("block_id", "")        # 다른 백본·설정 구획의 값과 섞지 않는다(2026-10-13 실측)
             and not re.search(r"(?i)\bours\b|\bproposed\b|\bw/|\bwithout\b", r["model"])
             and not (len(own_key) >= 2 and re.sub(r"[^0-9a-z]", "", r["model"].casefold()).startswith(own_key))]
     if main.get("direction") in ("higher", "lower"):
@@ -419,6 +423,7 @@ def reading_point(paper: dict) -> str:
     parts: list[str] = []
     if kws:
         parts.append(f"`{kws[0]}` 관심축과 직접 연관.")
+    import paper_observations
     fr = paper.get("_frontier") or {}
     main = (fr.get("main") or [None])[0]
     if main:
@@ -426,6 +431,9 @@ def reading_point(paper: dict) -> str:
         verified = _verified(fr)
         if verified and not all(_same(c) for c in verified):
             parts.append(head + "했으나, 확인한 외부 경쟁 결과와 평가 조건이 달라 직접 우열 비교는 어려움.")
+        elif verified and any(paper_observations.conditions_verified(c) for c in verified):
+            # 카드 비교 상자와 같은 판정(Codex 검토 P2: 카드는 "조건이 같다" 고, 읽을 포인트는 "일부만 기록" 이라고 달리 말했다).
+            parts.append(head + "했고, 평가 조건 4가지를 출처 인용으로 대조한 외부 결과가 있음.")
         elif verified:
             parts.append(head + "했고, 외부 논문 표와 일부 조건 대조 기록이 있음. 전체 평가 조건의 일치는 별도 확인이 필요함.")
         elif main["compare"]["status"] == "above_observed":

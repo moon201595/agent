@@ -252,7 +252,7 @@ def test_monday_mail_shows_what_was_missed_without_scout_opinions(tmp_path):
     html = digest._external_scout_html({"external_scout": sc})
     text = "\n".join(digest._external_scout_lines({"external_scout": sc}))
     for body in (html, text):
-        assert "Zero-Shot Surface Defect Segmentation Study 0" in body and "검색 소스가 가져온 것 0" in body
+        assert "Zero-Shot Surface Defect Segmentation Study 0" in body and "우리 검색이 가져온 것 0편" in body
         assert "surface inspection" not in body and "must read" not in body
     assert digest._external_scout_html({}) == "" and digest._external_scout_lines({}) == []
 
@@ -405,7 +405,7 @@ def test_axes_flow_to_mail_with_python_checked_evidence_and_keep_capture_compara
     assert sc["capture"]["evaluable"] == 2 and sc["verified"] == 2
     # 정찰 설명은 판정어가 없으면 싣는다. 미포착 내역은 근거 논문의 놓침 단계, 분모는 같은 창에 우리 검색에 처음 들어온 후보 전체(2026-10-08 외부 검토).
     assert sc["axes"] == [{"term": AXIS, "summary": "결함 원인을 설명하는 이상 탐지", "papers": 2, "recent": 2, "previous": 1,
-                           "recent_total": 2, "previous_total": 1, "missed": {"not_retrieved": 2},
+                           "recent_total": 2, "previous_total": 1, "missed": {"not_retrieved": 2}, "first_week": "2026-W41",
                            "evidence": [{"title": "Visual Anomaly Reasoning for Inspection 1", "link": "https://arxiv.org/abs/2609.22221", "stage": "검색 소스가 못 가져옴"},
                                         {"title": "Visual Anomaly Reasoning for Inspection 0", "link": "https://arxiv.org/abs/2609.22220", "stage": "검색 소스가 못 가져옴"}]}]
 
@@ -445,8 +445,8 @@ def test_axes_render_in_plain_html_and_saved_mail_identically():
     lines = digest._external_scout_lines({"external_scout": sc})
     assert any(digest.AXES_HEADING in line for line in lines) and "성장세는 확인하지 않음" in digest.AXES_HEADING
     html = digest._external_scout_html({"external_scout": sc})
-    for row in ("정찰 설명: 결함 원인을 설명하는 이상 탐지 (설명형)", "근거 논문 2편 · 미포착 2편(검색 못 가져옴 1 · 핵심어 불일치 1)",
-                "우리 검색 관측: 최근 4주 2/40편 · 직전 4주 1/31편", "근거 논문 3편"):
+    for row in ("정찰 설명: 결함 원인을 설명하는 이상 탐지 (설명형)", "근거 논문 2편 중 우리가 놓친 것 2편(검색 못 가져옴 1 · 핵심어 불일치 1)",
+                "우리 검색 결과에서 이 용어가 나온 논문: 최근 4주 2편(전체 40편 중) · 직전 4주 1편(전체 31편 중)", "근거 논문 3편"):
         assert row in html and any(row in line for line in lines), row
     assert "떠오르" not in html
     assert saved_digest._scout_from_lines(lines) == sc
@@ -562,7 +562,7 @@ def test_axis_counts_bound_time_and_hide_unverified_prose(tmp_path):
                         (key, AXIS, "", at, at))
     sc = es.mail_summary(db, "p", NOW)
     assert sc["axes"] == [{"term": AXIS, "summary": "", "papers": 2, "recent": 2, "previous": 2,
-                           "recent_total": 2, "previous_total": 2, "missed": {"not_retrieved": 2},
+                           "recent_total": 2, "previous_total": 2, "missed": {"not_retrieved": 2}, "first_week": "2026-W41",
                            "evidence": [{"title": "Visual anomaly reasoning study a1", "link": "https://arxiv.org/abs/a1", "stage": "검색 소스가 못 가져옴"},
                                         {"title": "Visual anomaly reasoning study a0", "link": "https://arxiv.org/abs/a0", "stage": "검색 소스가 못 가져옴"}]}]   # 판정어 섞인 설명은 버린다
     ev = es.evidence_for_brief(db, "p", NOW)

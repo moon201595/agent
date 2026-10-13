@@ -611,10 +611,54 @@ def _observation_blocks_html(paper: dict) -> str:
     return _render_observation_sections(_observation_sections(paper))
 
 
+_COMPARISON_ROW_RE = re.compile(r"(이 논문|같은 표|외부 논문|기존 관측) · (.+?) · (\S+)(?: · (.+))?")
+
+
+def _comparison_table_html(heading: str, entries: list[tuple[str, str]]) -> str | None:
+    """성능 비교 상자(2026-10-13) — 행 문법이 맞으면 표 + 문장으로, 하나라도 안 맞으면 None(호출부가 줄 나열로 그린다).
+    평문 저장 글에서 되살린 행도 같은 함수를 타므로 형식 수정본이 아침 메일과 같다."""
+    rows, notes = [], []
+    for text, url in entries:
+        if text.startswith("→ "):
+            notes.append((text[2:], url))
+            continue
+        m = _COMPARISON_ROW_RE.fullmatch(text)
+        if not m:
+            return None
+        rows.append((m[1], m[2], m[3], m[4] or "", url))
+    if not rows or rows[0][0] != "이 논문":
+        return None
+    th = 'style="text-align:left;font-size:12px;font-weight:600;color:#526675;padding:4px 8px;border-bottom:1px solid #DFE5E9;"'
+    body = ""
+    for kind, model, value, note, url in rows:
+        mine = kind == "이 논문"
+        weight = "700" if mine else "400"
+        bg = "#EEF6F7" if mine else "#FFFFFF"
+        name = (f'<a href="{_esc(url)}" style="color:#0B5F68;text-decoration:none;">{_esc(model)} ↗</a>' if url else _esc(model))
+        td = f'style="font-size:13px;padding:5px 8px;border-bottom:1px solid #EEF2F5;background-color:{bg};font-weight:{weight};vertical-align:top;"'
+        body += (f'<tr><td {td}>{_esc(kind)}</td><td {td}>{name}</td>'
+                 f'<td {td.replace("vertical-align:top;", "vertical-align:top;text-align:right;white-space:nowrap;")}>{_esc(value)}</td>'
+                 f'<td {td.replace(f"font-weight:{weight};", "font-weight:400;color:#526675;")}>{_esc(note)}</td></tr>')
+    table = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:6px;">'
+             f'<tr><th {th}>구분</th><th {th}>방법</th><th {th.replace("text-align:left", "text-align:right")}>값</th><th {th}>출처·조건</th></tr>'
+             f'{body}</table>')
+    sentences = ''.join(f'<div style="font-size:13.5px;line-height:1.65;margin-top:6px;color:#162536;">'
+                        + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text)) + '</div>'
+                        for text, url in notes)
+    return ('<div style="border:1px solid #E3E8EC;border-radius:8px;padding:10px 12px;margin-top:8px;">'
+            f'<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">{_esc(heading)}</div>{table}{sentences}</div>')
+
+
 def _render_observation_sections(sections: list[tuple[str, list[tuple[str, str]]]]) -> str:
     """평문에서 복원한 관측도 원래 관측 상자에 넣는다. 수치와 출처는 입력 그대로다."""
+    import paper_observations
     blocks = []
     for heading, entries in sections:
+        if heading.startswith(paper_observations.COMPARISON_PREFIX):
+            table = _comparison_table_html(heading, entries)
+            if table:
+                blocks.append(table)
+                continue
         rows = ''.join('<div style="font-size:13.5px;line-height:1.7;margin-top:5px;word-break:break-word;">'
                        + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text))
                        + '</div>' for text, url in entries)
@@ -1502,22 +1546,67 @@ def _has_auto_change(ch: dict) -> bool:
                 or _changes_tail(ch, hidden))
 
 
+# ── 외부 정찰 절의 안내 문장(2026-10-12 사용자 지적: "보여주기만 하지 말고 사용자가 알아먹을 수 있게") ──────────────────
+# 상자마다 (1) 이게 무엇인지 (2) 숫자가 무슨 뜻인지 (3) 에이전트가 이걸로 무엇을 하는지를 **정해진 문장**으로 붙인다. 모델이 쓰지 않는다 —
+# "할 일" 문장은 `agent_maintenance.validate` 가 실제로 강제하는 조건(놓친 외부 논문 2편·가중치 0.7 이하·관심 밖 충돌)과
+# `external_scout.watchlist`(8주) 그대로다. 그 상수가 바뀌면 test_external_scout 가 이 문장과 어긋난 것을 잡는다.
+SCOUT_GUIDE = "매주 우리 검색과 따로 외부에서 관련 연구를 찾아 공식 자료로 확인하고, 그중 에이전트가 무엇을 놓쳤는지 점검합니다."
+MISSED_HEADING = "에이전트가 놓친 연구"
+STAGE_HELP = {
+    "검색 소스가 못 가져옴": "우리 검색어·검색처로는 잡히지 않았습니다.",
+    "가져왔으나 핵심어에 안 걸림": "검색에는 들어왔지만 제목·초록에 핵심 키워드가 없어 뒤로 밀렸습니다.",
+    "관련인데 자리에서 밀림": "핵심 키워드에는 걸렸지만 그날 메일 자리 안에 들지 못했습니다.",
+}
+MISSED_ACTION = ("에이전트가 할 일: 같은 용어가 놓친 논문 2편 이상에 나오면 주간 관리가 그 용어를 키워드로 더할지 검토합니다"
+                 "(가중치 0.7 이하로 시작, 관심 밖으로 표시한 논문의 용어는 더하지 않음). 실제로 바뀐 것이 있으면 아래 '검색 기준 변화'에 나옵니다.")
+AXES_GUIDE = ("지금 핵심 키워드에 없는 연구 방향입니다. 근거 논문은 공식 제목·초록에 그 용어가 그대로 있는지 확인한 것이고, "
+              "분야 전체가 커지는지는 확인하지 않았습니다.")
+AXES_ACTION = ("에이전트가 할 일: 최근 8주 정찰에서 근거 2편 이상으로 확인된 연구축을 계속 지켜봅니다. "
+               "놓친 근거 논문이 2편 이상이면 주간 관리가 키워드 추가를 검토합니다.")
+AXIS_BUTTON_HELP = ("연구축 버튼은 다음 주간 관리에 들어갑니다. 받는 분마다 마지막에 누른 것 하나로 세어 많은 쪽을 따르고, 같으면 바꾸지 않습니다. "
+                    "더 보고 싶음이 많으면: 놓친 근거가 2편에 못 미쳐도 이 반응으로 키워드 추가를 검토합니다(이 반응만으로 더할 때 가중치 0.7 이하). "
+                    "관심 밖이 많으면: 이 용어를 키워드·검색어로 더하지 않고 추적을 멈춥니다.")
+WATCH_GUIDE = "이번 주 후보에는 없지만 최근 8주 정찰에서 근거가 확인돼 계속 지켜보는 연구축입니다. 채택 여부와 관계없이 지켜봅니다."
+AXIS_WANTED_NOTE = "더 보고 싶음 반응 — 주간 관리가 키워드 추가를 검토합니다"
+STOPPED_PREFIX = "관심 밖 반응으로 추적을 멈춘 연구축: "
+
+
+def _capture_sentence(sc: dict) -> str:
+    """정찰 대비 수집 세 수치를 한 문장으로. 셋은 포함 관계다(가져온 것 ⊇ 핵심어 적중 ⊇ 메일, `external_scout.capture_summary`)."""
+    c = sc["capture"]
+    text = (f"이번 주 확인한 외부 연구 중 우리 검색 기간과 겹치는 {c['evaluable']}편: 우리 검색이 가져온 것 {c['retrieved']}편 · "
+            f"그중 핵심어에 걸린 것 {c['core_hit']}편 · 메일에 실린 것 {c['delivered']}편.")
+    rest = sc["verified"] - c["evaluable"]
+    if rest > 0:
+        text += f" 나머지 {rest}편은 우리 마지막 검색 뒤에 나왔거나 관측 시작 전 논문이라 비교하지 않았습니다."
+    return text
+
+
+def _stage_help(missed: list[dict]) -> list[str]:
+    """놓친 목록에 실제로 나온 단계만 설명한다(나온 순서)."""
+    seen = list(dict.fromkeys(m["stage"] for m in missed if m["stage"] in STAGE_HELP))
+    return [f"· {stage} — {STAGE_HELP[stage]}" for stage in seen]
+
+
 def _external_scout_lines(scan_result: dict) -> list[str]:
     """외부 정찰 절(2026-09-30) — 평문. 값은 HTML 판과 같은 dict 하나(`external_scout`)."""
     sc = scan_result.get("external_scout")
     if not sc:
         return []
-    c = sc["capture"]
-    lines = ["", "▶ 외부 정찰 — 이번 주 검증된 외부 연구 %d편" % sc["verified"],
-             f"   판정 가능 {c['evaluable']}편 중 검색 소스가 가져온 것 {c['retrieved']} · 핵심어에 걸린 것 {c['core_hit']} · "
-             f"메일까지 간 것 {c['delivered']}"]
+    lines = ["", "▶ 외부 정찰 — 이번 주 검증된 외부 연구 %d편" % sc["verified"], f"   {SCOUT_GUIDE}", f"   {_capture_sentence(sc)}"]
+    if sc["missed"]:
+        lines += [f"   {MISSED_HEADING}"] + [f"   {line}" for line in _stage_help(sc["missed"])]
     for m in sc["missed"]:
         lines.append(f"   - {m['title']}" + (f" ({m['venue']})" if m["venue"] else "") + f" — {m['stage']}")
         if m["link"]:
             lines.append(f"     {m['link']}")
+    if sc["missed"]:
+        lines.append(f"   {MISSED_ACTION}")
+    if any(item.get("_feedback_links") for item in (sc.get("axes") or []) + (sc.get("watch") or [])):
+        lines.append(f"   {AXIS_BUTTON_HELP}")
     for line in _axis_lines(sc.get("axes") or []):
         lines.append(f"   {line}")
-    for line in _watch_lines(sc.get("watch") or []):
+    for line in _watch_lines(sc.get("watch") or [], sc.get("stopped") or []):
         lines.append(f"   {line}")
     return lines
 
@@ -1528,49 +1617,77 @@ _MISS_LABELS = {"not_retrieved": "검색 못 가져옴", "no_core_hit": "핵심�
 
 def _axis_rows(a: dict) -> list[str]:
     """연구축 하나의 근거 줄들(2026-10-08 외부 검토 반영). 무엇을 확인했고 무엇은 모르는지 가른다:
-    근거 논문 = Python 이 공식 제목·초록에서 용어를 확인한 논문 수 · 미포착 = 그 근거 중 우리 검색이 놓친 단계 ·
-    우리 검색 관측 = 같은 창에 우리 검색에 처음 들어온 후보 중 용어 포함 편수/전체(키워드가 바뀌면 두 창의 조건이 달라 성장세가 아니다)."""
+    근거 논문 = Python 이 공식 제목·초록에서 용어를 확인한 논문 수 · 놓친 것 = 그 근거 중 우리 검색이 놓친 단계 ·
+    우리 검색 결과 = 같은 창에 우리 검색에 처음 들어온 후보 중 용어 포함 편수/전체(키워드가 바뀌면 두 창의 조건이 달라 성장세가 아니다).
+    2026-10-12: 숫자를 문장으로 풀고("7/7504편" → "7편(전체 7504편 중)") 증감으로 읽지 말라고 그 줄에 적는다."""
     rows = []
     if a.get("summary"):
         rows.append(f"정찰 설명: {a['summary']}")
     missed = a.get("missed") or {}
-    miss = (f" · 미포착 {sum(missed.values())}편(" + " · ".join(f"{_MISS_LABELS.get(k, k)} {n}" for k, n in missed.items()) + ")"
+    miss = (f" 중 우리가 놓친 것 {sum(missed.values())}편(" + " · ".join(f"{_MISS_LABELS.get(k, k)} {n}" for k, n in missed.items()) + ")"
             if missed else "")
     rows.append(f"근거 논문 {a['papers']}편{miss}")
     if isinstance(a.get("recent"), int) and isinstance(a.get("previous"), int):
-        total = lambda n: f"/{n}" if isinstance(n, int) else ""
         # 분모가 0 이면 "0편 나왔다"가 아니라 그 창의 후보 기록이 없는 것이다(2026-10-10 실측: 후보 기록이 9/15 부터라 첫 몇 주의 직전 창은 비어 있다).
-        window = lambda n, d: "관측 없음" if d == 0 else f"{n}{total(d)}편"
-        rows.append(f"우리 검색 관측: 최근 4주 {window(a['recent'], a.get('recent_total'))} · "
-                    f"직전 4주 {window(a['previous'], a.get('previous_total'))}")
+        window = lambda n, d: "기록 없음" if d == 0 else f"{n}편" + (f"(전체 {d}편 중)" if isinstance(d, int) else "")
+        rows.append(f"우리 검색 결과에서 이 용어가 나온 논문: 최근 4주 {window(a['recent'], a.get('recent_total'))} · "
+                    f"직전 4주 {window(a['previous'], a.get('previous_total'))} — 검색 조건이 달라 증감으로 읽지 않습니다")
+    if a.get("first_week"):
+        rows.append(f"추적: {a['first_week']}부터" + (f" · {AXIS_WANTED_NOTE}" if a.get("reaction") == "wanted" else ""))
     # 대표 근거 논문(2026-10-10 외부 검토: "그래서 어떤 논문이 이 연구축을 뒷받침하나"). 링크는 발송 직전 감사를 다시 거친다.
     for e in (a.get("evidence") or [])[:2]:
         rows.append(f"근거: {e['title']} ({e['stage']})" + (f" {e['link']}" if e.get("link") else ""))
     return rows
 
 
+def _axis_button_text(item: dict) -> list[str]:
+    links = item.get("_feedback_links") or {}
+    import feedback_links
+    shown = [f"{label} {links[action]}" for action, label in feedback_links.AXIS_ACTIONS if links.get(action)]
+    return ["반응 : " + " · ".join(shown)] if shown else []
+
+
 def _axis_lines(axes: list[dict]) -> list[str]:
-    out = [AXES_HEADING] if axes else []
+    out = [AXES_HEADING, AXES_GUIDE, AXES_ACTION] if axes else []
     for a in axes:
-        out += [f"* {a['term']}"] + [f"    {row}" for row in _axis_rows(a)]
+        out += [f"* {a['term']}"] + [f"    {row}" for row in _axis_rows(a) + _axis_button_text(a)]
     return out
 
 
 WATCH_HEADING = "외부 정찰이 추적 중인 연구축"
-_WATCH_STATUS = {"watching": "추적 중", "in_profile": "검색어로 채택 — 이제 일일 검색이 본다", "dormant": "4주째 새 근거 없음"}
+_WATCH_STATUS = {"watching": "추적 중", "in_profile": "검색어로 채택 — 이제 일일 검색이 본다", "dormant": "4주째 새 근거 없음",
+                 "user_out": "관심 밖 반응으로 추적 멈춤"}
 
 
 def _watch_row(w: dict) -> str:
     """추적 목록 한 항목(2026-10-10 사용자 결정: 정찰이 찾은 연구축은 채택되지 않아도 계속 본다). 값은 external_scout.watchlist 가 센 것."""
     return (f"처음 발견 {w['first_week']} · 누적 근거 {w['papers_total']}편 · 이번 주 새 근거 {w['new_this_week']}편 · "
-            f"{_WATCH_STATUS.get(w['status'], w['status'])}")
+            f"{_WATCH_STATUS.get(w['status'], w['status'])}" + (f" · {AXIS_WANTED_NOTE}" if w.get("reaction") == "wanted" else ""))
 
 
-def _watch_lines(watch: list[dict]) -> list[str]:
-    out = [WATCH_HEADING] if watch else []
+def _watch_lines(watch: list[dict], stopped: list[str] | None = None) -> list[str]:
+    out = [WATCH_HEADING, WATCH_GUIDE] if watch or stopped else []
     for w in watch:
-        out += [f"* {w['term']}", f"    {_watch_row(w)}"]
+        out += [f"* {w['term']}", f"    {_watch_row(w)}"] + [f"    {row}" for row in _axis_button_text(w)]
+    if stopped:
+        out.append(STOPPED_PREFIX + " · ".join(stopped))
     return out
+
+
+def _axis_buttons_html(item: dict) -> str:
+    """연구축 버튼 둘(2026-10-12). 논문 카드 버튼과 같은 모양이고 `_feedback_links` 가 있을 때만 싣는다."""
+    links = item.get("_feedback_links") or {}
+    import feedback_links
+    buttons = "".join(
+        f'<a href="{_esc(links[action])}" style="display:inline-block;margin:0 6px 4px 0;padding:5px 11px;'
+        f'background-color:#FFFFFF;border:1px solid #BFCBD3;border-radius:6px;color:#394B5A;'
+        f'font-size:12px;font-weight:400;text-decoration:none;">{_esc(label)}</a>'
+        for action, label in feedback_links.AXIS_ACTIONS if links.get(action))
+    return f'<div style="background-color:{_PAPER_BG};margin:5px 0 0 10px;">{buttons}</div>' if buttons else ""
+
+
+def _guide_html(text: str, margin: str = "2px 0 6px") -> str:
+    return f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;line-height:1.55;margin:{margin};">{_esc(text)}</div>'
 
 
 def _external_scout_html(scan_result: dict) -> str:
@@ -1578,28 +1695,37 @@ def _external_scout_html(scan_result: dict) -> str:
     sc = scan_result.get("external_scout")
     if not sc:
         return ""
-    c = sc["capture"]
     rows = "".join(
         f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:4px 0 0;">'
         + (f'<a href="{_esc(m["link"])}" style="background-color:{_PAPER_BG};color:{_ACCENT_DARK};text-decoration:none;">{_esc(m["title"])}</a>'
            if m["link"] else _esc(m["title"]))
         + (f' <span style="background-color:{_PAPER_BG};color:{_MUTED};">({_esc(m["venue"])})</span>' if m["venue"] else "")
         + f' {_chip(m["stage"], "warn")}</div>' for m in sc["missed"])
+    missed = (_h2(MISSED_HEADING) + "".join(_guide_html(line, "1px 0") for line in _stage_help(sc["missed"])) + rows
+              + _guide_html(MISSED_ACTION, "8px 0 0")) if rows else ""
+    axes_list = sc.get("axes") or []
+    watch_list = sc.get("watch") or []
+    stopped = sc.get("stopped") or []
+    any_buttons = any(item.get("_feedback_links") for item in axes_list + watch_list)
     axes = "".join(
         f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;">'
         f'<b>{_esc(a["term"])}</b>'
         + "".join(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(row)}</div>'
-                  for row in _axis_rows(a)) + '</div>' for a in sc.get("axes") or [])
+                  for row in _axis_rows(a)) + _axis_buttons_html(a) + '</div>' for a in axes_list)
     watch = "".join(
         f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;"><b>{_esc(w["term"])}</b>'
-        f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(_watch_row(w))}</div></div>'
-        for w in sc.get("watch") or [])
+        f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(_watch_row(w))}</div>'
+        + _axis_buttons_html(w) + '</div>' for w in watch_list)
+    stopped_html = _guide_html(STOPPED_PREFIX + " · ".join(stopped), "8px 0 0") if stopped else ""
     return (_h1("외부 정찰", f"이번 주 검증된 외부 연구 {sc['verified']}편")
-            + _block(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;">판정 가능 {c["evaluable"]}편 중 '
-                     f'검색 소스가 가져온 것 {c["retrieved"]} · 핵심어에 걸린 것 {c["core_hit"]} · 메일까지 간 것 {c["delivered"]}</div>'
-                     + (_h2("에이전트가 놓친 연구") + rows if rows else "")
-                     + (_h2(AXES_HEADING) + axes if axes else "")
-                     + (_h2(WATCH_HEADING) + watch if watch else "")))
+            + _block(_guide_html(SCOUT_GUIDE, "0 0 4px")
+                     + f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;">{_esc(_capture_sentence(sc))}</div>'
+                     + missed
+                     + ((_h2(AXES_HEADING) + _guide_html(AXES_GUIDE) + _guide_html(AXES_ACTION, "0 0 6px")
+                         + (_guide_html(AXIS_BUTTON_HELP, "0 0 6px") if any_buttons else "") + axes) if axes else "")
+                     + ((_h2(WATCH_HEADING) + _guide_html(WATCH_GUIDE)
+                         + (_guide_html(AXIS_BUTTON_HELP, "0 0 6px") if any_buttons and not axes else "")
+                         + watch + stopped_html) if watch or stopped else "")))
 
 
 def _profile_changes_view(ch: dict | None) -> dict | None:
@@ -2570,6 +2696,16 @@ def _narrative_line_html(line: str) -> str:
         f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
 
 
+# 옆 칸 두 절의 안내 문장(2026-10-12 사용자 지적: "보여주기만 하지 말고 알아먹을 수 있게"). HTML 을 그릴 때 소제목 아래 붙인다 —
+# 저장 서술(평문)에는 넣지 않는다. 형식 수정본도 같은 함수로 그리므로 아침 메일과 같다.
+NARRATIVE_GUIDES = {
+    "우리 연구에서 볼 것": "오늘 흐름이 우리 관심 분야와 만나는 지점에서 확인해 볼 조건과 실험입니다. "
+                       "(해석)은 논문이 한 말이 아니라 에이전트가 우리 연구에 비춰 본 해석입니다.",
+    "주변 신호": "카드에 싣지 않았고 위 흐름에도 넣지 않은 오늘의 다른 관련 논문입니다. "
+             "끝의 [P번호:A] 는 근거 표시입니다 — A 초록 · R 원문 요약 · T 제목.",
+}
+
+
 def _narrative_boxes_html(text: str, papers: list[dict] | None = None) -> str:
     """Python 소제목으로만 칸을 나눈다. 짧은 절 두 개만 짝짓고 옛 자유 글은 넓게 남긴다."""
     blocks: list[tuple[str, list[str]]] = []
@@ -2616,6 +2752,8 @@ def _narrative_boxes_html(text: str, papers: list[dict] | None = None) -> str:
         plain = _plain(heading)
         label = _HEADING_ORNAMENT_RE.sub("", plain)
         content = (line_html(heading) if heading else "")
+        if label in NARRATIVE_GUIDES:
+            content += _guide_html(NARRATIVE_GUIDES[label], "0 0 8px")
         body = ''.join(line_html(line) for line in lines)
         if label in _LEAD_HEADINGS:
             body = (f'<div style="border-left:3px solid {_ACCENT};padding:6px 0 6px 14px;'

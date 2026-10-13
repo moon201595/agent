@@ -144,16 +144,21 @@ def test_generated_analysis_uses_same_document_sections_and_keeps_all_source_val
 
 def test_legacy_and_expanded_external_signals_keep_colored_info_outside_toggle():
     """옛/확장 신호의 옅은 색·관측값·이스케이프를 잃거나 분석 접힘 안으로 숨기면 실패한다."""
+    # 옛 저장 메일의 "외부 신호" 줄은 그대로 옅은 파란 상자로 되살린다(형식 수정본).
     old = saved_digest._line('외부 신호 인용 0회 · 공식 GitHub ★0 · <repo>')
+    parsed = Regions(old)
+    assert len(parsed.info_blocks) == 1 and parsed.toggles == 0
+    assert parsed.info_blocks[0]['bgcolor'] == '#EDF5FA'
+    assert 'background-color:#EDF5FA' in old and 'border-left:3px solid #7394A6' in old
+    assert '인용 0회' in ''.join(parsed.outside) and '★0' in ''.join(parsed.outside)
+    assert '<repo>' not in old and '&lt;repo&gt;' in old
+    # 2026-10-13 사용자 결정: 새 카드는 인용·별 수 상자 대신 "코드 저장소" 상자 — 접힘 밖, 저장소 이름은 이스케이프.
     new = digest._observation_blocks_html({'_signals': {'scholarly': {'citations': 0, 'influential': 0},
                                                     'github': {'repo': '<repo>', 'stars': 0}, 'github_tier': 'official'}})
-    for html in (old, new):
-        parsed = Regions(html)
-        assert len(parsed.info_blocks) == 1 and parsed.toggles == 0
-        assert parsed.info_blocks[0]['bgcolor'] == '#EDF5FA'
-        assert 'background-color:#EDF5FA' in html and 'border-left:3px solid #7394A6' in html
-        assert '인용 0회' in ''.join(parsed.outside) and '★0' in ''.join(parsed.outside)
-        assert '<repo>' not in html and '&lt;repo&gt;' in html
+    parsed = Regions(new)
+    assert parsed.toggles == 0 and '코드 저장소' in ''.join(parsed.outside)
+    assert '인용' not in new and '★' not in new
+    assert '<repo>' not in new and '&lt;repo&gt;' in new
 
 
 def test_warning_tint_and_gray_canvas_are_distinct_from_signal_tint():

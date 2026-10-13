@@ -64,7 +64,9 @@ def test_same_task_schema_prompt_and_false_or_legacy_display_gate():
     for candidate in (got,{k:v for k,v in got.items() if k!='same_task'}, {**got,'same_task':True,'task_not_checked':True}):
         assert not po.external_visible(candidate)
         sections=po.sections({'_frontier':{'main':[_r(99.4,own=True)],'external':{'competitors':[candidate]}}})
-        assert '외부 논문 표:' not in str(sections)
+        # 2026-10-13 Codex 검토 P3: 옛 문구('외부 논문 표:')만 보면 필터를 지워도 통과한다 — 새 행의 후보 이름·값·출처가 모두 없어야 한다.
+        text = str(sections)
+        assert '외부 논문 · ' not in text and candidate['model'] not in text.replace('IG-VLA', '') and candidate.get('source_url', '#none#') not in text
 
 
 def test_external_provenance_line_plain_html_and_saved_revision_match():
@@ -82,9 +84,13 @@ def test_external_provenance_line_plain_html_and_saved_revision_match():
     plain=digest.generate_digest(scan,'팀')
     rendered=digest.generate_digest_html(scan,'팀')
     restored=saved_digest.render_html(plain,'팀',[{'title':'Study','link':p['link']}])
-    line='외부 논문 표: GaussVLA 100 — 출처 표 열 "Spatial" (Table 1) · 같은 과제 판단: 에이전트 판독 (같은 하위 과제 성공률) · 조건 대조 미확인'
+    # 2026-10-13 카드 개편: 비교 표의 외부 행 — 실제 열 이름·표 번호·에이전트 판독·조건 미확인·링크를 그대로 싣는다.
+    note='Table 1 열 "Spatial" · 같은 과제: 에이전트 판독(같은 하위 과제 성공률) · 평가 조건 대조 못 함'
+    assert f'외부 논문 · GaussVLA · 100 · {note}' in plain                    # 평문은 한 줄, HTML 은 표의 칸으로 나뉜다
+    for content in (rendered,restored):
+        assert note in html.unescape(content) and '>100</td>' in content and 'GaussVLA ↗' in content
     for content in (plain,rendered,restored):
-        assert line in html.unescape(content) and c['source_url'] in content
+        assert c['source_url'] in content
         assert '표 값 사용' not in content and '최고 성능 후보' not in content
 
 

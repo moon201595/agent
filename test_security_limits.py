@@ -413,6 +413,29 @@ def test_daily_mail_alert_uses_first_daily_recipients_and_suppresses_duplicate(m
     assert stamp.read_text(encoding="utf-8").strip() == "2026-09-16"
 
 
+def test_daily_mail_alert_failure_log_masks_addresses(monkeypatch, tmp_path, capsys):
+    """2026-10-12. 이 테스트가 무엇을 망가뜨리면 실패하는가: 부재 알림 발송이 SMTP 에서 거절될 때 오류 문구({주소: 응답})를
+    그대로 stderr(로그)에 찍어 수신자 주소가 남으면 실패한다. 거절돼도 stamp 를 찍지 않아야 다음 점검이 다시 알린다."""
+    import smtplib
+    checker = _daily_mail_module()
+    db = tmp_path / "papers.db"
+    log = tmp_path / "daily_scan.log"
+    stamp = tmp_path / "daily_mail_alert.stamp"
+    _make_daily_db(db)
+    log.write_text(_daily_log(delivery="발송 실패: SMTP"), encoding="utf-8")
+
+    def refuse(text, subject, to, html=None):
+        raise smtplib.SMTPRecipientsRefused({addr: (550, b"5.1.1 user unknown") for addr in to})
+
+    import email_delivery
+    monkeypatch.setattr(email_delivery, "send_digest_email", refuse)
+    assert checker.main(["--db", str(db), "--log", str(log), "--stamp", str(stamp)], now=_CHECK_NOW) == 2
+    err = capsys.readouterr().err
+    assert "SMTPRecipientsRefused" in err and "550" in err
+    assert "first@example.test" not in err and "@" not in err
+    assert not stamp.exists()
+
+
 def test_daily_mail_dry_run_reports_problem_without_sending_or_stamping(monkeypatch, tmp_path):
     """이 테스트가 무엇을 망가뜨리면 실패하는가: --dry-run에서 SMTP를 호출하거나
     알림 stamp를 기록하면 실패한다."""

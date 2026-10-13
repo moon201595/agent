@@ -271,7 +271,8 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
         args.stamp.write_text(today.isoformat() + "\n", encoding="utf-8")
         print("부재 알림 발송 완료")
     except (OSError, RuntimeError, ValueError) as error:
-        print(f"[오류] 부재 알림 처리 실패: {type(error).__name__}: {error}", file=sys.stderr)
+        import email_delivery                       # SMTP 거절 문구의 수신자 주소를 로그에 남기지 않는다(2026-10-12)
+        print(f"[오류] 부재 알림 처리 실패: {email_delivery.describe_error(error)}", file=sys.stderr)
     return 2
 
 

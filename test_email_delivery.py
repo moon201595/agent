@@ -6,6 +6,7 @@ send_digest_email()은 engine.ENV(=.env)에서 계정을 읽으므로, 테스트
 가짜로 바꿔서 실제 네트워크 연결은 절대 안 나간다."""
 
 import smtplib
+import ssl
 
 import pytest
 
@@ -43,9 +44,10 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     calls = {}
 
     class FakeSMTP:
-        def __init__(self, host, port):
+        def __init__(self, host, port, timeout=None):
             calls["host"] = host
             calls["port"] = port
+            calls["timeout"] = timeout
 
         def __enter__(self):
             return self
@@ -53,8 +55,9 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-        def starttls(self):
+        def starttls(self, context=None):
             calls["starttls"] = True
+            calls["context"] = context
 
         def login(self, user, password):
             calls["login"] = (user, password)
@@ -70,6 +73,12 @@ def test_send_digest_email_sends_via_smtp_when_configured(monkeypatch):
     assert calls["host"] == email_delivery.SMTP_HOST
     assert calls["port"] == email_delivery.SMTP_PORT
     assert calls["starttls"] is True
+    # 2026-10-12: 인증서·호스트 이름 검증 문맥과 연결 시간 상한. 이 줄이 잡는 것: context 를 빼서 smtplib 이 검증 없는
+    # 기본 문맥으로 STARTTLS 하는 것(중간자가 앱 비밀번호를 받는다), timeout 을 빼서 멈춘 망에서 발송이 끝나지 않는 것.
+    ctx = calls["context"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+    assert calls["timeout"] == email_delivery.SMTP_TIMEOUT_S and 0 < calls["timeout"] <= 120
     assert calls["login"] == ("me@gmail.com", "app-password")
     assert calls["sent_from"] == "me@gmail.com"
     assert calls["sent_to"] == "a@x.com, b@x.com"
@@ -133,10 +142,10 @@ def test_send_strips_spaces_from_app_password(monkeypatch):
     seen = {}
 
     class FakeSMTP:
-        def __init__(self, host, port): pass
+        def __init__(self, host, port, timeout=None): pass
         def __enter__(self): return self
         def __exit__(self, *exc): return False
-        def starttls(self): pass
+        def starttls(self, context=None): pass
         def login(self, user, password): seen["password"] = password
         def send_message(self, msg): seen["multipart"] = msg.is_multipart()
 
@@ -145,3 +154,30 @@ def test_send_strips_spaces_from_app_password(monkeypatch):
 
     assert seen["password"] == "abcdefghijklmnop"  # 공백 제거됨
     assert seen["multipart"] is True               # HTML을 넘기면 multipart로 나간다
+
+
+def test_describe_error_masks_every_address_smtp_puts_in_its_errors():
+    """2026-10-12. 이 테스트가 무엇을 망가뜨리면 실패하는가: smtplib 예외가 싣는 주소(거절 수신자 dict 의 키, 발신 거절의 발신 주소,
+    응답 바이트 안의 꺾쇠 주소·대문자 도메인)를 하나라도 남기거나, 가리면서 예외 종류·응답 코드까지 지우면 실패한다."""
+    cases = [
+        smtplib.SMTPRecipientsRefused({"a.b+c@corp.example.co.kr": (550, b"5.1.1 user unknown")}),
+        smtplib.SMTPSenderRefused(553, b"5.7.1 <me@gmail.com> not allowed", "me@gmail.com"),
+        smtplib.SMTPDataError(554, b"rejected for <Kim@Corp.Example.KR>"),
+    ]
+    for error in cases:
+        shown = email_delivery.describe_error(error)
+        assert "@" not in shown, shown
+        assert not any(part in shown for part in ("a.b", "+c", "me<", "'me", "Kim", "K<")), shown   # 주소 앞부분 조각도 남기지 않는다
+        assert shown.startswith(type(error).__name__ + ": ") and "55" in shown
+    # 2026-10-12 Codex 검토로 더한 꼴 — 따옴표 local-part·주소 리터럴·작은따옴표 든 local-part(앞부분이 남으면 안 된다).
+    for address in ('"alice smith"@example.com', "alice@[192.0.2.1]", "o'connor@example.com"):
+        for error in (smtplib.SMTPRecipientsRefused({address: (550, b"5.1.1 user unknown")}),
+                      smtplib.SMTPDataError(554, f"rejected for <{address}>".encode())):
+            shown = email_delivery.describe_error(error)
+            assert "@" not in shown and "alice" not in shown and "connor" not in shown and "o'" not in shown, shown
+            assert "55" in shown and "<주소>" in shown, shown
+    # 정규식이 모르는 꼴(점 없는 도메인)도 예외가 들고 있는 구조화된 주소로 지운다.
+    shown = email_delivery.describe_error(smtplib.SMTPSenderRefused(553, b"rejected", "admin@localhost"))
+    assert "admin" not in shown and "localhost" not in shown and "553" in shown, shown
+    assert email_delivery.describe_error(TimeoutError("timed out")) == "TimeoutError: timed out"
+    assert len(email_delivery.describe_error(RuntimeError("x" * 500))) == 200

@@ -462,6 +462,26 @@ def test_deliver_reports_smtp_failure_without_raising(tmp_path, monkeypatch):
     assert "SMTP 인증 실패" in msg
 
 
+def test_delivery_failure_message_masks_recipient_addresses(tmp_path, monkeypatch):
+    """SMTP 거절 문구의 수신자 주소를 발송 상태(로그·운영 화면·실행 기록)에 남기지 않는다(2026-10-12).
+    이 테스트가 잡는 것: str(error) 를 그대로 붙여 SMTPRecipientsRefused 의 {주소: 응답} 이 상태 문자열에 실리는 것,
+    가린 뒤 오류 종류·응답 코드까지 지워 원인을 알 수 없게 되는 것."""
+    import smtplib
+    import email_delivery
+    db_path = tmp_path / "t.db"
+    _setup_profile(db_path)
+    rp.add_recipient(db_path, "team_ai", "kim.researcher+ai@corp.example.co.kr")
+
+    def refuse(text, subject, to, html=None):
+        raise smtplib.SMTPRecipientsRefused({to[0]: (550, b"5.1.1 user unknown")})
+
+    monkeypatch.setattr(email_delivery, "send_digest_email", refuse)
+    msg = rps._deliver(db_path, "team_ai", {"papers": []}, "본문")
+    assert msg.startswith("발송 실패")
+    assert "@" not in msg and "kim.researcher" not in msg and "corp.example" not in msg
+    assert "SMTPRecipientsRefused" in msg and "550" in msg and "<주소>" in msg
+
+
 def test_deliver_sends_even_with_zero_papers(tmp_path, monkeypatch):
     """논문 0편이어도 보낸다 — 매일 오는 메일 자체가 파이프라인이 살아 있다는
     증거이고, dead-man's switch를 안 붙인 지금 그 역할을 대신한다."""

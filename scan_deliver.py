@@ -108,18 +108,31 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             if links:
                 view["papers"] = [dict(p, _feedback_links=links.get(research_profile.paper_key(p)))
                                   for p in result.get("papers") or []]
+            # 외부 정찰 연구축 버튼(2026-10-12) — 주간 메일에만 있다. 못 만들어도 메일은 버튼 없이 나간다(규칙 6).
+            scout = result.get("external_scout") or {}
+            axis_terms = [a["term"] for a in scout.get("axes") or []] + [w["term"] for w in scout.get("watch") or []]
+            axis_links = {}
+            if axis_terms:
+                try:
+                    axis_links = feedback_links.axis_links(db_path, profile_id, issue_id, recipient, axis_terms)
+                except Exception as error:  # noqa: BLE001
+                    print(f"  [반응] 연구축 링크 생성 실패(버튼 없이 발송): {type(error).__name__}")
+            if axis_links:
+                view["external_scout"] = {**scout,
+                    "axes": [dict(a, _feedback_links=axis_links.get(a["term"])) for a in scout.get("axes") or []],
+                    "watch": [dict(w, _feedback_links=axis_links.get(w["term"])) for w in scout.get("watch") or []]}
             text = digest.generate_digest(view, name)
             digest_html = digest.generate_digest_html(view, name)
             email_delivery.send_digest_email(text, subject, [recipient], digest_html)
             sent += 1
-            if links:
+            if links or axis_links:
                 feedback_links.mark_delivered(db_path, issue_id, recipient)
             if states is not None:
                 visible = content_keys
                 evidence_state.acknowledge(db_path, profile_id, recipient,
                     [i for i in states if i["paper_key"] in visible])
         except Exception as error:
-            failures.append(str(error).splitlines()[0][:200])
+            failures.append(email_delivery.describe_error(error))   # 발송 상태는 로그·운영 화면에 남는다 — 주소를 가린다
     # 회차 기록(2026-09-16, 운영 화면용) — 실패한 회차도 남긴다. 기록 실패는 발송 결과를 바꾸지 않는다.
     try:
         mail_ledger.record_issue(db_path, issue_id, profile_id, subject, result.get("papers") or [],

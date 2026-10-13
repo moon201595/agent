@@ -80,10 +80,13 @@ def test_zero_only_signals_hide_box_and_positive_or_official_signals_show():
     zero = {'scholarly':{'citations':0},'hub':{'page':True,'n_models':0},'github':{'error':'Timeout'}}
     assert po.sections({'_signals':zero}) == [] and digest.signals_text({'_signals':zero}) == ''
     assert '외부 관측 신호' not in digest._observation_blocks_html({'_signals':zero})
-    for sig in [{'scholarly':{'citations':1}}, {'hub':{'page':True,'n_models':1}},
-                {'github_tier':'official','github':{'repo':'o/r','error':'Timeout'}},
+    # 2026-10-13 사용자 결정: 인용·HF 수는 카드에 싣지 않는다. 공식·저자 저장소만 "코드 저장소" 상자로 남는다.
+    for sig in [{'scholarly':{'citations':1}}, {'hub':{'page':True,'n_models':1}}]:
+        assert po.sections({'_signals':sig}) == []
+    for sig in [{'github_tier':'official','github':{'repo':'o/r','error':'Timeout'}},
                 {'github_tier':'author','github':{'repo':'o/r','stars':0}}]:
-        assert po.sections({'_signals':sig})[-1][0] == '외부 관측 신호'
+        assert po.sections({'_signals':sig})[-1] == (po.CODE_HEADING, [(po.code_rows(sig)[0][0], 'https://github.com/o/r')])
+    assert po.sections({'_signals':{'github_tier':'third_party','github':{'repo':'x/y'}}}) == []
     assert zero['github'] == {'error':'Timeout'}
 
 
@@ -97,12 +100,15 @@ def test_plain_html_saved_revision_have_identical_author_reported_line():
     plain = digest.generate_digest(scan,'팀')
     html = digest.generate_digest_html(scan,'팀')
     restored = saved_digest.render_html(plain,'팀',[{'title':'Study','link':p['link']}])
-    line = 'LIBERO · Spatial SR — GE-Act 98.2 · π0 96.8 · OpenVLA 84.7 (S4.T1#0)'
-    heading = '비교 대상 · 이 논문 표(저자 보고값)'
+    # 2026-10-13 카드 개편: 같은 표의 비교 방법이 표의 행으로 — 평문·HTML·저장 평문 복원이 같은 상자(같은 HTML)여야 한다.
+    heading = po.COMPARISON_PREFIX + 'LIBERO · Spatial SR'
     for content in [plain, html, restored]:
-        assert line in content and heading in content
-    box_heading = '<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">비교 대상 · 이 논문 표(저자 보고값)</div>'
-    assert box_heading in html and box_heading in restored
+        assert heading in content and '98.2' in content and 'GE-Act' in content and 'OpenVLA' in content
+    for row in ['같은 표 · GE-Act · 98.2', '같은 표 · π0 · 96.8', '같은 표 · OpenVLA · 84.7']:
+        assert row in plain
+    box = html[html.index('<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">' + heading):]
+    box = box[:box.index('</table>')]
+    assert box in restored and '<table' in box
 
 
 @pytest.mark.parametrize('label', ['DreamVLA [12]†', ' dreamvla (Ours) ', 'DreamVLA⋄'])

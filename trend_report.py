@@ -633,6 +633,26 @@ HEADLINE_HEADING = "오늘의 요점"
 LEGACY_HEADLINE_HEADINGS = frozenset({"오늘의 한 줄"})
 
 
+_TAG_RE = re.compile(r"\s*\[P(\d+):[^\]]+\]")
+_THREAD_CITE_RE = re.compile(r"\s*\(근거: [\d·]+번 흐름\)")
+
+
+def _cite_threads(text: str, thread_of: dict[int, int]) -> str:
+    """"우리 연구에서 볼 것" 의 근거 표시 `[P2:A][P9:A]` 를 읽는 사람이 찾을 수 있는 "(근거: 1·2번 흐름)" 으로 바꾼다(2026-10-12 사용자 지적).
+    P 번호는 모델 입력 목록의 번호라 메일 어디에도 없다. repair_story 가 implications 에 **흐름 논문의 근거만** 남기므로 흐름 번호로 옮길 수 있다 —
+    흐름에 없는 번호는 지을 곳이 없어 표시만 뗀다. "(해석)" 은 그 뒤에 둔다."""
+    nums = [int(n) for n in _TAG_RE.findall(text)]
+    if not nums:
+        return text
+    threads = sorted({thread_of[n] for n in nums if n in thread_of})
+    body = " ".join(_TAG_RE.sub("", text).split())
+    if not threads:
+        return body
+    cite = f"(근거: {'·'.join(map(str, threads))}번 흐름)"
+    tail = " (해석)"
+    return f"{body[:-len(tail)]} {cite}{tail}" if body.endswith(tail) else f"{body} {cite}"
+
+
 def render_story(story: dict) -> str:
     """손질한 구조 → 메일 글. 소제목 문구는 digest._NARRATIVE_HEADINGS 와 짝이다(흐름 소제목은 `■ 1. 이름`)."""
     titles, tags = story["titles"], story["tags"]
@@ -653,7 +673,8 @@ def render_story(story: dict) -> str:
     if not story["headline"] and story["relation"]:
         lines += [story["relation"], ""]
     if story["implications"]:
-        lines += ["■ 우리 연구에서 볼 것"] + [f"- {text}" for text in story["implications"]] + [""]
+        thread_of = {n: i for i, thread in enumerate(story["threads"], start=1) for n in thread["papers"]}
+        lines += ["■ 우리 연구에서 볼 것"] + [f"- {_cite_threads(text, thread_of)}" for text in story["implications"]] + [""]
     if story["side_signals"]:
         lines += ["■ 주변 신호"] + [f"- {titles[s['paper']]} — {s['note']} {_best_tag(s['paper'], tags)}".rstrip()
                                    for s in story["side_signals"]]
@@ -1632,6 +1653,7 @@ def parse_rendered_story(text: str) -> dict:
     """저장된 신·구 서술을 되읽는다. 근거 표시는 숨기되 해석·초록 한계 문구는 보존한다."""
     def clean(value: str) -> str:
         value = re.sub(r"\[P\d+(?::[A-Za-z]\d*)?(?:\s*[,;]\s*P?\d+(?::[A-Za-z]\d*)?)*\]", "", value)
+        value = _THREAD_CITE_RE.sub("", value)        # 오늘 메일의 흐름 번호는 지난 글로 되읽을 때 뜻이 없다(2026-10-12)
         # 근거 표기를 떼면 "쓴다 [P1:A]." 가 "쓴다 ." 가 된다 — 문장부호 앞 빈칸을 닫는다.
         return re.sub(r"\s+([.,。!?])", r"\1", " ".join(value.split()))
 

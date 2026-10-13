@@ -134,7 +134,7 @@ def _reaction_rows(con: sqlite3.Connection, profile_id: str) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT e.event_id, e.action, e.received_at, e.status, t.paper_key, t.issue_id, t.item_no, t.position, t.recipient_hash "
         "FROM feedback_events e JOIN feedback_tokens t ON t.tid = e.tid WHERE t.profile_id=? ORDER BY e.received_at DESC",
-        (profile_id,))]
+        (profile_id,)) if not feedback_links.is_axis_key(r["paper_key"])]   # 연구축 반응(2026-10-12)은 논문 반응 표·학습 숫자와 섞지 않는다
 
 
 def latest_valid_reactions(rows: list[dict]) -> list[dict]:

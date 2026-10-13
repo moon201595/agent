@@ -14,6 +14,13 @@ import saved_digest
 from time_policy import kst_day
 
 
+def relay_prefix(url: str) -> str:
+    """버튼 주소의 앞부분 — 닫히는 페이지가 설정돼 있으면 그 페이지, 아니면 웹앱 직행(`feedback_links.issue_links` 와 같은 규칙)."""
+    import feedback_links
+    page, did = feedback_links.page_url(), feedback_links.deploy_id(url)
+    return f"{page}?{urlencode({'d': did})}&" if page and did else f"{url}?"
+
+
 def load_snapshot(db: Path, profile_id: str, date: str, recipient: str, *, title_only_count: int | None = None) -> dict:
     """새 토큰·회차를 만들지 않는다. 본문과 원 회차가 다르면 발송 전에 멈춘다."""
     import feedback_links
@@ -34,11 +41,15 @@ def load_snapshot(db: Path, profile_id: str, date: str, recipient: str, *, title
         url, secret = cfg
         rows = con.execute("SELECT * FROM feedback_tokens WHERE issue_id=? AND recipient_hash=? AND delivered_at IS NOT NULL",
                            (issue["issue_id"], feedback_links.recipient_hash(recipient, secret))).fetchall()
-        tokens = {r["paper_key"]: dict(r) for r in rows}
+        # 연구축 버튼(2026-10-12)은 논문 토큰 명세 대조에서 뺀다 — 같은 표에 있지만 논문 자리가 아니다. 원래 토큰 그대로 다시 단다.
+        tokens = {r["paper_key"]: dict(r) for r in rows if not feedback_links.is_axis_key(r["paper_key"])}
+        axis_links = {r["paper_key"][len(feedback_links.AXIS_PREFIX):]: {
+            action: relay_prefix(url) + urlencode({"t": feedback_links.make_token(r["tid"], action, r["expires_at"], secret)})
+            for action, _label in feedback_links.AXIS_ACTIONS}
+            for r in rows if feedback_links.is_axis_key(r["paper_key"]) and r["expires_at"] > int(datetime.now(timezone.utc).timestamp())}
         if len(tokens) != len(papers) or not papers:
             raise ValueError("이 수신자에게 원래 발송된 논문 토큰과 명세가 다름")
-        page, did = feedback_links.page_url(), feedback_links.deploy_id(url)
-        relay = f"{page}?{urlencode({'d': did})}&" if page and did else f"{url}?"
+        relay = relay_prefix(url)
         for paper in papers:
             token = tokens.get(paper["paper_key"])
             if token is None or token["position"] != paper["position"]:
@@ -47,7 +58,8 @@ def load_snapshot(db: Path, profile_id: str, date: str, recipient: str, *, title
                 raise ValueError("원래 반응 토큰이 만료되어 그대로 재발송할 수 없음")
             paper["_feedback_links"] = {action: relay + urlencode({"t": feedback_links.make_token(token["tid"], action, token["expires_at"], secret)})
                                         for action, _label in feedback_links.ACTIONS}
-        html = saved_digest.render_html(row["last_digest"], row["name"], papers, title_only_count=title_only_count)
+        html = saved_digest.render_html(row["last_digest"], row["name"], papers, title_only_count=title_only_count,
+                                        axis_links=axis_links)
         # 평문 쪽도 HTML 과 같은 표시 규칙으로 보낸다(P3-1). 원 기록과 같은 글인지는 `source_text` 의 해시로 남긴다.
         return {"text": saved_digest.plain_text(row["last_digest"]), "source_text": row["last_digest"], "html": html, "issue_id": issue["issue_id"],
                 "subject": issue["subject"] + " [형식 수정본]", "papers": len(papers),
@@ -92,6 +104,7 @@ def load_preview(db: Path, profile_id: str, date: str, original_html: Path | Non
         tokens = {r["tid"]: dict(r) for r in con.execute(
             "SELECT * FROM feedback_tokens WHERE issue_id=? AND delivered_at IS NOT NULL", (issue["issue_id"],))}
         recovered: dict[str, dict[str, str]] = {}
+        axis_links: dict[str, dict[str, str]] = {}
         recipients = set()
         if original_html:
             for url in Links(original_html.read_text(encoding="utf-8")).urls:
@@ -104,6 +117,9 @@ def load_preview(db: Path, profile_id: str, date: str, original_html: Path | Non
                         or token[3] != str(stored["expires_at"])):
                     raise ValueError("기존 HTML의 토큰과 원 회차가 다름")
                 recipients.add(stored["recipient_hash"])
+                if feedback_links.is_axis_key(stored["paper_key"]):      # 연구축 버튼 — 논문 명세와 따로 되살린다(2026-10-12)
+                    axis_links.setdefault(stored["paper_key"][len(feedback_links.AXIS_PREFIX):], {})[token[2]] = url
+                    continue
                 recovered.setdefault(stored["paper_key"], {})[token[2]] = url
             if len(recipients) != 1 or set(recovered) != {p["paper_key"] for p in papers}:
                 raise ValueError("기존 HTML의 수신자·논문 토큰 명세가 다름")
@@ -111,8 +127,10 @@ def load_preview(db: Path, profile_id: str, date: str, original_html: Path | Non
                 if set(recovered[paper["paper_key"]]) != {a for a, _ in feedback_links.ACTIONS}:
                     raise ValueError("기존 HTML의 반응 버튼이 누락됨")
                 paper["_feedback_links"] = recovered[paper["paper_key"]]
+            if any(set(actions) != {a for a, _ in feedback_links.AXIS_ACTIONS} for actions in axis_links.values()):
+                raise ValueError("기존 HTML의 연구축 반응 버튼이 누락됨")       # 하나만 되살리면 "관심 밖" 만 남는 식의 반쪽 버튼이 된다(Codex 검토 P3)
         return {"text": saved_digest.plain_text(row["last_digest"]), "source_text": row["last_digest"],
-                "html": saved_digest.render_html(row["last_digest"], row["name"], papers),
+                "html": saved_digest.render_html(row["last_digest"], row["name"], papers, axis_links=axis_links),
                 "issue_id": issue["issue_id"], "papers": len(papers), "items": papers,
                 "subject": issue["subject"], "profile_name": row["name"],
                 "feedback_restored": bool(original_html), "preview_only": True}

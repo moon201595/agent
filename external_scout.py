@@ -24,6 +24,8 @@ import sqlite3
 import tempfile
 import time
 import uuid
+
+import feedback_links
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -626,7 +628,8 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
                                          (run_id, now.isoformat())).fetchone()
         for profile in profiles:
             profile["last_scout_at"] = previous_scout[0] if previous_scout else None
-        watches = {pid: [w for w in watchlist(db, pid, now) if w["status"] != "in_profile"][:MAX_WATCH] for pid in ids}
+        # 이미 검색어가 된 것과 사용자가 관심 밖으로 멈춘 것(2026-10-12)은 정찰에 다시 묻지 않는다.
+        watches = {pid: [w for w in watchlist(db, pid, now) if w["status"] not in ("in_profile", "user_out")][:MAX_WATCH] for pid in ids}
         try:
             scout_calls = 1
             raw = (scout or _run_codex_scout)(scout_prompt(profiles, now, watches), SCOUT_TIMEOUT_S)
@@ -883,16 +886,22 @@ def watchlist(db: Path, profile_id: str, now: datetime, weeks: int = 8) -> list[
                 # 나중 논문 정찰이 축 표시 없이 재관측해도 근거 연결은 남는다. 최신 공식 글·판정은 그대로 대조한다.
                 historical_items.append({**e, "axes": [term], "_observed_at": min(dates).isoformat()})
     current = {g["term"]: g for g in _axis_groups(historical_items, now, minimum=1)}
+    # 메일 연구축 버튼의 반응(2026-10-12). 관심 밖이 더 많으면 추적을 멈춘다 — 사용자 반응이 외부 발견보다 먼저다(규칙 1).
+    import feedback_links
+    reactions = feedback_links.axis_reactions(db, profile_id)
     result = []
     for term, first in adopted.items():
         evidence_times = [min(first_seen[(term, a)] for a in e["_aliases"] if (term, a) in first_seen)
                           for e in current.get(term, {}).get("items", [])]
         last = max(evidence_times, default=first)
-        status = ("in_profile" if _covered(term, core) else
+        reaction = (reactions.get(feedback_links.axis_key(term)) or {}).get("state")
+        # 관심 밖이 먼저다(2026-10-12 Codex 검토): 이미 핵심어가 된 축이라도 사용자가 멈추라 했으면 "멈춤" 으로 알린다. 키워드는 지우지 않는다(규칙 1 — 삭제는 사람 몫).
+        status = ("user_out" if reaction == feedback_links.AXIS_STOPPED else
+                  "in_profile" if _covered(term, core) else
                   "dormant" if last <= now - timedelta(weeks=4) else "watching")
         result.append({"term": term, "first_week": week_of(first), "last_evidence_week": week_of(last),
                        "papers_total": len(evidence_times), "new_this_week": sum(week_of(t) == week_of(now) for t in evidence_times),
-                       "status": status})
+                       "status": status, **({"reaction": reaction} if reaction else {})})
     return sorted(result, key=lambda w: (w["first_week"], w["term"]))
 
 
@@ -955,8 +964,16 @@ def mail_summary(db: Path, profile_id: str, now: datetime, days: int = 7) -> dic
     link = lambda e: (f"https://arxiv.org/abs/{e['paper_key']}" if e["paper_key"] and not e["paper_key"].startswith("doi:")
                       else f"https://doi.org/{e['paper_key'][4:]}" if e["paper_key"] else "")
     groups = {g["term"]: g for g in _axis_groups(items, now)}
-    axes = emerging_axes(db, profile_id, items, now)
+    tracked = {w["term"]: w for w in watches}
+    # 관심 밖 반응으로 멈춘 연구축은 후보·추적 목록에서 빼고 "멈춘 것"으로만 알린다(2026-10-12) — 반응이 어디에 쓰였는지 보이게.
+    stopped = sorted(t for t, w in tracked.items() if w["status"] == "user_out")
+    stopped_keys = {feedback_links.axis_key(t) for t in stopped}
+    axes = [a for a in emerging_axes(db, profile_id, items, now) if feedback_links.axis_key(a["term"]) not in stopped_keys]
     for axis in axes:
+        w = tracked.get(axis["term"])
+        axis["first_week"] = w["first_week"] if w else week_of(now)
+        if w and w.get("reaction"):
+            axis["reaction"] = w["reaction"]
         # 미포착 근거를 먼저, 같은 단계군에서는 공식 발표일이 최신인 두 편을 보여준다.
         evidence = sorted(groups[axis["term"]]["items"], key=lambda e: e["published"], reverse=True)
         evidence.sort(key=lambda e: e["gap_stage"] not in MISSED_STAGES)
@@ -964,6 +981,6 @@ def mail_summary(db: Path, profile_id: str, now: datetime, days: int = 7) -> dic
                             for e in evidence[:2]]
     return {"capture": capture_summary([e["gap_stage"] for e in scouted]), "verified": len(scouted),
             "axes": axes,
-            "watch": [w for w in watches if w["term"] not in groups],
+            "watch": [w for w in watches if w["term"] not in groups and w["status"] != "user_out"], **({"stopped": stopped} if stopped else {}),
             "missed": [{"title": e["title"], "venue": e["venue"], "stage": STAGE_LABELS.get(e["gap_stage"], e["gap_stage"]),
                         "link": link(e)} for e in missed[:5]]}

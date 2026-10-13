@@ -229,3 +229,48 @@ def test_column_path_only_adjacent_duplicates() -> None:
     assert at.find_cells(table, lambda s: True, lambda p: p == ['A', 'B', 'A']) == [
         {'row': 5, 'col': 0, 'row_label': '', 'column_path': ['A', 'B', 'A'],
          'text': '7', 'value': 7.0}]
+
+
+@pytest.mark.parametrize('role', ['span', 'div'])
+def test_class_spans_match_attribute_geometry(role):
+    """무엇을 망가뜨리면 실패하는가: 클래스 병합이나 전폭 그룹 경계를 무시해 열 머리·본문 위치를 밀면 실패한다."""
+    rows = '''<tr><td rowspan="2">Method</td><td colspan="2">Bench A</td><td rowspan="2">Bench B</td></tr>
+    <tr><td>Easy</td><td>Hard</td></tr>
+    <tr><td colspan="4">Backbone</td></tr>
+    <tr><td>Model</td><td>11</td><td>22</td><td>33</td></tr>'''
+    attribute, = at.parse_tables(_html(rows))
+    classes = rows.replace('rowspan="2"', 'class="ltx_rowspan ltx_rowspan_2"').replace(
+        'colspan="2"', 'class="ltx_colspan ltx_colspan_2"').replace(
+        'colspan="4"', 'class="ltx_colspan ltx_colspan_4"')
+    import re
+    classes = re.sub(r'<(tr|td)([^>]*)>', lambda m: (
+        f'<{role} class="ltx_{m[1]} ' + m[2].replace('class="', '').strip().rstrip('"') + '">'), classes)
+    classes = re.sub(r'</(?:tr|td)>', f'</{role}>', classes)
+    page = f'<figure class="ltx_table"><{role} class="ltx_tabular">{classes}</{role}></figure>'
+    table, = at.parse_tables(page)
+    assert table == attribute
+    assert table['header_rows'] == 2
+    assert table['grid'] == [['Method', 'Bench A', 'Bench A', 'Bench B'],
+                             ['Method', 'Easy', 'Hard', 'Bench B'],
+                             ['Backbone'] * 4, ['Model', '11', '22', '33']]
+    assert at.find_cells(table, lambda r: r == 'Model', lambda c: c == ['Bench B'])[0]['value'] == 33
+
+
+@pytest.mark.parametrize('attrs', [
+    'class="ltx_colspan ltx_colspan_257"', 'class="ltx_rowspan ltx_rowspan_2001"',
+    'class="ltx_colspan ltx_colspan_bad"', 'class="ltx_colspan ltx_colspan_0"',
+    'class="ltx_colspan ltx_colspan_2 ltx_colspan_3"',
+    'colspan="2" class="ltx_colspan ltx_colspan_3"', 'class="ltx_colspan"',
+])
+def test_class_span_limits_and_ambiguity(attrs):
+    """무엇을 망가뜨리면 실패하는가: 클래스형의 잘못된 크기·상한·상충 선언을 무시하면 실패한다."""
+    assert at.parse_tables(_html(f'<tr><td {attrs}>1</td></tr>')) == []
+
+
+def test_class_rowspan_zero_and_expanded_limit(monkeypatch):
+    """무엇을 망가뜨리면 실패하는가: 클래스 rowspan=0이 행 그룹을 침범하거나 펼친 셀 상한을 우회하면 실패한다."""
+    page = _html('<tbody><tr><td class="ltx_rowspan ltx_rowspan_0">A</td><td>1</td></tr>'
+                 '<tr><td>2</td></tr></tbody><tbody><tr><td>B</td></tr></tbody>')
+    assert at.parse_tables(page)[0]['grid'] == [['A', '1'], ['A', '2'], ['B', '']]
+    monkeypatch.setattr(at, 'MAX_CELLS', 5)
+    assert at.parse_tables(page) == []

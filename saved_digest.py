@@ -106,7 +106,8 @@ def _card(card: dict, paper: dict) -> str:
             observation = None
         if line == url or line.startswith("반응 :"):
             continue
-        if line.startswith(("성능 관측 ·", "논문 간 관측", "비교 대상 · 이 논문 표(저자 보고값)", "외부 관측 신호", "논문 자체 주장 ·")):
+        if line.startswith(("성능 관측 ·", "논문 간 관측", "비교 대상 · 이 논문 표(저자 보고값)", "외부 관측 신호", "논문 자체 주장 ·",
+                            "성능 비교 · ", "코드 저장소")):     # 뒤의 둘은 2026-10-13 카드 개편 — "성능 비교 :"(분석 절)·"코드:"(사다리 줄)와 다르다
             observations.append((line, []))
             observation = observations[-1][1]
             continue
@@ -172,6 +173,10 @@ def _card(card: dict, paper: dict) -> str:
 
 _SCOUT_HEAD_RE = re.compile(r"▶ 외부 정찰 — 이번 주 검증된 외부 연구 (\d+)편")
 _SCOUT_CAPTURE_RE = re.compile(r"판정 가능 (\d+)편 중 검색 소스가 가져온 것 (\d+) · 핵심어에 걸린 것 (\d+) · 메일까지 간 것 (\d+)")
+# 2026-10-12 문장판. 옛 저장 글(위 줄)도 그대로 읽는다 — 지난 메일의 형식 수정본이 옛 줄 렌더러로 떨어지지 않게.
+_SCOUT_SENTENCE_RE = re.compile(r"이번 주 확인한 외부 연구 중 우리 검색 기간과 겹치는 (\d+)편: 우리 검색이 가져온 것 (\d+)편 · "
+                                r"그중 핵심어에 걸린 것 (\d+)편 · 메일에 실린 것 (\d+)편\.(?: 나머지 (\d+)편은 우리 마지막 검색 뒤에 나왔거나 "
+                                r"관측 시작 전 논문이라 비교하지 않았습니다\.)?")
 _WINDOW_MOVE_RE = re.compile(r"([▲▼]) (.+?)\s+(\d+)   ([+−])(\d+)")
 _COUNT_ROW_RE = re.compile(r"(.+?)\s+(\d+)")
 _RESERVE_HEAD_RE = re.compile(r"▸ 자리에 못 든 후보 (\d+)편에서 자주 나온 말")
@@ -263,17 +268,36 @@ def _scout_from_lines(lines: list[str]) -> dict:
     """`▶ 외부 정찰` 평문 → digest `_external_scout_html` 이 읽는 `external_scout`.
 
     학회명은 평문에서 제목 끝 괄호로만 남는다. 제목 자체가 괄호로 끝나면 그 괄호를 학회명으로 읽어 흐린 글자로 그린다 —
-    글자는 그대로이고 색만 다르다(되살릴 정보가 저장 글에 없다)."""
+    글자는 그대로이고 색만 다르다(되살릴 정보가 저장 글에 없다).
+    2026-10-12: 안내 문장(digest 의 상수)은 **글자 그대로 같을 때만** 건너뛴다 — HTML 쪽이 같은 상수로 다시 그린다. 수치가 든 줄은
+    문장판·옛 줄 둘 다 읽는다. 반응 버튼 줄은 수신자별 토큰이라 저장 글에 없고, 있더라도 형식 수정본이 DB 토큰으로 다시 단다."""
     body = [line.strip() for line in lines if line.strip()]
     head = _SCOUT_HEAD_RE.fullmatch(body[0]) if body else None
-    capture = _SCOUT_CAPTURE_RE.fullmatch(body[1]) if len(body) > 1 else None
-    if not head or not capture:
+    if not head:
         raise ValueError("외부 정찰 머리 형식이 다름")
+    rest = body[1:]
+    if rest and rest[0] == digest.SCOUT_GUIDE:
+        rest = rest[1:]
+    capture = _SCOUT_CAPTURE_RE.fullmatch(rest[0]) if rest else None
+    sentence = _SCOUT_SENTENCE_RE.fullmatch(rest[0]) if rest and not capture else None
+    if not capture and not sentence:
+        raise ValueError("외부 정찰 머리 형식이 다름")
+    numbers = (capture or sentence).groups()[:4]
+    if sentence and int(sentence[5] or 0) != int(head[1]) - int(sentence[1]):
+        raise ValueError("비교하지 않은 편수가 다름")         # 문장의 나머지 편수는 검증 편수 − 비교 편수다 — 어긋나면 저장 글이 아니다
+    guides = {digest.MISSED_HEADING, digest.MISSED_ACTION, digest.AXES_GUIDE, digest.AXES_ACTION, digest.WATCH_GUIDE, digest.AXIS_BUTTON_HELP,
+              *(f"· {stage} — {text}" for stage, text in digest.STAGE_HELP.items())}
+    # 버튼 줄은 digest._axis_button_text 가 만드는 꼴만 받는다(2026-10-12 Codex 검토: 접두사만 보고 내용을 버렸다). URL 은 수신자별 토큰이라 되살리지 않는다 —
+    # 형식 수정본이 원래 회차의 토큰으로 다시 단다.
+    button_re = re.compile(r"반응 : (?:더 보고 싶음 https?://\S+(?: · 관심 밖 https?://\S+)?|관심 밖 https?://\S+)")
     missed: list[dict] = []
     axes: list[dict] = []
     watch: list[dict] = []
+    stopped: list[str] = []
     in_axes = in_watch = False
-    for line in body[2:]:
+    for line in rest[1:]:
+        if line in guides or button_re.fullmatch(line):
+            continue
         if line == digest.AXES_HEADING:
             in_axes, in_watch = True, False
             continue
@@ -282,14 +306,19 @@ def _scout_from_lines(lines: list[str]) -> dict:
             continue
         if in_watch:
             # digest._watch_lines 의 역(2026-10-10). 안 맞으면 절 전체를 줄로 떨어뜨린다.
+            if line.startswith(digest.STOPPED_PREFIX):
+                stopped = line[len(digest.STOPPED_PREFIX):].split(" · ")
+                continue
             if line.startswith("* "):
                 watch.append({"term": line[2:]})
                 continue
             labels = {v: k for k, v in digest._WATCH_STATUS.items()}
-            m_w = re.fullmatch(r"처음 발견 (\S+) · 누적 근거 (\d+)편 · 이번 주 새 근거 (\d+)편 · (.+)", line)
+            m_w = re.fullmatch(r"처음 발견 (\S+) · 누적 근거 (\d+)편 · 이번 주 새 근거 (\d+)편 · (.+?)"
+                               r"(?: · (" + re.escape(digest.AXIS_WANTED_NOTE) + r"))?", line)
             if not watch or not m_w or m_w[4] not in labels or len(watch[-1]) != 1:
                 raise ValueError("추적 연구축 줄 형식이 다름")
-            watch[-1].update(first_week=m_w[1], papers_total=int(m_w[2]), new_this_week=int(m_w[3]), status=labels[m_w[4]])
+            watch[-1].update(first_week=m_w[1], papers_total=int(m_w[2]), new_this_week=int(m_w[3]), status=labels[m_w[4]],
+                             **({"reaction": "wanted"} if m_w[5] else {}))
             continue
         if in_axes:
             # digest._axis_lines 의 역(2026-10-08): `* 용어` 다음에 설명·근거·관측 줄. 안 맞으면 절 전체를 줄로 떨어뜨린다.
@@ -300,8 +329,12 @@ def _scout_from_lines(lines: list[str]) -> dict:
             if not axes:
                 raise ValueError("연구축 이름보다 근거 줄이 먼저 나옴")
             a = axes[-1]
-            m_ev = re.fullmatch(r"근거 논문 (\d+)편(?: · 미포착 (\d+)편\((.+)\))?", line)
+            # 근거 편수 줄 — 옛 "· 미포착 N편(…)" 과 2026-10-12 "중 우리가 놓친 것 N편(…)"
+            m_ev = re.fullmatch(r"근거 논문 (\d+)편(?:(?: · 미포착| 중 우리가 놓친 것) (\d+)편\((.+)\))?", line)
             m_obs = re.fullmatch(r"우리 검색 관측: 최근 4주 (?:(\d+)(?:/(\d+))?편|(관측 없음)) · 직전 4주 (?:(\d+)(?:/(\d+))?편|(관측 없음))", line)
+            m_new = re.fullmatch(r"우리 검색 결과에서 이 용어가 나온 논문: 최근 4주 (?:(\d+)편(?:\(전체 (\d+)편 중\))?|(기록 없음)) · "
+                                 r"직전 4주 (?:(\d+)편(?:\(전체 (\d+)편 중\))?|(기록 없음)) — 검색 조건이 달라 증감으로 읽지 않습니다", line)
+            m_track = re.fullmatch(r"추적: (\d{4}-W\d{2})부터(?: · (" + re.escape(digest.AXIS_WANTED_NOTE) + r"))?", line)
             m_e = re.fullmatch(r"근거: (.+) \(([^()]+)\)(?: (https?://\S+))?", line)
             if line.startswith("정찰 설명: "):
                 a["summary"] = line[len("정찰 설명: "):]
@@ -321,9 +354,14 @@ def _scout_from_lines(lines: list[str]) -> dict:
                     a["missed"][labels[label]] = int(n)
                 if m_ev[2] and sum(a["missed"].values()) != int(m_ev[2]):
                     raise ValueError("미포착 합계가 다름")
-            elif m_obs:
-                a["recent"], a["recent_total"] = (0, 0) if m_obs[3] else (int(m_obs[1]), int(m_obs[2]) if m_obs[2] else None)
-                a["previous"], a["previous_total"] = (0, 0) if m_obs[6] else (int(m_obs[4]), int(m_obs[5]) if m_obs[5] else None)
+            elif m_obs or m_new:
+                m = m_obs or m_new
+                a["recent"], a["recent_total"] = (0, 0) if m[3] else (int(m[1]), int(m[2]) if m[2] else None)
+                a["previous"], a["previous_total"] = (0, 0) if m[6] else (int(m[4]), int(m[5]) if m[5] else None)
+            elif m_track:
+                a["first_week"] = m_track[1]
+                if m_track[2]:
+                    a["reaction"] = "wanted"
             else:
                 raise ValueError("연구축 줄 형식이 다름")
             continue
@@ -340,8 +378,8 @@ def _scout_from_lines(lines: list[str]) -> dict:
         raise ValueError("연구축 근거 편수가 없음")
     if any(len(w) == 1 for w in watch):
         raise ValueError("추적 연구축 상태 줄이 없음")
-    return {"verified": int(head[1]), "missed": missed, "axes": axes, "watch": watch,
-            "capture": dict(zip(("evaluable", "retrieved", "core_hit", "delivered"), map(int, capture.groups())))}
+    return {"verified": int(head[1]), "missed": missed, "axes": axes, "watch": watch, **({"stopped": stopped} if stopped else {}),
+            "capture": dict(zip(("evaluable", "retrieved", "core_hit", "delivered"), map(int, numbers)))}
 
 
 def _changes_view_from_lines(heading: str, lines: list[str]) -> dict:
@@ -414,14 +452,20 @@ def _weekly_section_html(heading: str, lines: list[str]) -> str | None:
     return None
 
 
-def _scout_html(lines: list[str]) -> str:
+def _scout_html(lines: list[str], axis_links: dict[str, dict[str, str]] | None = None) -> str:
     try:
-        return digest._external_scout_html({"external_scout": _scout_from_lines(lines)})
+        sc = _scout_from_lines(lines)
+        # 연구축 버튼은 원래 회차의 토큰으로 다시 단다(2026-10-12, `mail_reformat`) — 용어가 같은 항목에만.
+        for item in sc["axes"] + sc["watch"]:
+            if (axis_links or {}).get(item["term"]):
+                item["_feedback_links"] = axis_links[item["term"]]
+        return digest._external_scout_html({"external_scout": sc})
     except (ValueError, TypeError):
         return digest._block(''.join(digest._weekly_line_html(line) for line in lines if line.strip()))
 
 
-def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_count: int | None = None) -> str:
+def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_count: int | None = None,
+                axis_links: dict[str, dict[str, str]] | None = None) -> str:
     """오늘 본문을 다시 해석하지 않는다. 원래 발송 명세와 다른 카드는 거부한다."""
     parsed = parse(text)
     if len(papers) != len(parsed["cards"]) or any(
@@ -458,16 +502,16 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
             # 띠 아래 일반 줄이 있으면 버리지 않고 그대로 그린다(§226 P2 — 생산 평문엔 없지만 저장 글은 기록이다).
             rest = ''.join(digest._weekly_line_html(_without_hidden_moves(line))
                            for line in section["lines"] if _without_hidden_moves(line))
-            content += digest._block(rest) + (_scout_html(scout_lines) if scout_lines else "")
+            content += digest._block(rest) + (_scout_html(scout_lines, axis_links) if scout_lines else "")
             continue
         if heading == digest.DAILY_LINKS_TITLE:
             # 정해진 문장 목록이라 그대로 되돌린다(2026-10-10). `· ` 로 시작하지 않는 줄은 버리지 않고 같은 상자에 그대로 싣는다.
             texts = [line.strip()[2:] if line.strip().startswith("· ") else line.strip() for line in section["lines"] if line.strip()]
-            content += digest.daily_links_html(texts) + (_scout_html(scout_lines) if scout_lines else "")
+            content += digest.daily_links_html(texts) + (_scout_html(scout_lines, axis_links) if scout_lines else "")
             continue
         weekly = _weekly_section_html(heading, section["lines"])
         if weekly is not None:
-            content += weekly + (_scout_html(scout_lines) if scout_lines else "")
+            content += weekly + (_scout_html(scout_lines, axis_links) if scout_lines else "")
             continue
         content += digest._h1(heading) if heading else ""
         if heading == "오늘의 연구 흐름":
@@ -494,5 +538,5 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
             lines_html = ''.join(digest._weekly_line_html(_without_hidden_moves(line))
                                  for line in section["lines"] if _without_hidden_moves(line))
             content += digest._block(lines_html) if re.match(r"최근 \d+일 흐름|외부 정찰|지난 \d+일 검색 기준 변화", heading) else lines_html
-        content += _scout_html(scout_lines) if scout_lines else ""
+        content += _scout_html(scout_lines, axis_links) if scout_lines else ""
     return mail_layout.frame(content)
