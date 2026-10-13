@@ -29,6 +29,8 @@ LOOKUP_BUDGET_S = 60.0
 _GH_MENTION_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)", re.I)
 
 _HTML_CACHE: dict[str, list[dict] | None] = {}
+_HTML_RAW: dict[str, str] = {}      # 원 HTML — 비교 방법의 인용 링크를 따라가려고 둔다(`method_links`, 2026-10-13). 프로세스 안에서만 산다
+METHOD_BUDGET_S = 30.0             # 비교 방법 원 논문·인기 지표 조회의 프로필당 상한(S2 초당 1회 — 7일 캐시가 채워지면 거의 안 쓴다, 프로필 4개면 최대 2분)
 
 
 # 성능 결과를 못 낸 사유 기록. 테스트는 conftest 가 이 값을 임시 경로로 돌린다 — 기본값으로 두면 테스트가 운영 logs/ 에 쓴다
@@ -49,7 +51,7 @@ def _status(path: Path | None, day: str, profile: str, aid: str, stage: str, rea
         pass
 
 
-def _baselines(results: list[dict], main: dict, method: str = "") -> list[dict]:
+def _baselines(results: list[dict], main: dict, method: str = "", limit: int | None = 3) -> list[dict]:
     """같은 표·열의 명확한 다른 방법만 남겨 자기 변형과 섞이지 않게 한다.
 
     방법 이름이 `Foo` 면 `Foo-S`·`Foo-B` 같은 크기 변형은 추출 단계에서 own=False 가 될 수 있다 — 이름이 방법 이름으로 시작하면
@@ -70,7 +72,7 @@ def _baselines(results: list[dict], main: dict, method: str = "") -> list[dict]:
             and not (len(own_key) >= 2 and re.sub(r"[^0-9a-z]", "", r["model"].casefold()).startswith(own_key))]
     if main.get("direction") in ("higher", "lower"):
         rows = sorted(rows, key=lambda r: r["value"], reverse=main["direction"] == "higher")
-    return rows[:3]
+    return rows if limit is None else rows[:limit]
 
 
 def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
@@ -80,8 +82,9 @@ def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
         try:
             import arxiv_tables
             import external_evidence
-            _HTML_CACHE[arxiv_id] = arxiv_tables.parse_tables(
-                external_evidence._fetch(f"https://arxiv.org/html/{arxiv_id}", external_evidence.FETCH_TIMEOUT_S))
+            raw = external_evidence._fetch(f"https://arxiv.org/html/{arxiv_id}", external_evidence.FETCH_TIMEOUT_S)
+            _HTML_CACHE[arxiv_id] = arxiv_tables.parse_tables(raw)
+            _HTML_RAW[arxiv_id] = raw
         except Exception as error:  # noqa: BLE001 — HTML 판이 없는 논문이 많다(PDF 만 있는 경우)
             print(f"  [성능 동향] {arxiv_id} 표 받기 실패: {type(error).__name__}")
             _HTML_CACHE[arxiv_id] = None
@@ -140,6 +143,7 @@ def _main_results(own: list[dict], claims: list[dict]) -> list[dict]:
 
 def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dict]] | None = None,
             run_external: Callable[[list[dict]], dict] | None = None, signals_of: Callable[[str], dict] | None = None,
+            methods_of: Callable[[str, list[dict]], None] | None = None,
             profile_id: str = "", status_path: Path | None = None,
             now: datetime | None = None, clock: Callable[[], float] | None = None) -> None:
     """papers 에 `_frontier`·`_signals` 를 붙인다. 어떤 실패도 예외로 올리지 않는다(메일은 나가야 한다)."""
@@ -204,7 +208,9 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
             if reason:
                 status(aid, "extract", reason)
             for r in main:
-                r["baselines"] = _baselines(results, r, method)
+                # 카드 표는 성능 상위 3개, 인기 지표는 같은 표·열·구획의 비교 방법 전체에서 고른다(가장 많이 인용된 방법이 상위 3개 밖일 수 있다).
+                r["peers"] = _baselines(results, r, method, limit=None)
+                r["baselines"] = r["peers"][:3]
             for r in main:
                 r["compare"] = frontier_store.compare(db, aid, r)
             fr = {"main": main, "claims": claims, "external": None,
@@ -261,6 +267,21 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
                 adoption_signals._DEADLINE = None
             except Exception:  # noqa: BLE001
                 pass
+    # 비교 방법의 원 논문·인기 지표(2026-10-13) — 리더보드 대신 "많이 쓰이는 방법" 을 가리킨다. 원 HTML 이 있는 논문만(인용 링크를 따라간다).
+    method_deadline = clock() + METHOD_BUDGET_S
+    for paper in papers:
+        main = (paper.get("_frontier") or {}).get("main") or []
+        aid = paper.get("arxiv_id") or ""
+        if not main or clock() >= method_deadline:
+            continue
+        try:
+            if methods_of is not None:
+                methods_of(aid, main)
+            elif aid in _HTML_RAW:
+                import method_links
+                method_links.annotate(_HTML_RAW[aid], main, now=now, deadline=method_deadline, clock=clock)
+        except Exception as error:  # noqa: BLE001 — 부가 정보다
+            print(f"  [성능 동향] 비교 방법 인기 지표 생략: {type(error).__name__}")
 
 
 def _external(db: Path, candidates: list, day: str, run_external: Callable | None, texts: dict[str, str] | None = None, *,

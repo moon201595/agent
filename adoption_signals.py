@@ -48,6 +48,8 @@ def _get_json(url: str, headers: dict | None = None) -> object:
             raise
         api_usage.record(host, "ok" if resp.status_code == 200 else str(resp.status_code))
         if resp.status_code == 429 and attempt == 0:
+            if _DEADLINE is not None and _DEADLINE - time.monotonic() < 4.0:
+                break                                        # 마감이 다가오면 기다리지 않는다 — 3초 대기가 조회 상한을 넘기지 않게(2026-10-13 Codex 검토)
             time.sleep(3.0)                                  # 한 번만 다시 — 그래도 안 되면 그 축만 "조회 실패"
             continue
         break
@@ -72,7 +74,7 @@ def scholarly(arxiv_id: str, get: Callable[..., object] = None) -> dict:
             "publication_date": data.get("publicationDate")}
 
 
-def hub(arxiv_id: str, get: Callable[..., object] = None) -> dict:
+def hub(arxiv_id: str, get: Callable[..., object] = None, models: bool = True) -> dict:
     """HF 논문 페이지와 연결 모델. 논문 페이지가 없으면(새 논문은 대부분 없다) 모델 검색을 하지 않는다."""
     get = get or _get_json
     try:
@@ -84,7 +86,7 @@ def hub(arxiv_id: str, get: Callable[..., object] = None) -> dict:
     out = {"page": True, "upvotes": page.get("upvotes"), "github_repo": page.get("githubRepo"),
            "github_stars": page.get("githubStars"), "n_models": page.get("numTotalModels"),
            "n_datasets": page.get("numTotalDatasets"), "n_spaces": page.get("numTotalSpaces"), "models": []}
-    if out["n_models"]:
+    if out["n_models"] and models:                       # 비교 방법 인기 지표(method_links)는 모델 수만 쓴다 — 모델 상세 조회를 아낀다
         try:
             models = get(f"https://huggingface.co/api/models?filter=arxiv:{arxiv_id}&sort=downloads&direction=-1&limit=3"
                          "&expand%5B%5D=downloads&expand%5B%5D=likes")

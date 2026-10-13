@@ -181,7 +181,21 @@ def _comparison_section(r: dict, ext: dict, first: bool) -> tuple[str, list[tupl
     direction = DIRECTION_LABEL.get(r.get("direction") or "", "방향 미상")
     rows: list[tuple[str, str]] = [(f"이 논문 · {_field(r['model'])} · {_field(r['text'])} · {where}", "")]
     baselines = r.get("baselines") or []
-    rows += [(f"같은 표 · {_field(b['model'])} · {_field(b['text'])}", "") for b in baselines]
+    # 비교 방법의 원 논문 인기 지표(2026-10-13 사용자 결정 — 리더보드 대신 "이 분야에서 많이 쓰이는 방법"). 가장 많이 인용된 방법이
+    # 성능 상위 3개 밖이면 그 행도 싣는다. 이어진 방법은 이름에 원 논문 링크를 단다.
+    import method_links
+    pop = r.get("popularity") or {}
+    cited = method_links.most_cited(r)
+    # 원 논문 인용 수를 확인한 방법만 견준다 — 일부만 확인했는데 "이 표에서 가장 많이 인용된" 이라고 하면 과장이다(Codex 검토 P2).
+    checked, total = r.get("popularity_checked") or 0, r.get("popularity_total") or len(r.get("peers") or [])
+    scope = (f"이 표의 비교 방법 {total}개 중 원 논문 인용 수를 확인한 {checked}개에서" if checked < total
+             else f"이 표의 비교 방법 {total}개 중")
+    shown = list(baselines) + ([cited[0]] if cited and all(b["model"] != cited[0]["model"] for b in baselines) else [])
+    for b in shown:
+        p = pop.get(b["model"]) or {}
+        note = method_links.label(p)
+        rows.append((f"같은 표 · {_field(b['model'])} · {_field(b['text'])}" + (f" · {note}" if note else ""),
+                     f"https://arxiv.org/abs/{p['arxiv']}" if p.get("arxiv") else ""))
     shown_ext = [c for c in (ext.get("competitors") or []) if external_visible(c)] if first else []
     rows += [_external_row(c) for c in shown_ext]
     best = (r.get("compare") or {}).get("best")
@@ -190,8 +204,16 @@ def _comparison_section(r: dict, ext: dict, first: bool) -> tuple[str, list[tupl
     # 한 문장 — 같은 표·같은 열·같은 구획의 가장 좋은 비교 방법 대비(`_baselines` 가 방향대로 정렬해 둔다).
     if baselines:
         line = difference_sentence(r, baselines[0], f"{where}에서", same_column=True)
+        if line and cited and cited[0]["model"] == baselines[0]["model"]:
+            line += f" {cited[0]['model']}은(는) {scope} 가장 많이 인용된 방법이기도 하다(인용 {cited[1]['citations']:,}회)."
         if line:
             rows.append((line, ""))
+    # 가장 많이 인용된 비교 방법 대비 — 같은 표·같은 열·같은 구획이라 척도가 같다. "많이 인용됨" 은 많이 쓰인다는 뜻이지 성능 순위가 아니다.
+    if cited and (not baselines or cited[0]["model"] != baselines[0]["model"]):
+        line = difference_sentence(r, {**cited[0], "model": f"{cited[0]['model']}(인용 {cited[1]['citations']:,}회)"},
+                                   f"{scope} 가장 많이 인용된 방법과 견주면", same_column=True)
+        if line:
+            rows.append((line, ""))                          # 원 논문 링크는 표의 그 방법 행에 있다 — 문장 전체를 링크로 만들면 읽기 어렵다
     for c in shown_ext:
         if conditions_verified(c):
             line = difference_sentence(r, {**c, "model": c.get("display_model") or c["model"]}, "평가 조건이 같다고 대조한 외부 결과와 견주면",
