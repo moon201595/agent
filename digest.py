@@ -611,14 +611,23 @@ def _observation_blocks_html(paper: dict) -> str:
     return _render_observation_sections(_observation_sections(paper))
 
 
-_COMPARISON_ROW_RE = re.compile(r"(이 논문|같은 표|외부 논문|기존 관측) · (.+?) · (\S+)(?: · (.+))?")
+# 값 칸은 공백을 품을 수 있다("80.3 ± 1.1"·"78.2 +8.0") — 2026-10-13 `\S+` 라서 HMA 카드가 표가 아니라 줄 나열로 그려졌다.
+# 칸 사이 구분자 " · " 는 `paper_observations._field` 가 칸 안에서 지운다.
+# 값 칸은 수치로 시작하는 꼴만 받는다(오차·개선량·각주 꼬리 하나 허용) — 아무 글이나 받으면 "같은 표 · Alpha · Beta Model · 62.0" 을
+# 방법 Alpha·값 "Beta Model" 로 나눈다(Codex 검토 P2). 안 맞으면 표 대신 줄 나열이다.
+_COMPARISON_VALUE = r"[-+−]?\.?\d[^\s·]*(?: (?:±|∓|[+−-]|\() ?[^\s·]+)?"
+_COMPARISON_ROW_RE = re.compile(r"(이 논문|같은 표|다른 구획 참고|외부 논문|기존 관측) · (.+?) · (" + _COMPARISON_VALUE + r")(?: · (.+))?")
 
 
 def _comparison_table_html(heading: str, entries: list[tuple[str, str]]) -> str | None:
     """성능 비교 상자(2026-10-13) — 행 문법이 맞으면 표 + 문장으로, 하나라도 안 맞으면 None(호출부가 줄 나열로 그린다).
     평문 저장 글에서 되살린 행도 같은 함수를 타므로 형식 수정본이 아침 메일과 같다."""
-    rows, notes = [], []
+    import paper_observations
+    rows, notes, leads = [], [], []
     for text, url in entries:
+        if text.startswith(paper_observations.LEAD_PREFIX):
+            leads.append(text.removeprefix(paper_observations.LEAD_PREFIX))
+            continue
         if text.startswith("→ "):
             notes.append((text[2:], url))
             continue
@@ -636,17 +645,21 @@ def _comparison_table_html(heading: str, entries: list[tuple[str, str]]) -> str 
         bg = "#EEF6F7" if mine else "#FFFFFF"
         name = (f'<a href="{_esc(url)}" style="color:#0B5F68;text-decoration:none;">{_esc(model)} ↗</a>' if url else _esc(model))
         td = f'style="font-size:13px;padding:5px 8px;border-bottom:1px solid #EEF2F5;background-color:{bg};font-weight:{weight};vertical-align:top;"'
-        body += (f'<tr><td {td}>{_esc(kind)}</td><td {td}>{name}</td>'
-                 f'<td {td.replace("vertical-align:top;", "vertical-align:top;text-align:right;white-space:nowrap;")}>{_esc(value)}</td>'
+        # 값은 앞 수치와 뒤 꼬리("(+25.2)"·"± 1.0")를 다른 칸에 — 앞 수치끼리 세로로 맞는다(2026-10-14 사용자: "칸은 맞추고").
+        lead, _, tail = value.partition(" ")
+        body += (f'<tr><td {td.replace("vertical-align:top;", "vertical-align:top;white-space:nowrap;")}>{_esc(kind)}</td><td {td}>{name}</td>'
+                 f'<td {td.replace("vertical-align:top;", "vertical-align:top;text-align:right;white-space:nowrap;padding-right:2px;")}>{_esc(lead)}</td>'
+                 f'<td {td.replace("vertical-align:top;", "vertical-align:top;white-space:nowrap;padding-left:2px;").replace(f"font-weight:{weight};", f"font-weight:{weight};color:#526675;")}>{_esc(tail)}</td>'
                  f'<td {td.replace(f"font-weight:{weight};", "font-weight:400;color:#526675;")}>{_esc(note)}</td></tr>')
     table = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:6px;">'
-             f'<tr><th {th}>구분</th><th {th}>방법</th><th {th.replace("text-align:left", "text-align:right")}>값</th><th {th}>출처·조건</th></tr>'
+             f'<tr><th {th}>구분</th><th {th}>방법</th><th colspan="2" {th.replace("text-align:left", "text-align:right")}>값</th><th {th}>출처·조건</th></tr>'
              f'{body}</table>')
     sentences = ''.join(f'<div style="font-size:13.5px;line-height:1.65;margin-top:6px;color:#162536;">'
                         + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text)) + '</div>'
                         for text, url in notes)
+    lead = ''.join(f'<div style="font-size:14px;line-height:1.6;margin-top:6px;color:#162536;font-weight:600;">{_esc(text)}</div>' for text in leads)
     return ('<div style="border:1px solid #E3E8EC;border-radius:8px;padding:10px 12px;margin-top:8px;">'
-            f'<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">{_esc(heading)}</div>{table}{sentences}</div>')
+            f'<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">{_esc(heading)}</div>{lead}{table}{sentences}</div>')
 
 
 def _render_observation_sections(sections: list[tuple[str, list[tuple[str, str]]]]) -> str:

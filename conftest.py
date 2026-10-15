@@ -66,6 +66,8 @@ def _no_real_sota_lookups(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(external_evidence, "_real_fetch", external_evidence._fetch, raising=False)   # 받기 함수 자체를 보는 테스트용
     monkeypatch.setattr(external_evidence, "_fetch", refuse)
     monkeypatch.setattr(external_evidence, "_run_agent", no_agent)
+    # 가짜 응답도 운영 로그에 남았으므로 테스트마다 저장 경로를 격리한다(2026-10-13).
+    monkeypatch.setattr(external_evidence, "AGENT_LOG_DIR", tmp_path_factory.mktemp("frontier-agent"))
     monkeypatch.setattr(research_frontier, "_arxiv_tables", lambda arxiv_id: [])
     monkeypatch.setattr(research_frontier, "_HTML_CACHE", {})
     monkeypatch.setattr(research_frontier, "_CALLED_ON", set())

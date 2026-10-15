@@ -75,6 +75,82 @@ def _baselines(results: list[dict], main: dict, method: str = "", limit: int | N
     return rows if limit is None else rows[:limit]
 
 
+def _own_siblings(results: list[dict], main: dict) -> list[dict]:
+    """대표값과 같은 표·열·지표·구획의 **다른 이 논문 행**(방향대로 정렬). 2026-10-14 WARP-VLA 표 I 은 GR00T N1.7 + Ours 와 π0.5 + Ours 두 행이
+    이 논문 결과였는데 카드는 첫 행 하나만 실었다."""
+    table, _, cell = main["locator"].partition(":r")
+    col = cell.partition("c")[2]
+    rows = [r for r in results if r["own"] and r["locator"] != main["locator"] and r["locator"].partition(":r")[0] == table
+            and r["locator"].partition(":r")[2].partition("c")[2] == col and r.get("orientation") == main.get("orientation")
+            and r.get("bench_key") == main.get("bench_key") and r.get("metric_key") == main.get("metric_key")
+            and r.get("block_id", "") == main.get("block_id", "") and r.get("direction") == main.get("direction")]
+    return sorted(rows, key=lambda r: r["value"], reverse=main.get("direction") == "higher")
+
+
+def _best_own(results: list[dict], main: dict) -> dict:
+    """같은 열의 이 논문 행 중 가장 좋은 것을 대표값으로 — 첫 행이 대표면 "AnyCamVLA 보다 5.8 낮다" 만 남고, 같은 표의 더 좋은 자기 결과
+    (π0.5 + Ours 78.3 — AnyCamVLA 보다 6.0 높다)가 가려진다(2026-10-14 사용자 메일). 저자가 문장으로 직접 말한 값(`author_value`)은 그대로 둔다."""
+    if main.get("author_value") or main.get("direction") not in ("higher", "lower"):
+        return main
+    better = [r for r in _own_siblings(results, main)
+              if (r["value"] > main["value"] if main["direction"] == "higher" else r["value"] < main["value"])]
+    return better[0] if better else main
+
+
+def _references(results: list[dict], main: dict, method: str, tables: list[dict], limit: int = 3) -> list[dict]:
+    """같은 원문 표·같은 열·같은 지표의 **다른 구획**에서 고른 참고 결과 — 구획마다 가장 좋은 값 하나, 최대 `limit` 개.
+
+    2026-10-13 HMA 표 2: 같은 구획(구성 모델 조합)에는 "Avg. of Single" 뿐이고, 단일 에이전트·오픈소스 에이전트 결과는 다른 구획에 있다.
+    그런데 구획을 그냥 열면 POrchestra 처럼 백본마다 같은 방법을 다시 돌린 구획의 값이 다시 섞인다(§244). 그래서 **이 논문 행이 있는 구획은
+    통째로 뺀다** — 이 논문의 다른 설정이다. 판단은 추출 결과가 아니라 **원본 표의 행 이름**으로 한다: 값이 결측이거나 지표를 못 읽은
+    자기 행은 추출 결과에 없어서, 그것으로 판단하면 다른 백본 구획이 "자기 행 없음" 으로 보인다(외부 검토 지적). 이름이 애매하면(정규화한
+    이름이 방법 이름을 포함) 자기 행으로 본다 — 참고 행을 줄이는 쪽이다.
+    참고 결과는 `baselines`·`peers` 에 넣지 않는다 — 차이 문장·인용 수 비교·외부 조사 기준 집합은 같은 구획 규칙 그대로다."""
+    import arxiv_tables
+    import performance_results as pr
+    if main.get("orientation") == "transposed" or not main.get("block_id"):
+        return []
+    table_ref, _, cell = main["locator"].partition(":r")
+    try:
+        table = tables[int(table_ref.rsplit("#", 1)[1])]
+    except (IndexError, ValueError):
+        return []
+    own_key = re.sub(r"[^0-9a-z]", "", method.casefold())
+    is_own = lambda label: pr.own_label(label, method) or (len(own_key) >= 2 and own_key in re.sub(r"[^0-9a-z]", "", label.casefold()))
+    blocks = pr.row_blocks(table)
+    own_blocks: set[str] = set()
+    current, pending = "", False
+    for row in range(table.get("header_rows") or 0, len(table.get("grid") or [])):
+        if row in blocks:
+            current = blocks[row][0]
+            if pending:
+                own_blocks.add(current)
+                pending = False
+            if is_own(arxiv_tables.row_label(table, row)):
+                own_blocks.add(current)
+        elif is_own(arxiv_tables.row_label(table, row)):
+            # `row_blocks` 가 경계로 본 행이다. 값이 모두 결측인 자기 행이면 그 구획의 본문 행이다 — 앞뒤 구획 모두 자기 구획으로 친다.
+            # 이름만 있는 구획 머리("HMA (Ours)")면 뒤 구획만이다 — 앞 구획(HMA 표의 오픈소스 기준선)까지 빼면 참고 결과를 잃는다(2026-10-13 재생).
+            # 빈 칸뿐인 행도 결측 자기 행일 수 있다 — 칸 전체를 같은 글로 채운 병합 머리만 머리로 본다(Codex 검토 P2: 빈 `<td>` 자기 행이 앞 구획 제외를 우회했다).
+            first = table["grid"][row][0].strip()
+            if not all(c.strip() == first for c in table["grid"][row][1:]):
+                own_blocks.add(current)
+            pending = True
+    col = cell.partition("c")[2]
+    best: dict[str, dict] = {}
+    for r in results:
+        if (r["own"] or r["locator"].partition(":r")[0] != table_ref or r["locator"].partition(":r")[2].partition("c")[2] != col
+                or r.get("bench_key") != main.get("bench_key") or r.get("metric_key") != main.get("metric_key")
+                or r.get("block_id", "") in own_blocks                         # 대표값의 구획도 자기 행이 있어 여기서 빠진다
+                or re.search(r"(?i)\bours\b|\bproposed\b|\bw/|\bwithout\b", r["model"])):
+            continue
+        block = r.get("block_id", "")
+        held = best.get(block)
+        if held is None or (r["value"] > held["value"] if main["direction"] == "higher" else r["value"] < held["value"]):
+            best[block] = r
+    return sorted(best.values(), key=lambda r: r["value"], reverse=main["direction"] == "higher")[:limit]
+
+
 def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
     """이 논문의 arXiv HTML 표. 프로세스 안에서 한 번만 받는다(여러 프로필에 같은 논문이 실린다).
     **받기 실패는 None, 받았는데 표가 없으면 빈 목록** — 둘을 가르지 않으면 정상 재추출의 빈 결과로 옛 관측을 못 지운다(Codex 최종 검토)."""
@@ -125,7 +201,9 @@ def _main_results(own: list[dict], claims: list[dict]) -> list[dict]:
         tno = int(tbl.rsplit("#", 1)[1]) if "#" in tbl else 0
         # 전치 표는 같은 표 안의 평균 행을 과제 행보다 앞세운다. 표 순서는 바꾸지 않는다.
         task_row = r.get("orientation") == "transposed" and not pr._MEAN_RE.search(r["metric"].rsplit(" / ", 1)[-1])
-        return (claimed.index(r["bench_key"]) if r["bench_key"] in claimed else len(claimed), tno,
+        # 저자가 문장에서 지표 이름과 함께 직접 말한 값(성능 결과의 author_value)을 그 벤치마크의 대표값으로 앞세운다 — 2026-10-13 HMA 는
+        # 전체 75과제 78.2 대신 왼쪽 부분집합 열(Lite 22과제 84.8)이 대표값이었다.
+        return (claimed.index(r["bench_key"]) if r["bench_key"] in claimed else len(claimed), not r.get("author_value"), tno,
                 bool(task_row), int(col or 0),
                 bool(re.search(r"(?i)\bw/|\bw/o|\bwithout|\bablation|\bvariant", r.get("model", ""))), int(row or 0))
     seen: set[str] = set()
@@ -207,10 +285,14 @@ def analyze(db: Path, papers: list[dict], *, tables_of: Callable[[str], list[dic
                       "자기 행 인식 0" if not any(r["own"] for r in results) else "방향 미상" if not main else "")
             if reason:
                 status(aid, "extract", reason)
+            main = [_best_own(results, r) for r in main]
+            for r in main:
+                r["own_rows"] = _own_siblings(results, r)
             for r in main:
                 # 카드 표는 성능 상위 3개, 인기 지표는 같은 표·열·구획의 비교 방법 전체에서 고른다(가장 많이 인용된 방법이 상위 3개 밖일 수 있다).
                 r["peers"] = _baselines(results, r, method, limit=None)
                 r["baselines"] = r["peers"][:3]
+                r["references"] = _references(results, r, method, tables or [])
             for r in main:
                 r["compare"] = frontier_store.compare(db, aid, r)
             fr = {"main": main, "claims": claims, "external": None,
@@ -448,7 +530,7 @@ def reading_point(paper: dict) -> str:
     fr = paper.get("_frontier") or {}
     main = (fr.get("main") or [None])[0]
     if main:
-        head = f"{main['benchmark']}에서 {main['metric']} {main['text']}를 보고"
+        head = paper_observations.latex_display(f"{main['benchmark']}에서 {main['metric']} ") + f"{paper_observations.row_value(main)}를 보고"
         verified = _verified(fr)
         if verified and not all(_same(c) for c in verified):
             parts.append(head + "했으나, 확인한 외부 경쟁 결과와 평가 조건이 달라 직접 우열 비교는 어려움.")

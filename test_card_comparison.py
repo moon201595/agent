@@ -60,11 +60,15 @@ def test_card_says_how_this_paper_compares_to_the_best_baseline_in_the_same_bloc
     """이 테스트가 무엇을 망가뜨리면 실패하는가: 같은 표·같은 구획의 가장 좋은 비교 방법 대비 차이와 지표 방향을 한 문장으로 말하지 않거나,
     낮을수록 좋은 지표에서 "더 좋음/더 나쁨" 을 뒤집거나, 방향을 모르는데 대소를 말하거나, 소수 자릿수를 원 표와 다르게 쓰면 실패한다."""
     heading, rows = po.sections({"_frontier": {"main": [_main()], "external": {"status": "done", "competitors": []}}})[0]
-    assert heading == "성능 비교 · SWE-Bench · Success rate (높을수록 좋음)"
+    assert heading == "성능 비교 · SWE-Bench · Success rate"
     texts = [t for t, _ in rows]
-    assert texts[:3] == ["이 논문 · Ours-Method · 71.0 · 표 1 Backbone-X 구획", "같은 표 · Base-2 · 70.0", "같은 표 · Base-1 · 62.0"]
-    assert "→ 표 1 Backbone-X 구획에서 Ours-Method 71.0은(는) Base-2 70.0보다 1.0 높다(더 좋음). 지표는 높을수록 좋음." in texts
-    assert "→ 저자가 비교하지 않은 더 최근 결과를 웹에서 찾았지만 출처 표에서 확인된 것이 없다." in texts
+    # 결론 한 줄이 표 위에(2026-10-15 사용자: 표를 먼저 보면 무엇과 무엇을 견주는지 모른다).
+    assert texts[0] == "요약: 표 1 Backbone-X 구획에서 Ours-Method 71.0은(는) Base-2 70.0보다 1.0 높다(더 좋음)."
+    assert texts[1:4] == ["이 논문 · Ours-Method · 71.0 · 표 1 Backbone-X 구획", "같은 표 · Base-2 · 70.0", "같은 표 · Base-1 · 62.0"]
+    # 웹 검색이 후보를 하나도 내지 않았으면 "찾지 못했다" — "찾았지만 확인 못 함" 과 가른다(2026-10-14 WARP-VLA).
+    assert "→ 저자가 비교하지 않은 같은 벤치마크·지표의 다른 결과를 웹 검색에서 찾지 못했다." in texts
+    _, unverified = po.sections({"_frontier": {"main": [_main()], "external": {"status": "done", "competitors": [{"status": "not_found", "model": "X"}]}}})[0]
+    assert "→ 저자가 비교하지 않은 더 최근 결과를 웹에서 찾았지만 출처 표에서 확인된 것이 없다." in [t for t, _ in unverified]
     lower = _main(direction="lower", text="0.85", value=0.85, baselines=[{"model": "B", "text": "0.80", "value": 0.80}])
     same = lambda m, o: po.difference_sentence(m, o, "표 1에서", same_column=True)
     other = lambda m, o: po.difference_sentence(m, o, "외부와", same_column=False)
@@ -72,6 +76,25 @@ def test_card_says_how_this_paper_compares_to_the_best_baseline_in_the_same_bloc
     assert same(_main(direction=None), {"model": "B", "text": "70.0", "value": 70.0}) == ""
     assert "같다" in same(_main(), {"model": "B", "text": "71.0", "value": 71.0})
     assert other(_main(metric="RMSE", text="0.8", value=0.8), {"model": "B", "text": "80", "value": 80.0}) == ""
+
+
+def test_card_shows_latex_table_cells_as_readable_symbols_but_keeps_values():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: arXiv 수식 칸의 LaTeX 원문("\\pm"·"\\leftrightarrow"·"\\tau^{2}")을 카드 머리·행·구획·문장에 그대로 찍거나,
+    모르는 명령("\\top")을 비슷한 기호로 지어내거나, 보이는 글자를 바꾸면서 비교 값·자릿수를 바꾸면 실패한다(2026-10-13 2610.13494 재생)."""
+    m = _main(benchmark="\\tau^{2}-Telecom", text="84.8 +4.5", value=84.8, block="Claude Opus 5 \\leftrightarrow GPT-5.6-sol",
+              baselines=[{"model": "Avg. of Single", "text": "80.3 \\pm 1.1", "value": 80.3}])
+    heading, rows = po.sections({"_frontier": {"main": [m], "external": {"status": "done", "competitors": []}}})[0]
+    texts = [t for t, _ in rows]
+    assert heading == "성능 비교 · τ²-Telecom · Success rate"
+    # 증감 확인 표시(gain)가 없는 꼬리 "+4.5" 는 원 글 그대로다 — 괄호·설명은 산수로 확인된 칸만(test_card_plus_rows).
+    assert texts[1:3] == ["이 논문 · Ours-Method · 84.8 +4.5 · 표 1 Claude Opus 5 ↔ GPT-5.6-sol 구획", "같은 표 · Avg. of Single · 80.3 ± 1.1"]
+    assert "요약: 표 1 Claude Opus 5 ↔ GPT-5.6-sol 구획에서 Ours-Method 84.8 +4.5은(는) Avg. of Single 80.3 ± 1.1보다 4.5 높다(더 좋음)." in texts
+    assert not any("\\" in t for t in [heading, *texts])
+    assert po.latex_display("a\\top b \\mathrm{X}") == "a\\top b X"                     # 모르는 명령(\\top)은 남기고 글자 묶음만 푼다
+    # 2026-10-15 TSRL 카드: 띄어쓰기가 사라진 "SFT\\toDAPO", 글자 아래첨자 "TSRL {}_{\\text{DAPO}}" 가 그대로 찍혔다.
+    assert po.latex_display("SFT\\toDAPO") == "SFT → DAPO" and po.latex_display("TSRL {}_{\\text{DAPO}}") == "TSRL (DAPO)"
+    assert po.latex_display("\\pi_{0.5} + Ours") == "π0.5 + Ours" and po.latex_display("\\topK") == "\\topK"
+    assert m["text"] == "84.8 +4.5" and m["baselines"][0]["text"] == "80.3 \\pm 1.1"      # 원 값은 그대로
 
 
 def test_comparison_box_renders_as_a_table_and_falls_back_to_lines_for_unknown_rows():
@@ -85,10 +108,10 @@ def test_comparison_box_renders_as_a_table_and_falls_back_to_lines_for_unknown_r
     assert "<table" in html and "background-color:#EEF6F7" in html and ">Ours-Method</td>" in html
     assert 'href="https://arxiv.org/abs/2610.00009"' in html and "Newer ↗" in html
     assert "평가 조건이 같은지 확인되지 않아 차이를 말하지 않는다" in html and "74.0보다" not in html
-    legacy = [(po.COMPARISON_PREFIX + "SWE-Bench · SR (높을수록 좋음)", [("SWE-Bench · SR 53.8 — 논문 표 X 행 (S3.T1#0:r10c3)", "")])]
+    legacy = [(po.COMPARISON_PREFIX + "SWE-Bench · SR", [("SWE-Bench · SR 53.8 — 논문 표 X 행 (S3.T1#0:r10c3)", "")])]
     assert "<table" not in digest._render_observation_sections(legacy)
     # 일부 행만 문법에 맞아도 표로 그리지 않는다 — 맞지 않는 줄을 조용히 버리면 저장 글의 내용이 사라진다.
-    head = po.COMPARISON_PREFIX + "SWE-Bench · SR (높을수록 좋음)"
+    head = po.COMPARISON_PREFIX + "SWE-Bench · SR"
     mixed = [(head, [("이 논문 · A · 71.0 · 표 1", ""), ("알 수 없는 옛 줄", "")])]
     html = digest._render_observation_sections(mixed)
     assert "<table" not in html and "알 수 없는 옛 줄" in html

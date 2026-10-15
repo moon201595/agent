@@ -84,8 +84,10 @@ def test_external_provenance_line_plain_html_and_saved_revision_match():
     plain=digest.generate_digest(scan,'팀')
     rendered=digest.generate_digest_html(scan,'팀')
     restored=saved_digest.render_html(plain,'팀',[{'title':'Study','link':p['link']}])
-    # 2026-10-13 카드 개편: 비교 표의 외부 행 — 실제 열 이름·표 번호·에이전트 판독·조건 미확인·링크를 그대로 싣는다.
-    note='Table 1 열 "Spatial" · 같은 과제: 에이전트 판독(같은 하위 과제 성공률) · 평가 조건 대조 못 함'
+    # 2026-10-13 카드 개편: 비교 표의 외부 행 — 표 번호·조건 미확인·링크. 2026-10-15 사용자("값이 무엇인지 모르겠다"): 열 경로·판독 근거를 행마다
+    # 넣지 않고 "같은 과제는 에이전트 판독" 을 표 아래 한 문장으로 한 번 밝힌다.
+    note='Table 1 열 "Spatial" · 평가 조건 대조 못 함'                  # 출처 열 이름은 남긴다 — 값의 척도를 읽는 데 필요하다(Codex 검토 P2)
+    assert '외부 논문 행의 같은 과제·지표 여부는 웹 검색 에이전트가 판독했다' in plain
     assert f'외부 논문 · GaussVLA · 100 · {note}' in plain                    # 평문은 한 줄, HTML 은 표의 칸으로 나뉜다
     for content in (rendered,restored):
         assert note in html.unescape(content) and '>100</td>' in content and 'GaussVLA ↗' in content

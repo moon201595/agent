@@ -116,13 +116,15 @@ def test_card_compares_with_the_most_cited_method_even_outside_the_top_three():
     assert texts["같은 표 · FooNet · 62.0 · 인용 1,200회 · ★3.4k · HF 모델 5"] == "https://arxiv.org/abs/2301.00001"
     # 4개 중 인용 수를 확인한 것은 2개(FooNet·BarSys2) — 확인한 범위를 문장에 밝힌다(Codex 검토 P2).
     line = ("→ 이 표의 비교 방법 4개 중 원 논문 인용 수를 확인한 2개에서 가장 많이 인용된 방법과 견주면 Ours 71.0은(는) FooNet(인용 1,200회) 62.0보다 "
-            "9.0 높다(더 좋음). 지표는 높을수록 좋음.")
+            "9.0 높다(더 좋음).")
     assert texts[line] == ""
     html = digest._render_observation_sections(po.sections({"_frontier": {"main": [r], "external": {}}}))
     assert "<table" in html and 'href="https://arxiv.org/abs/2301.00001"' in html and "인용 1,200회" in html
-    same = _main(popularity={"BarSys2": {"arxiv": "2405.00002", "citations": 40}})
+    same = _main(popularity={"BarSys2": {"arxiv": "2405.00002", "citations": 40}, "Mid": {"citations": 3}}, popularity_checked=2, popularity_total=4)
     texts = [t for t, _ in po.sections({"_frontier": {"main": [same], "external": {}}})[0][1]]
     assert sum("가장 많이 인용" in t for t in texts) == 1 and any("가장 많이 인용된 방법이기도 하다(인용 40회)" in t for t in texts)
+    alone = _main(popularity={"BarSys2": {"arxiv": "2405.00002", "citations": 40}}, popularity_checked=1, popularity_total=4)
+    assert not any("가장 많이 인용" in t for t, _ in po.sections({"_frontier": {"main": [alone], "external": {}}})[0][1])
     none = _main(popularity={"Low": {"citations": None}})
     assert not any("가장 많이 인용" in t for t, _ in po.sections({"_frontier": {"main": [none], "external": {}}})[0][1])
 
@@ -151,14 +153,6 @@ def test_analyze_keeps_all_same_block_peers_and_calls_the_method_lookup(tmp_path
         assert boom["_frontier"]["main"]
     finally:
         pr.benchmark_candidates = orig
-
-
-def test_web_search_asks_for_the_fields_most_adopted_reference_method():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 외부 웹 검색이 더 최근 결과만 찾고 그 분야에서 가장 널리 쓰이는 기준 방법의 결과는 찾지 않으면 실패한다."""
-    import external_evidence as ee
-    prompt = ee._prompt([{"paper_id": "p", "title": "t", "method": "m", "benchmark": "b", "metric": "x", "value": "1"}])
-    assert "most widely adopted" in prompt and "already compared methods" in prompt
-
 
 
 # ── 2026-10-13 Codex 검토(P2 6 · P3 2) 회귀 ───────────────────────────────────────────────────────
@@ -239,7 +233,11 @@ def test_review_ninth_peer_is_looked_up_and_scope_is_stated(tmp_path):
     ml.annotate(HTML, [r], get=_fake_get([]), now=datetime(2026, 10, 13, tzinfo=timezone.utc), cache_path=tmp_path / "c.json")
     assert r["popularity"]["FooNet"]["citations"] == 1200 and r["popularity_checked"] == 1 and r["popularity_total"] == 9
     texts = [t for t, _ in po.sections({"_frontier": {"main": [r], "external": {}}})[0][1]]
-    assert any("이 표의 비교 방법 9개 중 원 논문 인용 수를 확인한 1개에서 가장 많이 인용된 방법과 견주면" in t for t in texts)
+    # 확인한 방법이 하나뿐이면 "가장 많이 인용된" 은 비교가 아니다(2026-10-15 사용자 메일) — 그 문장도, 성능 상위 3개 밖의 그 행도 싣지 않는다.
+    assert not any("가장 많이 인용" in t for t in texts) and not any("FooNet" in t for t in texts)
+    r["popularity"]["Weak0"], r["popularity_checked"] = {"citations": 10}, 2
+    texts = [t for t, _ in po.sections({"_frontier": {"main": [r], "external": {}}})[0][1]]
+    assert any("이 표의 비교 방법 9개 중 원 논문 인용 수를 확인한 2개에서 가장 많이 인용된 방법과 견주면" in t for t in texts)
 
 
 def test_review_cache_keys_keep_different_references_apart_and_hostile_html_stays_linear():

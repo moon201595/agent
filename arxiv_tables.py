@@ -246,16 +246,20 @@ def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
 
 
 def _safe_header_tables(table: _Node) -> bool:
-    """LaTeXML 머리글의 한 열 문자 표만 펼쳐 수치가 있는 중첩 표와 구분한다.
+    """LaTeXML 머리글·첫 열 라벨의 한 열 표만 펼쳐 결과 중첩 표와 구분한다.
 
     2026-10-07 로컬 3DThinkVLA의 2행×1열 머리글에서 재현했다. 입력·노드·깊이
-    상한은 올리지 않으며 최대 4행·1열·수치 없음·추가 중첩 없음으로 제한한다.
+    상한은 올리지 않으며 최대 4행·1열·추가 중첩 없음으로 제한한다.
+    머리의 마지막 괄호 정수는 표본 수로, 본문 첫 열의 문자 시작 행은 방법 라벨로만 허용한다.
     """
     allowed: set[int] = set()
     grid, rows, originals = _grid(table)
     headers = _header_rows(grid, rows, originals)
-    for row_index, row in enumerate(originals[:headers]):
-        for cell in row:
+    for row_index, row in enumerate(originals):
+        for cell_index, cell in enumerate(row):
+            label_cell = row_index >= headers and cell_index == 0 and grid[row_index][0] == _text(cell)
+            if row_index >= headers and not label_cell:
+                continue
             if not (rows[row_index][1] == 'thead' or 'ltx_td' in cell.classes
                     or 'ltx_th_column' in cell.classes or cell.attrs.get('scope') == 'col'):
                 continue
@@ -264,9 +268,22 @@ def _safe_header_tables(table: _Node) -> bool:
                         or next(_descendants(inner, 'table'), None) is not None):
                     return False
                 inner_grid, _, _ = _grid(inner)
-                if not inner_grid or len(inner_grid) > 4 or any(
-                        len(line) != 1 or cell_number(line[0]) is not None for line in inner_grid):
+                if not inner_grid or len(inner_grid) > 4 or any(len(line) != 1 for line in inner_grid):
                     return False
+                # 머리 단어 뒤의 괄호 정수는 표본 수다. 소수·백분율·단독 숫자 표는 여전히 거부한다.
+                # 2026-10-13 로컬 재생에서 Lite / (22) 머리 때문에 주요 표 전체가 빠졌다.
+                for index, line in enumerate(inner_grid):
+                    # 본문 첫 칸의 문자 방법명은 여러 줄이어도 라벨이다. 숫자로 시작하면 결과 표일 수 있다.
+                    if label_cell:
+                        if not re.match(r"[A-Za-z]", line[0]):
+                            return False
+                        continue
+                    if _NUMBER.search(line[0]) is None:
+                        continue
+                    if not (index == len(inner_grid) - 1 and index > 0
+                            and re.fullmatch(r"\([1-9][0-9]*\)", line[0])
+                            and any(re.search(r"[A-Za-z]", previous[0]) for previous in inner_grid[:index])):
+                        return False
                 allowed.add(id(inner))
     return all(id(inner) in allowed for inner in _descendants(table, 'table'))
 
@@ -277,7 +294,7 @@ def parse_tables(html: str) -> list[dict]:
     UTF-8 5MiB, 표 128개, 표당 펼친 직사각형 1만 셀, 전체 10만 셀을 넘으면
     부분 성공으로 오인하지 않도록 빈 목록을 반환한다. 노드·깊이·행·열도 제한한다.
     잘못된 span, 겹친 셀, 행 그룹 밖 rowspan, 미완성/수치 중첩 table 역시 빈 목록이다.
-    span/div의 LaTeXML 표 역할도 같은 상한·격자 규칙으로 읽는다. 문자 머리글 중첩만 제한적으로 허용한다.
+    span/div의 LaTeXML 표 역할도 같은 상한·격자 규칙으로 읽는다. 문자 머리글·첫 열 라벨 중첩만 제한적으로 허용한다.
     한 figure의 여러 독립 table은 같은 figure id로 각각 반환한다. 없는 id는
     반환 순서 T1부터 부여한다. 머리 판정의 한계는 _header_rows에 명시한다.
     """

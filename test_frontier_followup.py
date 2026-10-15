@@ -135,7 +135,7 @@ def test_raw_decode_ignores_trailing_braces_but_keeps_schema():
 
 
 def test_invalid_json_retries_once_same_prompt_with_remaining_budget():
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: JSON 실패를 재시도하지 않거나 2번 넘게 재호출하거나 새 300초 예산을 주면 실패한다."""
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: JSON 실패를 재시도하지 않거나 2번 넘게 재호출하거나 두 번째 호출에 새 예산을 주거나 180초 에이전트 몫·35초 검증 예약을 바꾸면 실패한다."""
     now=[0.0];calls=[]
     def agent(prompt,timeout):
         calls.append((prompt,timeout));now[0]+=70
@@ -143,7 +143,7 @@ def test_invalid_json_retries_once_same_prompt_with_remaining_budget():
         return json.dumps({'papers':[{'paper_id':TARGET['paper_id'],'competitors':[]}]})
     got=ee.check([TARGET],run_agent=agent,clock=lambda:now[0])[TARGET['paper_id']]
     assert got['status']=='done' and got['retried'] is True and got['agent_calls']==2
-    assert calls[0][0]==calls[1][0] and [c[1] for c in calls]==[ee.BUDGET_S-ee.VERIFY_RESERVE_S, ee.BUDGET_S-ee.VERIFY_RESERVE_S-70]
+    assert calls[0][0]==calls[1][0] and [c[1] for c in calls]==[180.0, 110.0]
     calls.clear();now[0]=0
     def broken(prompt,timeout):calls.append(prompt);return '{'
     got=ee.check([TARGET],run_agent=broken,clock=lambda:now[0])[TARGET['paper_id']]
