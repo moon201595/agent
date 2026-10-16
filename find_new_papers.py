@@ -61,6 +61,12 @@ def _build_query(
     return q
 
 
+# 검색 단계의 arXiv 429 대기 총합 상한(초) — 30초 + 60초 두 번이면 포기한다(2026-10-16 사용자 결정).
+# 그날 team_ai_advance 는 질의 3개가 각각 30+60+120+240=450초를 기다리고도 전부 429 로 실패해 22분을 잃었다. arXiv 한도는 IP 단위라
+# 오래 두드려도 잘 안 풀린다. 포기해도 손실은 없다 — 실패한 질의는 partial 로 남아 검색 창이 전진하지 않고 다음 실행이 같은 창을 다시 본다.
+# 전부 실패하면 기존 "arXiv 실패 → S2 만으로" 경로를 탄다. 논문 본문 받기 등 다른 arXiv 호출은 기존 상한(약 7분 30초) 그대로다.
+SEARCH_RATE_LIMIT_MAX_WAIT = 90.0
+
 async def find_new_papers_since(
     client: httpx.AsyncClient, query: str, since: datetime, category: str | None = None,
     page_size: int = 50, max_pages: int = 10, use_server_side_range: bool = True,
@@ -78,7 +84,7 @@ async def find_new_papers_since(
         resp = await http_client.throttled_arxiv_get(client, {
             "search_query": q, "start": start, "max_results": size,
             "sortBy": "submittedDate", "sortOrder": "descending",
-        })
+        }, max_wait=SEARCH_RATE_LIMIT_MAX_WAIT)
         return http_client.parse_arxiv_feed(resp.text)
 
     result = await delta_search.collect_since(fetch_page, since, page_size, max_pages)

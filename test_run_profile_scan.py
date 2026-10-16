@@ -106,7 +106,7 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
     }
     starts_seen = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:
@@ -151,7 +151,7 @@ def test_scan_profile_end_to_end_with_mocked_arxiv(tmp_path, monkeypatch):
 
 def _mock_empty_arxiv(monkeypatch):
     """빈 결과만 주는 가장 단순한 mock — 다이제스트 저장 배선만 확인할 때 씀."""
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         class FakeResp:
             text = "<fake/>"
 
@@ -235,7 +235,7 @@ def _mock_arxiv_three_agent_papers(monkeypatch):
         {"arxiv_id": "p3", "title": "agent paper three", "abstract": "", "published": _days_ago(3)},
     ]
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         class FakeResp:
             text = "<fake/>"
 
@@ -524,7 +524,7 @@ def _seed_summary(monkeypatch, tmp_path, arxiv_ids):
 def _mock_arxiv_pages(monkeypatch, papers):
     starts_seen = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:
@@ -1109,7 +1109,7 @@ def test_scan_profile_ranks_by_relevance_not_text_availability(tmp_path, monkeyp
     ]}
     starts_seen = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:
@@ -1153,7 +1153,7 @@ def test_high_relevance_paper_without_text_outranks_low_relevance_with_text(tmp_
     ]}
     starts_seen = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:
@@ -1190,7 +1190,7 @@ def test_paper_without_link_reaches_process_paper(tmp_path, monkeypatch):
     starts_seen = []
     reached = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:
@@ -1805,7 +1805,7 @@ def test_s2_실행기록이_시드_지문을_남긴다(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", _s2)
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         class FakeResp:
             text = "<fake/>"
         return FakeResp()
@@ -1857,7 +1857,7 @@ def test_시드를_바꾸면_S2_창이_과거로_돌아간다(tmp_path, monkeypa
 
     monkeypatch.setattr(scan_search.s2_delta, "find_new_papers_since", _s2)
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         class FakeResp:
             text = "<fake/>"
         return FakeResp()

@@ -24,7 +24,7 @@ def _profile(db, core=("target term", "trend term"), weights=None, exclude=("ban
 def _run(db, monkeypatch, papers):
     seen = []
 
-    async def fake_get(client, params):
+    async def fake_get(client, params, **kw):
         seen.append(params["start"])
         class R: text = "<x/>"
         return R()

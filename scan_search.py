@@ -66,6 +66,8 @@ async def _search_arxiv_chunked(client: httpx.AsyncClient, queries: list[str], s
             continue
         papers += r["papers"]
         statuses.append(r["status"])
+        if r.get("error"):
+            errors.append(f"뒤쪽 실패({r['error']}) — 앞쪽만 살림")
         untils.append(r["until"])
     if not statuses:
         raise RuntimeError(f"arXiv 질의 {len(queries)}개 전부 실패 — " + " / ".join(errors))
@@ -83,6 +85,12 @@ async def _search_arxiv_chunked(client: httpx.AsyncClient, queries: list[str], s
 
 
 
+# arXiv 검색 한 번에 받는 편수(2026-10-16). 50편씩 받던 때 10/15 하루 arXiv 결과 1,945편에 쪽 요청이 약 40개였다 — arXiv 429 는 IP 단위
+# 요청 수로 걸린다. 질의·결과는 그대로이고 쪽 수만 줄어 손실이 없다(arXiv API 는 한 번에 2,000편까지 받는다). 쪽 상한(max_pages)은
+# 그대로라 질의당 받을 수 있는 최대 편수는 오히려 커진다. 응답이 커져 느려질 수 있는지는 미실측 — 요청 타임아웃은 60초다.
+ARXIV_PAGE_SIZE = 200
+
+
 # 본문을 못 받는(arXiv ID 도 오픈액세스 PDF 도 없는) 논문을 다이제스트에 몇 편까지
 # 목록으로 보여줄지. 요약이 없으니 한 줄씩만 차지한다 — 넉넉해도 메일이 길어지지 않는다.
 TITLE_ONLY_MAX_ITEMS = 8
@@ -90,7 +98,7 @@ TITLE_ONLY_MAX_ITEMS = 8
 
 async def scan_profile(
     db_path: Path, profile_id: str, client: httpx.AsyncClient,
-    page_size: int = 50, max_pages: int = 10,
+    page_size: int | None = None, max_pages: int = 10,
 ) -> dict:
     """returns profile_scoring.score_and_rank()의 결과에 이번 실행 메타데이터
     (since/until/run_status/candidates_found)를 더한 것."""
@@ -162,7 +170,7 @@ async def scan_profile(
     until = datetime.now(timezone.utc)
     arxiv_error: str | None = None
     try:
-        result = await _search_arxiv_chunked(client, queries, since, page_size, max_pages)
+        result = await _search_arxiv_chunked(client, queries, since, page_size or ARXIV_PAGE_SIZE, max_pages)
     except Exception as e:  # noqa: BLE001 — 실패도 search_runs 에 남기고 계속 간다
         arxiv_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         arxiv_run_id = research_profile.record_run(

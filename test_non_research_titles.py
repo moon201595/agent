@@ -55,7 +55,7 @@ def test_실행관측에_비연구사유를_저장한다(tmp_path, monkeypatch):
     papers = [{"title": title, "abstract": "research", "arxiv_id": f"event{i}",
                "published": datetime.now(timezone.utc).isoformat()} for i, title in enumerate(BAD)]
 
-    async def fake_get(client, params):
+    async def fake_get(client, params, **kw):
         class Response:
             text = "fake"
         return Response()

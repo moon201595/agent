@@ -111,7 +111,16 @@ async def collect_since(
     collected: list[dict] = []
     for page_num in range(max_pages):
         start = page_num * page_size
-        papers = await fetch_page(start, page_size)
+        try:
+            papers = await fetch_page(start, page_size)
+        except Exception as error:
+            # 첫 쪽이 실패하면 받은 것이 없다 — 올려서 호출부가 실패로 기록하게 한다. 뒤쪽이 실패하면 앞쪽을 살리고 partial 로
+            # 돌려준다(2026-10-16) — 커서는 전진하지 않으니 다음 실행이 같은 창을 다시 받는다. 그전에는 뒤쪽 하나가 질의 전체를 버렸다.
+            # 실패 원인은 남긴다(Codex 검토 P3) — 쪽 상한 도달의 partial 과 구분돼야 한다.
+            if page_num == 0:
+                raise
+            return {"status": "partial", "papers": collected, "pages_used": page_num,
+                    "error": f"{page_num + 1}쪽 {type(error).__name__}"}
         if not papers:
             return {"status": "done", "papers": collected, "pages_used": page_num}
         kept, boundary_hit = cut_before(papers, since)

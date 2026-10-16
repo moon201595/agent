@@ -23,7 +23,7 @@ def _profile(db):
 def _run(db, monkeypatch, papers):
     seen = []
 
-    async def fake_get(client, params):
+    async def fake_get(client, params, **kw):
         seen.append(params["start"])
         class R: text = "<x/>"
         return R()

@@ -121,7 +121,7 @@ def _primary_keyword(paper: dict) -> str:
 
 async def scan_and_digest(
     db_path: Path, profile_id: str, client: httpx.AsyncClient,
-    page_size: int = 50, max_pages: int = 10,
+    page_size: int | None = None, max_pages: int = 10,
 ) -> tuple[dict, str]:
     """scan_profile() + Deep Layer(④⑤⑦) + digest 생성 + DB 저장까지 한 번에.
     review_app.py의 "지금 스캔 실행" 버튼과 cron 둘 다 이 함수 하나만

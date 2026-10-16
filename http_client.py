@@ -171,7 +171,7 @@ async def with_retry(attempt_fn, what: str, max_wait: float | None = None) -> ht
         attempt += 1
 
 
-async def throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx.Response:
+async def throttled_arxiv_get(client: httpx.AsyncClient, params: dict, max_wait: float | None = None) -> httpx.Response:
     """arXiv API 호출 간 최소 간격을 서버 전역에서 강제하고, 상한까지 재시도한다.
 
     간격 강제가 재시도마다 다시 적용된다 — 재시도가 arXiv 권장 간격을 무시하면
@@ -191,7 +191,7 @@ async def throttled_arxiv_get(client: httpx.AsyncClient, params: dict) -> httpx.
         resp.raise_for_status()
         return resp
 
-    return await with_retry(once, "arXiv API")
+    return await with_retry(once, "arXiv API", max_wait=max_wait)
 
 
 async def throttled_s2_get(

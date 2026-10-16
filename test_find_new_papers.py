@@ -26,7 +26,7 @@ def test_find_new_papers_since_defaults_to_server_side_range(monkeypatch):
     """2026-08-24 라이브 확인 완료(모듈 docstring 참고: 같은 조건에서 범위
     절 없이는 6페이지에도 status=partial, 켜면 3페이지에 status=done) —
     기본값이 True로 바뀐 걸 회귀 테스트로 고정해둔다."""
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         assert "submittedDate" in params["search_query"]  # 기본값으로 범위 절이 붙어야 함
 
         class FakeResp:
@@ -92,7 +92,7 @@ def test_find_new_papers_since_wires_collect_since_to_real_arxiv_helpers(monkeyp
     }
     starts_seen = []
 
-    async def fake_throttled(client, params):
+    async def fake_throttled(client, params, **kw):
         starts_seen.append(params["start"])
 
         class FakeResp:

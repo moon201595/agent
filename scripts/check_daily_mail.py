@@ -26,6 +26,25 @@ DEFAULT_LOG = ROOT / "logs" / "daily_scan.log"
 DEFAULT_DB = ROOT / "data" / "papers.db"
 DEFAULT_STAMP = ROOT / "logs" / "daily_mail_alert.stamp"
 DEFAULT_LOCK = ROOT / "logs" / "daily_scan.lock"
+DEFAULT_RERUN_STAMP = ROOT / "logs" / "daily_rerun.stamp"
+RUN_SCRIPT = ROOT / "run_daily_scan.sh"
+
+
+def launch_rerun(log_path: Path = ROOT / "logs" / "cron.log"):
+    """오늘 실행을 **따로 떠 있는 프로세스로** 다시 시작한다 — 이 점검 스크립트가 끝나도 계속 돈다.
+
+    2026-10-16 실측: 노트북을 켠 직후 WSL 인스턴스가 1~2분마다 꺼졌다 켜졌고, 09:55 에 Windows 예약 작업이 시작한 실행이
+    09:56:13 WSL 종료와 함께 죽었다. 예약 작업은 하루 한 번만 실행을 시작하므로 그 뒤로 아무도 다시 돌리지 않았다 — 10:30 점검은
+    알림만 보냈다. 실행 스크립트가 스스로 flock 을 잡으므로 겹쳐 떠도 하나는 건너뛰고, 발송 장부가 이미 보낸 프로필의 재발송을 막는다."""
+    import os
+    import subprocess
+    # 테스트 중에는 실제 실행을 띄우지 않는다 — 2026-10-16 기존 테스트가 점검을 dry-run 없이 불러 진짜 run_daily_scan.sh 가 떴다
+    # (그때는 진짜 재실행이 잠금을 쥐고 있어 바로 건너뛰었다).
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise OSError("테스트 중에는 실제 실행을 띄우지 않는다")
+    with open(log_path, "a", encoding="utf-8") as out:
+        return subprocess.Popen(["/bin/bash", str(RUN_SCRIPT)], cwd=str(ROOT), stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
 
 
 def scan_in_progress(lock_path: Path) -> bool:
@@ -169,7 +188,7 @@ def _database_state(db_path: Path, today: date) -> tuple[list[str], list[str], l
 
 
 def _check_run(
-    log_path: Path, profile_ids: list[str], boundary: datetime, now: datetime,
+    log_path: Path, profile_ids: list[str], boundary: datetime, now: datetime, db_path: Path | None = None,
 ) -> list[str]:
     """오늘 운영일의 종료 블록과 프로필별 발송 결과를 검사한다."""
     if not log_path.exists():
@@ -191,24 +210,112 @@ def _check_run(
         entry = summary.get(profile_id)
         delivery = entry.get("delivery") if isinstance(entry, dict) else None
         if not isinstance(delivery, str) or not delivery.startswith("발송 완료"):
+            # 재실행이 "오늘 이미 발송 — 건너뜀" 으로 넘긴 프로필은 장부로 확인한다(Codex 검토 P2) — 문구가 아니라 실제 성공 회차.
+            if db_path is not None and _sent_today(db_path, profile_id, now):
+                continue
             reasons.append(f"{profile_id}: delivery가 발송 완료가 아님")
     return reasons
 
 
-def _send_alert(recipients: list[str], reasons: list[str], today: date) -> None:
+def _sent_today(db_path: Path, profile_id: str, now: datetime) -> bool:
+    """같은 운영일에 모든 수신자에게 성공한 회차가 장부에 있는가(mail_ledger 와 같은 판정)."""
+    try:
+        import mail_ledger
+        return mail_ledger.already_sent_today(db_path, profile_id, when=now)
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def _send_alert(recipients: list[str], reasons: list[str], today: date, rerun: str = "") -> None:
     """알림 본문은 평문과 HTML에서 같은 사유를 보게 한다."""
     import email_delivery
 
     text = (
         f"{today.isoformat()} KST 새벽 브리핑 점검에서 문제가 발견되었습니다.\n"
         + "\n".join(f"- {reason}" for reason in reasons)
+        + (f"\n\n{rerun}" if rerun else "")
     )
     email_delivery.send_digest_email(
         text, ALERT_SUBJECT, recipients, f"<pre>{textutil.esc(text)}</pre>"
     )
 
 
-def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
+RERUN_CONFIRM_S = 20.0           # 띄운 재실행이 실제로 스캔 잠금을 잡았는지 지켜보는 시간
+
+
+def _stamp_text(path: Path) -> str | None:
+    """표시 파일 내용. 없으면 "", 못 읽으면 None — 못 읽은 것을 "없음" 으로 치면 같은 날 두 번 돌 수 있다."""
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    except OSError:
+        return None
+
+
+def _maybe_rerun(stamp: Path, today: date, launch, lock_path: Path, *, confirm_s: float | None = None,
+                 sleep=None, clock=None) -> str:
+    """오늘 처음 실패를 본 점검에서만 한 번 다시 돌린다(2026-10-16 사용자 결정). 돌렸으면 알림에 붙일 한 줄을 돌려준다.
+
+    순서(Codex 검토 P2): 다른 점검과 겹치지 않게 예약 잠금 → 표시 파일에 "예약" 을 **먼저** 쓴다(못 쓰면 돌리지 않는다 — 표시 없이 띄우면
+    다음 점검이 또 띄운다) → 띄운다 → 그 실행이 실제로 스캔 잠금을 잡았는지 잠시 본다. 다른 실행에 밀려 바로 건너뛰었으면 예약을 지워 오늘
+    기회를 남긴다(그 다른 실행이 뒤에 죽으면 다음 점검이 다시 시도할 수 있게). 두 번째 실패는 다시 돌리지 않는다(같은 고장을 계속 태우지 않는다).
+    어떤 오류도 부재 알림을 막지 않는다 — 여기서는 예외를 올리지 않는다."""
+    import fcntl
+    import time
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    confirm_s = RERUN_CONFIRM_S if confirm_s is None else confirm_s
+    if launch is None:
+        print("자동 재실행: 실행기 없음 — 명령줄 점검에서만 띄운다")
+        return ""
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        guard = open(stamp.with_name(stamp.name + ".lock"), "a")
+    except OSError as error:
+        print(f"[오류] 자동 재실행 예약 실패: {type(error).__name__}", file=sys.stderr)
+        return ""
+    with guard:
+        try:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("자동 재실행: 다른 점검이 예약 중 — 이번에는 하지 않는다")
+            return ""
+        current = _stamp_text(stamp)
+        if current is None:
+            print("[오류] 자동 재실행 표시를 못 읽음 — 이번에는 하지 않는다", file=sys.stderr)
+            return ""
+        if current.startswith(today.isoformat()):
+            print("자동 재실행: 오늘 이미 한 번 했다 — 다시 하지 않는다")
+            return ""
+        try:
+            stamp.write_text(f"{today.isoformat()} reserved\n", encoding="utf-8")
+        except OSError as error:
+            print(f"[오류] 자동 재실행 표시를 못 씀({type(error).__name__}) — 이번에는 하지 않는다", file=sys.stderr)
+            return ""
+        try:
+            proc = launch()
+        except OSError as error:
+            print(f"[오류] 자동 재실행 시작 실패: {type(error).__name__}", file=sys.stderr)
+            stamp.unlink(missing_ok=True)
+            return ""
+        deadline = clock() + confirm_s
+        while clock() < deadline:
+            if scan_in_progress(lock_path):
+                break
+            if proc is not None and proc.poll() is not None:
+                # 잠금을 못 잡고 끝났다 — 다른 실행이 돌고 있어 건너뛴 것이다. 오늘 기회를 남긴다.
+                stamp.unlink(missing_ok=True)
+                print("자동 재실행: 다른 실행에 밀려 건너뛰었다 — 오늘 재실행 기회는 남겨 둔다")
+                return ""
+            sleep(1.0)
+        try:
+            stamp.write_text(f"{today.isoformat()} started\n", encoding="utf-8")
+        except OSError:
+            pass                                   # "reserved" 가 남아 있어도 같은 날 다시 띄우지 않는다
+    print("자동 재실행 시작 — 모든 수신자에게 이미 보낸 프로필은 발송 장부가 다시 보내지 않는다")
+    return "자동 재실행을 시작했습니다(오늘 1회). 모든 수신자에게 이미 보낸 프로필은 다시 보내지 않습니다."
+
+
+def main(argv: list[str] | None = None, *, now: datetime | None = None, launch=None) -> int:
     """점검 결과에 따라 0(정상), 2(문제), 1(스크립트 오류)를 반환한다."""
     parser = argparse.ArgumentParser(description="새벽 연구 브리핑 발송 감시")
     parser.add_argument("--dry-run", action="store_true", help="알림을 보내지 않고 판정만 출력")
@@ -216,7 +323,12 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--stamp", type=Path, default=DEFAULT_STAMP)
     parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
+    parser.add_argument("--rerun-stamp", type=Path, default=None,
+                        help="기본은 --stamp 와 같은 폴더의 daily_rerun.stamp (임시 경로로 돌린 점검이 운영 표시를 건드리지 않게)")
+    parser.add_argument("--no-rerun", action="store_true", help="실패를 봐도 자동 재실행하지 않는다")
     args = parser.parse_args(argv)
+    if args.rerun_stamp is None:
+        args.rerun_stamp = args.stamp.with_name(DEFAULT_RERUN_STAMP.name)
     if scan_in_progress(args.lock):
         print("보류: 새벽 스캔이 아직 도는 중 — 다음 점검에서 판정한다")
         return 0
@@ -236,7 +348,7 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
         return 0
     try:
         recipients, profile_ids, reasons = _database_state(args.db, today)
-        reasons.extend(_check_run(args.log, profile_ids, boundary, current))
+        reasons.extend(_check_run(args.log, profile_ids, boundary, current, args.db))
     except (OSError, sqlite3.Error, ValueError, json.JSONDecodeError) as error:
         print(f"[오류] 점검 자체 실패: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -259,16 +371,23 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
     if args.dry_run:
         print("dry-run: 알림을 보내지 않음")
         return 2
+    rerun_before = (_stamp_text(args.rerun_stamp) or "") == f"{today.isoformat()} started"
+    rerun = "" if args.no_rerun else _maybe_rerun(args.rerun_stamp, today, launch, args.lock)
     try:
-        if args.stamp.exists() and args.stamp.read_text(encoding="utf-8").strip() == today.isoformat():
+        alerted = _stamp_text(args.stamp)
+        # 첫 알림 뒤 자동 재실행을 했는데도 실패면 한 번 더 알린다(Codex 검토 P3) — 그전에는 재실행이 실패해도 조용했다.
+        after_rerun = rerun_before and alerted == today.isoformat()
+        if alerted and alerted.startswith(today.isoformat()) and not after_rerun:
             print("오늘 알림은 이미 발송됨")
             return 2
         if not recipients:
             print("알림을 보낼 활성 수신자가 없음", file=sys.stderr)
             return 2
-        _send_alert(recipients, reasons, today)
+        if after_rerun:
+            reasons = ["자동 재실행 뒤에도 실패", *reasons]
+        _send_alert(recipients, reasons, today, rerun)
         args.stamp.parent.mkdir(parents=True, exist_ok=True)
-        args.stamp.write_text(today.isoformat() + "\n", encoding="utf-8")
+        args.stamp.write_text(today.isoformat() + (" after-rerun" if after_rerun else "") + "\n", encoding="utf-8")
         print("부재 알림 발송 완료")
     except (OSError, RuntimeError, ValueError) as error:
         import email_delivery                       # SMTP 거절 문구의 수신자 주소를 로그에 남기지 않는다(2026-10-12)
@@ -276,5 +395,10 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
     return 2
 
 
+def cli(argv: list[str] | None = None) -> int:
+    """명령줄 진입점 — 실제 실행기는 여기서만 연결한다(Codex 검토 P2). main() 을 그냥 부르는 테스트·수동 재현은 아무것도 띄우지 않는다."""
+    return main(argv, launch=launch_rerun)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

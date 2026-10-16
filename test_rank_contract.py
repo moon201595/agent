@@ -151,7 +151,7 @@ def test_본문_링크_유무가_선정_순서를_바꾸지_않는다(tmp_path, 
     ]}
     seen = []
 
-    async def fake_get(client, params):
+    async def fake_get(client, params, **kw):
         seen.append(params["start"])
         class R: text = "<x/>"
         return R()

@@ -42,7 +42,7 @@ def _profile(db, freq="manual"):
 
 
 def _scan(db, monkeypatch, papers):
-    async def fake_get(client, params):
+    async def fake_get(client, params, **kw):
         class R: text = "<x/>"
         return R()
 
