@@ -96,22 +96,46 @@ def _descendants(node: _Node, tag: str, stop: tuple[str, ...] = ()) -> Iterator[
                 yield from _descendants(child, tag, stop)
 
 
-def _plain(node: _Node) -> str:
-    """alttext를 원문 그대로 택해 MathML·TeX annotation의 같은 수치 중복을 막는다."""
+_MATH_STYLE = re.compile(r'\\(?:scriptscriptstyle|scriptstyle|displaystyle|textstyle)(?![A-Za-z])')
+_MATH_WRAP = re.compile(r'\\(?:mathbf|boldsymbol|bm|textbf|underline|uline|mathit|mathrm|textit|textrm|text)\s*\{([^{}]*)\}')
+_MATH_NUMBER = re.compile(r'([+\-−]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?)(?:\s*([±∓])\s*((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?))?')
+
+
+def math_number_text(text: str) -> str | None:
+    """서식만 입힌 수치 수식을 평문 수치로 — "\\mathbf{71.6}{\\scriptstyle\\,\\bm{\\pm}\\,\\mathbf{0.9}}" → "71.6 ± 0.9".
+
+    2026-10-19 카드가 이 alttext 를 그대로 찍었고("무슨 스크립트"), 숫자로 시작하지 않아 행 이름이 값 칸까지 삼켰다(2610.22791 표 1).
+    굵게·밑줄·글자 크기·좁은 띄어쓰기·묶음 괄호만 걷어 **수치(± 오차) 하나로 끝나는 경우에만** 바꾼다 — 그 밖의 수식은 None(원문 유지)."""
+    out = _MATH_STYLE.sub(' ', text)
+    out = re.sub(r'\\[,;:! ]|~', ' ', out)
+    for _ in range(4):                                       # \bm{\mathbf{..}} 같은 겹친 서식
+        out = _MATH_WRAP.sub(r'\1', out)
+    out = out.replace('\\pm', '±').replace('\\mp', '∓').replace('\\%', '%').replace('{', ' ').replace('}', ' ')
+    match = _MATH_NUMBER.fullmatch(' '.join(out.split()))
+    if match is None:
+        return None
+    value, sign, error = match.groups()
+    return value.replace(' ', '') + (f' {sign} {error.replace(" ", "")}' if sign else '')
+
+
+def _plain(node: _Node, numbers: bool = True) -> str:
+    """alttext를 원문 그대로 택해 MathML·TeX annotation의 같은 수치 중복을 막는다. 서식만 입힌 수치는 평문 수치로 바꾼다(`math_number_text`).
+    `numbers=False` 는 원래 alttext — 머리 판정이 쓴다(Codex 검토 P2: 머리 칸의 "\\mathbf{1}"·"\\mathbf{5}" 가 수치가 되면 머리 경계가 앞당겨진다)."""
     if node.tag in {'script', 'style', 'annotation', 'annotation-xml'}:
         return ''
     if node.tag == 'math' and 'alttext' in node.attrs:
-        return node.attrs['alttext']
+        alt = node.attrs['alttext']
+        return (math_number_text(alt) or alt) if numbers else alt
     if node.tag == 'br':
         return ' '
-    parts = ''.join(child if isinstance(child, str) else _plain(child) for child in node.children)
+    parts = ''.join(child if isinstance(child, str) else _plain(child, numbers) for child in node.children)
     if node.tag in {'p', 'div', 'tr'} or 'ltx_p' in node.classes:
         parts = ' ' + parts + ' '
     return parts
 
 
-def _text(node: _Node) -> str:
-    return ' '.join(_plain(node).split())
+def _text(node: _Node, numbers: bool = True) -> str:
+    return ' '.join(_plain(node, numbers).split())
 
 
 def cell_number(text: str) -> float | None:
@@ -229,7 +253,7 @@ def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
     count = 0
     for r, (_, section, _) in enumerate(rows):
         cells = originals[r]
-        texts = [_text(c) for c in cells]
+        texts = [_text(c, numbers=False) for c in cells]
         explicit = bool(cells) and all(
             c.tag == 'th' and 'ltx_th_row' not in c.classes and c.attrs.get('scope') != 'row'
             or 'ltx_th_column' in c.classes or c.attrs.get('scope') in {'col', 'colgroup'}
@@ -356,13 +380,42 @@ def row_label(table: dict, row: int) -> str:
     """
     if not 0 <= row < len(table['grid']):
         return ''
+    full, bare = _label_parts(table, row)
+    if full == bare or not bare:
+        return full
+    # 설정 표시 열(✓/✗)은 그 행이 다른 행과 이름이 같을 때만 남긴다 — "SFT ✘ ✓" 는 열 이름 없이 읽을 수 없고(2026-10-19 카드),
+    # 이름이 겹치는 절제 표("Ours ✓ ✗"·"Ours ✓ ✓")에서는 표시가 행을 가르는 유일한 단서다.
+    return full if _bare_counts(table).get(bare, 0) > 1 else bare
+
+
+_BARE_CACHE: list = [None, None, {}]
+
+
+def _bare_counts(table: dict) -> dict[str, int]:
+    """표시를 뺀 행 이름의 빈도. `find_cells` 가 행마다 `row_label` 을 불러 행마다 다시 세면 2,000행 표에서 약 400만 번이다(Codex 검토 P3) —
+    마지막 표 하나를 기억한다. 격자 객체를 붙잡아 두므로 `is` 비교가 다른 표와 헷갈리지 않는다."""
+    grid, start = table['grid'], table.get('header_rows', 0)
+    if _BARE_CACHE[0] is not grid or _BARE_CACHE[1] != (start, len(grid)):
+        counts: dict[str, int] = {}
+        for r in range(start, len(grid)):
+            bare = _label_parts(table, r)[1]
+            counts[bare] = counts.get(bare, 0) + 1
+        _BARE_CACHE[:] = [grid, (start, len(grid)), counts]
+    return _BARE_CACHE[2]
+
+
+_MARKS = frozenset({'✓', '✔', '✗', '✘', '×', '\\checkmark', '\\ding{51}', '\\ding{55}', '\\cmark', '\\xmark'})
+
+
+def _label_parts(table: dict, row: int) -> tuple[str, str]:
     labels = []
     for text in table['grid'][row]:
         if _numeric_cell(text) or text.lower() in _MISSING:
             break
-        if text and (not labels or labels[-1] != text):
+        # 병합 복제를 줄이는 같은 칸 합치기는 설정 표시에 쓰지 않는다 — "✓ ✓" 를 "✓" 로 줄이면 "✓ ✘" 행과 구별이 무너진다.
+        if text and (not labels or labels[-1] != text or text in _MARKS):
             labels.append(text)
-    return ' '.join(labels)
+    return ' '.join(labels), ' '.join(t for t in labels if t not in _MARKS)
 
 
 def find_cells(table: dict, row_pred: Callable[[str], bool],

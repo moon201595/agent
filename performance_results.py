@@ -583,6 +583,20 @@ def _author_metric_columns(tables: list[dict], *, method: str, benchmarks: list[
     return {k: v for k, v in found.items() if k not in rejected}
 
 
+_CITATION_AFTER = re.compile(r"\s*(?:\([^()]*\bet al\.?[^()]*\)|\([^()]*\b(?:19|20)\d{2}[a-z]?\)|\[\d+(?:\s*[,–-]\s*\d+)*\])")
+
+
+def _cited_as_benchmark(bench: str, label: str) -> bool:
+    """행 이름 속 벤치마크 후보 — 바로 뒤에 인용("(Lee et al., 2026)"·"[16]")이 붙은 이름은 방법 이름이다.
+
+    2026-10-19 2610.22791 표 1: 본문 "on Meta-Harness" 때문에 Meta-Harness 가 벤치마크 후보가 되어, 같은 구획의 가장 강한 비교 행
+    "Meta-Harness (Lee et al., 2026)" 69.1 이 교차 데이터셋 행으로 버려졌고 카드는 SFT 65.0 대비 6.6 높다고만 했다(저자 문장은 Meta-Harness 대비 2.5)."""
+    # 행 이름 **전체**가 "이름 + 인용" 일 때만 방법 이름으로 본다(Codex 검토 P2) — 인용만으로 가르면 "Ours Rival-Net [12] → Toy" 같은 전이 행이
+    # 교차 데이터셋 검사를 빠져나가고, 행에만 적힌 인용 붙은 데이터셋("Rival-Net [12] Ours")이 벤치마크를 잃는다.
+    named = re.fullmatch(r"\s*" + _bench_re(bench).pattern + _CITATION_AFTER.pattern + r"\s*", label, re.IGNORECASE)
+    return named is None and _bench_re(bench).search(label) is not None
+
+
 def table_results(tables: list[dict], *, method: str, benchmarks: list[str], context: str = "") -> list[dict]:
     """표의 교차 셀마다 (벤치마크, 지표, 값, 행). own=True 는 이 논문 행(제목의 기법 이름·"Ours"·"proposed").
 
@@ -633,10 +647,10 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str], con
             if not _is_metric(joined) or not path:
                 continue
             label_row = cell["row_label"]
-            named = {pr_b for pr_b in benchmarks if _bench_re(pr_b).search(joined) or _bench_re(pr_b).search(label_row)}
+            named = {pr_b for pr_b in benchmarks if _bench_re(pr_b).search(joined) or _cited_as_benchmark(pr_b, label_row)}
             if len(named) > 1:
                 continue                                    # 교차 데이터셋 설정(A → B) — 어느 벤치마크 값인지 하나로 못 정한다
-            bench = _bench_in(path, benchmarks) or _bench_in([label_row], benchmarks) or (in_caption[0] if len(in_caption) == 1 else "")
+            bench = _bench_in(path, benchmarks) or _bench_in([label_row], [b for b in benchmarks if _cited_as_benchmark(b, label_row)]) or (in_caption[0] if len(in_caption) == 1 else "")
             if not bench:
                 continue
             bpat = _bench_re(bench)

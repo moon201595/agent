@@ -200,12 +200,17 @@ def _latex_command(m: "re.Match") -> str:
 def latex_display(text: object) -> str:
     """표 칸의 흔한 LaTeX 꼴을 읽을 수 있는 글로. "\\tau^{2}" → "τ²", "SFT\\toDAPO" → "SFT → DAPO", "TSRL {}_{\\text{DAPO}}" → "TSRL (DAPO)"."""
     import re
+    from arxiv_tables import math_number_text
     out = str(text or "")
+    number = math_number_text(out.strip())            # 서식만 입힌 수치(2026-10-19 "\\scriptstyle" 노출) — 저장된 옛 값도 여기서 읽힌다
+    if number:
+        return number
+    out = re.sub(r"\\(?:scriptscriptstyle|scriptstyle|displaystyle|textstyle)(?![A-Za-z])|\\[,;:]", " ", out)
     # 글자 아래첨자 중 **방법 변형 표기만** 괄호로 — "{}_{\\text{DAPO}}"(빈 묶음 뒤)·"_{\\text{DAPO}}"(글자 묶음). "x_{t}"·"F_{max}" 같은 수식은 그대로(Codex 검토 P2).
     out = re.sub(r"\s*\{\}\s*_\{\\(?:text|textrm|mathrm)\{([^{}]{1,24})\}\}|\s*(?:\{\})?\s*_\{\\(?:text|textrm)\{([^{}]{1,24})\}\}",
                  lambda m: f" ({m[1] or m[2]})", out)
     out = re.sub(r"\s*\{\}\s*_\{([A-Za-z][^{}]{0,23})\}", r" (\1)", out)
-    out = re.sub(r"\\(?:text|textbf|textit|mathrm|mathbf|mathit|operatorname)\{([^{}]{0,40})\}", r"\1", out)
+    out = re.sub(r"\\(?:text|textbf|textit|mathrm|mathbf|mathit|operatorname|boldsymbol|bm|underline)\{([^{}]{0,40})\}", r"\1", out)
     out = re.sub(r"\\([A-Za-z]+)", _latex_command, out)
     out = re.sub(r"\^\{(\d{1,3})\}", lambda m: m[1].translate(_SUPERSCRIPT), out)
     out = re.sub(r"_\{([0-9.]{1,6})\}", r"\1", out)          # "\pi_{0.5}" → "π0.5"
@@ -277,8 +282,10 @@ def _comparison_section(r: dict, ext: dict, first: bool) -> tuple[str, list[tupl
                      f"https://arxiv.org/abs/{p['arxiv']}" if p.get("arxiv") else ""))
     # 같은 표의 다른 구획(이 논문 행이 없는 구획) — 실행 예산·구성 등 평가 조건이 다를 수 있어 차이·우열 문장을 쓰지 않는다(2026-10-13).
     for ref in r.get("references") or []:
-        rows.append((f"{REFERENCE_KIND} · {_field(ref['model'])} · {_field(row_value(ref))} · {table_label(r)} {latex_display(ref.get('block') or '')} 구획"
-                     f" · {REFERENCE_NOTE}", ""))
+        # 구획 머리 위의 행(기준 모델 "Base" 등)은 구획 이름이 없다 — "표 1  구획" 으로 빈 이름을 찍었다(2026-10-19 카드).
+        block = latex_display(ref.get("block") or "").strip()
+        place = f"{table_label(r)} {block} 구획" if block else f"{table_label(r)} 구획 밖 행"
+        rows.append((f"{REFERENCE_KIND} · {_field(ref['model'])} · {_field(row_value(ref))} · {place} · {REFERENCE_NOTE}", ""))
     shown_ext = [c for c in (ext.get("competitors") or []) if external_visible(c)] if first else []
     rows += [_external_row(c) for c in shown_ext]
     best = (r.get("compare") or {}).get("best")

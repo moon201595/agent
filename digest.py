@@ -1570,12 +1570,15 @@ STAGE_HELP = {
     "가져왔으나 핵심어에 안 걸림": "검색에는 들어왔지만 제목·초록에 핵심 키워드가 없어 뒤로 밀렸습니다.",
     "관련인데 자리에서 밀림": "핵심 키워드에는 걸렸지만 그날 메일 자리 안에 들지 못했습니다.",
 }
-MISSED_ACTION = ("에이전트가 할 일: 같은 용어가 놓친 논문 2편 이상에 나오면 주간 관리가 그 용어를 키워드로 더할지 검토합니다"
-                 "(가중치 0.7 이하로 시작, 관심 밖으로 표시한 논문의 용어는 더하지 않음). 실제로 바뀐 것이 있으면 아래 '검색 기준 변화'에 나옵니다.")
+ACTION_PREFIX = "에이전트가 할 일: "
+MISSED_RULE = ("같은 용어가 놓친 논문 2편 이상에 나오면 주간 관리가 그 용어를 키워드로 더할지 검토합니다"
+               "(가중치 0.7 이하로 시작, 관심 밖으로 표시한 논문의 용어는 더하지 않음). 실제로 바뀐 것이 있으면 아래 '검색 기준 변화'에 나옵니다.")
+MISSED_ACTION = ACTION_PREFIX + MISSED_RULE
 AXES_GUIDE = ("지금 핵심 키워드에 없는 연구 방향입니다. 근거 논문은 공식 제목·초록에 그 용어가 그대로 있는지 확인한 것이고, "
               "분야 전체가 커지는지는 확인하지 않았습니다.")
-AXES_ACTION = ("에이전트가 할 일: 최근 8주 정찰에서 근거 2편 이상으로 확인된 연구축을 계속 지켜봅니다. "
-               "놓친 근거 논문이 2편 이상이면 주간 관리가 키워드 추가를 검토합니다.")
+AXES_RULE = ("최근 8주 정찰에서 근거 2편 이상으로 확인된 연구축을 계속 지켜봅니다. "
+             "놓친 근거 논문이 2편 이상이면 주간 관리가 키워드 추가를 검토합니다.")
+AXES_ACTION = ACTION_PREFIX + AXES_RULE
 AXIS_BUTTON_HELP = ("연구축 버튼은 다음 주간 관리에 들어갑니다. 받는 분마다 마지막에 누른 것 하나로 세어 많은 쪽을 따르고, 같으면 바꾸지 않습니다. "
                     "더 보고 싶음이 많으면: 놓친 근거가 2편에 못 미쳐도 이 반응으로 키워드 추가를 검토합니다(이 반응만으로 더할 때 가중치 0.7 이하). "
                     "관심 밖이 많으면: 이 용어를 키워드·검색어로 더하지 않고 추적을 멈춥니다.")
@@ -1703,42 +1706,130 @@ def _guide_html(text: str, margin: str = "2px 0 6px") -> str:
     return f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;line-height:1.55;margin:{margin};">{_esc(text)}</div>'
 
 
+# ── 외부 정찰 HTML(2026-10-19 개편) ──────────────────────────────────────────────────────────────────────────────
+# 사용자: "외부정찰 결과를 좀더 가독성 있게". 그날 메일은 안내 문단 다섯 개와 "에이전트가 할 일" 두 번이 사실(놓친 논문·연구축) 사이에 끼어
+# 무엇을 봐야 하는지 묻혔다. HTML 만 바꾼다 — 숫자는 한 줄 깔때기, 놓친 논문은 표, 연구축은 상자 하나에 칩·설명·근거, 추적 목록은 표,
+# 규칙 설명(할 일·버튼)은 맨 아래 상자 하나로 모은다. **평문은 그대로다** — 형식 수정본(`saved_digest._scout_from_lines`)이 그 글자를 읽는다.
+SCOUT_FUNNEL = (("evaluable", "비교한 외부 연구"), ("retrieved", "우리 검색이 가져옴"), ("core_hit", "핵심어에 걸림"), ("delivered", "메일에 실림"))
+AXES_TITLE = "신규 연구축 후보"
+AXES_NOTE = "현재 핵심 키워드 밖의 연구 방향 · 근거 논문은 공식 제목·초록에 용어가 있는지 확인한 것 · 분야 성장세는 확인하지 않음"
+WATCH_TITLE = "계속 추적 중인 연구축"
+RULES_TITLE = "에이전트가 이 결과로 하는 일"
+_WATCH_HEAD = ("연구축", "처음 발견", "누적 근거", "이번 주 새 근거", "상태")
+
+
+def _num(n: object) -> str:
+    return f"{n:,}" if isinstance(n, int) else str(n)
+
+
+def _text_div(inner: str, *, size: str = "13px", color: str = "", margin: str = "0") -> str:
+    return (f'<div style="background-color:{_PAPER_BG};color:{color or _INK};font-size:{size};line-height:1.55;margin:{margin};">'
+            f'{inner}</div>')
+
+
+def _scout_link(title: str, link: str) -> str:
+    return (f'<a href="{_esc(link)}" style="background-color:{_PAPER_BG};color:{_ACCENT_DARK};text-decoration:none;">{_esc(title)}</a>'
+            if link else _esc(title))
+
+
+def _scout_funnel_html(sc: dict) -> str:
+    """정찰 대비 수집 네 수치를 칸 넷으로(포함 관계 — 가져온 것 ⊇ 핵심어 적중 ⊇ 메일). 문장은 평문판(`_capture_sentence`)이 그대로 가진다."""
+    c = sc["capture"]
+    cells = "".join(
+        f'<td style="background-color:{_BOX_BG};border:1px solid {_CARD_LINE};border-radius:6px;padding:7px 10px;width:25%;vertical-align:top;">'
+        f'<div style="background-color:{_BOX_BG};color:{_MUTED};font-size:11.5px;">{"→ " if i else ""}{_esc(label)}</div>'
+        f'<div style="background-color:{_BOX_BG};color:{_INK};font-size:17px;font-weight:700;">{_num(c[key])}편</div></td>'
+        for i, (key, label) in enumerate(SCOUT_FUNNEL))
+    rest = sc["verified"] - c["evaluable"]
+    note = (_guide_html(f"이번 주 확인한 {sc['verified']}편 중 {rest}편은 우리 마지막 검색 뒤에 나왔거나 관측 시작 전 논문이라 비교하지 않았습니다.",
+                        "4px 0 0") if rest > 0 else "")
+    return (f'<table role="presentation" cellpadding="0" cellspacing="4" style="width:100%;border-collapse:separate;margin:6px 0 0 -4px;">'
+            f'<tr>{cells}</tr></table>' + note)
+
+
+def _scout_missed_html(missed: list[dict]) -> str:
+    if not missed:
+        return ""
+    rows = "".join(
+        f'<tr><td style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.5;padding:5px 10px 5px 0;'
+        f'border-bottom:1px solid {_LINE};">{_scout_link(m["title"], m["link"])}'
+        + (f' <span style="background-color:{_PAPER_BG};color:{_MUTED};">({_esc(m["venue"])})</span>' if m["venue"] else "")
+        + f'</td><td style="background-color:{_PAPER_BG};padding:5px 0;border-bottom:1px solid {_LINE};white-space:nowrap;text-align:right;">'
+        f'{_chip(m["stage"], "warn")}</td></tr>' for m in missed)
+    legend = "".join(_guide_html(line, "1px 0") for line in _stage_help(missed))
+    return (_h2(f"{MISSED_HEADING} {len(missed)}편")
+            + f'<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">{rows}</table>'
+            + f'<div style="background-color:{_PAPER_BG};margin:6px 0 0;">{legend}</div>')
+
+
+def _scout_axis_html(a: dict) -> str:
+    """연구축 하나 = 상자 하나. 머리 줄에 이름과 칩(근거·놓침·추적 시작·반응), 그 아래 정찰 설명, 근거 논문, 우리 검색 관측(증감 아님) 순."""
+    missed = a.get("missed") or {}
+    chips = _chip(f"근거 {a['papers']}편")
+    if missed:
+        chips += _chip(f"우리가 놓친 것 {sum(missed.values())}편 (" + " · ".join(f"{_MISS_LABELS.get(k, k)} {n}" for k, n in missed.items()) + ")",
+                       "warn")
+    if a.get("first_week"):
+        chips += _chip(f"{a['first_week']}부터 추적")
+    if a.get("reaction") == "wanted":
+        chips += _chip(AXIS_WANTED_NOTE, "ok")
+    body = (f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:14.5px;font-weight:700;margin:0 0 2px;">{_esc(a["term"])}</div>'
+            + f'<div style="background-color:{_CARD_BG};">{chips}</div>')
+    if a.get("summary"):
+        body += _text_div(_esc(a["summary"]), margin="4px 0 0")
+    for e in (a.get("evidence") or [])[:2]:
+        body += _text_div(f'근거 · {_scout_link(e["title"], e.get("link") or "")} '
+                          f'<span style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;">({_esc(e["stage"])})</span>', margin="4px 0 0")
+    if isinstance(a.get("recent"), int) and isinstance(a.get("previous"), int):
+        window = lambda n, d: "기록 없음" if d == 0 else f"{_num(n)}편" + (f"(전체 {_num(d)}편 중)" if isinstance(d, int) else "")
+        body += _guide_html(f"우리 검색 결과에서 이 용어가 나온 논문 — 최근 4주 {window(a['recent'], a.get('recent_total'))} · "
+                            f"직전 4주 {window(a['previous'], a.get('previous_total'))} (검색 조건이 달라 증감으로 읽지 않습니다)", "6px 0 0")
+    return (f'<div style="background-color:{_CARD_BG};border:1px solid {_CARD_LINE};border-radius:8px;padding:10px 12px;margin:8px 0 0;">'
+            f'{body}{_axis_buttons_html(a)}</div>')
+
+
+def _scout_watch_html(watch: list[dict], stopped: list[str]) -> str:
+    if not watch and not stopped:
+        return ""
+    cell = f'style="background-color:{_PAPER_BG};color:{_INK};font-size:12.5px;padding:5px 10px 5px 0;border-bottom:1px solid {_LINE};vertical-align:top;"'
+    head = "".join(f'<th style="background-color:{_PAPER_BG};color:{_MUTED};font-size:11.5px;font-weight:600;text-align:left;'
+                   f'padding:4px 10px 4px 0;border-bottom:1px solid {_LINE};white-space:nowrap;">{h}</th>' for h in _WATCH_HEAD)
+    rows = "".join(
+        f'<tr><td {cell}><b>{_esc(w["term"])}</b>{_axis_buttons_html(w)}</td><td {cell}>{_esc(w["first_week"])}</td>'
+        f'<td {cell}>{_num(w["papers_total"])}편</td><td {cell}>{_num(w["new_this_week"])}편</td>'
+        f'<td {cell}>{_esc(_WATCH_STATUS.get(w["status"], w["status"]))}'
+        + (f'<br>{_chip(AXIS_WANTED_NOTE, "ok")}' if w.get("reaction") == "wanted" else "") + '</td></tr>'
+        for w in watch)
+    table = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">'
+             f'<tr>{head}</tr>{rows}</table>') if watch else ""
+    return (_h2(WATCH_TITLE) + _guide_html(WATCH_GUIDE) + table
+            + (_guide_html(STOPPED_PREFIX + " · ".join(stopped), "8px 0 0") if stopped else ""))
+
+
+def _scout_rules_html(sc: dict, buttons: bool) -> str:
+    """규칙 설명은 사실 사이에 끼우지 않고 맨 아래 상자 하나로(2026-10-19). 문장은 `agent_maintenance.validate` 가 강제하는 조건 그대로다."""
+    items = ([MISSED_RULE] if sc["missed"] else []) + ([AXES_RULE] if sc.get("axes") else []) + ([AXIS_BUTTON_HELP] if buttons else [])
+    if not items:
+        return ""
+    lis = "".join(f'<div style="background-color:{_BOX_BG};color:{_MUTED};font-size:12px;line-height:1.55;margin:3px 0 0;">· {_esc(t)}</div>'
+                  for t in items)
+    return (f'<div style="background-color:{_BOX_BG};border-radius:6px;padding:9px 12px;margin:16px 0 0;">'
+            f'<div style="background-color:{_BOX_BG};color:{_INK};font-size:12.5px;font-weight:700;">{RULES_TITLE}</div>{lis}</div>')
+
+
 def _external_scout_html(scan_result: dict) -> str:
     """외부 정찰 절 — 에이전트가 **무엇을 왜 놓쳤는지**. 정찰의 평가·순위는 없다(관측 사실만)."""
     sc = scan_result.get("external_scout")
     if not sc:
         return ""
-    rows = "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:4px 0 0;">'
-        + (f'<a href="{_esc(m["link"])}" style="background-color:{_PAPER_BG};color:{_ACCENT_DARK};text-decoration:none;">{_esc(m["title"])}</a>'
-           if m["link"] else _esc(m["title"]))
-        + (f' <span style="background-color:{_PAPER_BG};color:{_MUTED};">({_esc(m["venue"])})</span>' if m["venue"] else "")
-        + f' {_chip(m["stage"], "warn")}</div>' for m in sc["missed"])
-    missed = (_h2(MISSED_HEADING) + "".join(_guide_html(line, "1px 0") for line in _stage_help(sc["missed"])) + rows
-              + _guide_html(MISSED_ACTION, "8px 0 0")) if rows else ""
     axes_list = sc.get("axes") or []
     watch_list = sc.get("watch") or []
-    stopped = sc.get("stopped") or []
-    any_buttons = any(item.get("_feedback_links") for item in axes_list + watch_list)
-    axes = "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;">'
-        f'<b>{_esc(a["term"])}</b>'
-        + "".join(f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(row)}</div>'
-                  for row in _axis_rows(a)) + _axis_buttons_html(a) + '</div>' for a in axes_list)
-    watch = "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;margin:8px 0 0;"><b>{_esc(w["term"])}</b>'
-        f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12.5px;margin:1px 0 0 10px;">{_esc(_watch_row(w))}</div>'
-        + _axis_buttons_html(w) + '</div>' for w in watch_list)
-    stopped_html = _guide_html(STOPPED_PREFIX + " · ".join(stopped), "8px 0 0") if stopped else ""
-    return (_h1("외부 정찰", f"이번 주 검증된 외부 연구 {sc['verified']}편")
-            + _block(_guide_html(SCOUT_GUIDE, "0 0 4px")
-                     + f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:13px;line-height:1.55;">{_esc(_capture_sentence(sc))}</div>'
-                     + missed
-                     + ((_h2(AXES_HEADING) + _guide_html(AXES_GUIDE) + _guide_html(AXES_ACTION, "0 0 6px")
-                         + (_guide_html(AXIS_BUTTON_HELP, "0 0 6px") if any_buttons else "") + axes) if axes else "")
-                     + ((_h2(WATCH_HEADING) + _guide_html(WATCH_GUIDE)
-                         + (_guide_html(AXIS_BUTTON_HELP, "0 0 6px") if any_buttons and not axes else "")
-                         + watch + stopped_html) if watch or stopped else "")))
+    buttons = any(item.get("_feedback_links") for item in axes_list + watch_list)
+    axes = ((_h2(f"{AXES_TITLE} {len(axes_list)}개") + _guide_html(AXES_NOTE) + "".join(_scout_axis_html(a) for a in axes_list))
+            if axes_list else "")
+    return (_h1("외부 정찰", f"이번 주 확인한 외부 연구 {sc['verified']}편")
+            + _block(_guide_html(SCOUT_GUIDE, "0 0 2px") + _scout_funnel_html(sc) + _scout_missed_html(sc["missed"]) + axes
+                     + _scout_watch_html(watch_list, sc.get("stopped") or []) + _scout_rules_html(sc, buttons)))
 
 
 def _profile_changes_view(ch: dict | None) -> dict | None:

@@ -241,13 +241,24 @@ def test_scout_section_explains_what_it_is_what_numbers_mean_and_what_happens_ne
     text = "\n".join(digest._external_scout_lines({"external_scout": sc}))
     sentence = ("이번 주 확인한 외부 연구 중 우리 검색 기간과 겹치는 4편: 우리 검색이 가져온 것 2편 · 그중 핵심어에 걸린 것 1편 · 메일에 실린 것 0편."
                 " 나머지 1편은 우리 마지막 검색 뒤에 나왔거나 관측 시작 전 논문이라 비교하지 않았습니다.")
+    for part in (digest.SCOUT_GUIDE, sentence, digest.MISSED_ACTION, digest.AXES_GUIDE, digest.AXES_ACTION, digest.WATCH_GUIDE,
+                 digest.STAGE_HELP["검색 소스가 못 가져옴"], digest.STAGE_HELP["관련인데 자리에서 밀림"],
+                 "최근 4주 7편(전체 7504편 중) · 직전 4주 1편(전체 2149편 중) — 검색 조건이 달라 증감으로 읽지 않습니다",
+                 "근거 논문 2편 중 우리가 놓친 것 1편(순위에서 밀림 1)", f"추적: 2026-W41부터 · {digest.AXIS_WANTED_NOTE}",
+                 digest.STOPPED_PREFIX + "latent reasoning"):
+        assert part in text, part
+    # HTML(2026-10-19 개편): 수치는 깔때기 칸, 규칙 문장은 맨 아래 상자 하나("에이전트가 할 일" 접두 없이), 연구축 값은 칩·설명 줄.
+    for part in (digest.SCOUT_GUIDE, digest.MISSED_RULE, digest.AXES_NOTE, digest.AXES_RULE, digest.WATCH_GUIDE, digest.RULES_TITLE,
+                 digest.STAGE_HELP["검색 소스가 못 가져옴"], digest.STAGE_HELP["관련인데 자리에서 밀림"],
+                 "이번 주 확인한 5편 중 1편은 우리 마지막 검색 뒤에 나왔거나 관측 시작 전 논문이라 비교하지 않았습니다.",
+                 "최근 4주 7편(전체 7,504편 중) · 직전 4주 1편(전체 2,149편 중) (검색 조건이 달라 증감으로 읽지 않습니다)",
+                 "우리가 놓친 것 1편 (순위에서 밀림 1)", "2026-W41부터 추적", digest.AXIS_WANTED_NOTE,
+                 digest.STOPPED_PREFIX + "latent reasoning"):
+        assert digest._esc(part) in html, part
+    assert digest.ACTION_PREFIX not in html                                         # 할 일 문장을 사실 사이에 되풀이하지 않는다
+    funnel = re.findall(r"(우리 검색이 가져옴|핵심어에 걸림|메일에 실림|비교한 외부 연구)</div><div[^>]*>(\d+)편</div>", html)
+    assert funnel == [("비교한 외부 연구", "4"), ("우리 검색이 가져옴", "2"), ("핵심어에 걸림", "1"), ("메일에 실림", "0")]
     for body in (html, text):
-        for part in (digest.SCOUT_GUIDE, sentence, digest.MISSED_ACTION, digest.AXES_GUIDE, digest.AXES_ACTION, digest.WATCH_GUIDE,
-                     digest.STAGE_HELP["검색 소스가 못 가져옴"], digest.STAGE_HELP["관련인데 자리에서 밀림"],
-                     "최근 4주 7편(전체 7504편 중) · 직전 4주 1편(전체 2149편 중) — 검색 조건이 달라 증감으로 읽지 않습니다",
-                     "근거 논문 2편 중 우리가 놓친 것 1편(순위에서 밀림 1)", f"추적: 2026-W41부터 · {digest.AXIS_WANTED_NOTE}",
-                     digest.STOPPED_PREFIX + "latent reasoning"):
-            assert digest._esc(part) in body or part in body, part
         assert digest.STAGE_HELP["가져왔으나 핵심어에 안 걸림"] not in body and "7/7504" not in body
     assert digest._esc(digest.AXIS_BUTTON_HELP) in html
     assert re.search(r'<a href="https://example.com/a/more"[^>]*>더 보고 싶음</a>', html)

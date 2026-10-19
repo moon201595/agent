@@ -72,9 +72,10 @@ def test_real_simlingo() -> None:
     table = _fixture('2609.18623', 'S5.T1')
     assert table['header_rows'] == 2
     assert {len(row) for row in table['grid']} == {13}
-    cells = at.find_cells(table, lambda s: s == 'SimLingo [18] S ✓',
+    # 설정 표시(✓/✗)는 이름이 겹치지 않으면 행 이름에서 뺀다(2026-10-19 — 카드가 "SFT ✘ ✓" 를 방법 이름으로 찍었다).
+    cells = at.find_cells(table, lambda s: s == 'SimLingo [18] S',
                           lambda p: p == ['Bench2Drive', r'DS \uparrow'])
-    assert cells == [{'row': 17, 'col': 3, 'row_label': 'SimLingo [18] S ✓',
+    assert cells == [{'row': 17, 'col': 3, 'row_label': 'SimLingo [18] S',
                       'column_path': ['Bench2Drive', r'DS \uparrow'], 'text': '85.07', 'value': 85.07}]
     cells = at.find_cells(table, lambda s: s.startswith('SimLingo '),
                           lambda p: p == ['Fail2Drive Generalisation', r'DS \uparrow'])

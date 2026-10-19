@@ -1,5 +1,6 @@
 """② 주간 외부 정찰(external_scout, 2026-09-30) — 정찰 의견은 버리고 사실만, 신원은 S2 공식 자료로, 놓침은 발견 직전 스캔 기준으로."""
 import json
+import re
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
@@ -252,8 +253,10 @@ def test_monday_mail_shows_what_was_missed_without_scout_opinions(tmp_path):
     html = digest._external_scout_html({"external_scout": sc})
     text = "\n".join(digest._external_scout_lines({"external_scout": sc}))
     for body in (html, text):
-        assert "Zero-Shot Surface Defect Segmentation Study 0" in body and "우리 검색이 가져온 것 0편" in body
+        assert "Zero-Shot Surface Defect Segmentation Study 0" in body
         assert "surface inspection" not in body and "must read" not in body
+    assert "우리 검색이 가져온 것 0편" in text
+    assert re.search(r"우리 검색이 가져옴</div><div[^>]*>0편</div>", html)          # HTML 은 깔때기 칸(2026-10-19 개편)
     assert digest._external_scout_html({}) == "" and digest._external_scout_lines({}) == []
 
 
@@ -447,7 +450,11 @@ def test_axes_render_in_plain_html_and_saved_mail_identically():
     html = digest._external_scout_html({"external_scout": sc})
     for row in ("정찰 설명: 결함 원인을 설명하는 이상 탐지 (설명형)", "근거 논문 2편 중 우리가 놓친 것 2편(검색 못 가져옴 1 · 핵심어 불일치 1)",
                 "우리 검색 결과에서 이 용어가 나온 논문: 최근 4주 2편(전체 40편 중) · 직전 4주 1편(전체 31편 중)", "근거 논문 3편"):
-        assert row in html and any(row in line for line in lines), row
+        assert any(row in line for line in lines), row
+    # HTML 은 연구축 상자(2026-10-19 개편) — 같은 값이 칩·설명 줄로 들어간다.
+    for row in ("결함 원인을 설명하는 이상 탐지 (설명형)", "우리가 놓친 것 2편 (검색 못 가져옴 1 · 핵심어 불일치 1)",
+                "최근 4주 2편(전체 40편 중) · 직전 4주 1편(전체 31편 중)", "근거 3편"):
+        assert row in html, row
     assert "떠오르" not in html
     assert saved_digest._scout_from_lines(lines) == sc
     assert saved_digest._scout_html(lines) == html

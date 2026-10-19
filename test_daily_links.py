@@ -1,4 +1,5 @@
 """⑨ 의미 연결(2026-10-10) — 이번 주 변화·정찰 추적과 오늘 논문의 실제 겹침, 연구축 근거·추적 표시, 지난 해석의 자기 강화 차단."""
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -79,7 +80,11 @@ def test_axis_evidence_and_watchlist_round_trip_in_every_mail_form():
     html = digest._external_scout_html({"external_scout": sc})
     for text in ("근거: Visual Anomaly Reasoning (VAR) (검색 소스가 못 가져옴)", digest.WATCH_HEADING,
                  "처음 발견 2026-W41 · 누적 근거 3편 · 이번 주 새 근거 1편 · 추적 중", "검색어로 채택 — 이제 일일 검색이 본다"):
-        assert text in html and any(text in line for line in lines), text
+        assert any(text in line for line in lines), text
+    # HTML 은 근거 줄·추적 표(2026-10-19 개편) — 같은 값이 칸으로 들어간다.
+    assert re.search(r'근거 · <a href="https://arxiv.org/abs/2609.22220"[^>]*>Visual Anomaly Reasoning \(VAR\)</a> <span[^>]*>\(검색 소스가 못 가져옴\)</span>', html)
+    assert digest.WATCH_TITLE in html and "검색어로 채택 — 이제 일일 검색이 본다" in html
+    assert re.search(r"<b>causal defect reasoning</b></td><td[^>]*>2026-W41</td><td[^>]*>3편</td><td[^>]*>1편</td><td[^>]*>추적 중</td>", html)
     assert saved_digest._scout_from_lines(lines) == {**sc, "missed": []}
     assert saved_digest._scout_html(lines) == html
 
