@@ -141,7 +141,8 @@ def test_validate_requires_real_evidence_containing_the_term(world):
         _act("add_keyword", "deep learning", [r1], 0.8),
     ], b)
     assert [a["term"] for a in ok] == ["tactile skin"]
-    assert [x["reason"] for x in bad] == ["term_not_in_evidence", "unknown_evidence", "bad_weight", "bad_weight",
+    # 2.5 는 2026-10-20 부터 거절이 아니라 2.0 으로 잘린 뒤 다음 규칙(상향엔 좋아요 근거)에서 걸린다. bool 은 여전히 bad_weight.
+    assert [x["reason"] for x in bad] == ["term_not_in_evidence", "unknown_evidence", "no_liked_evidence", "bad_weight",
                                           "already_known", "umbrella_term"]
 
 
@@ -966,3 +967,33 @@ def test_brief_only_never_syncs_even_with_catch_up(tmp_path, monkeypatch):
     monkeypatch.setattr(am, "run_week", refuse)
     monkeypatch.setattr(am, "build_brief", lambda *a: None)
     assert am.main(["--db", str(tmp_path / "absent.db"), "--brief-only", "--catch-up", "--profile", "p"]) == 0
+
+
+@pytest.mark.parametrize('weight,why', [(.3, None), (0, 'bad_weight'), (-0.2, 'bad_weight'), ('0.3', 'bad_weight'),
+                                        (float('inf'), 'bad_weight'), (float('nan'), 'bad_weight')])
+def test_out_of_range_weight_is_clamped_not_rejected(world, weight, why):
+    """2026-10-20 사용자 결정: 10/19 비전 4건·로봇 1건이 정밀도 근거와 검토 승인을 받고도 0.3(하한 0.35)이라 버려졌다.
+    이 테스트가 무엇을 망가뜨리면 실패하는가: 범위 밖 양수를 다시 거절로 되돌리거나, 잘라 적용하면서 제안값·조정 사실을 기록과 사유에서
+    지우거나, 0 이하·문자열·무한대·NaN(내린다가 아닌 다른 뜻일 수 있는 값)까지 잘라 받아들이거나, 잘린 뒤의 정밀도 근거 검사를 건너뛰면 실패한다."""
+    b = _precision_world(world)
+    ok, bad = am.validate([_act('set_weight', 'robot manipulation', ['Q1', 'Q2'], weight, reason='분야 밖 단독 적중')], b)
+    if why:
+        assert not ok and bad[0]['reason'] == why
+        return
+    assert not bad and ok[0]['weight'] == am.WEIGHT_MIN and ok[0]['weight_proposed'] == 0.3
+    assert ok[0]['basis'] == 'precision' and ok[0]['evidence_count'] == 2
+    assert "제안값 0.3은 허용 범위 0.35~2.0 밖이라 0.35로 조정" in ok[0]['reason']
+    ok, bad = am.validate([_act('set_weight', 'robot manipulation', ['Q1'], .3)], _precision_world(world))
+    assert not ok and bad[0]['reason'] == 'precision_too_few_papers'          # 잘라도 근거 규칙은 그대로
+    ok, bad = am.validate([_act('set_weight', 'robot manipulation', ['Q1', 'Q2'], .4)], _precision_world(world))
+    assert ok and 'weight_proposed' not in ok[0] and '조정' not in ok[0]['reason']   # 범위 안 값은 손대지 않는다
+
+
+def test_weight_range_is_written_for_both_models():
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 제안·검토 프롬프트의 set_weight 항목에서 허용 범위를 다시 빼면 실패한다
+    (10/19 두 모델이 같은 지시문을 읽어 0.3 을 서로 못 걸렀다)."""
+    from pathlib import Path
+    for name in ("agent_propose_v1.md", "agent_judge_v1.md"):
+        line = next(l for l in (Path(__file__).parent / "prompts" / name).read_text().splitlines() if l.startswith("- set_weight:"))
+        assert f"{am.WEIGHT_MIN}~{am.WEIGHT_MAX}" in line, name
+

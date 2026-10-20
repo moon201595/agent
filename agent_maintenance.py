@@ -20,6 +20,7 @@ import lang_guard
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -568,9 +569,17 @@ def validate(actions: list, brief: Brief) -> tuple[list[dict], list[dict]]:
         a["basis"] = "+".join(parts) or "maintenance"
         if op in ("add_keyword", "set_weight"):
             w = a["weight"]
-            if isinstance(w, bool) or not isinstance(w, (int, float)) or not (WEIGHT_MIN <= float(w) <= WEIGHT_MAX):
+            if isinstance(w, bool) or not isinstance(w, (int, float)) or not math.isfinite(float(w)) or float(w) <= 0:
                 reject(a, "bad_weight"); continue
-            a["weight"] = round(float(w), 3)
+            # 범위 밖 양수는 거절하지 않고 경계값으로 자른다(2026-10-20 사용자 결정). 10/19 비전 4건·로봇 1건이 정밀도 표본 4편 근거와
+            # 검토 모델 승인을 받고도 0.3(하한 0.35)이라 통째로 버려졌다 — 방향과 근거는 맞는데 0.05 표기 차이로 변경이 사라졌다.
+            # 일일 반응 조정(feedback_weights)·프로필 반영(research_profile)도 같은 범위로 자른다. 0 이하·숫자 아님은 "내린다"가
+            # 아니라 다른 뜻(삭제 등)일 수 있어 계속 거절한다. 조정한 사실은 기록과 메일 사유에 남긴다.
+            clamped = round(min(WEIGHT_MAX, max(WEIGHT_MIN, float(w))), 3)
+            if clamped != round(float(w), 3):
+                a["weight_proposed"] = round(float(w), 3)
+                a["reason"] = f"{a['reason']} (제안값 {float(w):g}은 허용 범위 {WEIGHT_MIN}~{WEIGHT_MAX} 밖이라 {clamped:g}로 조정)"
+            a["weight"] = clamped
         else:
             a["weight"] = None
         known_core = find(core, term)

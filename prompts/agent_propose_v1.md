@@ -30,7 +30,7 @@ T.text 안에 실제 있는 용어를 T.id로 인용한다. 단어를 지어내�
   evidence에 용어가 있는 좋아요 R 또는 T를 넣는다. X만으로는 안 된다.
   R·T 없이 E만으로 추가하려면: 그 용어가 E의 title·abstract에 그대로 있고, gap_stage가 not_retrieved·no_core_hit·ranked_out인
   서로 다른 E가 두 편 이상이어야 하며, weight는 0.7 이하, 관심 밖(out) 반응 논문에 나오는 용어가 아니어야 한다. E는 가중치를 올리는 근거가 아니다.
-- set_weight: 기존 핵심 키워드. 올릴 때 좋아요 R 또는 해당 용어가 있는 T. 내릴 때 R/K/T 또는 해당 키워드 Q 2편 이상 가능.
+- set_weight: 기존 핵심 키워드. weight 0.35~2.0. 올릴 때 좋아요 R 또는 해당 용어가 있는 T. 내릴 때 R/K/T 또는 해당 키워드 Q 2편 이상 가능.
 - remove_keyword: 자동 출처만 삭제 가능. 사용자 키워드는 삭제 금지, 하향 허용. 마지막 키워드와 검색어로 남은 키워드는 삭제하지 않는다.
 - add_seed: 이미 핵심 키워드이거나 앞선 add_keyword로 추가한 것만.
 - remove_seed: 자동 출처만, 마지막 검색어 삭제 금지.

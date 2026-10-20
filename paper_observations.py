@@ -352,6 +352,10 @@ def code_rows(sig: dict | None) -> list[tuple[str, str]]:
     return [(f"{tier} · {g['repo']}", f"https://github.com/{g['repo']}")]
 
 
+QUOTE_KO_PREFIX = "번역: "                       # quote_ko.PREFIX 와 같다(테스트가 본다) — 이 모듈은 LLM 모듈을 import 하지 않는다
+TRANSLATION_NOTE = "(번역은 참고용이며 근거는 원문)"
+
+
 def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tuple[str, str]]]]:
     """숫자는 저장 근거 그대로 쓴다. 차이 문장은 같은 표·같은 열·같은 구획이나 조건 대조가 끝난 외부 값과만 만든다."""
     fr = paper.get("_frontier") or {}
@@ -362,16 +366,25 @@ def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tup
         out.append(_comparison_section(r, ext, first=i == 0))   # 외부 조사는 analyze 가 고른 첫 관측 하나가 대상이다
     if not mains:
         own: list[tuple[str, str]] = []
+        translated = False
         for s in (fr.get("sentences") or [])[:2]:
             where = f"[S{s['index']:04d}]" if s.get("source") == "text" and s.get("index") else "(초록)"
             own.append((f"“{s['sentence']}” {where}", ""))
+            # 원문 아래 한국어 병기(2026-10-20 사용자 요청, `quote_ko` — 숫자 목록이 원문과 같을 때만 붙는다). 근거는 원문이다.
+            if s.get("sentence_ko"):
+                own.append((QUOTE_KO_PREFIX + s["sentence_ko"], ""))
+                translated = True
         if own:
-            own.append(("저자 자신의 실험 보고를 인용함. 표 구조를 확인하지 못해 논문 간 수치 비교에는 쓰지 않음.", ""))
+            own.append(("저자 자신의 실험 보고를 인용함" + (TRANSLATION_NOTE if translated else "")
+                        + ". 표 구조를 확인하지 못해 논문 간 수치 비교에는 쓰지 않음.", ""))
             out.append(("성능 관측 · 논문 내 결과", own))
     claims = paper.get("_sota_claims") or fr.get("claims") or []
     if claims:
         import sota_claims
-        out.append(("논문 자체 주장 · 미검증", [(sota_claims.mail_line(claims), "")]))
+        claim_rows = [(sota_claims.mail_line(claims), "")]
+        if claims[0].get("sentence_ko"):
+            claim_rows.append((QUOTE_KO_PREFIX + claims[0]["sentence_ko"], ""))
+        out.append(("논문 자체 주장 · 미검증", claim_rows))
     code = code_rows(paper.get("_signals"))
     if code:
         out.append((CODE_HEADING, code))

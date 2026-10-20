@@ -522,6 +522,18 @@ async def scan_and_digest(
     except Exception as e:  # noqa: BLE001 — 번역이 없어도 메일은 원제로 나간다
         print(f"  [제목] 한국어 병기 실패(무시): {type(e).__name__}")
 
+    # 카드에 인용한 원문 문장(저자 성능 보고·SOTA 주장)의 한국어 병기(2026-10-20 사용자 요청) — 한 묶음 호출, 숫자가 원문과
+    # 다른 번역은 버린다(quote_ko). 실패하면 원문만 나간다(규칙 6).
+    try:
+        import quote_ko
+        cards = list(result.get("papers") or [])
+        korean_quotes = await quote_ko.translate(client, quote_ko.quotes_of(cards))
+        attached = quote_ko.attach(cards, korean_quotes)
+        if attached:
+            print(f"  [인용문] 한국어 병기 {attached}건")
+    except Exception as e:  # noqa: BLE001 — 번역이 없어도 메일은 원문으로 나간다
+        print(f"  [인용문] 한국어 병기 실패(무시): {type(e).__name__}")
+
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     import mail_ledger
     # 재수집 결과가 실제 발송한 개요를 덮지 않게 한다(2026-10-06).

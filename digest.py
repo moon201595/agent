@@ -552,7 +552,12 @@ def frontier_lines(paper: dict) -> list[tuple[str, str]]:
         except Exception:  # noqa: BLE001 — 성능 동향이 깨져도 논문 카드는 나간다
             pass
     line = sota_claim_line(paper)
-    return [(line, "")] if line else []
+    if not line:
+        return []
+    claims = paper.get("_sota_claims") or []
+    ko = claims[0].get("sentence_ko") if claims and isinstance(claims[0], dict) else None
+    import paper_observations
+    return [(line, "")] + ([(paper_observations.QUOTE_KO_PREFIX + ko, "")] if ko else [])
 
 
 def reading_point(paper: dict) -> str:
@@ -672,7 +677,10 @@ def _render_observation_sections(sections: list[tuple[str, list[tuple[str, str]]
             if table:
                 blocks.append(table)
                 continue
-        rows = ''.join('<div style="font-size:13.5px;line-height:1.7;margin-top:5px;word-break:break-word;">'
+        # 원문 인용 아래의 한국어 병기 줄은 흐린 글씨로 들여 쓴다(2026-10-20) — 근거는 원문, 번역은 참고라는 위계가 보이게.
+        rows = ''.join(('<div style="font-size:13px;line-height:1.65;margin:2px 0 0 12px;color:#526675;word-break:break-word;">'
+                        if text.startswith(paper_observations.QUOTE_KO_PREFIX) and not url else
+                        '<div style="font-size:13.5px;line-height:1.7;margin-top:5px;word-break:break-word;">')
                        + (f'<a href="{_esc(url)}" style="color:#0B5F68;">{_esc(text)} ↗</a>' if url else _esc(text))
                        + '</div>' for text, url in entries)
         if heading == "외부 관측 신호":
