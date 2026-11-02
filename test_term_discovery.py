@@ -120,8 +120,8 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
     """이 테스트가 잡는 것: 도메인·시드가 동률 깨기에 그쳐 범용 용어가 상위를 독식하는 것,
     기존 키워드의 하이픈·복수형 변형이 후보로 나가는 것, 스니펫이 앞 N 자라 용어가 잘리는 것."""
     db = tmp_path / "t.db"
-    rp.create_profile(db, "p", "이름", core_topics=["vision-language model", "safety policy"],
-                      core_weights={"vision-language model": 1.0, "safety policy": 1.0},
+    rp.create_profile(db, "p", "이름", core_topics=["vision-language model", "safety policy", "event cameras"],
+                      core_weights={"vision-language model": 1.0, "safety policy": 1.0, "event cameras": 1.0},
                       target_domain=["factory"], exclude=["banned"], max_items=2, s2_seeds=["x"])
     long_tail = "filler words here. " * 40 + "we use a spiking sensor at the end."   # 용어가 700자 뒤
     papers = ([{"arxiv_id": f"g{i}", "title": f"generic thing {i}", "abstract": "generic thing everywhere", "published": _day(1)} for i in range(6)]
@@ -130,6 +130,7 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
               + [{"arxiv_id": f"d{i}", "title": f"factory item {i}", "abstract": "spiking sensor in a factory line", "published": _day(1)} for i in range(4)]
               + [{"arxiv_id": f"v{i}", "title": f"vision language models {i}", "abstract": "", "published": _day(1)} for i in range(3)]
               + [{"arxiv_id": f"s{i}", "title": f"safety policies {i}", "abstract": "", "published": _day(1)} for i in range(3)]
+              + [{"arxiv_id": f"e{i}", "title": f"event camera {i}", "abstract": "", "published": _day(1)} for i in range(3)]
               + [{"arxiv_id": "t1", "title": "tail paper", "abstract": long_tail, "published": _day(1)}])
     _run(db, monkeypatch, papers)
     profile = rp.get_profile(db, "p")
@@ -140,12 +141,13 @@ def test_차선_선발은_support_독식을_막고_표기_변형은_후보에서
     assert generic and generic[0]["lane"] == "support" and generic[0]["support"] == 6
     # support 만 보면 generic(6)·stuff(6)·plain(6) 이 세 자리를 다 가져가 spiking(5)은 못 들어온다
     assert "spiking sensor" in by and by["spiking sensor"]["lane"] == "domain", "도메인 축 자리는 도메인 비율 1등에게"
-    # match-v2 뒤로 "vision language models" 는 키워드에 **잡힌다** — 탐색 풀에 없어야 한다
-    assert not any(p["_paper_key"].startswith("v") for p in pool), "매처가 잡는 표기는 탈락 풀에 없다"
-    # 매처가 아직 못 잡는 변형(-ies 복수)은 후보가 아니라 '표기 변형' 보고로 간다
-    assert "safety policies" not in by
+    # match-v2 뒤로 "vision language models", match-v3(2026-11-02) 뒤로 "safety policies"(-ies 복수)는 키워드에 **잡힌다** — 탐색 풀에 없어야 한다
+    assert not any(p["_paper_key"].startswith(("v", "s")) for p in pool), "매처가 잡는 표기는 탈락 풀에 없다"
+    # 매처가 아직 못 잡는 변형(복수로 적은 키워드의 단수형)은 후보가 아니라 '표기 변형' 보고로 간다.
+    # 그전엔 -ies 복수가 이 예였다 — 매처가 고쳐져 예를 바꿨고, 보고 기능 자체는 그대로 지킨다.
+    assert "event camera" not in by and "safety policies" not in by
     var = td.known_variants(pool, profile)
-    assert var and var[0]["term"] == "safety policies" and var[0]["known"] == "safety policy"
+    assert var and var[0]["term"] == "event camera" and var[0]["known"] == "event cameras"
     # 스니펫: 용어가 초록 뒤쪽에 있어도 전송 조각 안에 있다
     tail = td.snippet(long_tail, "spiking sensor", 200)
     assert "spiking sensor" in tail and len(tail) <= 204 and tail.startswith("…")

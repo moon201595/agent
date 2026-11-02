@@ -8423,6 +8423,20 @@ Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 �
       `storage.db()` 1,021번째가 실패. GC 가 돌면 0 으로 돌아온다(영구 누수 아님 — GC 전 잔류). 장애 당시 실제 기술자 수는 미실측.
     - 완화: `run_daily_scan.sh` 맨 앞 `ulimit -n 10240`(Windows 경로와 같은 값) — 테스트가 실제 bash 로 1024 → 10240 을 확인한다. **근본 수정(연결을 닫는 공용 규약, 수신자 루프 밖으로 공통 조회 빼기)은 미착수**.
 
+273. **"robot policy" 키워드가 "robot policies" 를 못 잡았다 — 매처가 -s/-es 만 붙여 자음 뒤 -y 의 복수 -ies 를 놓쳤다; match-v3** (2026-11-02, 사용자 결정 "고쳐" · Claude).
+    - 결함(§269 에서 발견·미수정): `profile_scoring.keyword_pattern` 이 마지막 낱말 뒤에 `(?:es|s)?` 만 붙였다. 채점·주간 관리 근거 확인(`agent_maintenance._in_text`)·용어 발견이 다 이 매처라
+      10/20 주간 관리에서 '더 보고 싶음' 반응이 있던 robot policy 상향이 근거 없음으로 잘못 거절됐다.
+    - 수정: 마지막 낱말이 자음+y(3자 이상)면 `(?:y|ies)` 로(`policy`→`polic(?:y|ies)`), 모음 뒤 y(`key`→`keys`)는 기존 -s 가지. 낱말 경계 그대로(`policyholder` 안 잡힘).
+      정책 버전 `rank-tuple-v2+match-v3+…`(research_profile.RANK_POLICY_VERSION) — 관측·건강 점검·영향 평가가 v2·v3 를 한 기준선에 섞지 않는다.
+      **건강 점검은 새 버전 기록이 14회·14일 찰 때까지(약 3주) "버전 섞임"으로 판정을 쉰다**(match-v2 때와 같은 설계).
+    - 영향 재생(운영 DB 읽기 전용, 후보 기록 `search_candidates` 4.7만 행): 해당 키워드 — 로봇 robot policy·diffusion policy·visuomotor policy·generalist robot policy·robotic assembly,
+      에이전트 agent memory·agent safety·agent interoperability, 비전 logical anomaly, 공통 smart factory(target), 제외어 drug discovery 등.
+      로봇 후보 179편에 새 적중(전엔 키워드 적중 0 이던 41편 — 탈락 33·예비 8), 에이전트 5편, 비전·AI 0편. **제외어 새 적중 0편**(이미 실린 논문이 빠지는 일 없음),
+      적중이 사라진 후보 0편. 새로 적격이 된 로봇 후보 10편 무작위 확인 — 모두 로봇 정책 학습 논문(진양성).
+    - 테스트: `test_keyword_plural.py` 14건(-ies 가지를 빼면 9건 실패 — 변이 확인). `test_term_discovery` 의 '표기 변형' 예가 -ies 복수(고친 결함 자체)였다 →
+      매처가 아직 못 잡는 예(복수로 적은 키워드 "event cameras" 의 단수형)로 바꾸고 "safety policies" 는 탈락 풀에 없어야 한다로 고쳤다. 전체 2007 passed.
+    - 남은 것: 복수로 적은 키워드가 단수 표기를 못 잡는 것(위 "event camera"), -f→-ves·-is→-es 같은 불규칙 복수 — 현재 키워드에 해당이 없어 두었다.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.

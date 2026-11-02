@@ -228,6 +228,8 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   그전엔 통째 escape 라 "large language model (LLM) agents"·"vision--language models"·"MVTec-AD" 를
   놓쳤다 — 1.0 계층 키워드가 가장 흔한 표기를 못 잡고 있었다. 넓히고 싶어도 `\W+`·`.*` 로 가지
   않는다(사이에 다른 낱말이 끼면 다른 뜻이다). 정책 버전 `rank-tuple-v1+match-v2`.
+  마지막 낱말 복수는 -s/-es 에 더해 자음 뒤 -y 의 -ies 도 같은 말로 본다(match-v3, 2026-11-02 — 그전엔 "robot policies" 를 못 잡아 주간 관리가
+  근거 있는 상향을 거절했다, PROGRESS §273). 매처 뜻을 바꾸면 `RANK_POLICY_VERSION` 을 올린다 — 건강 점검은 새 버전이 14회·14일 찰 때까지 판정을 쉰다.
 - **용어 후보 필터는 정확 토큰 일치가 아니다**(2026-09-13, §8-108·109). 후보 생성은 `term_hygiene.ngrams`(문장 경계·
   `reject_reason`·우산어) 하나이고 두 소비자(`trend_report.emerging_terms` · `term_discovery.discover`)가 같이 쓴다(2026-09-14 통일; `rule_advisor` 는 2026-09-16 삭제). 판정용 정규화
   (하이픈 분리·단수화)와 표시 문자열을 가르고, **낱말 목록(any-token)과 담화 구절, 우산어(all-token)를 합치지
@@ -235,7 +237,7 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   `world model` 이 죽는다. 새 금지어는 재생 픽스처에서 실제로 올라온 것만 넣는다(whack-a-mole 금지).
 - **순위는 가중합이 아니라 튜플이다**(2026-09-11, v2 2026-09-16). `profile_scoring.rank_key` 가
   `(계층, 3일 날짜 띠, -개념 폭, -날짜, -도메인, 키)` 로 정하고 `priority` 는 설명 필드다. 띠의 기준은 그 스캔의 가장 최신 후보이고(절대 달력 아님),
-  폭은 문자열이 아니라 **개념**(robot/robotic·LLM/LLM-based 변형은 하나)으로 센다 — `rank-tuple-v2+match-v2+band0.1+dateband3`. 선정 경로에 합산
+  폭은 문자열이 아니라 **개념**(robot/robotic·LLM/LLM-based 변형은 하나)으로 센다 — `rank-tuple-v2+match-v3+band0.1+dateband3+anchor3`(2026-11-02 기준). 선정 경로에 합산
   재정렬(MMR·자리 상한·문지기)을 다시 붙이면 계약이 깨진다 — `test_rank_contract.py` 가 감시한다.
 - **거짓 성공을 기록하지 않는다.** TSPulse 재현이 실패했는데 성공으로 기록된 사례가 있다(PROGRESS.md).
 - **arXiv 는 OR 항이 많은 질의를 못 받는다**(2026-09-16 실측). 키워드 47개 질의 하나는 36초 뒤 503, 24개씩 둘은 10·15초에 200. `scan_search` 가

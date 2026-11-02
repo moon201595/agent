@@ -43,6 +43,7 @@ _WORD_RE_CACHE: dict[str, re.Pattern] = {}
 # 낱말 사이에 올 수 있는 것: 공백, 하이픈류(‐ - – — ―), 언더스코어, 슬래시, 괄호. 이것뿐이다.
 TOKEN_SPLIT_RE = re.compile(r"[\s\-‐-―_/]+")     # 공개(2026-09-17) — agent_maintenance._norm_term 이 같은 구분자로 나눠야 한다
 _TOKEN_SEP = r"(?:[\s\-‐-―_/]|\(|\))+"
+_Y_PLURAL_RE = re.compile(r"[A-Za-z]+[b-df-hj-np-tv-z]y", re.IGNORECASE)   # 자음 뒤 -y 로 끝나는 3자 이상 낱말 — 복수가 -ies
 
 
 def keyword_pattern(keyword: str) -> re.Pattern:
@@ -54,10 +55,11 @@ def keyword_pattern(keyword: str) -> re.Pattern:
     substring 매칭을 안 쓰는 이유: "AI"가 "domain" 안에 우연히 들어있는
     것 같은 거짓 양성을 막기 위해서다.
 
-    마지막 낱말의 복수형(-s/-es)은 같은 키워드로 본다. 이게 없으면 논문이
+    마지막 낱말의 복수형(-s/-es, 자음 뒤 -y 는 -ies)은 같은 키워드로 본다. 이게 없으면 논문이
     "event cameras", "robot manipulators", "wearable biosensors"처럼 복수로
     쓸 때 통째로 놓친다 — 초록은 대부분 복수형으로 쓰기 때문에 이 누락이
-    드물지 않다. 단어 경계는 그대로 유지되므로 오탐은 늘지 않는다."""
+    드물지 않다. 단어 경계는 그대로 유지되므로 오탐은 늘지 않는다.
+    -ies 는 match-v3(2026-11-02)에서 더했다 — 그전엔 "robot policies"·"logical anomalies" 를 못 잡았다."""
     pat = _WORD_RE_CACHE.get(keyword)
     if pat is None:
         # match-v2(2026-09-12, §8-99). 키워드를 낱말로 나누고 낱말 사이에 **제한된 구분자**만
@@ -67,8 +69,15 @@ def keyword_pattern(keyword: str) -> re.Pattern:
         # 관측 947편에서 56편이 새로 잡혔는데 전부 진양성이었다(오탐 0). `.*`나 `\W+` 같은
         # 넓은 허용은 안 한다 — 사이에 다른 낱말이 끼면 여전히 안 잡힌다.
         tokens = [t for t in TOKEN_SPLIT_RE.split(keyword) if t]
-        body = _TOKEN_SEP.join(re.escape(t) for t in tokens) if tokens else re.escape(keyword)
-        pat = re.compile(r"\b" + body + r"(?:es|s)?\b", re.IGNORECASE)
+        if tokens and _Y_PLURAL_RE.fullmatch(tokens[-1]):
+            # match-v3(2026-11-02, §273). 자음 뒤 -y 는 복수가 -ies 다 — `(?:es|s)?` 만 붙이면 "robot policies"·"logical anomalies"·
+            # "smart factories" 를 통째로 놓쳤다. 10/20 주간 관리에서 '더 보고 싶음' 반응이 있던 robot policy 상향이 이 때문에 근거 없음으로
+            # 거절됐다(§269). 모음 뒤 -y(key→keys)는 아래의 -s 로 된다.
+            stems = [re.escape(t) for t in tokens[:-1]] + [re.escape(tokens[-1][:-1]) + "(?:y|ies)"]
+            pat = re.compile(r"\b" + _TOKEN_SEP.join(stems) + r"\b", re.IGNORECASE)
+        else:
+            body = _TOKEN_SEP.join(re.escape(t) for t in tokens) if tokens else re.escape(keyword)
+            pat = re.compile(r"\b" + body + r"(?:es|s)?\b", re.IGNORECASE)
         _WORD_RE_CACHE[keyword] = pat
     return pat
 
