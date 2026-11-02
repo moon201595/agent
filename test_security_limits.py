@@ -390,14 +390,19 @@ def test_daily_mail_check_returns_zero_when_scan_db_and_delivery_are_current(tmp
     assert not stamp.exists()
 
 
-def test_daily_mail_alert_uses_first_daily_recipients_and_suppresses_duplicate(monkeypatch, tmp_path):
-    """이 테스트가 무엇을 망가뜨리면 실패하는가: 문제 발견 때 첫 daily 프로필로
-    알림을 보내지 않거나 stamp 중복 방지를 빼서 두 번 보내면 실패한다."""
+def test_daily_mail_alert_uses_common_daily_recipients_and_suppresses_duplicate(monkeypatch, tmp_path):
+    """이 테스트가 무엇을 망가뜨리면 실패하는가: 모든 daily 프로필의 공통 활성 수신자에게
+    알리지 않거나 stamp 중복 방지를 빼서 두 번 보내면 실패한다."""
     checker = _daily_mail_module()
     db = tmp_path / "papers.db"
     log = tmp_path / "daily_scan.log"
     stamp = tmp_path / "daily_mail_alert.stamp"
     _make_daily_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO profiles VALUES ('daily-b', 'daily', NULL)")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'first@example.test', 1)")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-a', 'team-a@example.test', 1)")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'team-b@example.test', 1)")
     log.write_text(_daily_log(delivery="발송 실패: SMTP"), encoding="utf-8")
     sent = []
 
@@ -456,7 +461,7 @@ def test_daily_mail_dry_run_reports_problem_without_sending_or_stamping(monkeypa
 
 def test_daily_mail_alert_goes_to_the_operator_common_to_all_daily_profiles(monkeypatch, tmp_path):
     """2026-09-16. 이 테스트가 무엇을 망가뜨리면 실패하는가: 알림을 첫 프로필의 수신자 전원(팀원 포함)에게 보내면 실패한다 — 모든 daily
-    프로필에 공통인 주소(운영자)에게만 가야 한다. 공통 주소가 없으면 첫 프로필로 떨어진다."""
+    프로필에 공통인 활성 주소(운영자)에게만 가야 한다(2026-10-30, 사용자 결정)."""
     checker = _daily_mail_module()
     db = tmp_path / "papers.db"
     log = tmp_path / "daily_scan.log"
@@ -466,12 +471,62 @@ def test_daily_mail_alert_goes_to_the_operator_common_to_all_daily_profiles(monk
         con.execute("INSERT INTO profile_recipients VALUES ('daily-a', 'operator@example.test', 1)")
         con.execute("INSERT INTO profiles VALUES ('daily-b', 'daily', NULL)")
         con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'operator@example.test', 1)")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'team-b@example.test', 1)")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'first@example.test', 0)")
     log.write_text(_daily_log(delivery="발송 실패: SMTP"), encoding="utf-8")
     sent = []
     import email_delivery
     monkeypatch.setattr(email_delivery, "send_digest_email", lambda *args: sent.append(args))
     assert checker.main(["--db", str(db), "--log", str(log), "--stamp", str(stamp)], now=_CHECK_NOW) == 2
+    assert len(sent) == 1
     assert sent[0][2] == ["operator@example.test"]
+
+
+def test_daily_mail_no_common_recipient_skips_alert_but_starts_rerun(monkeypatch, tmp_path, capsys):
+    """2026-10-30 사용자 결정. 첫 프로필 수신자 예비 경로를 되살리거나 수신자 검사를 재실행보다 앞당기면 실패한다.
+    알림 stamp를 쓰거나 출력에 주소를 남겨도 실패한다."""
+    checker = _daily_mail_module()
+    db = tmp_path / "papers.db"
+    log = tmp_path / "daily_scan.log"
+    stamp = tmp_path / "daily_mail_alert.stamp"
+    rerun_stamp = tmp_path / "daily_rerun.stamp"
+    _make_daily_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO profiles VALUES ('daily-b', 'daily', '2026-09-15T20:10:00Z')")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'team-b@example.test', 1)")
+    log.write_text(_daily_log(delivery="발송 실패: SMTP"), encoding="utf-8")
+    monkeypatch.setattr(checker, "_send_alert", lambda *a, **k: pytest.fail("공통 수신자 없이 발송"))
+    monkeypatch.setattr(checker, "RERUN_CONFIRM_S", 0.0)
+    launches = []
+    assert checker.main(
+        ["--db", str(db), "--log", str(log), "--stamp", str(stamp)],
+        now=_CHECK_NOW, launch=lambda: launches.append("started"),
+    ) == 2
+    assert launches == ["started"]
+    assert checker._database_state(db, _CHECK_NOW.date()) == ([], ["daily-a", "daily-b"], [])
+    assert rerun_stamp.read_text(encoding="utf-8").strip() == "2026-09-16 started"
+    assert not stamp.exists()
+    captured = capsys.readouterr()
+    assert captured.err.splitlines() == ["알림 메일 생략 — 모든 daily 프로필의 공통 수신자(운영자)가 없다"]
+    assert "@" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("empty_profile, expected_reasons", [
+    ("daily-a", ["daily-a: 활성 수신자 없음"]),
+    ("daily-b", []),
+])
+def test_daily_mail_no_active_recipient_reason_only_for_first_daily_profile(tmp_path, empty_profile, expected_reasons):
+    """2026-10-30 사용자 결정. 첫 프로필의 활성 수신자 없음 사유를 없애거나 공통 수신자 없음으로 확대하면 실패한다."""
+    checker = _daily_mail_module()
+    db = tmp_path / "papers.db"
+    _make_daily_db(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO profiles VALUES ('daily-b', 'daily', '2026-09-15T20:10:00Z')")
+        con.execute("INSERT INTO profile_recipients VALUES ('daily-b', 'team-b@example.test', 1)")
+        con.execute("UPDATE profile_recipients SET active=0 WHERE profile_id=?", (empty_profile,))
+    recipients, profile_ids, reasons = checker._database_state(db, _CHECK_NOW.date())
+    assert recipients == [] and profile_ids == ["daily-a", "daily-b"]
+    assert reasons == expected_reasons
 
 
 def test_daily_mail_check_defers_while_scan_holds_the_lock(monkeypatch, tmp_path):

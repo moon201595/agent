@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import digest
@@ -93,10 +93,34 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
     # 게다가 이 경로는 `reported_at` 기준이라 월요일 발송이 한 명에게라도 실패하면 **화요일 메일에 다시** 붙었다.
     # 수신자 하나가 거절돼도 다른 수신자의 기준 상태를 함께 전진시키면 안 된다.
     # 기존 SMTP 함수에 한 명씩 넘기므로 부분 거절도 그 수신자의 실패로 드러난다.
-    subject = mail_subject(name)
+    # 설정·공통 수신자 조회가 실패해도 논문 메일은 그대로 보낸다. 대상 판정 실패는 절만 닫는다.
+    import research_assets
+    assets, audience, operators = [], None, set()
+    asset_day = None
+    asset_base = research_assets.default_base()
+    try:
+        config = research_assets.load_config(asset_base)
+        if config and result.get("research_assets"):
+            audience = config['audience']
+            selected_audience = result.get("_research_assets_audience", audience)
+            if selected_audience == audience:
+                assets = result['research_assets']
+                asset_day = date.fromisoformat(result.get("_research_assets_day") or digest.reader_date())
+                if audience == 'operator':
+                    operators = research_assets.common_recipients(db_path)
+    except Exception:
+        assets = []
+        print("  [참고 자료] 수신 범위 확인 실패(절 없이 발송)")
+    assets_accepted = False
+    subject_day = result.get("_research_assets_day")
+    subject = mail_subject(name, datetime.fromisoformat(subject_day).replace(tzinfo=READER_TZ)) if subject_day else mail_subject(name)
     for recipient in recipients:
         try:
             view = dict(result)
+            if assets and (audience == 'all' or recipient in operators):
+                view['research_assets'] = assets
+            else:
+                view.pop('research_assets', None)
             states = result.get("_evidence_states")
             # 이전 수신 이력을 다음 메일 내용으로 다시 조립하지 않는다.
             view.pop("state_updates", None)
@@ -127,6 +151,8 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
             digest_html = digest.generate_digest_html(view, name)
             email_delivery.send_digest_email(text, subject, [recipient], digest_html)
             sent += 1
+            if view.get('research_assets'):
+                assets_accepted = True
             if links or axis_links:
                 feedback_links.mark_delivered(db_path, issue_id, recipient)
             if states is not None:
@@ -135,6 +161,11 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
                     [i for i in states if i["paper_key"] in visible])
         except Exception as error:
             failures.append(email_delivery.describe_error(error))   # 발송 상태는 로그·운영 화면에 남는다 — 주소를 가린다
+    if assets_accepted:
+        try:
+            research_assets.record_sent(profile_id, assets, audience, asset_day, asset_base)
+        except Exception:
+            print("  [참고 자료] 발송 기록 실패(무시)")
     # 회차 기록(2026-09-16, 운영 화면용) — 실패한 회차도 남긴다. 기록 실패는 발송 결과를 바꾸지 않는다.
     try:
         mail_ledger.record_issue(db_path, issue_id, profile_id, subject, result.get("papers") or [],

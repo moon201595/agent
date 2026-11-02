@@ -31,6 +31,11 @@ export PATH="$HOME/.local/bin:$PATH"
 # 파이썬 출력을 바로 로그에 쓴다(2026-10-16). 파일로 돌리면 블록 버퍼라, 실행이 중간에 죽으면(그날 WSL 이 09:56 에 꺼졌다)
 # 마지막 몇십 초가 버퍼째 사라져 어디서 멈췄는지 알 수 없었다.
 export PYTHONUNBUFFERED=1
+# 열린 파일 한도를 Windows 작업으로 띄운 실행과 같은 10240 으로 올린다(2026-11-02). cron 데몬의 soft 한도는 1024 다(/proc/<cron>/limits 실측) —
+# 10/23 05:00(cron)·10/30 10:30(점검이 cron 아래서 띄운 재실행) 두 번 "Errno 24 Too many open files" 로 로봇·비전 팀원 일부가 메일을 못 받았다.
+# 원인은 `with sqlite3.connect() as con` 이 연결을 닫지 않아 GC 전까지 기술자가 쌓이는 것이다(Codex 조사 task-mvyjmkwy: _deliver 한 번에 +535,
+# 기본 GC·한도 1024 에서 1,021번째 연결이 실패). 연결을 닫는 근본 수정 전까지의 완화다. 올리지 못해도(hard 한도) 그대로 돈다.
+ulimit -n 10240 2>/dev/null || true
 
 LOCKFILE="logs/daily_scan.lock"
 
@@ -90,6 +95,11 @@ LOCKFILE="logs/daily_scan.lock"
     .venv/bin/python run_profile_scan.py --all --send --max-pages 30
     status=$?
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) 종료 (exit $status) ==="
+
+    # 화·목 "참고 자료" 수집(2026-11-02 사용자 지시 — 수동 시범이 아무도 안 돌려 10/29 를 통째로 놓쳤다). 메일을 늦추지 않게 **발송 뒤**,
+    # 같은 락 안에서 돈다(재실행과 겹치지 않게). 매 근무일 부르지만 그 주가 이미 끝났으면 수집기가 네트워크·모델 없이 바로 끝난다 —
+    # 주 첫 근무일에 실패하면 다음 근무일이 자동으로 다시 한다. 스캔 종료코드·종료 줄은 바꾸지 않는다(점검·보고가 그 줄을 읽는다).
+    timeout --kill-after=30 2700 .venv/bin/python research_assets_collect.py || echo "  [참고 자료] 수집 실패·시간 초과(무시)"
 } >> logs/daily_scan.log 2>&1
 
 # 실행 직후에 스스로 보고서를 남긴다 — 보고가 "그때 누가 붙어 있었는가"에

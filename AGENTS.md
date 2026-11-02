@@ -48,8 +48,12 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   꺼진 WSL 도 켠다. `WakeToRun=true` 를 켰다(2026-09-18, XML 로 확인). 둘이 겹치면 flock·주차 표지가 한 번만 돌게 한다.
   같은 날 순차 재실행은 발송 장부가 막는다(05:00 KST 운영일·프로필별 성공 회차, 2026-10-06).
   지우기: `schtasks.exe /Delete /TN "paper-harness\daily-scan" /F`.
+  **루트 폴더의 옛 `\paper-harness daily scan`(8/29, 콘솔 창을 띄움)이 같이 돌다가 창이 닫히며 10/30 스캔을 죽였다** — 사용자가 지웠다(2026-11-02 확인).
+  같은 시각 작업이 둘이면 먼저 락을 잡은 쪽이 이긴다 — 새로 만들 때 `schtasks /Query /FO LIST | grep paper-harness` 로 하나뿐인지 본다.
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
+- **cron 으로 뜬 실행은 열린 파일 soft 한도가 1024 다**(2026-11-02 실측, Windows 작업은 10240). SQLite 연결이 GC 전까지 안 닫혀 10/23·10/30 에 Errno 24 로
+  메일 일부가 빠졌다. `run_daily_scan.sh` 가 맨 앞에서 `ulimit -n 10240` 으로 올린다(완화) — 근본 수정 전에는 지우지 않는다(PROGRESS §272).
 - **주간 관리가 실패하거나 못 돌면 바로 다음 근무일 아침에 한 번만 다시 한다**(`agent_maintenance --catch-up`, 2026-10-01 §202) —
   실패 행은 다시 잡히고 끝난 상태·applying 은 안 잡힌다. 그보다 늦으면 다음 주간 관리를 기다린다(사용자 결정).
 - **주간 관리는 "월요일"이 아니라 그 주 첫 근무일**(`work_calendar.is_weekly_day`)이다 — 월요일이 공휴일인 주가
@@ -110,6 +114,9 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   `code_ladder.py`(⑦ 코드 단계: 공식→저자 연관→제3자→유사 구현→없음, 유사 구현은 표시만) · `sota_claims.py`(논문 자체 SOTA 주장 문장만, 미검증 표시) →
   `research_frontier.py`(성능 동향 — `arxiv_tables` 표 셀 → `performance_results` → 관측 DB `frontier_store` → 하루 2편 `external_evidence` 외부 비교,
   우열 계산 금지·"관측 범위"만) · `adoption_signals.py`(인용·공식 GitHub·HF — 성능과 섞지 않는 관측값, 판정어 없음).
+- `research_assets.py`(화·목 "참고 자료" 절 — 저장소 `<data>/research_assets/` 의 config·items·sent.jsonl, 운영자만/팀 전체 `audience`) ·
+  `research_assets_collect.py`(주 1회 과업별 GitHub·HF 검색 → 공식 사실 → Claude 선정 → Python 근거 대조 → Codex 사실 대조, `run_daily_scan.sh` 가 **발송 뒤** 부른다).
+  링크·라이선스·버전은 Python 이 API 값으로만 쓴다 — 모델 출력 스키마에 그 칸이 없다. 과업 목록(`tasks.json`)은 검색 키워드와 섞지 않는다(PROGRESS §271).
 - `external_scout.py` — 주 1회 **검색 바깥** 정찰(GPT 웹검색) → S2 공식 제목·초록으로 신원 확인 → 발견 직전 스캔 기준 놓침 단계 → Claude 검증 →
   주간 브리프 `E` 근거. 정찰의 평가·순위는 버린다. 외부 근거만으로 키워드를 더하려면 **놓친 외부 논문 2편 이상·가중치 0.7 이하·관심 밖 반응과
   충돌 없음**(`agent_maintenance.validate`). 최종 정책은 기존 Codex 판정 단계다. `term_discovery` 는 검색 **안쪽** 사각지대 몫이다.
@@ -235,4 +242,6 @@ CLAUDE.md 규칙 4·5 의 실행 사실이다.
   `ARXIV_TERMS_PER_QUERY`(20)개씩 갈라 던지고 합친다 — 프로필 키워드를 늘릴 때 이 상한을 없애거나 `_arxiv_query_from_core_topics` 하나로 되돌리지 않는다.
 - **테스트가 운영 DB 를 건드릴 수 있다**(2026-09-16 실측). conftest 가 켠 DDL 플래그 아래서 `storage.DB_PATH` 기본값으로 가는 코드는 운영 DB 에
   표를 만들고, 스캔 테스트가 실제 `gh` 검색을 불렀다. 새 모듈은 DB 경로를 인자로 받고, digest 를 부르는 테스트는 격리 픽스처(`isolated_store`)를 쓴다.
-  conftest 가 `code_finder.github_search` 를 기본 거부한다 — 검색이 필요한 테스트는 가짜로 덮는다.
+  conftest 가 `code_finder.github_search` 를 기본 거부한다 — 검색이 필요한 테스트는 가짜로 덮는다. 참고 자료 수집기는 `code_finder` 를 안 거치고
+  gh·httpx·모델 CLI 를 직접 불러 그 차단이 안 닿았다(2026-11-02, 테스트 하나가 실제 검색·모델 호출을 탔다) — conftest 가 `research_assets_collect` 의
+  `_gh`·`_get`·`_cli` 도 막는다. **외부를 직접 부르는 새 모듈은 conftest 차단을 같이 만든다.**

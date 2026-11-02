@@ -477,6 +477,44 @@ def _scout_html(lines: list[str], axis_links: dict[str, dict[str, str]] | None =
         return digest._block(''.join(digest._weekly_line_html(line) for line in lines if line.strip()))
 
 
+def _assets_from_lines(lines: list[str]) -> list[dict]:
+    """저장된 표시 필드만 되돌려 현재 후보 저장소의 변경이 과거 메일을 덮지 않게 한다."""
+    rows = [line for line in lines if line.strip()]
+    if not rows or rows.pop(0) != "   " + digest.RESEARCH_ASSETS_NOTE:
+        raise ValueError("참고 자료 안내 형식이 다름")
+    items = []
+    while rows:
+        head = re.fullmatch(r"   (\d+)\. (.+)", rows.pop(0))
+        if not head or int(head[1]) != len(items) + 1:
+            raise ValueError("참고 자료 번호 형식이 다름")
+        def take(prefix: str) -> str:
+            """들여쓰기를 계약으로 읽어 본문 속 같은 라벨을 오인하지 않게 한다."""
+            if not rows or not rows[0].startswith(prefix):
+                raise ValueError("참고 자료 본문 형식이 다름")
+            return rows.pop(0)[len(prefix):]
+        item = dict(name=head[2], topic=take("      주제: "), what=take("      "))
+        if not rows or rows.pop(0) != "      이해에 도움이 되는 부분":
+            raise ValueError("참고 자료 도움 라벨 없음")
+        item['helps'] = take("         ")
+        if not rows or rows.pop(0) != "      공식 자료에 적힌 것":
+            raise ValueError("참고 자료 사실 라벨 없음")
+        item['facts'] = []
+        while rows and rows[0].startswith("         · "):
+            item['facts'].append(take("         · "))
+        if not rows or rows.pop(0) != "      링크":
+            raise ValueError("참고 자료 링크 라벨 없음")
+        item['refs'] = []
+        while rows and rows[0].startswith("         "):
+            ref = re.fullmatch(r"(.+?) · (https://\S+)(?: · (.*))?", take("         "))
+            if not ref:
+                raise ValueError("참고 자료 링크 형식이 다름")
+            item['refs'].append(dict(label=ref[1], url=ref[2], note=ref[3] or ""))
+        if not item['refs']:
+            raise ValueError("참고 자료 링크 없음")
+        items.append(item)
+    return items
+
+
 def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_count: int | None = None,
                 axis_links: dict[str, dict[str, str]] | None = None) -> str:
     """오늘 본문을 다시 해석하지 않는다. 원래 발송 명세와 다른 카드는 거부한다."""
@@ -506,6 +544,12 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
         any(line.strip().startswith(digest.RESEARCH_VALUE_PREFIXES) for card in parsed.get("cards") or [] for line in card.get("lines") or []))
     for section in parsed["sections"]:
         heading = section["heading"]
+        if heading == digest.RESEARCH_ASSETS_TITLE:
+            try:
+                content += digest.research_assets_html(_assets_from_lines(section["lines"]))
+            except (ValueError, TypeError, KeyError):
+                content += digest._h1(heading) + ''.join(_line(line) for line in section["lines"])
+            continue
         section_lines, scout_lines = _split_scout(section["lines"])
         section = {**section, "lines": section_lines}
         if heading == "이 메일 읽는 법":

@@ -77,6 +77,23 @@ def _no_real_sota_lookups(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_research_assets_collect(monkeypatch):
+    """참고 자료 수집기(2026-11-02)는 `code_finder` 를 안 거치고 gh·httpx·모델 CLI 를 직접 부른다 — 위의 차단이 안 닿는다. 그날 테스트 하나가
+    `main()` 을 불러 실제 gh 검색·헤드리스 모델 호출을 탔다. 받기 두 함수와 CLI 한 곳을 막는다. 수집기 테스트는 가짜 Fetcher·Runner 를 넘기고,
+    CLI 격리 플래그를 보는 테스트는 `_real_cli` 를 되살린다."""
+    import research_assets_collect as rac
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("테스트에서 실제 참고 자료 수집 호출")
+    if not hasattr(rac, "_real_cli"):
+        rac._real_cli = rac._cli
+        rac._real_net_get = rac.NetFetcher._get      # 받기 경로를 MockTransport 로 보는 테스트가 되살린다
+    monkeypatch.setattr(rac, "_cli", refuse)
+    monkeypatch.setattr(rac.NetFetcher, "_gh", refuse)
+    monkeypatch.setattr(rac.NetFetcher, "_get", refuse)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_external_scout(monkeypatch):
     """외부 정찰(2026-09-30)이 테스트에서 실제 Codex 웹검색·Claude·S2 를 부르지 않게 한다. 정찰 테스트는 가짜를 인자로 넘긴다."""
     import external_scout

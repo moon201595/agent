@@ -32,6 +32,7 @@ import json
 import re
 
 import textutil
+import link_policy
 import mail_document
 import mail_layout
 import sqlite3
@@ -2470,11 +2471,55 @@ def source_outage_line(scan_result: dict) -> str:
     return ("⚠ " + " · ".join(parts)) if parts else ""
 
 
+RESEARCH_ASSETS_TITLE = "참고 자료"
+RESEARCH_ASSETS_NOTE = ("화·목에 지금 하는 일과 닿는 공개 자료를 소개합니다. 공식 저장소·문서·논문 초록에 적힌 내용만 옮겼고, "
+                        "실행해 보지는 않았습니다.")
+
+
+def research_assets_lines(items: list[dict]) -> list[str]:
+    """표시 필드만 옮겨 과업 ID 와 검토 원문이 저장 메일에 섞이지 않게 한다."""
+    if not items:
+        return []
+    lines = ["", "─" * 62, "■ " + RESEARCH_ASSETS_TITLE, "", "   " + RESEARCH_ASSETS_NOTE, ""]
+    for index, item in enumerate(items, 1):
+        lines += [f"   {index}. {item['name']}", f"      주제: {item['topic']}",
+                  "      " + item['what'], "      이해에 도움이 되는 부분", "         " + item['helps'],
+                  "      공식 자료에 적힌 것"]
+        lines += ["         · " + fact for fact in item['facts']]
+        lines.append("      링크")
+        # 비고가 없는 링크 끝에 " · " 가 매달리지 않게 한다(저장 평문 왕복은 saved_digest 가 비고 칸을 선택으로 읽는다).
+        lines += [f"         {ref['label']} · {ref['url']}" + (f" · {ref['note']}" if ref.get('note') else "") for ref in item['refs']]
+        lines.append("")
+    lines += ["─" * 62, ""]
+    return lines
+
+
+def research_assets_html(items: list[dict]) -> str:
+    """새 메일과 저장 메일이 같은 상자와 이스케이프를 쓰도록 한곳에서 그린다."""
+    if not items:
+        return ""
+    out = _h1(RESEARCH_ASSETS_TITLE) + _guide_html(RESEARCH_ASSETS_NOTE)
+    for index, item in enumerate(items, 1):
+        content = (_chip(item['topic'], 'kw') + _h2(f"{index}. {item['name']}")
+                   + _text_div(_esc(item['what']), size="14px")
+                   + _h2("이해에 도움이 되는 부분") + _text_div(_esc(item['helps']), size="14px")
+                   + _h2("공식 자료에 적힌 것"))
+        content += '<ul style="margin:4px 0;padding-left:20px;">' + ''.join(
+            '<li>' + _esc(fact) + '</li>' for fact in item['facts']) + '</ul>'
+        for ref in item['refs']:
+            url = link_policy.safe_link(ref['url'])
+            link = f'<a href="{_esc(url)}" style="color:{_ACCENT_DARK};">{_esc(url)}</a>' if url else _esc(ref['url'])
+            note = (' · ' + _esc(ref['note'])) if ref.get('note') else ''
+            content += _text_div(_esc(ref['label']) + ' · ' + link + note, margin="4px 0")
+        out += '<div style="margin:10px 0;">' + mail_layout.box(content) + '</div>'
+    return out
+
+
 def generate_digest(scan_result: dict, profile_name: str) -> str:
     """scan_result: run_profile_scan.scan_profile()의 반환값 그대로 받는다.
     returns 메일 본문으로 바로 쓸 수 있는 순수 텍스트(HTML 아님 — 렌더링
     실패 걱정 없이 항상 읽힌다는 걸 우선했다)."""
-    date_str = reader_date()
+    date_str = scan_result.get("_research_assets_day") or reader_date()
     # 제목은 읽는 사람 기준이다(2026-09-11, 사용자 요청). 시스템 이름(HARNESS)이나
     # 프로필 내부 이름("우리팀 — …")은 받는 사람에게 정보가 아니다. 무엇인지
     # (연구 동향 브리핑)와 언제인지(날짜)만 둔다. 프로필 이름은 여러 프로필을
@@ -2518,6 +2563,8 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
             lines.append("")
     else:
         lines += [f"■ 본문을 받을 수 있는 신규 논문은 없었습니다 (전체 후보 {candidates}건 중).", ""]
+
+    lines += research_assets_lines(scan_result.get("research_assets") or [])
 
     # 빈 갈래는 아래 절들을 안 받는다 — 걸러진 내역은 위 본문에 이미 들어갔고,
     # 논문이 0편이면 키워드 편수·서술도 실을 것이 없다. 예전 조기 반환이
@@ -3323,7 +3370,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
 
     맨 위에 철회 경고용 슬롯을 비워둔다 — M5(retraction 체크)가 채울 자리다.
     """
-    date_str = reader_date()
+    date_str = scan_result.get("_research_assets_day") or reader_date()
     papers = scan_result.get("papers", [])
     candidates = scan_result.get("candidates_found", 0)
 
@@ -3374,6 +3421,8 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
             f'margin:14px 0 10px;">본문을 받을 수 있는 신규 논문은 없었습니다 '
             f'(전체 후보 {candidates}건 중).</p>'
         )
+
+    body += research_assets_html(scan_result.get("research_assets") or [])
 
     # 빈 갈래는 평문판처럼 키워드 편수·꼬리 "걸러진 것"을 싣지 않는다 — 걸러진 내역은 본문에 이미
     # 있다(2026-09-14, 외부 검토 D: HTML 만 편수를 싣고 걸러진 것을 두 번 실었다).

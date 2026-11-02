@@ -586,6 +586,7 @@ async def scan_and_digest(
             paper.pop("research_value", None)          # 마감에 걸려 일부만 붙은 상태로 나가지 않게
         print(f"  [활용 분석] 실패(무시): {type(e).__name__}")
 
+    _attach_research_assets(result, profile_id)
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     import mail_ledger
     # 재수집 결과가 실제 발송한 개요를 덮지 않게 한다(2026-10-06).
@@ -612,6 +613,24 @@ async def scan_and_digest(
     print(f"  [계측]   └ ③ 검색 {search_calls}회 + Deep Layer {deep_calls}회 "
           f"(⑦ 재현은 별도 프로세스라 여기 안 잡힌다 — 재현 로그를 따로 볼 것)")
     return result, digest_text
+
+
+def _attach_research_assets(result: dict, profile_id: str) -> None:
+    """두 실행 경로의 저장 전에 붙여 화면 기록과 수신자별 메일의 자료가 같게 한다."""
+    try:
+        from datetime import date
+        import research_assets
+        base = research_assets.default_base()
+        # 메일 머리말도 KST 달력 날짜다. 05:00 경계의 발송 회차 날짜와 혼용하지 않는다.
+        day = date.fromisoformat(digest.reader_date())
+        result["_research_assets_day"] = day.isoformat()
+        config = research_assets.load_config(base)
+        result["research_assets"] = research_assets.pick_for_mail(profile_id, day, base)
+        result["_research_assets_audience"] = config['audience'] if config else None
+    except Exception:
+        result.pop("research_assets", None)
+        result.pop("_research_assets_audience", None)
+        print("  [참고 자료] 선정 실패(절 없이 진행)")
 
 
 async def record_weekly_diagnostics(db_path: Path, profile_id: str, result: dict,

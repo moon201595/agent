@@ -1,8 +1,10 @@
 """⑨ 배달 — 새벽 스캔과 다이제스트 발송의 부재를 한 번만 알린다.
 
 cron 자체가 절전·종료로 건너뛰면 스캔 로그와 DB 모두 조용히 멈춘다. 이
-검사는 같은 운영일의 종료·저장·발송 세 기록을 서로 대조하고, 수신자에게
-알림을 보낸 뒤 날짜 stamp로 재알림을 막는다.
+검사는 같은 운영일의 종료·저장·발송 세 기록을 서로 대조하고, 모든 daily
+프로필의 공통 활성 수신자(운영자)에게만 알린 뒤 날짜 stamp로 재알림을 막는다.
+팀원에게 장애 알림이 가지 않도록 공통 수신자가 없으면 메일을 생략한다
+(2026-10-30, 사용자 결정). 자동 재실행은 수신자 유무와 관계없이 시도한다.
 """
 
 from __future__ import annotations
@@ -161,7 +163,11 @@ def _kst_date(value: str | None) -> date | None:
 
 
 def _database_state(db_path: Path, today: date) -> tuple[list[str], list[str], list[str]]:
-    """daily 프로필 전체의 digest 날짜와 첫 프로필 수신자를 읽는다."""
+    """daily 프로필 전체의 digest 날짜와 공통 활성 수신자(운영자)만 읽는다.
+
+    2026-10-30 사용자 결정으로 팀원에게 알리지 않도록 공통 수신자만 반환한다.
+    수신자 없음 사유는 기존 장애 판정을 유지하려고 첫 daily 프로필만 기준으로 삼는다.
+    """
     with sqlite3.connect(db_path) as con:
         rows = con.execute(
             "SELECT profile_id, last_digest_at FROM profiles "
@@ -169,20 +175,20 @@ def _database_state(db_path: Path, today: date) -> tuple[list[str], list[str], l
         ).fetchall()
         if not rows:
             return [], [], ["daily 프로필 없음"]
-        # 알림은 **모든 daily 프로필에 공통인 수신자**(운영자)에게만 — 팀원 한 명이 받는 프로필의 장애를 다른 팀원에게 알릴 이유가
-        # 없다(2026-09-16). 공통 수신자가 없으면 첫 프로필의 수신자로 떨어진다.
+        # 팀원에게 장애 알림이 가지 않도록 모든 daily 프로필의 공통 활성 수신자(운영자)만 쓴다.
+        # 공통 수신자가 없으면 다른 수신자로 대체하지 않는다(2026-10-30, 사용자 결정).
         per_profile = [
             {row[0] for row in con.execute(
                 "SELECT email FROM profile_recipients WHERE profile_id=? AND active=1", (profile_id,))}
             for profile_id, _ in rows
         ]
     common = set.intersection(*per_profile) if per_profile else set()
-    recipients = sorted(common) if common else sorted(per_profile[0])
+    recipients = sorted(common)
     reasons = []
     for profile_id, last_digest_at in rows:
         if _kst_date(last_digest_at) != today:
             reasons.append(f"{profile_id}: profiles.last_digest_at이 오늘이 아님")
-    if not recipients:
+    if not per_profile[0]:
         reasons.append(f"{rows[0][0]}: 활성 수신자 없음")
     return recipients, [row[0] for row in rows], reasons
 
@@ -381,7 +387,7 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None, launch=N
             print("오늘 알림은 이미 발송됨")
             return 2
         if not recipients:
-            print("알림을 보낼 활성 수신자가 없음", file=sys.stderr)
+            print("알림 메일 생략 — 모든 daily 프로필의 공통 수신자(운영자)가 없다", file=sys.stderr)
             return 2
         if after_rerun:
             reasons = ["자동 재실행 뒤에도 실패", *reasons]
