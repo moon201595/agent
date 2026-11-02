@@ -219,7 +219,7 @@ def test_trend_line_in_html(db_with_summary_path):
     _seed(db_with_summary_path, "p1")
     html = generate_digest_html(
         _result([_paper("p1")], core_hit_counts={"on-sensor computing": 4}), "우리팀")
-    assert "키워드별 적중 편수" in html
+    assert "관심 키워드에 해당한 논문 수" in html
     assert "on-sensor computing 4" in html
 
 

@@ -799,7 +799,8 @@ def test_narrative_comes_first_and_carries_no_boilerplate_header():
     # 계속 검사하고, 새 순서 계약은 평문·HTML 모두 잠근다(검증 완화 아님).
     assert text.index("오늘의 연구 흐름") < text.index("키워드별 적중 편수")
     html = digest.generate_digest_html(_scan_with_story(), "t")
-    assert html.index("오늘의 연구 흐름") < html.index("키워드별 적중 편수")
+    # 절 제목 요소로 찾는다 — 맨 위 "이 메일 읽는 법" 안내에도 같은 글자가 있어, 서술이 통째로 빠져도 통과했다(Codex 검토 2026-10-22).
+    assert html.index(">오늘의 연구 흐름</p>") < html.index("관심 키워드에 해당한 논문 수")
 
 
 def test_narrative_warns_about_invented_numbers():
@@ -1024,7 +1025,7 @@ def test_named_paper_gets_a_link_in_both_renderers():
 
     text = digest.generate_digest(scan, "t")
     html = digest.generate_digest_html(scan, "t")
-    assert "이름으로 부른 논문" in text and "이름으로 부른 논문" in html
+    assert "이름으로 부른 논문" in text and "연구 흐름에서 언급한 다른 논문과 원문 링크" in html
     assert "https://arxiv.org/abs/2609.00111" in text
     assert 'href="https://arxiv.org/abs/2609.00111"' in html
 
@@ -1432,8 +1433,9 @@ def test_reproduction_result_is_in_same_mail_without_old_updates():
                                "reason": "저장소 후보 없음"}}
     data = {"papers": [paper], "state_updates": [{"title": "Old irrelevant paper"}],
             "state_recheck": {"status": "관측 완료", "checked": 3, "resolved": 2}}
-    for mail in (digest.generate_digest(data, "팀"), digest.generate_digest_html(data, "팀")):
-        assert "코드 저장소를 찾지 못해 재현하지 못함" in mail
+    text, html = digest.generate_digest(data, "팀"), digest.generate_digest_html(data, "팀")
+    assert "코드 저장소를 찾지 못해 재현하지 못함" in text and "코드 저장소를 찾지 못해 동작을 확인하지 못함" in html
+    for mail in (text, html):
         assert "Old irrelevant paper" not in mail
         assert "이전에 보낸 논문의 상태 소식" not in mail
         assert "근거 상태 관측" not in mail
@@ -1667,7 +1669,7 @@ def test_every_section_heading_is_bold_in_the_html_mail():
     }
     html = digest.generate_digest_html(scan, "t")
     headings = ["오늘의 연구 흐름", "최근 7일 흐름", "지난 7일 검색 기준 변화", "오늘의 핵심 논문",
-                "상승", "하락", "핵심 키워드 밖 반복 관측", "가중치 변화", "신규", "이유", "검색 영향"]
+                "상승", "하락", "가중치 변화", "신규", "이유", "검색 영향"]
     for heading in headings:
         m = re.search(r"<(?:p|div)[^>]*>[^<]*" + re.escape(heading) + r"[^<]*<", html)
         assert m, f"{heading} 이 메일에 없다"

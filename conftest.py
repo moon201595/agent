@@ -121,3 +121,11 @@ def _no_real_codex_cli(monkeypatch):
             return None
         return real_which(cmd, *args, **kwargs)
     monkeypatch.setattr(shutil, "which", which)
+
+
+@pytest.fixture(autouse=True)
+def _reset_codex_block(monkeypatch):
+    """`narrative_engine._codex_blocked`(실행 단위 Codex 차단, 2026-10-23)는 프로세스 전역이다 — 한 테스트의 Codex 실패가
+    다음 테스트의 엔진 순서를 바꾸지 않게 테스트마다 풀어 둔다."""
+    import narrative_engine
+    monkeypatch.setattr(narrative_engine, "_codex_blocked", False)

@@ -198,7 +198,7 @@ def test_html_flags_partial_coverage_open(isolated_db):
     paper = {"arxiv_id": "p1", "title": "긴 논문", "abstract": "x",
              "_score": {"priority": 1.0, "core_hits": [], "domain_hits": [], "venue_hit": None}}
     html = digest.generate_digest_html({"papers": [paper], "candidates_found": 1}, "우리팀")
-    assert "원문 40%만 반영" in html
+    assert "요약할 때 원문 중 40%만 사용" in html
     assert "<details open" not in html
 
 

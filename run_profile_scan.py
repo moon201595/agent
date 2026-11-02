@@ -486,6 +486,17 @@ async def scan_and_digest(
                                          papers_seen=len(shown), window_days=1)
                 except Exception as e:  # noqa: BLE001 — 보관 실패가 메일을 막지 않는다
                     print(f"  [동향] 서술 보관 실패(무시): {type(e).__name__}")
+                # 연구 동향(2026-10-22 사용자 결정): 오늘 서술까지 저장한 뒤, 최근 3주 동안 연결로 이어진 흐름 묶음을 Python 이 세고
+                # 모델이 그 변화를 서술한다(trend_chains). 실패하면 이 절만 빠진다(규칙 6).
+                try:
+                    import trend_chains
+                    found = trend_chains.load(db_path, profile_id, narrative_store.reader_date())
+                    if found:
+                        result["research_trends"] = await asyncio.wait_for(
+                            trend_chains.narrate(client, found, trend_report.narrative_topics(profile or {}, shown)), 900)
+                        print(f"  [연구 동향] 이어진 주제 {len(found)}개")
+                except Exception as e:  # noqa: BLE001
+                    print(f"  [연구 동향] 실패(무시): {type(e).__name__}")
         except Exception as e:  # noqa: BLE001 — 서술이 실패해도 셈은 그대로 나간다
             print(f"  [동향] 서술 실패(무시): {type(e).__name__}")
 
@@ -533,6 +544,47 @@ async def scan_and_digest(
             print(f"  [인용문] 한국어 병기 {attached}건")
     except Exception as e:  # noqa: BLE001 — 번역이 없어도 메일은 원문으로 나간다
         print(f"  [인용문] 한국어 병기 실패(무시): {type(e).__name__}")
+
+    # 카드마다 비전문가용 "쉽게 말하면"(2026-10-22, 처음 받은 팀장 "무슨 말인지 모르겠다") — 제목·초록만 보고 한 묶음 호출,
+    # 입력에 없는 숫자가 든 설명은 버린다(plain_ko). 실패하면 설명 없이 나간다(규칙 6).
+    try:
+        import plain_ko
+        cards = list(result.get("papers") or [])
+        attached = plain_ko.attach(cards, await asyncio.wait_for(plain_ko.explain(client, cards), plain_ko.DEADLINE_S))
+        if attached:
+            print(f"  [쉬운 설명] {attached}건")
+    except Exception as e:  # noqa: BLE001 — 설명이 없어도 메일은 나간다
+        print(f"  [쉬운 설명] 실패(무시): {type(e).__name__}")
+
+    # 카드마다 "우리 연구에 쓸 수 있는가"(2026-10-23 팀장 "너무 모델 개발 쪽이다", research_value) — 핵심 아이디어·공개 구현(사실)·
+    # 활용 가능성(제안)·세미나에서 볼 점. 활용 관점이 없는 프로필(또는 migrate 전 표 없음)은 부르지 않는다. 마감은 단계 전체에 건다 —
+    # 자료 조회·생성·폴백·검사·부착·기록까지. 실패하면 세 항목 없이 나간다(규칙 6).
+    try:
+        import narrative_store
+        import research_value
+        view = research_value.perspective(db_path, profile_id)
+        cards = list(result.get("papers") or [])
+        if view and cards:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + research_value.DEADLINE_S
+
+            async def _value_stage():
+                kept, dropped, engine = await research_value.generate(client, db_path, cards, view)
+                try:
+                    research_value.record(db_path, profile_id, narrative_store.reader_date(), view, engine, kept, dropped)
+                except Exception as e:  # noqa: BLE001 — 기록 실패가 메일을 막지 않는다
+                    print(f"  [활용 분석] 기록 실패(무시): {type(e).__name__}")
+                # 자료 조회·기록은 동기라 wait_for 가 그 사이를 끊지 못한다 — 기록까지 끝낸 뒤, 카드에 붙이기 직전에 절대 마감을 다시 본다.
+                # 붙이기가 마지막 단계라 마감을 넘긴 결과가 메일에 실리지 않는다(Codex 구현 검토 1·2차: 기록 지연 뒤에도 항목이 남았다).
+                if loop.time() > deadline:
+                    raise asyncio.TimeoutError
+                return research_value.attach(db_path, cards, kept), len(dropped), engine
+            attached, n_dropped, engine = await asyncio.wait_for(_value_stage(), research_value.DEADLINE_S)
+            print(f"  [활용 분석] {attached}편 · 버린 항목 {n_dropped} · 엔진 {engine or '없음'}")
+    except Exception as e:  # noqa: BLE001
+        for paper in result.get("papers") or []:
+            paper.pop("research_value", None)          # 마감에 걸려 일부만 붙은 상태로 나가지 않게
+        print(f"  [활용 분석] 실패(무시): {type(e).__name__}")
 
     digest_text = digest.generate_digest(result, profile["name"] if profile else profile_id)
     import mail_ledger

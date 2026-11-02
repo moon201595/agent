@@ -27,6 +27,7 @@ T+1 지연 보고(기다리지 않고 "실행중"으로 내보냄)였으나 2026
 
 from __future__ import annotations
 
+from fractions import Fraction
 import json
 import re
 
@@ -40,6 +41,254 @@ from pathlib import Path
 import research_profile
 import title_ko
 import storage
+
+# 2026-10-22: 저장된 옛 메일도 같은 표시 함수를 쓴다. 원본·판정·링크는 바꾸지 않는다.
+REPRO_STAGES = {
+    "clone": "코드 내려받기", "build": "설치", "no_target": "설치·실행 대상 확인",
+    "install_only": "설치 후 실행 대상 확인", "run": "실행",
+}
+REPRO_REASONS = {
+    "unsupported_host": "자동으로 코드를 내려받을 수 없는 사이트",
+    "clone_timeout": "코드 내려받기 제한 시간 초과",
+    "repo_not_found": "저장소를 찾을 수 없거나 접근할 수 없음",
+    "clone_failed": "코드를 내려받지 못함",
+    "repo_too_large": "저장소가 커서 건너뜀(2026-09-21 이전 기준)",
+    "no_install_target": "설치할 대상 파일과 실행할 프로그램을 찾지 못함",
+    "build_failed": "설치 단계에서 실패",
+    "install_only_no_run_target": "설치는 완료했으나 실행할 프로그램을 찾지 못함",
+    "run_timeout": "실행 제한 시간 초과",
+    "run_network_suspected": "실행 중 오류가 났으며 네트워크 차단 영향이 의심됨",
+    "run_nonzero_exit": "프로그램이 정상 종료되지 않음",
+}
+_RELATION_HELP = {"이어짐": "같은 문제에 대한 연구가 이어짐", "확장": "다루는 범위가 넓어짐",
+                  "갈라짐": "같은 문제에 다른 접근이 나옴"}
+_SIDE_GUIDE = "핵심 논문과 위 연구 흐름에 포함되지 않은 다른 관련 논문입니다."
+
+
+RESEARCH_TRENDS_HEADING = "연구 동향 (최근 3주)"
+_TREND_STAT_RE = re.compile(r"(\d+)일 · 논문 (\d+)편 · (\d{2}/\d{2}) ~ (\d{2}/\d{2})")
+
+
+def _md(day: str) -> str:
+    return f"{day[5:7]}/{day[8:10]}"
+
+
+def research_trends_lines(trends: list[dict]) -> list[str]:
+    """연구 동향 절의 평문(저장되는 모양). 2026-10-22 사용자: "연구 동향과 오늘의 연구 흐름을 딱딱 보여주는 게 맞다".
+    며칠·몇 편·날짜·경과는 `trend_chains` 가 센 값이고, 제목·본문만 모델 글이다(없으면 경과만 남는다)."""
+    if not trends:
+        return []
+    lines = ["", "─" * 62, f"■ {RESEARCH_TRENDS_HEADING}", ""]
+    for t in trends:
+        lines.append(f"   ▸ {t['title']}")
+        lines.append(f"     {t['days']}일 · 논문 {t['papers']}편 · {_md(t['first'])} ~ {_md(t['last'])}")
+        lines += [f"     {p}" for p in (t.get("body") or "").split("\n") if p.strip()]
+        lines.append("     경과: " + " → ".join(f"{_md(day)} {name}" for day, name in t["steps"]))
+        lines.append("")
+    return lines
+
+
+def research_trends_html(lines: list[str]) -> str:
+    """저장 평문 줄 → HTML. 새 메일도 형식 수정본도 이 함수 하나로 그린다(두 판이 갈라지지 않게)."""
+    items: list[dict] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("─"):
+            continue
+        if line.startswith("▸ "):
+            items.append({"title": line[2:], "stat": "", "body": [], "steps": ""})
+        elif items and not items[-1]["stat"] and _TREND_STAT_RE.fullmatch(line):
+            items[-1]["stat"] = line
+        elif items and line.startswith("경과: "):
+            items[-1]["steps"] = line[len("경과: "):]
+        elif items:
+            items[-1]["body"].append(line)
+    out = ""
+    for it in items:
+        body = "".join(f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;line-height:1.7;'
+                       f'text-indent:1em;margin:6px 0;">{_esc(p)}</div>' for p in it["body"])
+        out += (f'<div style="background-color:{_PAPER_BG};margin:0 0 18px;">'
+                f'<div style="background-color:{_PAPER_BG};color:{_ACCENT};font-size:15px;font-weight:700;margin:4px 0 2px;">{_esc(it["title"])}</div>'
+                f'<div style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0 0 6px;">{_esc(it["stat"])}</div>'
+                f'{body}'
+                + (f'<div style="background-color:#F3F6F8;color:{_MUTED};font-size:12.5px;line-height:1.6;border-radius:6px;'
+                   f'padding:6px 10px;margin:8px 0 0;">경과 · {_esc(it["steps"])}</div>' if it["steps"] else "")
+                + '</div>')
+    return _block(out) if out else ""
+
+
+PLAIN_KO_PREFIX = "쉽게 말하면: "     # plain_ko.PREFIX 와 같다(테스트가 본다) — 이 모듈은 LLM 모듈을 import 하지 않는다
+
+
+def _plain_ko_html(text: str) -> str:
+    """카드의 "쉽게 말하면" 줄(2026-10-22, `plain_ko`). 기술적 요지보다 먼저 보이게 둔다 — 처음 읽는 사람이 먼저 읽을 곳이다."""
+    return (f'<div style="background-color:#F3F6F8;color:#22313F;font-size:13.5px;line-height:1.7;border-radius:6px;'
+            f'padding:8px 10px;margin:6px 0 8px;"><span style="font-weight:700;color:#0B5F68;">쉽게 말하면</span> '
+            f'{_esc(text)}</div>')
+
+
+# 카드의 "우리 연구에 쓸 수 있는가"(2026-10-23, `research_value`). 키 → 평문 머리. 순서가 곧 카드 안 순서다 — 평문·실시간 HTML·저장 HTML 이
+# 이 표 하나를 본다. 셋 다 모델 해석이다 — 코드 공개 사실은 카드의 기존 코드 칸이 말한다(10/23 미리보기: 따로 싣자 같은 말이 두 번 나왔다).
+RESEARCH_VALUE_FIELDS = (("idea", "핵심 아이디어: "), ("use", "활용 가능성: "), ("seminar", "세미나에서 볼 점: "))
+RESEARCH_VALUE_PREFIXES = tuple(prefix for _key, prefix in RESEARCH_VALUE_FIELDS)
+
+
+def research_value_lines(paper: dict) -> list[tuple[str, str]]:
+    """[(평문 머리, 글)] — 있는 것만. 글은 한 물리적 줄로 정규화한다(저장 평문에서 줄이 갈리면 다른 칸으로 읽힌다)."""
+    value = paper.get("research_value") or {}
+    return [(prefix, " ".join(str(value[key]).split())) for key, prefix in RESEARCH_VALUE_FIELDS
+            if str(value.get(key) or "").strip()]
+
+
+def research_value_html(pairs: list[tuple[str, str]]) -> str:
+    """세 경로(새 메일·저장 메일 재렌더)가 같은 상자를 그린다. 저장 메일은 당시 문장 그대로다 — 다시 계산하지 않는다."""
+    if not pairs:
+        return ""
+    rows = "".join(f'<div style="margin:2px 0;"><span style="font-weight:700;color:#0B5F68;">{_esc(prefix.rstrip(": ").rstrip(":"))}</span> '
+                   f'{_esc(text)}</div>' for prefix, text in pairs)
+    return (f'<div style="background-color:#FBF8F1;color:#22313F;font-size:13.5px;line-height:1.7;border-left:3px solid #C99A2E;'
+            f'border-radius:4px;padding:8px 10px;margin:6px 0 8px;">{rows}</div>')
+
+
+def reader_guide(count: int, buttons: bool = False, values: bool = False) -> list[str]:
+    """2026-10-22 처음 받는 동료들이 "무슨 말인지 모르겠다" — 구성과 표시의 뜻을 맨 위에 짧게 둔다.
+    별점은 2026-09-15 사용자 결정으로 메일에서 뺐으므로 언급하지 않는다. 버튼 문장은 버튼이 실린 메일에만 쓴다."""
+    lines = ["이 메일 읽는 법",
+             "① 연구 동향: 최근 3주 동안 여러 날 이어서 나온 주제가 어떻게 바뀌어 왔는지 설명합니다.",
+             "② 오늘의 연구 흐름: 오늘 찾은 논문들을 같은 문제끼리 묶어 무엇이 나왔는지 설명합니다.",
+             f"③ 오늘의 핵심 논문 {count}편: 관련도가 가장 높은 논문의 요약입니다. ‘상세 분석’을 펼치면 방법·실험·결과가 나옵니다.",
+             "흐름마다 아래에 근거가 된 논문 목록이 있습니다. (해석)이 붙은 문장은 논문이 직접 한 말이 아니라 에이전트의 해석입니다."]
+    if values:
+        lines.append("카드의 ‘핵심 아이디어·활용 가능성·세미나에서 볼 점’은 에이전트의 해석이고, 활용 가능성의 ‘제안’은 논문 내용이 아닙니다.")
+    if buttons:
+        lines.append("논문마다 ‘더 보고 싶음 · 유용함 · 관심 밖’을 누르면 다음 날부터 논문 선정에 반영됩니다.")
+    return lines
+
+
+def reader_guide_html(count: int, buttons: bool = False, values: bool = False) -> str:
+    return ('<div style="background-color:#F3F6F8;color:#394B5A;border:1px solid #DFE5E9;'
+            'border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;line-height:1.7;">'
+            + '<br>'.join(_esc(line) for line in reader_guide(count, buttons, values)) + '</div>')
+
+
+def readable_label(text: str) -> str:
+    """Python 이 만든 라벨만 바꾼다. 모르는 상태 코드는 지우지 않고 괄호로 남긴다."""
+    def repro(m: re.Match) -> str:
+        stage, reason = m[1], m[2]
+        stage = REPRO_STAGES.get(stage, f"단계 미확인({stage})" if re.fullmatch(r"[a-z_]+", stage) else stage)
+        reason = REPRO_REASONS.get(reason, f"사유 미확인({reason})" if re.fullmatch(r"[a-z_]+", reason) else reason)
+        return f"코드 동작을 확인하지 못함 — {stage}: {reason}"
+    text = re.sub(r"코드 재현 실패 — ([^·\]\n]+?) · ([^\]\n]+)", repro, text)
+    text = text.replace("코드 저장소를 찾지 못해 재현하지 못함", "코드 저장소를 찾지 못해 동작을 확인하지 못함")
+    text = re.sub(r"`([^`]+)` 관심축과 직접 연관\.", r"관심 키워드 '\1'에 해당.", text)
+    text = text.replace("읽을 포인트 — ", "고른 이유: ")
+    text = re.sub(r"⚠ 원문 (\d+)%만 반영", r"⚠ 요약할 때 원문 중 \1%만 사용", text)
+    if text.startswith("코드:"):
+        text = text.replace("이 논문의 저장소는 없음", "이 논문의 코드 저장소를 찾지 못함")
+        text = re.sub(r"같은 과제\('([^']*)'\)의 참고 구현", r"같은 주제('\1')로 찾은 다른 공개 코드:", text)
+        text = text.replace("이 논문을 재현한 것이 아니다", "이 논문과 별개이며, 이 논문을 재현한 코드가 아님")
+        text = re.sub(r"★([\d,]+)", r"GitHub 관심 표시 \1개", text)
+    return text
+
+
+def readable_heading(text: str) -> str:
+    text = text.replace("전체 후보", "검토 후보(중복·기발송 제외)")
+    text = re.sub(r"원문 분석 (\d+)", r"원문을 읽고 요약한 논문 \1편", text)
+    text = text.replace("이번 창의 키워드별 적중 편수", "이번 검색에서 관심 키워드에 해당한 논문 수")
+    text = text.replace("이번 실행에서 걸러진 것", "이번 검색에서 선정하지 않은 이유")
+    text = text.replace("조건 불일치", "제목·초록에서 관심 키워드가 확인되지 않음(문맥 검사 포함)")
+    text = text.replace("위에서 이름으로 부른 논문", "연구 흐름에서 언급한 다른 논문과 원문 링크")
+    return text
+
+
+def readable_history(line: str) -> str:
+    m = re.fullmatch(r"(\s*)(?:↳ )?지난 관측 (\d{4}-\d{2}-\d{2})(?: · (.*?))? · (이어짐|확장|갈라짐)( · 오늘 1편의 후속 관측)? — (.*)", line)
+    if not m:
+        return line
+    name = f"의 '{m[3]}' 흐름" if m[3] else "의 연구 흐름"
+    single = " · 오늘 논문 1편으로 살펴본 후속 연구" if m[5] else ""
+    return f"{m[1]}↳ {m[2]} 메일{name}과 비교 — {m[4]}({_RELATION_HELP[m[4]]}){single}: {m[6]}"
+
+
+def readable_narrative(text: str) -> str:
+    """연구 흐름 화면용: 근거 표지를 빼고 이어짐 줄을 문장으로 푼다.
+
+    본문의 "P5" 같은 낱말은 바꾸지 않는다 — 내부 번호인지 실제 모델·논문 이름(P5 추천 모델 등)인지 가를 수 없어서, 치환하면
+    다른 논문 이름과 링크로 바뀐다(Codex 검토 2026-10-22 재현). 지시문이 본문에서는 약칭으로 부르게 한다."""
+    item = re.compile(r"(\s*[-•] .+?)\s+\[P\d+:(?:[ART]|S\d+)\]\s*$")
+    out = []
+    skipping = False
+    for line in text.splitlines():
+        # "우리 연구에서 볼 것" 절은 2026-10-22 사용자 결정으로 뺐다 — 그 전에 저장된 글을 다시 그릴 때도 숨긴다(다음 소제목까지).
+        heading = _HEADING_ORNAMENT_RE.sub("", _plain(line)).strip()
+        if heading == "우리 연구에서 볼 것":
+            skipping = True
+            continue
+        if skipping and _plain(line).lstrip().startswith("■"):
+            skipping = False
+        if skipping:
+            continue
+        line = readable_history(line)
+        # 목록 줄은 그 줄의 논문 자신을 가리키는 표지라, 바꾸면 제목이 두 번 나온다 — 지운다.
+        line = item.sub(r"\1", line)
+        # 문장 끝 근거 표지는 화면에서 뺀다(2026-10-22 사용자: "근거 번호를 쓰지 말까" — 흐름마다 논문 목록이 이미 붙어 있다).
+        # 모델은 계속 근거 ID 를 달고 Python 이 그것으로 검사한다 — 저장 본문·감사 기록에는 남는다.
+        line = re.sub(r"[ \t]*\[P\d+:(?:[ART]|S\d+)\](?:[ \t]*\[P\d+:(?:[ART]|S\d+)\])*", "", line)
+        line = re.sub(r"[ \t]+([.,])", r"\1", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def readable_card_lines(lines: list[str]) -> list[str]:
+    """카드 줄의 라벨만 바꾼다. 원문 문장 번호([S…])는 근거 추적용이라 그대로 둔다."""
+    return [line[:len(line) - len(line.lstrip())] + readable_label(line.strip()) for line in lines]
+
+
+def readable_mail_text(body: str) -> str:
+    """파싱 계약을 보존하도록 절을 나눈 뒤 표시만 바꾼다."""
+    lines = body.splitlines()
+    if not lines:
+        return body
+    card_head = next((i for i, line in enumerate(lines) if line.startswith("■ 오늘의 핵심 논문 ")), len(lines))
+    story_start = next((i for i, line in enumerate(lines) if line == "■ 오늘의 연구 흐름"), card_head)
+    lines[story_start:card_head] = readable_narrative("\n".join(lines[story_start:card_head])).splitlines()
+    out, card, in_cards = [], [], False
+    for line in lines:
+        if line.startswith("■ "):
+            if card:
+                out += [card[0]] + readable_card_lines(card[1:])
+                card = []
+            in_cards = line.startswith("■ 오늘의 핵심 논문 ")
+            out.append(readable_heading(line))
+        elif in_cards and re.match(r"\d+\. ", line):
+            if card:
+                out += [card[0]] + readable_card_lines(card[1:])
+            card = [line]
+        elif card:
+            card.append(line)
+        else:
+            out.append(readable_heading(line) if line.strip().startswith("▸ 위에서 이름으로 부른 논문") else line)
+            if line.strip() == "■ 주변 신호" and _SIDE_GUIDE not in body:
+                out.append("   " + _SIDE_GUIDE)
+    if card:
+        out += [card[0]] + readable_card_lines(card[1:])
+    count = re.search(r"■ 오늘의 핵심 논문 (\d+)편", body)
+    if count and "■ 이 메일 읽는 법" not in body and lines[0].startswith("연구 동향 브리핑"):     # 메일 전체일 때만
+        guide = reader_guide(int(count[1]), values=any(line.strip().startswith(RESEARCH_VALUE_PREFIXES) for line in lines))
+        out[1:1] = ["", "■ " + guide[0], *("   " + g for g in guide[1:]), ""]
+    return "\n".join(out) + ("\n" if body.endswith("\n") else "")
+
+
+def _readable_card_html(parts: list[str]) -> list[str]:
+    """링크 속성과 제목은 보존하고 카드의 표시 텍스트만 바꾼다."""
+    from html import unescape
+    out = []
+    for part in parts:
+        chunks = re.split(r"(<[^>]+>)", part)
+        out.append(''.join(chunk if i % 2 else (_esc(readable_label(unescape(chunk))) if chunk.strip() else chunk)
+                           for i, chunk in enumerate(chunks)))
+    return out
+
 
 _ABSTRACT_EXCERPT_CHARS = 220
 
@@ -645,6 +894,8 @@ def _comparison_table_html(heading: str, entries: list[tuple[str, str]]) -> str 
     th = 'style="text-align:left;font-size:12px;font-weight:600;color:#526675;padding:4px 8px;border-bottom:1px solid #DFE5E9;"'
     body = ""
     for kind, model, value, note, url in rows:
+        kind = paper_observations.readable_kind(kind)
+        note = paper_observations.readable_conditions(note)
         mine = kind == "이 논문"
         weight = "700" if mine else "400"
         bg = "#EEF6F7" if mine else "#FFFFFF"
@@ -961,6 +1212,9 @@ def _paper_entry(idx: int, paper: dict) -> str:
         if warning:
             lines.append(f"   {warning}")
     lines.append(f"   {_why_matched(score)}")   # "왜 걸렸나 :" 머리말은 뺐다(2026-09-15 사용자 요청) — 핵심 키워드부터 보인다
+    if paper.get("plain_ko"):
+        lines.append(f"   {PLAIN_KO_PREFIX}{' '.join(str(paper['plain_ko']).split())}")
+    lines += [f"   {prefix}{text}" for prefix, text in research_value_lines(paper)]
     for heading, entries in _observation_sections(paper):
         lines.append(f"   {heading}")
         lines += [f"     {text}" + (f" <{url}>" if url else "") for text, url in entries]
@@ -1296,6 +1550,7 @@ def _narrative_section(scan_result: dict) -> list[str]:
 def _h1(text: str, note: str = "") -> str:
     """메일의 **절 제목**. 한 통 안에서 크기·굵기가 같아야 계층이 보인다(2026-09-20 사용자 지적 —
     절마다 제각각이라 어디가 새 절인지 안 보였다). `오늘의 동향 정리` 만 18px 로 한 단계 위다(머리 절)."""
+    text, note = readable_heading(text), readable_heading(note)
     tail = (f'<span style="color:{_MUTED};font-size:12px;font-weight:400;margin-left:6px;">{_esc(note)}</span>'
             if note else "")
     # 2026-09-30 시안: 절마다 위에 가는 줄을 긋고 제목을 18px 로 — 메일이 길어도 절 경계가 한눈에 보인다.
@@ -1330,14 +1585,29 @@ def _block(content: str) -> str:
     return f'<div style="background-color:{_PAPER_BG};padding:{_BLOCK_PAD};">{content}</div>'
 
 
+WINDOW_SHARE_MIN_PP = 0.5      # 비율 변화가 이보다 작으면 상승·하락으로 부르지 않는다
+WINDOW_MOVES_MAX = 8           # 상승·하락 합쳐 변화 폭이 큰 순으로 — 편수 기준일 때의 상위 8개와 같은 분량
+
+
 def _window_moves(mv: dict) -> tuple[list, list]:
-    """(상승, 하락). 직전 구간 관측이 없으면 둘 다 비운다 — 0→N 을 급증으로 읽으면 안 된다."""
-    if not mv.get("comparable"):
+    """(상승, 하락) — 행은 (키워드, 이번 편수, 직전 편수, 이번 비율 %, 비율 변화 %p).
+
+    2026-10-22 내용 검토: 편수 차이로 가르니 그 주 수집량이 줄면(1,092→719편) 거의 모든 키워드가 "하락" 이었다 — 동향이 아니라 수집량이었다.
+    그래서 **그 기간 관련 논문 중 그 키워드가 차지한 비율**의 변화로 가른다. 직전 구간 관측이 없으면 둘 다 비운다 — 0→N 을 급증으로 읽으면 안 된다."""
+    now_n, prev_n = mv.get("papers", (0, 0))
+    if not mv.get("comparable") or not now_n or not prev_n:
         return [], []
-    rows = [(kw, now, now - prev) for kw, now, prev in (mv.get("keywords") or [])]
-    up = sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])
-    down = sorted([r for r in rows if r[2] < 0], key=lambda r: r[2])
-    return up, down
+    # 전체 셈(`all_keywords`)이 있으면 그것으로 고른다 — `keywords` 는 편수 차이로 걸러 상위 8개만 남긴 것이라 편수가 같고 비율만 변한
+    # 키워드가 빠진다(Codex 검토 2026-10-22). 저장 메일에서 다시 그릴 때는 저장된 줄(`keywords`)뿐이다.
+    raw = []
+    for kw, now, prev in (mv.get("all_keywords") or mv.get("keywords") or []):
+        # 반올림 전 값으로, 분수로 판정한다 — 0.49%p 가 "+0.5%p 상승" 이 되지 않게, 정확히 0.5%p 가 부동소수점 오차(0.4999…)로 빠지지 않게(Codex 검토).
+        exact = Fraction(100 * now, now_n) - Fraction(100 * prev, prev_n)
+        if abs(exact) >= Fraction(str(WINDOW_SHARE_MIN_PP)):
+            raw.append((kw, now, prev, 100 * now / now_n, float(exact)))
+    raw.sort(key=lambda r: (-abs(r[4]), r[0]))
+    rows = [(kw, now, prev, round(share, 1), round(delta, 1)) for kw, now, prev, share, delta in raw[:WINDOW_MOVES_MAX]]
+    return [r for r in rows if r[4] > 0], [r for r in rows if r[4] < 0]
 
 
 def _window_html(scan_result: dict) -> str:
@@ -1345,7 +1615,7 @@ def _window_html(scan_result: dict) -> str:
     두 판이 갈라지면 같은 메일 안에서 숫자가 달라진다(§8-70 이 그 사고였다)."""
     mv = scan_result.get("trend_window")
     if not mv:
-        return _block(_reserve_html(scan_result))
+        return ""
     days = mv.get("days", 7)
     now_n, prev_n = mv.get("papers", (0, 0))
     d_now, d_prev = mv.get("days_covered", (0, 0))
@@ -1354,14 +1624,15 @@ def _window_html(scan_result: dict) -> str:
 
     head = _h2
 
-    def move_row(kw: str, now: int, delta: int) -> str:
+    def move_row(kw: str, now: int, prev: int, share: float, delta: float) -> str:
         colour, arrow = (_RISE_INK, "▲") if delta > 0 else (_FALL_INK, "▼")
         sign = "+" if delta > 0 else "−"
         return (f'<div style="background-color:{_PAPER_BG};font-size:13px;margin:2px 0;padding-left:10px;">'
                 f'<span style="color:{colour};">{arrow}</span> '
                 f'<span style="color:{_INK};">{_esc(kw)}</span> '
-                f'<span style="color:{_MUTED};">· {now}편</span> '
-                f'<span style="color:{colour};">{sign}{abs(delta)}</span></div>')
+                f'<span style="color:{_MUTED};">· {share:.1f}%</span> '
+                f'<span style="color:{colour};">{sign}{abs(delta):.1f}%p</span> '
+                f'<span style="color:{_MUTED};font-size:12px;">({now}편 / 직전 {prev}편)</span></div>')
 
     out = ""
     if comparable:
@@ -1374,8 +1645,8 @@ def _window_html(scan_result: dict) -> str:
                 f'관련 논문 <b>{now_n}편</b> <span style="color:{_MUTED};">· 관측일 {d_now}일</span></p>'
                 f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:0;">'
                 f'직전 {days}일에는 관측이 없어 증감을 내지 않았다.</p>')
-    up_html = (head("상승") + "".join(move_row(kw, n, d) for kw, n, d in up)) if up else ""
-    down_html = (head("하락") + "".join(move_row(kw, n, d) for kw, n, d in down)) if down else ""
+    up_html = (head("상승") + "".join(move_row(*row) for row in up)) if up else ""
+    down_html = (head("하락") + "".join(move_row(*row) for row in down)) if down else ""
     if up_html and down_html:
         # 2026-09-30 시안: 상승·하락을 나란히. 이메일에선 flex/grid 가 안 먹으니 표 두 칸으로 편다.
         out += (f'<table role="presentation" style="width:100%;border-collapse:collapse;"><tr>'
@@ -1392,12 +1663,11 @@ def _window_html(scan_result: dict) -> str:
             for kw, now, _prev in (mv.get("keywords") or []))
         if rows:
             out += head("키워드 (이번 창 편수)") + rows
-    terms = "".join(_chip(f"{term} · {now}편") for term, now, _prev in (mv.get("terms") or []))
-    if terms:
-        out += head("핵심 키워드 밖 반복 관측") + f'<div style="background-color:{_PAPER_BG};">{terms}</div>'
-    # 설명 주석(※ 검색 관측 기준…)은 2026-09-30 사용자 요청으로 뺐다 — 매일 같은 말이라 읽히지 않는다.
-    # 자리 밖 후보는 이 절과 **같은 흰 블록** 안이다(절 제목이 하나뿐이라 블록도 하나다).
-    return _h1(f"최근 {days}일 흐름") + _block(out + _reserve_html(scan_result))
+    # "핵심 키워드 밖 반복 관측"·"자리에 못 든 후보에서 자주 나온 말" 은 2026-10-22 사용자 결정으로 뺐다 — "bridge this gap",
+    # "existing benchmarks" 같은 논문 상투어가 올라와 동향 정보가 아니었다(내용 검토). 집계(`terms`·`reserve_terms`)는 그대로 남는다.
+    out += (f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;margin:8px 0 0;">'
+            f'비율 = 그 키워드에 걸린 논문 / 그 기간 관련 논문. 수집량이 달라도 비교할 수 있게 비율로 본다.</p>') if (up or down) else ""
+    return _h1(f"최근 {days}일 흐름") + _block(out)
 
 
 def _reserve_html(scan_result: dict) -> str:
@@ -2119,11 +2389,8 @@ def _window_section(scan_result: dict) -> list[str]:
     색만으로 뜻을 나르지 않는다 — 다크 모드나 색을 지우는 클라이언트에서도 화살표는 남는다.
     """
     mv = scan_result.get("trend_window")
-    reserve = _reserve_lines(scan_result)
     if not mv:
-        # 창 집계가 없어도 자리 밖 후보는 따로 싣는다 — 둘은 다른 자료에서 나온다
-        # (창은 search_candidates, 자리 밖은 candidate_observations).
-        return ["", "─" * 62, "■ 이번 실행에서 자리에 못 든 후보"] + reserve if reserve else []
+        return []
     days = mv.get("days", 7)
     now_n, prev_n = mv.get("papers", (0, 0))
     d_now, d_prev = mv.get("days_covered", (0, 0))
@@ -2138,11 +2405,11 @@ def _window_section(scan_result: dict) -> list[str]:
         lines.append(f"   직전 {days}일에는 관측이 없어 증감을 내지 않았다.")
 
     def move_lines(rows: list, arrow: str) -> list[str]:
-        width = max((len(kw) for kw, _n, _d in rows), default=0)
+        width = max((len(r[0]) for r in rows), default=0)
         out = []
-        for kw, now, delta in rows:
+        for kw, now, prev, share, delta in rows:
             sign = "+" if delta > 0 else "−"
-            out.append(f"      {arrow} {kw:<{width}}   {now:>4}   {sign}{abs(delta)}")
+            out.append(f"      {arrow} {kw:<{width}}   {share:.1f}%   {sign}{abs(delta):.1f}%p   ({now}편 / 직전 {prev}편)")
         return out
 
     if up:
@@ -2153,12 +2420,7 @@ def _window_section(scan_result: dict) -> list[str]:
         lines += ["", "   키워드 (이번 창 편수)"]
         width = max(len(kw) for kw, _n, _p in mv["keywords"])
         lines += [f"      {kw:<{width}}   {now:>4}" for kw, now, _p in mv["keywords"]]
-    terms = mv.get("terms") or []
-    if terms:
-        lines += ["", "   핵심 키워드 밖 반복 관측"]
-        width = max(len(t) for t, _n, _p in terms)
-        lines += [f"      {term:<{width}}   {now:>4}" for term, now, _p in terms]
-    lines += reserve
+    # 상투어 목록 두 개는 2026-10-22 사용자 결정으로 뺐다(HTML 판 주석 참고).
     return lines
 
 
@@ -2233,6 +2495,7 @@ def generate_digest(scan_result: dict, profile_name: str) -> str:
     if outage:
         lines += [outage, ""]
     if not empty:
+        lines += research_trends_lines(scan_result.get("research_trends") or [])
         lines += _narrative_section(scan_result)
         lines += _daily_links_lines(scan_result)
     if empty:
@@ -2521,11 +2784,14 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
     # **접힌 상태에서도 보이는 한 줄**(2026-09-05) — 제목만으론 무슨 논문인지 모르고, 다 펼쳐 두면 훑을 수가 없다.
     gist_html = (f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:14px;line-height:1.7;'
                  f'margin:6px 0 8px;">{_esc(_clip(gist, _GIST_CHARS))}</div>') if gist else ""
+    if paper.get("plain_ko"):
+        gist_html = _plain_ko_html(" ".join(str(paper["plain_ko"]).split())) + gist_html
     # 읽을 포인트는 요지 아래, 관측값은 별도 박스로 토글 위에 둔다(2026-10-02 사용자 요청).
     point = reading_point(paper)
     if point:
         gist_html += (f'<div style="background-color:{_CARD_BG};color:{_INK};font-size:13px;line-height:1.6;margin:0 0 6px;">'
-                      f'<span style="background-color:{_CARD_BG};color:{_ACCENT_DARK};font-weight:700;">읽을 포인트</span> — {_esc(point)}</div>')
+                      f'<span style="background-color:{_CARD_BG};color:{_ACCENT_DARK};font-weight:700;">고른 이유:</span> {_esc(point)}</div>')
+    gist_html += research_value_html(research_value_lines(paper))
     source = link.replace("https://", "") if link else ""
     source_html = (f'<a href="{_esc(link)}" style="display:inline-block;background-color:{_CARD_BG};color:{_ACCENT};font-size:12.5px;'
                    f'text-decoration:none;margin-left:2px;">원문 {_esc(source)} ↗</a>') if link else ""
@@ -2544,6 +2810,7 @@ def _paper_entry_html(idx: int, paper: dict) -> str:
 def _render_card_parts(idx: int, title_html: str, korean_html: str, gist_html: str,
                        chips: str, kw_chips: str, detail: str, analysis: str, foot: str) -> str:
     """저장 글도 같은 카드 틀을 쓴다. 내용 복원 때문에 일일 메일의 모양을 바꾸지 않는다."""
+    gist_html, chips, detail, analysis = _readable_card_html([gist_html, chips, detail, analysis])
     open_attr = ""
     return (
         f'<div class="ph-card" style="background-color:{_CARD_BG};color:{_INK};border:1px solid {_CARD_LINE};'
@@ -2782,7 +3049,7 @@ def _narrative_line_html(line: str) -> str:
     보였다. 글의 뼈대가 안 보이면 "그래서 무슨 일이 벌어지나"를 훑을 수가 없다.
     """
     text = _plain(line)
-    if text.startswith("↳ 지난 관측 "):
+    if text.startswith("↳ 지난 관측 ") or re.match(r"↳ \d{4}-\d{2}-\d{2} 메일", text):
         return (f'<div style="background-color:#F3F6F8;color:{_MUTED};font-size:13px;'
                 f'padding:8px 10px;margin:6px 0 10px;border-radius:6px;line-height:1.6;">{_esc(text)}</div>')
     # **정규화한 뒤 판정한다**(2026-09-08 정정). 원래 줄로 보면 `**갈래**` 가
@@ -2802,24 +3069,23 @@ def _narrative_line_html(line: str) -> str:
                 f'margin:3px 0 3px 18px;line-height:1.6;">• {_esc(re.sub(r"^[-•]\s+", "", text))}</div>')
     # 같은 줄에 나열된 갈래도 문단으로 분리해 항목 사이 한 줄 여백을 둔다.
     parts = re.split(r"(?<=[.!?。])\s+(?=(?:첫|둘|셋|넷|다섯|여섯|일곱)\s*째|(?:첫|두|세|네)\s*번째)", text)
+    # 본문 문단은 논문처럼 첫 줄을 들여쓴다(2026-10-22 사용자 요청 — 쉬운 말로 길어진 흐름에서 문단 경계가 보이게).
     return "".join(
-        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;'
-        f'margin:{"14px" if _ENUM_RE.match(part) else "4px"} 0;line-height:1.7;">'
+        f'<div style="background-color:{_PAPER_BG};color:{_INK};font-size:15px;text-indent:1em;'
+        f'margin:{"14px" if _ENUM_RE.match(part) else "6px"} 0;line-height:1.7;">'
         f'{_emphasise_enum(_esc(part))}</div>' for part in parts)
 
 
 # 옆 칸 두 절의 안내 문장(2026-10-12 사용자 지적: "보여주기만 하지 말고 알아먹을 수 있게"). HTML 을 그릴 때 소제목 아래 붙인다 —
 # 저장 서술(평문)에는 넣지 않는다. 형식 수정본도 같은 함수로 그리므로 아침 메일과 같다.
 NARRATIVE_GUIDES = {
-    "우리 연구에서 볼 것": "오늘 흐름이 우리 관심 분야와 만나는 지점에서 확인해 볼 조건과 실험입니다. "
-                       "(해석)은 논문이 한 말이 아니라 에이전트가 우리 연구에 비춰 본 해석입니다.",
-    "주변 신호": "카드에 싣지 않았고 위 흐름에도 넣지 않은 오늘의 다른 관련 논문입니다. "
-             "끝의 [P번호:A] 는 근거 표시입니다 — A 초록 · R 원문 요약 · T 제목.",
+    "주변 신호": _SIDE_GUIDE,
 }
 
 
 def _narrative_boxes_html(text: str, papers: list[dict] | None = None) -> str:
     """Python 소제목으로만 칸을 나눈다. 짧은 절 두 개만 짝짓고 옛 자유 글은 넓게 남긴다."""
+    text = readable_narrative(text)
     blocks: list[tuple[str, list[str]]] = []
     for line in text.strip().splitlines():
         if not _plain(line):
@@ -3064,14 +3330,15 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     # 2026-09-30 사용자 시안: 남색 띠를 걷고 눈썹 글 · 큰 제목 · 프로필 · 숫자 줄로.
     # 숫자 줄은 **이 메일에 실제로 있는 값만** 싣는다. 시안의 "수치 검증 통과 n/m" 칸은 넣지 않는다 —
     # 2026-09-14 사용자 결정으로 메일에서 검증 수치를 뺐고(§8-122), 시안(9/07)은 그 결정보다 앞선 것이다.
-    kpis = [("핵심 논문", f"{len(papers)}편"), ("전체 후보", f"{candidates}건")]
+    kpis = [("핵심 논문", f"{len(papers)}편"), ("검토 후보(중복·기발송 제외)", f"{candidates}건")]
     mv = scan_result.get("trend_window") or {}
     if mv.get("papers"):
         kpis.append((f"최근 {mv.get('days', 7)}일 관련", f"{mv['papers'][0]}편"))
     title_only_n = len(scan_result.get("title_only_papers") or [])
     if title_only_n:
         kpis.append(("제목만 실은 논문", f"{title_only_n}편"))
-    head = _digest_head_html(date_str, profile_name, kpis)
+    head = _digest_head_html(date_str, profile_name, kpis) + reader_guide_html(
+        len(papers), any(p.get("_feedback_links") for p in papers), any(research_value_lines(p) for p in papers))
 
     # M5 철회 경고 슬롯 — 지금은 비어 있다(주석만 남긴다).
     retraction_slot = "<!-- retraction-warnings -->"
@@ -3118,6 +3385,9 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
     details_body = body
     # 과거 논문 상태나 근거 부록을 앞뒤에 붙이지 않는다(2026-09-10 사용자 요청).
     body = ""
+    trend_lines = research_trends_lines(scan_result.get("research_trends") or []) if not empty else []
+    if trend_lines:
+        body += _h1(RESEARCH_TRENDS_HEADING) + research_trends_html(trend_lines[4:])
     story = scan_result.get("narrative")
     if story:
         text, ungrounded = story
@@ -3150,7 +3420,7 @@ def generate_digest_html(scan_result: dict, profile_name: str) -> str:
                       f'font-size:12px;margin:2px 0;padding-left:10px;">· {label}</div>')
         if named:
             named = (f'<div style="background-color:{_PAPER_BG};color:{_MUTED};'
-                     f'font-size:12px;margin:10px 0 2px;">위에서 이름으로 부른 논문</div>'
+                     f'font-size:12px;margin:10px 0 2px;">연구 흐름에서 언급한 다른 논문과 원문 링크</div>'
                      f'{named}')
 
         body += (
@@ -3194,6 +3464,7 @@ def _weekly_banner_html() -> str:
 
 def _saved_footer_html(text: str) -> str:
     """꼬리도 원래 폭 안에서 글자만 들인다. 저장 문장의 숫자는 재계산하지 않는다."""
+    text = readable_heading(text)
     return (f'<p style="background-color:{_PAPER_BG};color:{_MUTED};font-size:12px;'
             f'border-top:1px solid {_LINE};padding:10px 14px 0;">{_esc(text)}</p>')
 

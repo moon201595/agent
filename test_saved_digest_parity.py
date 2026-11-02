@@ -133,7 +133,7 @@ def test_saved_weekly_brief_keeps_unknown_lines_instead_of_guessing(monkeypatch)
     plain = digest.generate_digest(scan, '팀').replace('   관측일 4일 / 직전 3일', '   관측일 4일 / 직전 3일\n   손으로 고친 줄 77')
     saved = saved_digest.render_html(plain, '팀', scan['papers'])
     text = ''.join(VisibleText(saved).data)
-    assert '손으로 고친 줄 77' in text and 'reinforcement learning' in text and '+90' in text
+    assert '손으로 고친 줄 77' in text and 'reinforcement learning' in text and '+0.9%p' in text
     assert digest._window_html(scan) not in saved
     assert digest._external_scout_html(scan) in saved and digest._profile_changes_html(scan) in saved
 
@@ -176,12 +176,13 @@ def test_saved_weekly_edge_lines_fall_back_with_original_text(monkeypatch):
     banner = next(line for line in plain.splitlines() if line.startswith('■ ' + digest.WEEKLY_BRIEF_TITLE))
     cases = {
         'banner': plain.replace(banner, banner + '\n   보존해야 할 추가 근거 77'),
-        'reserve': plain.replace('   ▸ 자리에 못 든 후보 702편에서 자주 나온 말',
-                                 '   ▸ 자리에 못 든 후보 702편에서 자주 나온 말\n      action generation : 24편\n'
-                                 '   ▸ 자리에 못 든 후보 7편에서 자주 나온 말'),
-        'sign': plain.replace('▲ reinforcement learning', '▲ reinforcement learning', 1).replace('   +90', '   −90', 1),
+        # 자리 밖 후보 줄은 2026-10-22 부터 새로 쓰지 않지만 옛 저장 글에는 있다 — 그 모양 그대로 끼워 넣는다.
+        'reserve': plain.replace('   관측일 4일 / 직전 3일',
+                                 '   관측일 4일 / 직전 3일\n   ▸ 자리에 못 든 후보 702편에서 자주 나온 말\n      action generation : 24편\n'
+                                 '   ▸ 자리에 못 든 후보 7편에서 자주 나온 말', 1),
+        'sign': plain.replace('   +0.9%p', '   −0.9%p', 1),
     }
-    assert cases['sign'] != plain and '−90' in cases['sign']
+    assert cases['sign'] != plain and '−0.9%p' in cases['sign'] and cases['reserve'] != plain
     for name, text in cases.items():
         saved = saved_digest.render_html(text, '팀', scan['papers'])
         visible = ''.join(VisibleText(saved).data)
@@ -190,4 +191,13 @@ def test_saved_weekly_edge_lines_fall_back_with_original_text(monkeypatch):
         elif name == 'reserve':
             assert '702편' in visible and digest._window_html(scan) not in saved
         else:
-            assert '−90' in visible and '▼ reinforcement learning' not in visible
+            assert '−0.9%p' in visible and '▼ reinforcement learning' not in visible
+
+
+def test_legacy_count_lines_are_kept_verbatim_not_reclassified_by_share():
+    """Codex 검토 2026-10-22 재현. 이 테스트가 무엇을 망가뜨리면 실패하는가: 10/22 이전에 저장된 편수 줄(`▼ keyword   10   −10`)을
+    비율 렌더러로 다시 분류해, 두 구간 비율이 같다는 이유로 저장된 줄을 통째로 지우면 실패한다."""
+    text = ("연구 동향 브리핑 · 2026-10-20\n■ 최근 7일 흐름\n관련 논문 100편 (직전 200편)\n관측일 7일 / 직전 7일\n"
+            "하락\n▼ keyword   10   −10")
+    html = saved_digest.render_html(text, "팀", [])
+    assert "keyword" in html and "−10" in html

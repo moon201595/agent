@@ -129,7 +129,7 @@ def test_card_shows_references_without_a_difference_sentence_and_renders_as_tabl
     restored = saved_digest.render_html(plain, "팀", [{"title": "Study", "link": p["link"]}])
     start = html.index('<div style="font-size:13.5px;font-weight:700;color:#0B5F68;">' + heading)
     box = html[start:html.index("</table>", start)]
-    assert "<table" in box and ">다른 구획 참고</td>" in box
+    assert "<table" in box and ">같은 표의 다른 실험 묶음(참고)</td>" in box
     for lead, tail in (("66.5", "(+15.3)"), ("51.2", "± 1.0"), ("52.4", "± 1.6")):                 # 앞 수치와 꼬리는 다른 칸 — 앞 수치끼리 세로로 맞는다
         assert f">{lead}</td><td " in box and f">{tail}</td>" in box
     assert box in restored

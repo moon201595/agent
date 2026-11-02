@@ -162,7 +162,7 @@ def test_weekly_brief_white_blocks_keep_their_text_off_the_left_edge():
         assert inside in _text(block), f"{heading} 본문이 그 블록 안에 없다"
         assert "반영된 사용자 반응 15건" not in _text(kids[head])      # 제목 줄에 꼬리가 새지 않는다
 
-    tail = next(n for n in nodes if n["tag"] == "p" and _text(n).startswith("이번 실행에서 걸러진 것"))
+    tail = next(n for n in nodes if n["tag"] == "p" and _text(n).startswith("이번 검색에서 선정하지 않은 이유"))
     assert "background-color:#FFFFFF" in tail["style"]
     assert all(pad >= 12 for pad in _side_padding(tail["style"])), tail["style"]
 

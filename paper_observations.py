@@ -389,3 +389,14 @@ def sections(paper: dict, today: date | None = None) -> list[tuple[str, list[tup
     if code:
         out.append((CODE_HEADING, code))
     return out
+
+
+def readable_kind(kind: str) -> str:
+    """옛 평문 행의 종류를 먼저 파싱한 뒤 읽기 쉬운 이름으로 표시한다."""
+    return {"같은 표": "저자가 같은 표에서 비교한 방법", "다른 구획 참고": "같은 표의 다른 실험 묶음(참고)"}.get(kind, kind)
+
+
+def readable_conditions(note: str) -> str:
+    return (note.replace("구획 밖 행", "실험 묶음 밖의 행").replace("구획", "실험 묶음")
+            .replace("평가 조건 미검증 · 직접 우열 비교 불가", "실험 조건이 같은지 확인하지 못해 어느 쪽이 더 좋은지 비교할 수 없음"))
+

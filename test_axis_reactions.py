@@ -381,9 +381,11 @@ def test_implications_cite_readable_thread_numbers_and_side_boxes_have_guides():
              "threads": [{"name": "가", "body": "본문 [P2:A]", "papers": [2]}, {"name": "나", "body": "본문 [P9:A]", "papers": [9]}],
              "implications": ["조건을 확인한다. [P9:A] (해석)"], "side_signals": []}
     text = trend_report.render_story(story)
-    assert "- 조건을 확인한다. (근거: 2번 흐름) (해석)" in text
-    assert not any("번 흐름" in x for x in trend_report.parse_rendered_story(text)["implications"])
-    assert any("조건을 확인한다." in x and "(해석)" in x for x in trend_report.parse_rendered_story(text)["implications"])
-    html = digest._narrative_boxes_html(text + "\n■ 주변 신호\n- Side — 메모 [P5:A]")
+    assert "우리 연구에서 볼 것" not in text                  # 2026-10-22 사용자 결정으로 그리지 않는다
+    old = text + "\n\n■ 우리 연구에서 볼 것\n- 조건을 확인한다. (근거: 2번 흐름) (해석)"   # 그 전에 저장된 글
+    assert not any("번 흐름" in x for x in trend_report.parse_rendered_story(old)["implications"])
+    assert any("조건을 확인한다." in x and "(해석)" in x for x in trend_report.parse_rendered_story(old)["implications"])
+    html = digest._narrative_boxes_html(old + "\n■ 주변 신호\n- Side — 메모 [P5:A]")
+    assert "조건을 확인한다" not in html and "Side" in html     # 옛 글을 다시 그려도 그 절은 숨기고 다음 절은 남긴다
     for guide in digest.NARRATIVE_GUIDES.values():
         assert digest._esc(guide) in html

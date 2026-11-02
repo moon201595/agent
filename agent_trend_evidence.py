@@ -28,7 +28,10 @@ def collect(db: Path, profile: dict, now: datetime) -> dict:
     try:
         movement = trend_report.window_movement(db, profile, days=7, end=now)
         if movement:
-            add('window_movement', movement, '\n'.join(t[0] for t in movement['keywords'] + movement['terms']))
+            # `all_keywords`(메일 비율 판정용 전체 셈, 2026-10-22)는 주간 모델에 주지 않는다 — 인용 검사 글(`text`)은 keywords·terms 로만 만들어
+            # 모델이 all_keywords 에만 있는 키워드를 T 근거로 부르면 맞는 인용이 거절된다(Codex 2차 검토 재현).
+            add('window_movement', {k: v for k, v in movement.items() if k != 'all_keywords'},
+                '\n'.join(t[0] for t in movement['keywords'] + movement['terms']))
         current = trend_report.observed_rows(db, profile, start, now)
         previous = trend_report.observed_rows(db, profile, start - timedelta(days=7), start)
         terms = trend_report.emerging_terms(current, profile, previous)

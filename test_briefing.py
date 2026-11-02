@@ -234,8 +234,9 @@ def test_scan_carries_grounded_material_through_both_mail_formats(db, tmp_path, 
     assert result["citation_audit"]["support"] == "미평가"
     assert result["papers"][0]["first_seen"]
     assert result["papers"][0]["summarized_at"] == "2026-09-09T00:00:00+00:00"
-    for mail in (text, digest.generate_digest_html(result, "팀")):
-        assert "[P1:S0002]" in mail
+    html = digest.generate_digest_html(result, "팀")
+    assert "[P1:S0002]" in text and "[P1:S0002]" not in html     # 평문 저장본엔 남고, 화면의 연구 흐름에서는 2026-10-22 부터 뺀다
+    for mail in (text, html):
         assert "서술 근거 대조" not in mail
     assert "indoors only" in result["evidence_catalog"]["[P1:S0002]"]["text"]
     assert rp.get_latest_digest(db, "team")[0] == text

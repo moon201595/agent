@@ -665,7 +665,10 @@ def test_trend_sources_match_existing_python_collectors(world):
     records = b.data['trend']['records']
     by_kind = {r['kind']: r for r in records}
     prof = rp.get_profile(world, 'p')
-    assert by_kind['window_movement']['data'] == trend_report.window_movement(world, prof, days=7, end=now)
+    # 메일 비율 판정용 전체 셈(all_keywords)만 빼고 수집기 값 그대로다 — 인용 검사 글과 모델이 보는 목록을 맞춘다(2026-10-22 Codex 2차 검토).
+    expected = trend_report.window_movement(world, prof, days=7, end=now)
+    assert 'all_keywords' in expected
+    assert by_kind['window_movement']['data'] == {k: v for k, v in expected.items() if k != 'all_keywords'}
     assert by_kind['window_movement']['data']['comparable'] is False
     assert '주간 동향 리뷰' in by_kind['weekly_review']['data']['report']
     assert by_kind['narrative']['data']['unverified_interpretation'] is True

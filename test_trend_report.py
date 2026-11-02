@@ -757,7 +757,7 @@ def test_prompt_demands_the_shape_digest_renders():
             "relation": "", "implications": ["볼 것 [P1:A]"], "side_signals": [{"paper": "P3", "note": "주변"}]}
     text = trend_report.render_story(trend_report.repair_story(plan, corpus))
     heads = [ln for ln in text.splitlines() if ln.startswith("■")]
-    assert heads == ["■ 오늘의 요점", "■ 1. 흐름", "■ 우리 연구에서 볼 것", "■ 주변 신호"]
+    assert heads == ["■ 오늘의 요점", "■ 1. 흐름", "■ 주변 신호"]          # "우리 연구에서 볼 것" 은 2026-10-22 부터 그리지 않는다
     assert all(digest._is_narrative_heading(h) for h in heads)
     assert not digest._is_narrative_heading("1. 본문 목록 줄")       # ■ 없는 번호 줄은 소제목이 아니다
 
@@ -902,15 +902,16 @@ def test_clipping_never_strips_evidence_that_was_counted():
     """Codex 검토 2026-10-01: 근거를 센 **뒤에** 글자 수로 잘라 흐름·headline 이 근거 없이 남았다.
     망가뜨리면 실패하는 것: 자르기를 근거 판정 뒤로 되돌리는 것 · 문장 단위가 아니라 글자로 잘라 문장 끝 근거를 떨구는 것 ·
     잘려서 근거를 잃은 implication 에 "(해석)" 을 안 붙이는 것."""
-    long_body = "가" * 510 + " [P1:A][P2:A]"
+    limits = trend_report._STORY_LIMITS           # 상한 값이 바뀌어도(2026-10-22 쉬운 말 개정) 상한보다 긴 글로 검사한다
+    long_body = "가" * (limits["body"] + 10) + " [P1:A][P2:A]"
     story = trend_report.repair_story(_plan(threads=[{"name": "길다", "papers": ["P1", "P2"], "body": long_body},
                                                      {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}],
-                                            headline="나" * 500 + " [P4:A]",          # 상한(450)보다 길어야 잘린다 — 2026-10-06 요점 상한 300→450
-                                            implications=["다" * 400 + " [P4:A]"]), _STORY_CORPUS)
+                                            headline="나" * (limits["headline"] + 50) + " [P4:A]",
+                                            implications=["다" * (limits["implication"] + 100) + " [P4:A]"]), _STORY_CORPUS)
     assert [t["papers"] for t in story["threads"]] == [[4, 6]]       # 근거가 잘린 흐름은 흐름이 아니다
     assert story["headline"] == "" and "headline_uncited" in story["repairs"]
     assert story["implications"][0].endswith("(해석)") and "[P4:A]" not in story["implications"][0]
-    sentences = "첫 문장이다 [P1:A]. " + "둘째 " * 200 + "문장 [P2:A]."
+    sentences = "첫 문장이다 [P1:A]. " + "둘째 " * (limits["body"] // 3 + 20) + "문장 [P2:A]."
     kept = trend_report.repair_story(_plan(threads=[{"name": "문장", "papers": ["P1", "P2"], "body": sentences},
                                                     {"name": "few-shot", "papers": ["P4", "P6"], "body": "적은 샘플 [P4:A][P6:A]."}]),
                                      _STORY_CORPUS)
@@ -1132,7 +1133,7 @@ def test_parse_rendered_story_roundtrip():
         {"name": "few-shot 검사", "body": "적은 샘플로 학습한다.", "items": [
             {"title": "Prototype aligned few-shot defect network", "depth": "초록 기반"},
             {"title": "Few-shot welding defect detection", "depth": "초록 기반"}]}]
-    assert result["implications"] == ["합성 결함의 현실성을 확인한다", "근거 없는 제안 (해석)"]
+    assert result["implications"] == []                                   # 2026-10-22 부터 그리지 않는다(옛 글 되읽기는 test_axis_reactions)
     assert result["side_signals"] == [{"title": "Goose down YOLO", "note": "경량 미세질감 검출"}]
 
 

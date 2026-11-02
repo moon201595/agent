@@ -11,6 +11,11 @@ import agent_maintenance as am
 import summarize_engine as se
 
 
+# 실행 단위 Codex 차단(2026-10-23, Codex 계획 검토): 한 번 한도 초과·시간 초과로 실패하면 같은 실행(프로세스)의 이후 호출 — 다음 단계·다음
+# 프로필 — 은 Codex 를 건너뛴다. 매번 다시 시도하면 실패를 기다리는 시간만큼 뒤 프로필의 배달이 늦는다. 출력이 틀린 것(invalid_output)은 막지 않는다.
+_codex_blocked = False
+
+
 def _codex(prompt: str, timeout: int, schema: dict | None = None) -> str | None:
     """주간 관리와 같은 격리를 써서 논문 속 지시가 도구 실행으로 이어지지 않게 한다.
     schema 가 있으면 `--output-schema` 로 출력 모양을 고정한다(story-v2, 2026-10-01)."""
@@ -44,7 +49,10 @@ async def generate(client, prompt: str, *, label: str = "동향 서술",
 
     accept 가 있으면 출력을 그 함수에 통과시킨 결과를 돌려준다. ValueError 면 그 엔진의 출력을 버리고 다음 엔진으로 —
     구조가 깨진 글을 "그래도 글"이라며 싣지 않는다(story-v2, 2026-10-01). schema 는 Codex 에만 넘긴다."""
+    global _codex_blocked
     for engine in ("codex", "gemini", "groq") if order is None else order:
+        if engine == "codex" and _codex_blocked:
+            continue
         try:
             if engine == "codex":
                 # 동기 CLI 대기가 다른 비동기 배달 작업까지 멈추지 않게 한다.
@@ -73,6 +81,8 @@ async def generate(client, prompt: str, *, label: str = "동향 서술",
             reason = exc.code if isinstance(exc, am.StepError) else type(exc).__name__
             if reason == "timeout":
                 reason = "TimeoutExpired"
+            if engine == "codex" and reason in ("codex_exit", "TimeoutExpired"):
+                _codex_blocked = True
             print(f"  [동향] {engine} 실패 → 다음 엔진 ({reason})")
             continue
         print(f"  [동향] 서술 엔진 {engine} ({len(text):,}자)")

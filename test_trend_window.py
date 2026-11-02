@@ -71,9 +71,48 @@ def test_delta_is_reported_when_both_windows_have_observations(tmp_path):
     text = "\n".join(digest._window_section({"trend_window": mv}))
     # 2026-09-20 개편: 숫자 덩어리를 상승/하락으로 가르고 `▲▼` 를 붙였다. 색만으로 뜻을 나르지 않는다 —
     # 다크 모드나 색을 지우는 클라이언트에서도 화살표는 남는다.
-    assert "▲ defect detection" in text and "+5" in text
-    assert "▼ anomaly detection" in text and "−3" in text     # 빼기는 U+2212
+    # 2026-10-22: 편수 차이가 아니라 그 기간 관련 논문 중 비율의 변화(%p)로 가른다 — 수집량이 줄면 다 "하락" 이던 문제. 편수는 괄호로 남긴다.
+    assert "▲ defect detection" in text and "+100.0%p" in text and "(5편 / 직전 0편)" in text
+    assert "▼ anomaly detection" in text and "−100.0%p" in text and "(0편 / 직전 3편)" in text     # 빼기는 U+2212
     assert text.index("상승") < text.index("하락")
+
+
+def test_same_count_but_changed_share_is_shown_and_threshold_uses_unrounded_delta(tmp_path):
+    """Codex 검토 2026-10-22 재현. 이 테스트가 무엇을 망가뜨리면 실패하는가: 편수 차이로 먼저 거른 목록에서 비율을 계산해
+    편수가 같고 비율만 10%→20% 로 변한 키워드를 빼거나, 0.49%p 를 반올림한 뒤 판정해 "+0.5%p 상승" 으로 부르면 실패한다."""
+    db = tmp_path / "p.db"
+    prof = _profile(db)
+    recent, older = (NOW - timedelta(days=2)).isoformat(), (NOW - timedelta(days=9)).isoformat()
+    rows = [(f"nd{i}", "Defect detection paper", "defect detection", recent) for i in range(20)]
+    rows += [(f"na{i}", "Anomaly detection paper", "anomaly detection", recent) for i in range(80)]
+    rows += [(f"od{i}", "Defect detection paper", "defect detection", older) for i in range(20)]
+    rows += [(f"oa{i}", "Anomaly detection paper", "anomaly detection", older) for i in range(180)]
+    _seed(db, "p1", rows)
+    mv = trend_report.window_movement(db, prof, end=NOW)
+    assert ("defect detection", 20, 20) not in mv["keywords"]           # 옛 편수 기준 목록에는 없다 — 그래서 전체 셈이 따로 필요하다
+    up, down = digest._window_moves(mv)
+    assert [r[0] for r in up] == ["defect detection"] and up[0][3:] == (20.0, 10.0)
+    assert [r[0] for r in down] == ["anomaly detection"]
+    assert "▲ defect detection" in "\n".join(digest._window_section({"trend_window": mv}))
+    assert digest._window_moves({"papers": (10000, 10000), "comparable": True, "keywords": [("borderline", 49, 0)]}) == ([], [])
+    assert digest._window_moves({"papers": (10000, 10000), "comparable": True, "keywords": [("edge", 50, 0)]})[0][0][4] == 0.5
+    # 정확히 0.5%p 인데 부동소수점으로 0.4999… 가 되는 조합(23/140 − 223/1400) — 빠지면 안 된다(Codex 2차 검토).
+    assert digest._window_moves({"papers": (140, 1400), "comparable": True, "keywords": [("float", 23, 223)]})[0][0][4] == 0.5
+
+
+def test_weekly_agent_evidence_does_not_carry_the_full_keyword_count(tmp_path):
+    """Codex 2차 검토 2026-10-22. 이 테스트가 무엇을 망가뜨리면 실패하는가: 메일 비율 판정용 `all_keywords` 를 주간 관리 모델 입력(T 근거)에
+    실어, 모델이 인용 검사 글(keywords·terms)에 없는 키워드를 T 근거로 불러 맞는 인용이 거절되게 만들면 실패한다."""
+    import agent_trend_evidence
+    db = tmp_path / "p.db"
+    prof = _profile(db)
+    recent, older = (NOW - timedelta(days=2)).isoformat(), (NOW - timedelta(days=9)).isoformat()
+    _seed(db, "p1", [(f"n{i}", "Defect detection paper", "defect detection", recent) for i in range(5)]
+                    + [(f"o{i}", "Anomaly detection paper", "anomaly detection", older) for i in range(3)])
+    assert trend_report.window_movement(db, prof, end=NOW)["all_keywords"]
+    record = next(r for r in agent_trend_evidence.collect(db, prof, NOW)["records"] if r["kind"] == "window_movement")
+    assert "all_keywords" not in record["data"]
+    assert all(kw in record["text"].split("\n") for kw, _n, _p in record["data"]["keywords"])
 
 
 def test_narrative_context_carries_terms_but_never_numbers(tmp_path):
@@ -94,21 +133,18 @@ def test_window_section_is_absent_without_data():
     assert digest._window_html({}) == ""
 
 
-def test_reserve_aggregate_reaches_both_renderers():
-    """이 테스트가 잡는 것: 자리 밖 후보 집계를 평문에만 싣고 HTML 메일에서 빠뜨리는 것
-    (§8-70 이 그 사고였다 — 주간 리뷰가 평문에만 있고 HTML 에는 통째로 없었다) ·
-    창 집계가 없는 날 자리 밖 절까지 같이 사라지는 것."""
+def test_boilerplate_term_lists_are_not_drawn_in_either_renderer():
+    """2026-10-22 사용자 결정: "자리에 못 든 후보에서 자주 나온 말"·"핵심 키워드 밖 반복 관측" 은 논문 상투어가 올라와 뺐다.
+    이 테스트가 무엇을 망가뜨리면 실패하는가: 두 목록 중 하나라도 평문이나 HTML 에 다시 그리거나, 창 집계가 없는 날 빈 절 머리를 남기면 실패한다."""
     result = {"reserve_terms": {"count": 431, "terms": [("agentic rl", 9), ("tool use", 4)]}}
-    text = "\n".join(digest._window_section(result))
-    html = digest._window_html(result)
-    for rendered in (text, html):
-        assert "431" in rendered and "agentic rl" in rendered
-    # 창 집계가 같이 있어도 두 절이 한 번씩만 나온다
-    both = digest._window_section({**result, "trend_window": {
-        "days": 7, "papers": (10, 0), "days_covered": (2, 0), "comparable": False,
-        "keywords": [("defect detection", 10, 0)], "terms": []}})
-    assert "\n".join(both).count("자리에 못 든 후보") == 1
-    assert "최근 7일 흐름" in "\n".join(both)
+    assert digest._window_section(result) == [] and digest._window_html(result) == ""
+    window = {**result, "trend_window": {"days": 7, "papers": (10, 8), "days_covered": (2, 2), "comparable": True,
+                                         "keywords": [("defect detection", 6, 2)], "terms": [("bridge this gap", 5, 1)]}}
+    for rendered in ("\n".join(digest._window_section(window)), digest._window_html(window)):
+        assert "defect detection" in rendered
+        assert "자리에 못 든 후보" not in rendered and "agentic rl" not in rendered
+        assert "반복 관측" not in rendered and "bridge this gap" not in rendered
+        assert "최근 7일 흐름" in rendered
 
 
 def test_reserve_section_absent_when_nothing_was_held_back():

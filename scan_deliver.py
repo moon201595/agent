@@ -121,7 +121,9 @@ def _deliver(db_path: Path, profile_id: str, result: dict, digest_text: str) -> 
                 view["external_scout"] = {**scout,
                     "axes": [dict(a, _feedback_links=axis_links.get(a["term"])) for a in scout.get("axes") or []],
                     "watch": [dict(w, _feedback_links=axis_links.get(w["term"])) for w in scout.get("watch") or []]}
-            text = digest.generate_digest(view, name)
+            # 평문 파트도 HTML 과 같은 표시 계층(읽는 법 안내·근거 표지 정리 — 2026-10-22)을 거친다. 그전엔 저장 메일 재발송에만 걸려 새 메일의
+            # 평문 파트에는 안내가 없었다(Codex 검토 2026-10-23: 활용 항목의 "해석·제안" 안내가 HTML 에만 있었다). 저장 평문(기록)은 그대로다.
+            text = digest.readable_mail_text(digest.generate_digest(view, name))
             digest_html = digest.generate_digest_html(view, name)
             email_delivery.send_digest_email(text, subject, [recipient], digest_html)
             sent += 1

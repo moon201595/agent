@@ -11,6 +11,7 @@ import feedback_links as feedback
 import mail_ledger
 import mail_reformat
 import research_profile as profile
+import saved_digest
 from test_mail_layout import SAVED
 
 
@@ -47,7 +48,7 @@ def test_snapshot_reuses_recipient_tokens_and_keeps_database_unchanged(original,
         return con
     monkeypatch.setattr(mail_reformat.sqlite3, "connect", connect)
     got = mail_reformat.load_snapshot(db, "p", "2026-10-02", "user@example.com", title_only_count=8)
-    assert got["text"] == SAVED and got["issue_id"] == "original-issue"
+    assert got["text"] == saved_digest.plain_text(SAVED) and got["source_text"] == SAVED and got["issue_id"] == "original-issue"
     assert got["papers"] == 1 and got["subject"] == "브리핑 2026-10-02 [형식 수정본]"
     assert db.read_bytes() == before
     assert len(opened) == 1 and str(opened[0][0]).endswith("?mode=ro") and opened[0][1]["uri"] is True
@@ -92,7 +93,7 @@ def test_preview_sends_nothing_and_send_backs_up_once_for_one_recipient(original
     assert not sent and not list(output.glob("*.backup.db"))
     monkeypatch.setattr(sys, "argv", argv + ["--send"])
     mail_reformat.main()
-    assert len(sent) == 1 and sent[0][0] == SAVED and sent[0][1] == ["user@example.com"]
+    assert len(sent) == 1 and sent[0][0] == saved_digest.plain_text(SAVED) and sent[0][1] == ["user@example.com"]
     backup = next(output.glob("*.backup.db"))
     with sqlite3.connect(backup) as con:
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

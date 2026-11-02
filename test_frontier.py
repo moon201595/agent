@@ -255,7 +255,7 @@ def test_analyze_never_raises_and_mail_still_renders(tmp_path):
                "_score": {"core_hits": ["defect detection"]}}]
     rf.analyze(tmp_path / "missing.db", papers, tables_of=broken, run_external=lambda t: 1 / 0, signals_of=lambda a: 1 / 0, now=NOW)
     html = digest._paper_entry_html(1, papers[0])
-    assert "읽을 포인트" in html and "defect detection" in html
+    assert "고른 이유" in html and "defect detection" in html
 
 
 def test_agent_is_called_once_per_day_even_without_the_db_table(tmp_path, monkeypatch):

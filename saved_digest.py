@@ -72,7 +72,7 @@ def plain_text(body: str) -> str:
                 continue
             line = line[:len(line) - len(line.lstrip())] + kept       # 들여쓰기는 원래대로
         out.append(line)
-    return "\n".join(out)
+    return digest.readable_mail_text("\n".join(out))
 
 
 def _line(text: str) -> str:
@@ -126,7 +126,7 @@ def _card(card: dict, paper: dict) -> str:
         elif observation is not None:
             # 관측 뒤 요지는 들여쓰기 깊이가 같지 않지만 parse는 과거 계약상 strip한다.
             # 읽을 포인트와 근거 없는 자유 요지는 관측값으로 새로 해석하지 않는다.
-            if line.startswith("읽을 포인트"):
+            if line.startswith(("읽을 포인트", "고른 이유:", digest.PLAIN_KO_PREFIX, *digest.RESEARCH_VALUE_PREFIXES)):
                 before.append(line)
                 observation = None
             else:
@@ -149,14 +149,21 @@ def _card(card: dict, paper: dict) -> str:
         paper.get(key) for key in ("_signals", "_frontier", "_sota_claims")) else ""
     detail += legacy_observations
     chips = ''.join(digest._status_chip(line, flagged="실패" in line or "⚠" in line) for line in states)
-    keywords, gist = [], []
+    keywords, gist, values = [], [], []
     for line in before:
         if legacy_observations and paper.get("_signals") and line.startswith("외부 신호"):
             continue
         if line.startswith("핵심 키워드:"):
             keywords += [digest._chip(word.strip(), "kw") for word in line.split(":", 1)[1].split(",")]
+        elif line.startswith(digest.PLAIN_KO_PREFIX):
+            gist.append(digest._plain_ko_html(line[len(digest.PLAIN_KO_PREFIX):]))
+        elif line.startswith(digest.RESEARCH_VALUE_PREFIXES):
+            # 당시 저장한 문장 그대로 같은 상자로 — 지금 DB 로 다시 계산하지 않는다(과거 메일의 사실 줄이 바뀌면 안 된다).
+            prefix = next(p for p in digest.RESEARCH_VALUE_PREFIXES if line.startswith(p))
+            values.append((prefix, line[len(prefix):].strip()))
         else:
             gist.append(_line(line))
+    gist.append(digest.research_value_html(values))     # 새 메일과 같은 자리(요지·고른 이유 다음)
     foot = ('<div style="background-color:#FFFFFF;border-top:1px solid #EDF1F3;padding-top:10px;margin-top:12px;">'
             + digest._feedback_buttons_html(paper)
             + (f'<a href="{escape(url, quote=True)}" style="color:#086C75;font-size:12.5px;">원문 {escape(url.replace("https://", ""))} ↗</a>' if url else "") + '</div>')
@@ -178,6 +185,8 @@ _SCOUT_SENTENCE_RE = re.compile(r"이번 주 확인한 외부 연구 중 우리 
                                 r"그중 핵심어에 걸린 것 (\d+)편 · 메일에 실린 것 (\d+)편\.(?: 나머지 (\d+)편은 우리 마지막 검색 뒤에 나왔거나 "
                                 r"관측 시작 전 논문이라 비교하지 않았습니다\.)?")
 _WINDOW_MOVE_RE = re.compile(r"([▲▼]) (.+?)\s+(\d+)   ([+−])(\d+)")
+# 2026-10-22 비율판: "▲ kw   9.9%   +2.1%p   (71편 / 직전 112편)" — 편수 둘을 그대로 읽어 같은 함수로 다시 그린다.
+_WINDOW_SHARE_RE = re.compile(r"([▲▼]) (.+?)\s+(\d+(?:\.\d)?)%   ([+−])(\d+(?:\.\d)?)%p   \((\d+)편 / 직전 (\d+)편\)")
 _COUNT_ROW_RE = re.compile(r"(.+?)\s+(\d+)")
 _RESERVE_HEAD_RE = re.compile(r"▸ 자리에 못 든 후보 (\d+)편에서 자주 나온 말")
 _RESERVE_ROW_RE = re.compile(r"(.+) : (\d+)편")
@@ -226,11 +235,15 @@ def _window_from_lines(heading: str, lines: list[str]) -> dict:
             reserve_count = int(reserve_head[1]) if reserve_head else reserve_count
             continue
         if part in ("상승", "하락"):
-            m = _WINDOW_MOVE_RE.fullmatch(line)
+            share = _WINDOW_SHARE_RE.fullmatch(line)
+            m = share or _WINDOW_MOVE_RE.fullmatch(line)
             if not m or (m[1] == "▲") != (part == "상승") or (m[1] == "▲") != (m[4] == "+"):
                 raise ValueError("증감 줄 형식이 다름")      # 화살표·부호가 어긋난 줄을 받으면 상승이 하락으로 바뀐다(§226 P3)
-            now, delta = int(m[3]), int(m[5]) * (1 if m[4] == "+" else -1)
-            keywords.append((m[2], now, now - delta))
+            if not share:
+                # 옛 편수 줄(2026-10-22 이전 저장)을 비율 렌더러에 넣으면 다시 분류돼 저장된 줄이 사라진다(Codex 검토: 비율이 같으면 통째로 빠짐).
+                # 이 절은 옛 줄 렌더러가 원문 그대로 그린다.
+                raise ValueError("옛 편수 형식")
+            keywords.append((m[2].rstrip(), int(m[6]), int(m[7])))
         elif part in ("키워드 (이번 창 편수)", "핵심 키워드 밖 반복 관측"):
             m = _COUNT_ROW_RE.fullmatch(line)
             if not m:
@@ -443,7 +456,7 @@ def _weekly_section_html(heading: str, lines: list[str]) -> str | None:
             return digest._block(digest._reserve_html(_reserve_only_from_lines(lines)))
         if re.fullmatch(r"지난 \d+일 검색 기준 변화", heading):
             return digest._profile_changes_view_html(_changes_view_from_lines(heading, lines))
-        hits = re.fullmatch(r"이번 창의 키워드별 적중 편수 (\(후보 \d+건 기준\))", heading)
+        hits = re.fullmatch(r"(?:이번 창의 키워드별 적중 편수|이번 검색에서 관심 키워드에 해당한 논문 수) (\(후보 \d+건 기준\))", heading)
         if hits:
             trend = " ".join(line.strip() for line in lines if line.strip())
             return digest._keyword_hits_html(hits[1], trend) if trend else None
@@ -473,10 +486,10 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
             for card, paper in zip(parsed["cards"], papers)):
         raise ValueError("저장 본문과 발송 명세의 논문이 일치하지 않음")
     counts = [("핵심 논문", f'{len(papers)}편')]
-    candidate = next((re.search(r"전체 후보 (\d+)건", s["heading"]) for s in parsed["sections"]
+    candidate = next((re.search(r"(?:전체 후보|검토 후보\(중복·기발송 제외\)) (\d+)건", s["heading"]) for s in parsed["sections"]
                       if s["heading"].startswith("오늘의 핵심 논문 ")), None)
     if candidate:
-        counts.append(("전체 후보", candidate[1] + "건"))
+        counts.append(("검토 후보(중복·기발송 제외)", candidate[1] + "건"))
     if title_only_count is not None:
         if title_only_count < 0:
             raise ValueError("제목만 실은 논문 수가 음수")
@@ -488,12 +501,16 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
         days = next(re.search(r"최근 (\d+)일", section["heading"])[1] for section in parsed["sections"]
                     if re.match(r"최근 \d+일 흐름", section["heading"]))
         counts.insert(2, (f"최근 {days}일 관련", number[1] + "편"))
-    content = digest._digest_head_html(parsed["date"], profile_name, counts)
+    content = digest._digest_head_html(parsed["date"], profile_name, counts) + digest.reader_guide_html(
+        len(papers), any(p.get("_feedback_links") for p in papers),
+        any(line.strip().startswith(digest.RESEARCH_VALUE_PREFIXES) for card in parsed.get("cards") or [] for line in card.get("lines") or []))
     for section in parsed["sections"]:
         heading = section["heading"]
         section_lines, scout_lines = _split_scout(section["lines"])
         section = {**section, "lines": section_lines}
-        if heading.startswith("이번 실행에서 걸러진 것"):
+        if heading == "이 메일 읽는 법":
+            continue
+        if heading.startswith(("이번 실행에서 걸러진 것", "이번 검색에서 선정하지 않은 이유")):
             tail = [heading] + [_without_hidden_moves(line) for line in section["lines"]]
             content += digest._saved_footer_html(" · ".join(line for line in tail if line))
             continue
@@ -514,10 +531,12 @@ def render_html(text: str, profile_name: str, papers: list[dict], *, title_only_
             content += weekly + (_scout_html(scout_lines, axis_links) if scout_lines else "")
             continue
         content += digest._h1(heading) if heading else ""
-        if heading == "오늘의 연구 흐름":
+        if heading == digest.RESEARCH_TRENDS_HEADING:
+            content += digest.research_trends_html(section["lines"])
+        elif heading == "오늘의 연구 흐름":
             story, named = [], []
             for line in section["lines"]:
-                if "위에서 이름으로 부른 논문" in line:
+                if "위에서 이름으로 부른 논문" in line or "연구 흐름에서 언급한 다른 논문과 원문 링크" in line:
                     continue
                 match = re.match(r"\s*· (.+) — (https?://\S+)$", line)
                 if match:

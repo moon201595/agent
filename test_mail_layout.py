@@ -41,7 +41,7 @@ def test_story_links_stay_inline_and_do_not_repeat_named_papers():
     html = digest.generate_digest_html(scan, "프로필")
     assert '<a href="https://arxiv.org/abs/2609.00001"' in html
     assert "위에서 이름으로 부른 논문" not in html
-    assert '<span style="color:#526675;font-size:11.5px;white-space:nowrap;">[P3:A]</span>' in html
+    assert "[P3:A]" not in html                          # 목록 줄의 자기 표지는 2026-10-22 부터 지운다(제목이 두 번 나와서)
     assert "Outside &lt;script&gt;" in html and "<script>" not in html
 
 
@@ -80,7 +80,7 @@ def test_saved_render_keeps_all_analysis_and_old_feedback_outside_toggle():
         "more": "https://example.com/original-token"}}]
     html = saved_digest.render_html(SAVED, "사용자 <팀>", papers, title_only_count=8)
     text = ''.join(VisibleText(html).data)
-    for expected in ["요지 숫자 76.3%", "읽을 포인트 — 조건", "저장 분석 <unsafe> & 42", "정확도 76.3%, 비교 3.7% [S0012]",
+    for expected in ["요지 숫자 76.3%", "고른 이유: 조건", "저장 분석 <unsafe> & 42", "정확도 76.3%, 비교 3.7% [S0012]",
                      "[원문 분석 완료] [재현 실패]", "agent 3건", "이미 보낸 논문 2건"]:
         assert expected in text
     assert html.count("<details ") == 1 and html.index("원문 분석 완료") < html.index("<details ")
