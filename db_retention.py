@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -87,8 +87,13 @@ def _read_only(db: Path) -> sqlite3.Connection:
     """읽기 전용 URI를 써서 plan이 없던 DB 파일을 만들지 않게 한다."""
     absolute = Path(db).resolve()
     con = sqlite3.connect(f"file:{quote(str(absolute))}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
+    try:
+        con.row_factory = sqlite3.Row
+        return con
+    except BaseException:
+        # 2026-11-02: 설정 실패 때 호출부가 연결을 받지 못하므로 생성한 쪽이 닫는다.
+        con.close()
+        raise
 
 
 @contextmanager
@@ -583,7 +588,7 @@ def _plan_impl(
         result["skipped"].append("DB 없음")
     else:
         try:
-            with _read_only(db) as con:
+            with closing(_read_only(db)) as con, con:
                 tables, internal = _plan_tables(con, current)
                 files, skipped_files, stats = _plan_files(con, data_dir, current, internal)
                 result["tables"] = tables
@@ -661,7 +666,7 @@ def _record_run(
     result: dict[str, Any],
     error: str | None,
 ) -> None:
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute(
             "INSERT INTO retention_runs "
             "(run_id,started_at,finished_at,applied,plan_json,result_json,error) "
@@ -704,7 +709,7 @@ def run(
         internal = planned.get("_internal", {}).get("internal", {})
         tables = planned.get("_internal", {}).get("tables", planned["tables"])
         table_result: dict[str, dict[str, int]] = {}
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute("BEGIN")
             for table, info in tables.items():
                 if table in (*_TABLE_TIME_POLICIES, *_PAPER_TABLES, _REPRO_TABLE):
@@ -735,7 +740,7 @@ def run(
 
         checkpoint_vacuum_error: str | None = None
         try:
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 con.execute("VACUUM")
         except sqlite3.Error as exc:

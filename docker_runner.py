@@ -26,6 +26,8 @@ Docker로 격리 실행해서 "설치+실행이 에러 없이 도는가"를 판�
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import re
 import json
 import os
@@ -735,7 +737,7 @@ def launch_background(arxiv_id: str) -> str:
     그다음은 무인으로 돈다" 패턴. 이미 성공 기록이 있으면 다시 안 돌리고,
     이미 실행 중이면(마커 파일) 중복 실행하지 않는다.
     """
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         rows = con.execute(
             "SELECT success FROM repro_results WHERE arxiv_id=?", (arxiv_id,)
         ).fetchall()

@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +43,7 @@ def record(db: Path, paper_id: str, results: list[dict], published: str | None =
     받기 실패와 구분하는 것은 호출부 몫이다(`research_frontier` 는 받았을 때만 부른다). 돌려주는 값은 넣은 행 수."""
     init_db(db)
     ts = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         # 다시 뽑으면 그 논문 행을 통째로 바꾼다 — 이전 추출에만 있던 셀이 남지 않게(Codex 검토 2026-09-30). 빈 결과(받기 실패)는 위에서 걸러
         # 기존 관측을 지우지 않는다.
         con.execute("DELETE FROM observed_results WHERE reported_in=?", (paper_id,))
@@ -61,7 +63,7 @@ def compare(db: Path, paper_id: str, result: dict) -> dict:
     if direction not in ("higher", "lower"):
         return {"status": "no_direction", "best": None, "n": 0}
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             rows = con.execute(
                 "SELECT value, model, reported_in, own FROM observed_results "
                 "WHERE bench_key=? AND metric_key=? AND reported_in<>? AND (direction=? OR direction IS NULL)",
@@ -89,7 +91,7 @@ def external_today(db: Path, day: str) -> list[dict]:
     """오늘 이미 한 외부 조사(프로필이 여럿이라 같은 날 여러 번 불린다 — 하루 상한은 여기서 센다)."""
     import json
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             rows = con.execute("SELECT paper_id, status, result_json FROM frontier_external WHERE checked_on=?", (day,)).fetchall()
     except sqlite3.Error:
         return []
@@ -100,7 +102,7 @@ def external_recent(db: Path, bench_key: str, metric_key: str, since_day: str) -
     """같은 (벤치마크, 지표)를 최근에 조사했으면 그 결과(경쟁 수치 재사용 — 사용자 결정: 같은 벤치마크는 캐시)."""
     import json
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             row = con.execute("SELECT paper_id, checked_on, status, result_json FROM frontier_external "
                               "WHERE bench_key=? AND metric_key=? AND checked_on>=? AND status='done' ORDER BY checked_on DESC LIMIT 1",
                               (bench_key, metric_key, since_day)).fetchone()
@@ -112,6 +114,6 @@ def external_recent(db: Path, bench_key: str, metric_key: str, since_day: str) -
 def save_external(db: Path, paper_id: str, day: str, bench_key: str, metric_key: str, status: str, result: dict) -> None:
     import json
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute("INSERT OR REPLACE INTO frontier_external VALUES (?,?,?,?,?,?)",
                     (paper_id, day, bench_key, metric_key, status, json.dumps(result, ensure_ascii=False)))

@@ -1,6 +1,8 @@
 """⑨ 형식 수정본 — 한 수신자의 저장 본문과 기존 반응 토큰을 읽기 전용으로 되쓴다."""
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import hashlib
 import json
@@ -24,7 +26,7 @@ def relay_prefix(url: str) -> str:
 def load_snapshot(db: Path, profile_id: str, date: str, recipient: str, *, title_only_count: int | None = None) -> dict:
     """새 토큰·회차를 만들지 않는다. 본문과 원 회차가 다르면 발송 전에 멈춘다."""
     import feedback_links
-    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.execute("PRAGMA query_only=ON")
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT name,last_digest,last_digest_at FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
@@ -88,7 +90,7 @@ def load_preview(db: Path, profile_id: str, date: str, original_html: Path | Non
             if tag == "a" and url:
                 self.urls.append(url)
 
-    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.execute("PRAGMA query_only=ON")
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT name,last_digest FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
@@ -171,7 +173,7 @@ def main() -> None:
         info.update(preview_only=True, feedback_restored=snapshot["feedback_restored"])
     if args.send:
         backup = stem.with_suffix(".backup.db")
-        with sqlite3.connect(args.db.resolve().as_uri() + "?mode=ro", uri=True) as source, sqlite3.connect(backup) as target:
+        with closing(sqlite3.connect(args.db.resolve().as_uri() + "?mode=ro", uri=True)) as source, source, closing(sqlite3.connect(backup)) as target, target:
             source.execute("PRAGMA query_only=ON")
             source.backup(target)
         import email_delivery

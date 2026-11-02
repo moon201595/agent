@@ -18,6 +18,8 @@ EXISTS`·`ALTER TABLE` 을 갖고 있어 **코드를 실행하는 것만으로**
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import os
 import sqlite3
 from pathlib import Path
@@ -48,14 +50,14 @@ def _schema(con: sqlite3.Connection) -> dict[str, set[str]]:
 
 
 def expected_schema(ddl: Callable[[sqlite3.Connection], None]) -> dict[str, set[str]]:
-    with sqlite3.connect(":memory:") as mem:
+    with closing(sqlite3.connect(":memory:")) as mem, mem:
         ddl(mem)
         return _schema(mem)
 
 
 def missing_in(db_path: Path, ddl: Callable[[sqlite3.Connection], None]) -> list[str]:
     exp = expected_schema(ddl)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         act = _schema(con)
     missing = []
     for key, cols in exp.items():
@@ -71,7 +73,7 @@ def ensure(db_path: Path, ddl: Callable[[sqlite3.Connection], None], owner: str)
     """returns 'applied' | 'up_to_date'. 그 밖에는 SchemaOutOfDate."""
     db_path = Path(db_path)
     if os.environ.get(APPLY_ENV) == "1":
-        with sqlite3.connect(db_path) as con:
+        with closing(sqlite3.connect(db_path)) as con, con:
             ddl(con)
         return "applied"
     missing = missing_in(db_path, ddl)

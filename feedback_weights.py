@@ -1,6 +1,8 @@
 """② 선별 — 사용자 반응으로 키워드 가중치를 매일 자동 조정한다(결정적, LLM 없음)."""
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -198,7 +200,7 @@ def _save_base_and_run(
     skipped: int, reactions_used: int,
 ) -> dict:
     """기준선과 일일 이력을 하나의 SQLite 트랜잭션으로 남긴다."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for keyword, base, source in base_updates:
             con.execute(
                 "INSERT INTO feedback_weight_base (profile_id, keyword, base_weight, set_at, source) "
@@ -237,7 +239,7 @@ def update_profile(db: Path, profile_id: str, now: datetime | None = None) -> di
     init_db(db)
     now_utc = _utc(now or _now())
     run_date = _run_date(now_utc)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         existing_run = con.execute(
             "SELECT * FROM feedback_weight_runs WHERE profile_id=? AND run_date=?",
@@ -249,7 +251,7 @@ def update_profile(db: Path, profile_id: str, now: datetime | None = None) -> di
     profile = research_profile.get_profile(db, profile_id)
     if profile is None:
         raise ValueError(f"unknown_profile:{profile_id}")
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         config = con.execute(
             "SELECT name, max_items, schedule_frequency, schedule_time "

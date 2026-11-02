@@ -8,6 +8,8 @@ HF 연결 모델은 그 논문 arXiv 주소를 README 에 적은 모델이라 "�
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import re
 import sqlite3
@@ -144,7 +146,7 @@ def init_db(db: Path) -> None:
 
 def _cached(db: Path, arxiv_id: str, day: str) -> dict | None:
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             row = con.execute("SELECT signals_json FROM adoption_snapshots WHERE arxiv_id=? AND collected_on=?", (arxiv_id, day)).fetchone()
     except sqlite3.Error:
         return None
@@ -203,7 +205,7 @@ def collect(db: Path, arxiv_id: str, *, get: Callable[..., object] = None, now: 
         init_db(db)
         s, h, g = sig["scholarly"], sig["hub"], sig["github"]
         models = h.get("models") or []
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute("INSERT OR REPLACE INTO adoption_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 arxiv_id, day, now.isoformat(timespec="seconds"), s.get("citations"), s.get("influential"), s.get("publication_date"),
                 g.get("repo"), tier or None, g.get("stars"), g.get("forks"), h.get("n_models"),

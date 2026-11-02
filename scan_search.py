@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -458,7 +460,7 @@ def _already_summarized(arxiv_ids: list[str]) -> set[str]:
     if not ids:
         return set()
     found: set[str] = set()
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         # SQLite 변수 상한(999)을 넘지 않게 나눠 묻는다.
         for i in range(0, len(ids), 500):
             batch = ids[i:i + 500]
@@ -477,7 +479,7 @@ def _summary_exists(arxiv_id: str) -> bool:
     이라(재확인함) 호출 전에 여기서 걸러야 한다. summaries는 profiles
     db_path가 아니라 server.DB_PATH에 산다 — _process_paper가 server 경유로
     저장하는 곳이 거기라서(운영에선 둘이 같은 파일이지만 테스트에선 다름)."""
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         row = con.execute(
             "SELECT 1 FROM summaries WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()

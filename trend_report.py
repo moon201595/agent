@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import lang_guard
 
 import json
@@ -762,7 +764,7 @@ def result_excerpts(db: Path, arxiv_ids: list[str],
         return {}
     out: dict[str, str] = {}
     marks = ",".join("?" * len(arxiv_ids))
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             f"SELECT arxiv_id, path FROM summaries WHERE arxiv_id IN ({marks}) "
@@ -801,7 +803,7 @@ def source_evidence(db: Path, excerpts: dict[str, str]) -> dict[str, list[dict]]
     """
     import sentence_grounding
     out: dict[str, list[dict]] = {}
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for aid, excerpt in excerpts.items():
             row = con.execute("SELECT text_path FROM papers WHERE arxiv_id=?", (aid,)).fetchone()
             if not row or not row[0]:
@@ -1148,7 +1150,7 @@ async def narrative(client: httpx.AsyncClient, rows: list,
 
 
 def _rows_between(db: Path, start: datetime, end: datetime) -> list[sqlite3.Row]:
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         return con.execute(
             "SELECT p.arxiv_id, p.title, p.abstract, p.authors, p.published, p.source, "
@@ -1166,7 +1168,7 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
     본문이 없는 논문도 포함하며 이 표본은 분야 전체의 출판량이 아니다.
     """
     import profile_scoring
-    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT c.*, p.authors, s.created_at AS summarized_at, s.engine, "
@@ -1184,7 +1186,7 @@ def observed_rows(db: Path, profile: dict, start: datetime, end: datetime) -> li
 def collection_rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[tuple[str, str, int, str]]:
     """(출처, 결과, 횟수, 검색 지문) — 검색 지문·완료 상태를 표본과 함께 보여 줘 출처 장애를 추세로 읽지 않게 한다.
     조회 전용 연결로 연다 — 운영 화면도 부른다(2026-10-06 독립 검토 P3-4)."""
-    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         rows = con.execute(
             "SELECT source, status, topic_signature, COUNT(*) FROM search_runs "
             "WHERE profile_id=? AND started_at>=? "
@@ -1669,7 +1671,7 @@ async def build(db: Path, profile: dict, client: httpx.AsyncClient | None = None
     try:
         import term_discovery
         pool = term_discovery.exploration_pool(db, profile["profile_id"], start, end)
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             has_obs = con.execute("SELECT 1 FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ? LIMIT 1",
                                   (profile["profile_id"], start.isoformat(), end.isoformat())).fetchone()
         block = term_discovery.format_discovery(

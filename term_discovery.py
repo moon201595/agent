@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 from collections import Counter, defaultdict
@@ -44,7 +46,7 @@ def exploration_pool(db: Path, profile_id: str, start: datetime, end: datetime) 
 
     도메인 적중은 관측 시점 저장값(domain_hits)을 쓰고, 없는 옛 관측만 당시 스냅샷으로
     다시 센다. 초록은 abstract_ref 를 따라 복원한다(profile_impact 와 같은 규칙)."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute(
             "SELECT o.*, s.profile_snapshot FROM candidate_observations o "

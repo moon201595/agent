@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import re
 import sqlite3
@@ -56,7 +58,7 @@ def _now() -> datetime:
 
 def get(arxiv_id: str, db: Path | None = None) -> dict | None:
     init_db(db or storage.DB_PATH)
-    with sqlite3.connect(db or storage.DB_PATH) as con:
+    with closing(sqlite3.connect(db or storage.DB_PATH)) as con, con:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT * FROM code_ladder WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     if not row:
@@ -72,7 +74,7 @@ def get(arxiv_id: str, db: Path | None = None) -> dict | None:
 def _record(db: Path, arxiv_id: str, tier: str, cand: dict | None, queries: list[str]) -> dict:
     init_db(db)
     cand = cand or {}
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute("INSERT OR REPLACE INTO code_ladder (arxiv_id, tier, url, full_name, stars, query, description, searched_at) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (arxiv_id, tier, cand.get("url"), cand.get("full_name"), cand.get("stars"),
@@ -139,7 +141,7 @@ def resolve(arxiv_id: str, keywords: list[str], db: Path | None = None, now: dat
     db = db or storage.DB_PATH
     now = now or _now()
     cached = get(arxiv_id, db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute("SELECT repo_url, source, confidence, success, stage FROM repro_results WHERE arxiv_id=?",
                                              (arxiv_id,))]

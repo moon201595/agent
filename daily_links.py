@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,14 +23,19 @@ _ORIGIN = {"agent": "주간 관리", "feedback": "반응", "user": "사용자", 
 
 def _ro(db: Path) -> sqlite3.Connection:
     con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
-    con.execute("PRAGMA query_only=ON")
-    return con
+    try:
+        con.execute("PRAGMA query_only=ON")
+        return con
+    except BaseException:
+        # 2026-11-02: 설정 실패 때 호출부가 연결을 받지 못하므로 생성한 쪽이 닫는다.
+        con.close()
+        raise
 
 
 def added_keywords(db: Path, profile_id: str, now: datetime) -> list[dict]:
     """최근 7일 안에 더해진 검색어(핵심어·검색 시드) — [{keyword, origin}]. 그 뒤 다시 지워졌으면 뺀다."""
     since = (now - timedelta(days=ADDED_WINDOW_DAYS)).isoformat()
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         rows = con.execute("SELECT keyword, kind, change, actor_origin FROM profile_keyword_events WHERE profile_id=? "
                            "AND julianday(created_at)>julianday(?) AND julianday(created_at)<=julianday(?) "
                            "AND kind IN ('core','s2_seed') ORDER BY julianday(created_at), event_id",
@@ -64,7 +71,7 @@ def collect(db: Path, profile_id: str, scan_id: str | None, papers: list[dict], 
                 added.append({"keyword": a["keyword"], "origin": a["origin"], "cards": n})
         out_watch = []
         if watched and scan_id:
-            with _ro(db) as con:
+            with closing(_ro(db)) as con, con:
                 rows = con.execute("SELECT o.title, COALESCE(o.abstract, c.abstract, '') FROM candidate_observations o "
                                    "LEFT JOIN search_candidates c ON c.profile_id=o.profile_id AND c.paper_key=o.paper_key "
                                    "WHERE o.scan_id=? AND o.profile_id=?", (scan_id, profile_id)).fetchall()

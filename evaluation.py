@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 import statistics
@@ -50,7 +52,7 @@ def latency(db: Path, profile_id: str, start: datetime, end: datetime,
     묶여 지연이 부풀려지므로 **분모에서 뺀다** — 지운 게 아니라 `censored_before_
     observation` 으로 따로 센다. 미포착(전달 안 됨)도 삭제하지 않고 센다.
     """
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute(
             "SELECT c.paper_key, c.published, c.first_seen, c.source, s.shown_at "
             "FROM search_candidates c LEFT JOIN profile_shown s "
@@ -99,7 +101,7 @@ def core_hit_ratio(db: Path, profile_id: str, start: datetime, end: datetime, pr
     """guard 후 core 적격 고유 후보 / 평가 대상 고유 후보. **운영 진단용**이고
     precision 이 아니다(§11.2) — 의미상 관련성은 독립 라벨이 있어야 한다."""
     profile = profile or research_profile.get_profile(db, profile_id)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute(
             "SELECT paper_key, title, abstract, published, source FROM search_candidates "
             "WHERE profile_id=? AND first_seen>=? AND first_seen<?",
@@ -162,7 +164,7 @@ def replay(db: Path, profile_id: str, cutoff: datetime, k: int) -> dict:
     `policy_match`(둘이 같은가). `policy_version` 은 **실제로 쓴 정책**을 가리키게 바꿨다.
     """
     import profile_impact
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         row = con.execute(
             "SELECT profile_snapshot, policy_version FROM scan_runs WHERE profile_id=? AND started_at<? "
             "ORDER BY started_at DESC LIMIT 1", (profile_id, cutoff.isoformat())).fetchone()
@@ -252,7 +254,7 @@ def experiment_draft(eval_db: Path, manifest: dict) -> str:
     experiments_init(eval_db)
     import uuid
     eid = uuid.uuid4().hex[:12]
-    with sqlite3.connect(eval_db) as con:
+    with closing(sqlite3.connect(eval_db)) as con, con:
         con.execute("INSERT INTO experiments (experiment_id, created_at, status, manifest_json) VALUES (?,?,?,?)",
                     (eid, datetime.now(timezone.utc).isoformat(timespec="seconds"), DRAFT,
                      json.dumps(manifest, ensure_ascii=False, sort_keys=True)))
@@ -265,7 +267,7 @@ def experiment_freeze(eval_db: Path, experiment_id: str, baseline_end: datetime,
     임계값(max_degradation·gate_rules)이 None 이면 얼리지 않는다 — 효과 판정을
     못 하는 실험을 유효한 비교로 인정하지 않는다."""
     now = now or datetime.now(timezone.utc)
-    with sqlite3.connect(eval_db) as con:
+    with closing(sqlite3.connect(eval_db)) as con, con:
         row = con.execute("SELECT status, manifest_json FROM experiments WHERE experiment_id=?", (experiment_id,)).fetchone()
         if not row:
             return {"frozen": False, "reason": "not_found"}
@@ -290,7 +292,7 @@ def experiment_record_run(eval_db: Path, experiment_id: str, arm: str, snapshot_
                           arm_revision: int | None, result: dict) -> str:
     """실행마다 manifest 해시를 같이 남긴다 — 얼린 뒤 설정이 바뀌면 실행이 어긋난다."""
     import uuid
-    with sqlite3.connect(eval_db) as con:
+    with closing(sqlite3.connect(eval_db)) as con, con:
         row = con.execute("SELECT status, manifest_sha256 FROM experiments WHERE experiment_id=?", (experiment_id,)).fetchone()
         if not row or row[0] != FROZEN:
             raise ValueError("experiment must be frozen before recording runs")
@@ -307,7 +309,7 @@ def feedback_usefulness(db: Path, profile_id: str, start: datetime, end: datetim
     useful/known/out_of_scope 라 관련성 판정과 다르다(`known` 은 관련성 부정이 아니다).
     별도 지표로만 낸다. precision 이라 부르지 않는다."""
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             rows = con.execute(
                 "SELECT usefulness, COUNT(DISTINCT paper_key) FROM briefing_feedback "
                 "WHERE profile_id=? AND created_at>=? AND created_at<? GROUP BY usefulness",

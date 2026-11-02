@@ -53,7 +53,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
   옛 `paper-harness\weekly-agent`(금 17:00)는 2026-09-19 에 **지웠다** — 주간 관리가 월요일 체인으로 옮겼는데 그게 살아 있으면
   금요일에도 따로 돌아 설계와 실제 운행이 갈린다. 전원 쪽은 `powercfg /QUERY SCHEME_CURRENT SUB_SLEEP RTCWAKE` 가 AC·DC 모두 1(Enable)이다(2026-09-19 실측).
 - **cron 으로 뜬 실행은 열린 파일 soft 한도가 1024 다**(2026-11-02 실측, Windows 작업은 10240). SQLite 연결이 GC 전까지 안 닫혀 10/23·10/30 에 Errno 24 로
-  메일 일부가 빠졌다. `run_daily_scan.sh` 가 맨 앞에서 `ulimit -n 10240` 으로 올린다(완화) — 근본 수정 전에는 지우지 않는다(PROGRESS §272).
+  메일 일부가 빠졌다. `run_daily_scan.sh` 가 맨 앞에서 `ulimit -n 10240` 으로 올린다(완화). 근본 수정은 같은 날 했다(연결을 닫는 규약, 아래 코드 스타일) —
+  ulimit 줄은 방어로 남긴다(PROGRESS §272).
 - **주간 관리가 실패하거나 못 돌면 바로 다음 근무일 아침에 한 번만 다시 한다**(`agent_maintenance --catch-up`, 2026-10-01 §202) —
   실패 행은 다시 잡히고 끝난 상태·applying 은 안 잡힌다. 그보다 늦으면 다음 주간 관리를 기다린다(사용자 결정).
 - **주간 관리는 "월요일"이 아니라 그 주 첫 근무일**(`work_calendar.is_weekly_day`)이다 — 월요일이 공휴일인 주가
@@ -95,6 +96,8 @@ Codex 는 `~/.claude/CLAUDE.md` 를 읽지 않아서 거기 적으면 못 보기
 - 모듈 docstring 첫 줄은 담당 단계로 시작한다 — 예: `"""② 중복 제거·선별 — 결정적 규칙, 네트워크·LLM 미사용."""`
 - 파일 수정은 `sed` 대신 str_replace 또는 `python3 << 'PYEOF'` heredoc 을 쓴다(한글·특수문자 치환 사고 방지).
 - `selection.py` 를 `select.py` 로 바꾸지 않는다 — 표준 라이브러리 `select` 를 가려 asyncio 가 깨진다.
+- **SQLite 연결은 `with closing(sqlite3.connect(...)) as con, con:` 로 연다**(2026-11-02). 맨 `with sqlite3.connect() as con:` 은 커밋만 하고 연결을 안 닫아
+  GC 전까지 기술자가 남는다 — cron 한도 1024 에서 발송이 실패했다(§272). 연결을 돌려주는 팩토리는 소비자가 닫는다. `test_db_connections_closed.py` 가 AST 로 감시한다.
 
 ## 아키텍처 메모
 

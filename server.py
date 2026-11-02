@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import asyncio
 import ipaddress
 import json
@@ -347,7 +349,7 @@ async def ensure_images_extracted(arxiv_id: str) -> Path:
     if out_dir.exists() and any(out_dir.iterdir()):
         return out_dir
 
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute(
             "SELECT extract_method, pdf_path FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()
@@ -694,7 +696,7 @@ async def _get_or_compute_embedding(
     returns (embedding, was_cache_hit) — 호출부가 실제로 네트워크를 탄
     경우에만 호출 간 지연을 넣게 하려고 캐시 적중 여부를 함께 돌려준다.
     """
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute(
             "SELECT embedding FROM paper_embeddings WHERE arxiv_id=? AND model=?",
             (arxiv_id, _EMBED_MODEL),
@@ -705,7 +707,7 @@ async def _get_or_compute_embedding(
         vec = await hybrid_search.embed_text(client, text, "RETRIEVAL_DOCUMENT")
     except Exception:  # noqa: BLE001 — 임베딩 실패는 검색 전체를 막지 않는다
         return None, False
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             "INSERT OR REPLACE INTO paper_embeddings (arxiv_id, model, embedding, updated_at) "
             "VALUES (?,?,?,?)",
@@ -738,7 +740,7 @@ async def hybrid_search_local_papers(params: HybridSearchInput) -> str:
         str: JSON — {count, query, embeddings_used: bool, papers: [{arxiv_id,
              title, bm25_score, cosine_score, fused_score}, ...]}
     """
-    with _db() as con:
+    with closing(_db()) as con, con:
         rows = con.execute("SELECT arxiv_id, title, abstract FROM papers").fetchall()
     if not rows:
         return json.dumps({"count": 0, "query": params.query, "papers": []}, ensure_ascii=False)
@@ -838,7 +840,7 @@ async def fetch_paper(params: FetchPaperInput) -> str:
              text_path, preview}
     """
     arxiv_id = _clean_arxiv_id(params.arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     if row and row["text_path"] and Path(row["text_path"]).exists():
         return json.dumps(
@@ -912,7 +914,7 @@ async def fetch_paper(params: FetchPaperInput) -> str:
     text_path = TEXT_DIR / f"{arxiv_id.replace('/', '_')}.txt"
     text_path.write_text(text, encoding="utf-8")
 
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             """INSERT OR REPLACE INTO papers
                (arxiv_id, title, authors, published, categories, abstract,
@@ -947,7 +949,7 @@ async def get_paper_text(params: GetTextInput) -> str:
         str: JSON — {arxiv_id, offset, returned_chars, total_chars, has_more, text}
     """
     arxiv_id = _clean_arxiv_id(params.arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT text_path, text_chars FROM papers WHERE arxiv_id=?",
                           (arxiv_id,)).fetchone()
     if not row:
@@ -972,7 +974,7 @@ def read_full_text(arxiv_id: str) -> str:
     이 자체적으로 청크(300,000자 단위)를 나누므로 여기서는 자르지 않는다.
     """
     arxiv_id = _clean_arxiv_id(arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     if not row:
         raise ValueError(f"'{arxiv_id}'는 아직 저장되지 않음 — fetch_paper 먼저 호출할 것")
@@ -1064,7 +1066,7 @@ def update_paper_title(arxiv_id: str, title: str) -> None:
     title = title.strip()
     if not title:
         return
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute("UPDATE papers SET title=? WHERE arxiv_id=?", (title, arxiv_id))
 
 
@@ -1096,7 +1098,7 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str = "", source_note: str = "manu
 
     synth_id = f"pdf-{hashlib.sha1(pdf_bytes).hexdigest()[:10]}"
 
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (synth_id,)).fetchone()
     if row and row["text_path"] and Path(row["text_path"]).exists():
         # 이미 저장된 파일 재업로드 — 이전에 제목이 자동/수동 어느 쪽으로
@@ -1126,7 +1128,7 @@ def ingest_local_pdf(pdf_bytes: bytes, title: str = "", source_note: str = "manu
     text_path = TEXT_DIR / f"{synth_id}.txt"
     text_path.write_text(text, encoding="utf-8")
 
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             """INSERT OR REPLACE INTO papers
                (arxiv_id, title, authors, published, categories, abstract,
@@ -1271,7 +1273,7 @@ async def verify_summary_numbers(params: VerifyInput) -> str:
         str: JSON — {total_numbers, matched, pass_ratio, unmatched: [{token, context}]}
     """
     arxiv_id = _clean_arxiv_id(params.arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     if not row:
         return _error(f"'{arxiv_id}'는 아직 저장되지 않음", "fetch_paper를 먼저 호출할 것.")
@@ -1295,7 +1297,7 @@ async def save_summary(params: SaveSummaryInput) -> str:
         str: JSON — {saved_path, verification: {total_numbers, matched, pass_ratio, unmatched}}
     """
     arxiv_id = _clean_arxiv_id(params.arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute("SELECT text_path FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     if not row:
         return _error(f"'{arxiv_id}'는 아직 저장되지 않음", "fetch_paper를 먼저 호출할 것.")
@@ -1322,7 +1324,7 @@ async def save_summary(params: SaveSummaryInput) -> str:
 
     out_path = SUMMARY_DIR / f"{arxiv_id.replace('/', '_')}.md"
     out_path.write_text(params.markdown, encoding="utf-8")
-    with _db() as con:
+    with closing(_db()) as con, con:
         # 컬럼명을 명시한다 — summaries 는 ⑥ 사람 판단용 컬럼(review_*)이 추가돼
         # 위치 기반 INSERT 로는 값 개수가 안 맞는다. 요약을 새로 저장(재생성 포함)
         # 하면 이전 검토 상태는 의미가 없어지므로 review_status 를 'pending' 으로
@@ -1364,7 +1366,7 @@ async def get_summary_json(params: SummaryJsonInput) -> str:
              grounded, sentence_id, context}, ...]}}
     """
     arxiv_id = _clean_arxiv_id(params.arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute(
             """SELECT p.title, p.authors, p.published, p.text_path, s.path AS summary_path
                FROM papers p LEFT JOIN summaries s ON p.arxiv_id = s.arxiv_id
@@ -1393,7 +1395,7 @@ def set_review_status(arxiv_id: str, status: str, note: str = "") -> None:
     if status not in ("approved", "rejected", "pending"):
         raise ValueError(f"알 수 없는 review_status: {status}")
     arxiv_id = _clean_arxiv_id(arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             "UPDATE summaries SET review_status=?, review_note=?, reviewed_at=? WHERE arxiv_id=?",
             (status, note or None, _now(), arxiv_id),
@@ -1468,7 +1470,7 @@ async def sweep_retraction_status(limit: int = 20) -> dict:
     다시 대상이 된다 — 어떤 실패에도 예외를 올리지 않는다.
     """
     _init_storage()
-    with _db() as con:
+    with closing(_db()) as con, con:
         rows = con.execute(
             "SELECT arxiv_id FROM papers WHERE is_retracted IS NULL "
             "ORDER BY fetched_at ASC LIMIT ?", (limit,)
@@ -1488,7 +1490,7 @@ async def sweep_retraction_status(limit: int = 20) -> dict:
 
 
 def _null_retraction_count() -> int:
-    with _db() as con:
+    with closing(_db()) as con, con:
         return con.execute(
             "SELECT COUNT(*) FROM papers WHERE is_retracted IS NULL").fetchone()[0]
 
@@ -1506,7 +1508,7 @@ async def refresh_retraction_status(arxiv_id: str) -> int | None:
     어떤 실패에도 예외를 올리지 않는다 — 철회 조회가 요약 저장을 막으면 안 된다.
     """
     arxiv_id = _clean_arxiv_id(arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         row = con.execute(
             "SELECT is_retracted FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()
@@ -1528,7 +1530,7 @@ async def refresh_retraction_status(arxiv_id: str) -> int | None:
         return None
     if status is None:
         return None
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             "UPDATE papers SET is_retracted=? WHERE arxiv_id=?", (status, arxiv_id)
         )
@@ -1555,7 +1557,7 @@ def save_repro_result(
     "성공했다"가 뒤집히지 않는다.
     """
     arxiv_id = _clean_arxiv_id(arxiv_id)
-    with _db() as con:
+    with closing(_db()) as con, con:
         con.execute(
             """INSERT OR REPLACE INTO repro_results
                (arxiv_id, repo_url, source, confidence, success, exit_code,
@@ -1580,7 +1582,7 @@ async def list_stored_papers(params: ListPapersInput) -> str:
         str: JSON — {count, papers: [{arxiv_id, title, text_chars, summary_saved,
              numbers_matched, numbers_total}]}
     """
-    with _db() as con:
+    with closing(_db()) as con, con:
         rows = con.execute(
             """SELECT p.arxiv_id, p.title, p.text_chars, p.extract_method,
                       s.path AS summary_path, s.numbers_total, s.numbers_matched

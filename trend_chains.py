@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import re
 from datetime import date, timedelta
@@ -102,7 +104,7 @@ def load(db_path: Path, profile_id: str, today: str, days: int = WINDOW_DAYS) ->
     """읽기 전용. 하루에 서술이 둘이면(재실행) 둘 다 쓴다 — 연결은 서술 ID 로 이어지므로 겹쳐도 묶음 하나가 된다."""
     import sqlite3
     start = (date.fromisoformat(today) - timedelta(days=days - 1)).isoformat()
-    with sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute("SELECT narrative_id, reader_date, body, audit_json FROM profile_narratives "
                            "WHERE profile_id=? AND kind='daily' AND reader_date BETWEEN ? AND ? ORDER BY reader_date, created_at",

@@ -11,6 +11,8 @@ DB 에서 센다(규칙 2) — 서술 안의 숫자를 나중에 사실로 다�
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 import uuid
@@ -76,7 +78,7 @@ def save(db_path: Path, profile_id: str, kind: str, body: str, *,
         return None
     init_db(db_path)
     nid = uuid.uuid4().hex
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "INSERT INTO profile_narratives (narrative_id, profile_id, kind, reader_date, created_at,"
             " scan_id, engine, body, audit_json, papers_seen, window_days)"
@@ -109,7 +111,7 @@ def recent(db_path: Path, profile_id: str, kind: str = DAILY, days: int = 5,
         sql += " LIMIT ?"
         params.append(int(limit))
     try:
-        with sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True)) as con, con:
             con.row_factory = sqlite3.Row
             return [dict(r) for r in con.execute(sql, params)]
     except sqlite3.OperationalError:

@@ -151,14 +151,22 @@ def test_stored_comparison_reads_only_current_unambiguous_values(tmp_path, monke
     """UI 조회가 DB를 쓰거나 같은 날·유일한 대상 셀/검증된 비교 값·출처를 잃으면 실패한다."""
     path=tmp_path/'comparison.db';comparison_db(path)
     before=path.read_bytes();opened=[];real=sqlite3.connect
+    class ObservedConnection(sqlite3.Connection):
+        def close(self):
+            # 2026-11-02: 닫힌 연결을 다시 조회하지 않고 닫기 직전의 실제 설정을 남긴다.
+            self.query_only_at_close = self.execute("PRAGMA query_only").fetchone()[0]
+            super().close()
+
     def connect(db,**kwargs):
-        con=real(db,**kwargs);opened.append((db,kwargs,con));return con
+        con=real(db,factory=ObservedConnection,**kwargs);opened.append((db,kwargs,con));return con
     monkeypatch.setattr(paper_observations.sqlite3,'connect',connect)
     rows=paper_observations.stored_comparison_rows(path,'p')
     assert rows==[('Bench · Success — Ours 85.4% (T1:r2c2)',''),
                   ('외부 논문 표: Other 82.0% — 출처 표 열 "Success" (Table 1) · 같은 과제 판단: 에이전트 판독 (같은 과제 지표) · 대조한 조건: dataset v1, test split, success protocol, frozen training','https://arxiv.org/abs/2402.00001')]
     assert opened[0][0].endswith('?mode=ro') and opened[0][1]=={'uri': True}
-    assert opened[0][2].execute('PRAGMA query_only').fetchone()[0]==1
+    assert opened[0][2].query_only_at_close==1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0][2].execute("SELECT 1")
     assert path.read_bytes()==before
 
 

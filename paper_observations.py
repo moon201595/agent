@@ -1,6 +1,8 @@
 """⑤⑨ 카드의 관측 근거 — 논문 보고·논문 간 관측·외부 이용 신호를 구분한다."""
 from __future__ import annotations
 
+from contextlib import closing
+
 from datetime import date
 import math
 import re
@@ -13,7 +15,7 @@ def stored_comparison_rows(db: Path, paper_id: str) -> list[tuple[str, str]]:
     """화면은 같은 날의 저장 관측만 읽는다. 자신의 셀이 하나로 정해지지 않으면 비교를 표시하지 않는다."""
     import time_policy
     try:
-        with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             con.row_factory = sqlite3.Row
             ext = con.execute("SELECT checked_on,bench_key,metric_key,result_json FROM frontier_external "

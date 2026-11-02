@@ -42,8 +42,14 @@ def test_snapshot_reuses_recipient_tokens_and_keeps_database_unchanged(original,
     before = db.read_bytes()
     opened = []
     real_connect = sqlite3.connect
+    class ObservedConnection(sqlite3.Connection):
+        def close(self):
+            # 2026-11-02: 연결 종료를 유지하면서 실제 query_only 설정도 검사한다.
+            self.query_only_at_close = self.execute("PRAGMA query_only").fetchone()[0]
+            super().close()
+
     def connect(path, **kwargs):
-        con = real_connect(path, **kwargs)
+        con = real_connect(path, factory=ObservedConnection, **kwargs)
         opened.append((path, kwargs, con))
         return con
     monkeypatch.setattr(mail_reformat.sqlite3, "connect", connect)
@@ -52,7 +58,9 @@ def test_snapshot_reuses_recipient_tokens_and_keeps_database_unchanged(original,
     assert got["papers"] == 1 and got["subject"] == "브리핑 2026-10-02 [형식 수정본]"
     assert db.read_bytes() == before
     assert len(opened) == 1 and str(opened[0][0]).endswith("?mode=ro") and opened[0][1]["uri"] is True
-    assert opened[0][2].execute("PRAGMA query_only").fetchone()[0] == 1
+    assert opened[0][2].query_only_at_close == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0][2].execute("SELECT 1")
     for url in next(iter(links.values())).values():
         token = parse_qs(urlsplit(url).query)["t"][0]
         assert feedback.verify_token(token, cfg[1]) and token in got["html"]

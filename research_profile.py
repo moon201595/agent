@@ -18,6 +18,8 @@ done이면 그 실행의 window_to부터, partial/failed면 그 실행의 window
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import sqlite3
 import hashlib
 import uuid
@@ -371,7 +373,7 @@ def create_profile(
     일을 막기 위한 장치다(외부 검토 2026-09-14)."""
     init_db(db_path)
     now = _now()
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         if expected_revision is not None:
             # 파이썬 sqlite3 기본 모드에서 SELECT 는 트랜잭션을 열지 않는다 — 대조와 쓰기 사이에 다른
             # 쓰기가 끼어들 수 있다. 쓰기 잠금을 먼저 잡고 대조한다(2026-09-14, 외부 검토 반영분 재검토).
@@ -492,7 +494,7 @@ def bootstrap_keyword_events(db_path: Path, profile_id: str) -> int:
     added/removed 로 보충한다. 이미 같으면 0 — 두 번 불러도 안전하다."""
     init_db(db_path)
     current = set()
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         current = {(r[0].lower(), r[1]) for r in con.execute(
             "SELECT keyword, kind FROM profile_keywords WHERE profile_id=?", (profile_id,))}
         rev = con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?", (profile_id,)).fetchone()[0]
@@ -502,7 +504,7 @@ def bootstrap_keyword_events(db_path: Path, profile_id: str) -> int:
     active = set(active_generations(db_path, profile_id))
     if active == current:
         return 0
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         return _record_keyword_events(con, profile_id, rev, _now(), active, current, "bootstrap",
                                       "이관 대조에서 발견된 불일치 보정",
                                       restore_from=legacy_provenance(db_path, profile_id, current - active))
@@ -513,7 +515,7 @@ def legacy_provenance(db_path: Path, profile_id: str, keys: set[tuple[str, str]]
     kind 는 제안기가 손댄 적이 없으므로 user. rollback 이 bootstrap 보다 과거 revision 으로 갈 때
     이벤트가 없어 전부 rollback/user 로 뭉개지던 것을 막는다(외부 검토 2026-09-12)."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         first = _first_seen_provenance(con, profile_id)
     out = {}
     for kw, kind in keys:
@@ -526,7 +528,7 @@ def active_generations(db_path: Path, profile_id: str, as_of_revision: int | Non
     """(keyword, kind) → {provenance_origin, generation, actor_origin, revision} — 마지막 이벤트가 added 인 것만.
     as_of_revision 을 주면 그 revision 까지의 이벤트로 본다(rollback 이 되살릴 세대의 provenance)."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         q = "SELECT keyword, kind, change, actor_origin, provenance_origin, generation, revision FROM profile_keyword_events WHERE profile_id=?"
         args: tuple = (profile_id,)
         if as_of_revision is not None:
@@ -550,7 +552,7 @@ def keyword_provenance(db_path: Path, profile_id: str) -> dict[str, dict]:
         return {kw: {"origin": v["provenance_origin"], "first_seen": str(v["revision"]),
                      "source": f"generation:{v['generation']}"} for (kw, kind), v in gens.items() if kind == "core"}
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         return _first_seen_provenance(con, profile_id)
 
 
@@ -598,7 +600,7 @@ def record_scan_health(db_path: Path, scan_id: str, profile_id: str, *, anchor_t
     "미래의 코드·이력이 과거 값을 못 바꾼다"는 이 표의 계약과 정반대였다."""
     import json
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         if con.execute("SELECT 1 FROM scan_health WHERE scan_id=?", (scan_id,)).fetchone():
             return False
         con.execute(
@@ -629,7 +631,7 @@ def profile_from_snapshot(snapshot: dict) -> dict:
 def current_revision(db_path: Path, profile_id: str) -> int:
     """0 이면 revision 을 기록한 적이 없다(2026-09-11 이전 프로필)."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         return con.execute("SELECT COALESCE(MAX(revision), 0) FROM profile_revisions WHERE profile_id=?",
                            (profile_id,)).fetchone()[0]
 
@@ -639,7 +641,7 @@ def get_profile(db_path: Path, profile_id: str) -> dict | None:
     — 이 함수의 출력이 곧 그 함수의 입력이라는 계약을 여기 문서화해둔다."""
     init_db(db_path)  # DB 파일이 아직 없는 상태(테이블조차 없음)에서 조회해도
     # "없음(None)"으로 답해야지 OperationalError를 내면 안 된다.
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
         if not row:
@@ -733,7 +735,7 @@ def mark_shown(db_path: Path, profile_id: str, papers: list[dict]) -> None:
         return
     init_db(db_path)
     now = _now()
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.executemany(
             "INSERT INTO profile_shown (profile_id, paper_key, title, shown_at) "
             "VALUES (?,?,?,?) ON CONFLICT(profile_id, paper_key) DO NOTHING",
@@ -745,7 +747,7 @@ def mark_shown(db_path: Path, profile_id: str, papers: list[dict]) -> None:
 def already_shown(db_path: Path, profile_id: str) -> set[str]:
     """이 프로필이 이미 내보낸 논문 키들."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         return {r[0] for r in con.execute(
             "SELECT paper_key FROM profile_shown WHERE profile_id=?", (profile_id,))}
 
@@ -759,7 +761,7 @@ def set_schedule(db_path: Path, profile_id: str, frequency: str) -> None:
     if frequency not in SCHEDULES:
         raise ValueError(f"unknown_schedule:{frequency}")
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         cur = con.execute("UPDATE profiles SET schedule_frequency=?, updated_at=? WHERE profile_id=?",
                           (frequency, _now(), profile_id))
         if cur.rowcount != 1:
@@ -769,7 +771,7 @@ def set_schedule(db_path: Path, profile_id: str, frequency: str) -> None:
 def get_schedule(db_path: Path, profile_id: str) -> tuple[str, str]:
     """(주기, 시각). 없으면 기본 daily·05:00."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         row = con.execute("SELECT COALESCE(schedule_frequency,'daily'), COALESCE(schedule_time,'05:00') "
                           "FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
     return (row[0], row[1]) if row else ("daily", "05:00")
@@ -783,7 +785,7 @@ def rollback_to_revision(db_path: Path, profile_id: str, to_revision: int, reaso
     에이전트가 넣었던 것은 agent 로 돌아온다(§8-102). 되살릴 revision 이 이벤트 표 도입 전이면 legacy provenance 로 보충한다."""
     import json
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         row = con.execute("SELECT snapshot FROM profile_revisions WHERE profile_id=? AND revision=?",
                           (profile_id, to_revision)).fetchone()
         if not row:
@@ -843,7 +845,7 @@ def update_core_weights(db_path: Path, profile_id: str, weights: dict[str, float
 
 def add_recipient(db_path: Path, profile_id: str, email: str, active: bool = True) -> None:
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "INSERT INTO profile_recipients (profile_id, email, active) VALUES (?,?,?) "
             "ON CONFLICT(profile_id, email) DO UPDATE SET active=excluded.active",
@@ -853,7 +855,7 @@ def add_recipient(db_path: Path, profile_id: str, email: str, active: bool = Tru
 
 def get_recipients(db_path: Path, profile_id: str) -> list[str]:
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         rows = con.execute(
             "SELECT email FROM profile_recipients WHERE profile_id=? AND active=1 ORDER BY email",
             (profile_id,),
@@ -865,7 +867,7 @@ def list_runs(db_path: Path, profile_id: str, limit: int = 10) -> list[dict]:
     """review_app.py 리서치 프로필 탭이 "지금 상황"을 보여줄 때 쓴다 — 최신
     실행이 먼저 오게 정렬."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT * FROM search_runs WHERE profile_id=? ORDER BY started_at DESC LIMIT ?",
@@ -880,7 +882,7 @@ def list_profiles(db_path: Path, schedule: str | None = None) -> list[str]:
     2026-09-15: 분야별 프로필(로봇·에이전트·비전)을 만들되 새벽 cron 에는 넣지 않으려고 이 칸을 쓰기 시작했다 —
     그전엔 칸만 있고 아무도 안 읽어 모든 프로필이 매일 스캔됐다. `manual` 프로필은 `run_profile_scan.py <id>` 로만 돈다."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         if schedule is None:
             return [r[0] for r in con.execute("SELECT profile_id FROM profiles ORDER BY profile_id")]
         return [r[0] for r in con.execute(
@@ -901,7 +903,7 @@ def next_since(db_path: Path, profile_id: str, source: str = "arxiv",
     "바뀌었다"로 단정해 매번 과거를 다시 훑으면 그것대로 낭비다.
     """
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         row = con.execute(
             "SELECT status, window_from, window_to, topic_signature FROM search_runs "
@@ -962,7 +964,7 @@ def record_candidates(
             float(score) if score is not None else None,
             outcome, signature, w_from, w_to, now, now,
         ))
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.executemany(
             "INSERT INTO search_candidates (profile_id, paper_key, title, abstract, "
             " source, arxiv_id, doi, venue, published, citation_count, score, outcome, "
@@ -1006,7 +1008,7 @@ def begin_scan(db_path: Path, profile_id: str, profile: dict,
     scan_id = uuid.uuid4().hex[:12]
     snapshot = {k: profile.get(k) for k in
                 ("core_topics", "core_weights", "target_domain", "exclude", "s2_seeds", "max_items")}
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "INSERT INTO scan_runs (scan_id, profile_id, started_at, profile_snapshot, policy_version)"
             " VALUES (?,?,?,?,?)",
@@ -1019,7 +1021,7 @@ def finish_scan(db_path: Path, scan_id: str, *, arxiv_run_id: str | None = None,
                 s2_run_id: str | None = None, seed_attempts: list | None = None,
                 observations: int | None = None, observation_error: str | None = None) -> None:
     import json
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "UPDATE scan_runs SET arxiv_run_id=COALESCE(?, arxiv_run_id),"
             " s2_run_id=COALESCE(?, s2_run_id), seed_attempts=COALESCE(?, seed_attempts),"
@@ -1050,7 +1052,7 @@ def record_observations(db_path: Path, scan_id: str, profile_id: str,
     import hashlib, json
     init_db(db_path)
     now = observed_at or _now()
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         out = []
         for p in rows:
             score = p.get("_score") or {}
@@ -1108,7 +1110,7 @@ def list_candidates(
         args.append(since.isoformat())
     sql += " ORDER BY score DESC NULLS LAST, last_seen DESC LIMIT ?"
     args.append(limit)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         return list(con.execute(sql, args))
 
@@ -1124,7 +1126,7 @@ def candidate_outcome_counts(
         sql += " AND last_seen>=?"
         args.append(since.isoformat())
     sql += " GROUP BY outcome"
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         return {row[0] or "(미기록)": row[1] for row in con.execute(sql, args)}
 
 
@@ -1159,7 +1161,7 @@ def backfill_shown_from_summaries(db_path: Path, profile_id: str,
     """
     init_db(db_path)
     src = summaries_db or db_path
-    with sqlite3.connect(src) as con:
+    with closing(sqlite3.connect(src)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT p.arxiv_id, p.title, p.source FROM summaries s "
@@ -1192,7 +1194,7 @@ def record_run(
 ) -> str:
     init_db(db_path)
     run_id = uuid.uuid4().hex[:12]
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "INSERT INTO search_runs (run_id, profile_id, source, query, window_from, "
             "window_to, status, retrieved_count, error_detail, started_at, finished_at, "
@@ -1210,7 +1212,7 @@ def save_digest(db_path: Path, profile_id: str, digest_text: str) -> None:
     _write_progress와 같은 이유로 "일부만 갱신"보다 "매번 전체 교체"가
     상태를 헷갈리지 않게 한다."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.execute(
             "UPDATE profiles SET last_digest=?, last_digest_at=? WHERE profile_id=?",
             (digest_text, _now(), profile_id),
@@ -1220,7 +1222,7 @@ def save_digest(db_path: Path, profile_id: str, digest_text: str) -> None:
 def get_latest_digest(db_path: Path, profile_id: str) -> tuple[str, str] | None:
     """returns (digest_text, generated_at) 또는 아직 없으면 None."""
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         row = con.execute(
             "SELECT last_digest, last_digest_at FROM profiles WHERE profile_id=?", (profile_id,)
         ).fetchone()
@@ -1231,7 +1233,7 @@ def get_latest_digest(db_path: Path, profile_id: str) -> tuple[str, str] | None:
 
 def attach_observation_dates(db_path: Path, profile_id: str, papers: list[dict]) -> None:
     """발표일·발견일·요약일은 다른 사건이므로 메일에도 따로 전달한다."""
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for paper in papers:
             row = con.execute(
@@ -1261,7 +1263,7 @@ def record_feedback(db_path: Path, profile_id: str, key: str, usefulness: str,
     if support != "unassessed" and not claim.strip():
         raise ValueError("근거를 평가할 주장 문장이 필요하다")
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         if not con.execute("SELECT 1 FROM profile_shown WHERE profile_id=? AND paper_key=?",
                            (profile_id, key)).fetchone():
             raise ValueError("이 프로필에서 배달 기록이 없는 논문이다")
@@ -1272,7 +1274,7 @@ def record_feedback(db_path: Path, profile_id: str, key: str, usefulness: str,
 
 def list_feedback(db_path: Path, profile_id: str) -> list[dict]:
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         return [dict(r) for r in con.execute(
             "SELECT * FROM briefing_feedback WHERE profile_id=? ORDER BY feedback_id", (profile_id,))]
@@ -1280,7 +1282,7 @@ def list_feedback(db_path: Path, profile_id: str) -> list[dict]:
 
 def feedback_papers(db_path: Path, profile_id: str) -> list[dict]:
     init_db(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         con.row_factory = sqlite3.Row
         return [dict(r) for r in con.execute(
             "SELECT paper_key,title,shown_at FROM profile_shown WHERE profile_id=? "

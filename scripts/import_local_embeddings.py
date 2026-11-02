@@ -34,6 +34,8 @@ _get_or_compute_embedding이 (arxiv_id, model) 조합으로 조회하는 것과
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import json
 import sqlite3
@@ -84,7 +86,7 @@ def import_embeddings(db_path: Path, records: list) -> int:
     # (Codex 구조 검토 2026-09-16: 이 도구가 운영 DB 에 가드 밖 표를 만들 수 있었다). 표가 없으면 init_storage 가 가드 규칙대로 처리한다.
     import storage
     storage.init_storage(db_path)
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         for r in records:
             con.execute(
                 "INSERT OR REPLACE INTO paper_embeddings (arxiv_id, model, embedding, updated_at) "

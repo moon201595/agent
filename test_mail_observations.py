@@ -81,14 +81,22 @@ def test_frontier_source_reads_use_read_only_uri_and_never_create_database(tmp_p
     before = db.read_bytes()
     opened = []
     real_connect = sqlite3.connect
+    class ObservedConnection(sqlite3.Connection):
+        def close(self):
+            # 2026-11-02: 반환 후에는 닫혀 있으므로 실제 PRAGMA는 닫히기 직전에 관측한다.
+            self.query_only_at_close = self.execute("PRAGMA query_only").fetchone()[0]
+            super().close()
+
     def connect(path, **kwargs):
-        connection = real_connect(path, **kwargs)
+        connection = real_connect(path, factory=ObservedConnection, **kwargs)
         opened.append((path, kwargs, connection))
         return connection
     monkeypatch.setattr(research_frontier.sqlite3, 'connect', connect)
     assert research_frontier._paper_row(db, 'x') == ('Abstract', 'Title', '2026-10-01', 'abstract')
     assert opened[0][0].endswith('?mode=ro') and opened[0][1] == {'uri': True}
-    assert opened[0][2].execute('PRAGMA query_only').fetchone()[0] == 1 and db.read_bytes() == before
+    assert opened[0][2].query_only_at_close == 1 and db.read_bytes() == before
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0][2].execute("SELECT 1")
 
 
 SIGNALS = {'scholarly': {'citations': 21, 'influential': 3, 'publication_date': '2026-09-30'},

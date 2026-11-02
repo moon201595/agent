@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
@@ -45,7 +47,7 @@ def _key(keyword: str) -> str:
 
 def _rows(db: Path, sql: str, args: tuple) -> list[sqlite3.Row]:
     try:
-        with sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True)) as con, con:
             con.row_factory = sqlite3.Row
             return list(con.execute(sql, args))
     except sqlite3.OperationalError:

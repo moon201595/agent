@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import re
 import sqlite3
@@ -108,7 +110,7 @@ def system_status(db: Path, root: Path, now: datetime | None = None) -> dict:
     if next_weekly <= kst_now:
         next_weekly = datetime.combine(work_calendar.next_weekly_day(kst_now.date()), time(5, 0), tzinfo=KST)
     weekly = None
-    with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.row_factory = sqlite3.Row
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='agent_runs'").fetchone():
             weekly = con.execute("SELECT week, status, error, started_at FROM agent_runs ORDER BY started_at DESC LIMIT 1").fetchone()
@@ -163,7 +165,7 @@ def profile_overview(db: Path, profile_id: str) -> dict | None:
         return None
     freq, at = research_profile.get_schedule(db, profile_id)
     mails = mail_ledger.counts(db, profile_id)
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         reactions = reaction_counts(_reaction_rows(con, profile_id))
         last_agent = None
@@ -187,7 +189,7 @@ def profile_overview(db: Path, profile_id: str) -> dict | None:
 def weight_history(db: Path, profile_id: str) -> dict[str, list[tuple[str, int, float]]]:
     """핵심 키워드별 [(created_at, revision, weight)] — revision 스냅숏에서. 화면의 가중치 추이 그래프 재료."""
     out: dict[str, list[tuple[str, int, float]]] = {}
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         for rev, created, snap in con.execute(
                 "SELECT revision, created_at, snapshot FROM profile_revisions WHERE profile_id=? ORDER BY revision", (profile_id,)):
             try:
@@ -209,7 +211,7 @@ def keyword_table(db: Path, profile_id: str, now: datetime | None = None) -> lis
     since = (now - timedelta(days=HIT_WINDOW_DAYS)).isoformat()
     origins = agent_maintenance._origins(db, profile_id)
     history = weight_history(db, profile_id)
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         hits: dict[str, set[str]] = {}
         for key, raw in con.execute("SELECT paper_key, core_hits FROM candidate_observations WHERE profile_id=? AND observed_at>=?",
@@ -250,7 +252,7 @@ def keyword_table(db: Path, profile_id: str, now: datetime | None = None) -> lis
 def issues_with_reactions(db: Path, profile_id: str, limit: int | None = None) -> list[dict]:
     """회차마다 논문 목록 + 논문별 유효 반응 수. 복원 회차(legacy)에는 반응이 붙지 않는다(회차 id 가 없다)."""
     issues = mail_ledger.list_issues(db, profile_id, limit)
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = _reaction_rows(con, profile_id)
     by_issue_paper: dict[tuple[str, str], Counter] = {}
@@ -266,7 +268,7 @@ def issues_with_reactions(db: Path, profile_id: str, limit: int | None = None) -
 
 def reaction_log(db: Path, profile_id: str, limit: int = 200) -> list[dict]:
     """반응 한 건씩: 시각·논문 제목·반응·상태. 제목은 회차 표 → profile_shown 순으로 찾는다."""
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = _reaction_rows(con, profile_id)[:limit]
         titles: dict[str, str] = {}
@@ -302,7 +304,7 @@ KIND_LABELS = {"core": "키워드", "s2_seed": "검색어", "target": "도메인
 
 def revision_history(db: Path, profile_id: str, limit: int = 50) -> list[dict]:
     """revision 마다 누가(origin)·언제·무엇을 바꿨나 — 앞 revision 과의 차이(추가·삭제·가중치 변경)를 문장으로."""
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         rows = con.execute("SELECT revision, created_at, origin, note, snapshot FROM profile_revisions "
                            "WHERE profile_id=? ORDER BY revision", (profile_id,)).fetchall()
     out = []
@@ -329,7 +331,7 @@ def revision_history(db: Path, profile_id: str, limit: int = 50) -> list[dict]:
 
 def agent_history(db: Path, profile_id: str, limit: int = 20) -> list[dict]:
     """주차별 에이전트 실행: Claude 제안·Codex 판정·적용·기각(사유)."""
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         if not con.execute("SELECT 1 FROM sqlite_master WHERE name='agent_runs'").fetchone():
             return []
@@ -466,7 +468,7 @@ def db_status(db: Path) -> dict:
                  "tables": {}, "backups": [], "retention": None}
     if not db.exists():
         return out
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         existing = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for t in DB_TABLES:
             out["tables"][t] = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] if t in existing else None
@@ -524,7 +526,7 @@ def paper_catalog(db: Path, query: str = "", profile_id: str | None = None, limi
     어느 프로필이 보냈는지는 `profile_shown` 과 **arxiv_id 또는 정규화 제목**으로 잇는다 — 저널 논문(pdf-* 합성 ID)은 paper_key 가
     doi:/title: 형태라 arxiv_id 로는 안 이어진다(실측 2026-09-16: 224행 중 194행만 arxiv_id 로 이어졌다)."""
     q = (query or "").strip().lower()
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         existing = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         papers = [dict(r) for r in con.execute(
@@ -572,7 +574,7 @@ def paper_detail(db: Path, arxiv_id: str) -> dict | None:
     """논문 하나: 초록·요약 본문(마크다운)·재현 시도·코드 단계·SOTA 주장."""
     import code_ladder
     import sota_claims
-    with _ro(db) as con:
+    with closing(_ro(db)) as con, con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         p = con.execute("SELECT * FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
@@ -696,7 +698,7 @@ def research_overview(db: Path, profile_id: str, now: datetime | None = None) ->
         dates = [datetime.fromisoformat(t).astimezone(KST) for t in window]
         return "~".join(f"{d.month}/{d.day}" for d in dates)
 
-    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.row_factory = sqlite3.Row
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "profiles" not in tables:
@@ -934,7 +936,7 @@ def paper_id_for_title(title: str, candidates: dict[str, str]) -> str:
 def paper_core_hits(db: Path, paper_key: str) -> list[str]:
     """그 논문이 메일에 실릴 때 걸린 핵심 키워드(가장 최근 회차). 상세 화면 칩용 — 없으면 빈 목록."""
     try:
-        with _ro(db) as con:
+        with closing(_ro(db)) as con, con:
             row = con.execute("SELECT i.core_hits FROM mail_issue_items i JOIN mail_issues m ON m.issue_id=i.issue_id "
                               "WHERE i.paper_key=? ORDER BY m.sent_at DESC LIMIT 1", (paper_key,)).fetchone()
     except sqlite3.Error:

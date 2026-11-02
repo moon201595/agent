@@ -79,11 +79,14 @@ def _work_window(started: str | None) -> str | None:
         return None
     try:
         con = sqlite3.connect(DB)
-        row = con.execute(
-            "SELECT MIN(created_at), MAX(created_at), COUNT(*) FROM summaries "
-            "WHERE created_at >= ?", (started.replace("Z", ""),)
-        ).fetchone()
-        con.close()
+        try:
+            row = con.execute(
+                "SELECT MIN(created_at), MAX(created_at), COUNT(*) FROM summaries "
+                "WHERE created_at >= ?", (started.replace("Z", ""),)
+            ).fetchone()
+        finally:
+            # 2026-11-02: 조회 실패도 기술자를 쥐고 남지 않게 연 쪽이 닫는다.
+            con.close()
     except sqlite3.Error:
         return None
     lo, hi, n = row
@@ -153,92 +156,95 @@ def main() -> int:
     # ── DB: 검색·선정·발송
     if DB.exists():
         con = sqlite3.connect(DB)
-        con.row_factory = sqlite3.Row
-        run = con.execute("SELECT * FROM search_runs ORDER BY started_at DESC LIMIT 1").fetchone()
-        out.append(_section("④ 검색"))
-        if run:
-            out.append(f"  창   : {run['window_from'][:16]} → {run['window_to'][:16]} (UTC)")
-            out.append(f"  결과 : {run['retrieved_count']}편 · status={run['status']}")
-            if run["error_detail"]:
-                out.append(f"  오류 : {str(run['error_detail'])[:140]}")
-
-        # 메일을 받는 프로필(daily)마다 — 분야별 프로필이 생긴 뒤(2026-09-16) `LIMIT 1` 은 첫 프로필만 보여 줬다.
-        profs = con.execute(
-            "SELECT name, last_digest, last_digest_at FROM profiles "
-            "WHERE COALESCE(schedule_frequency, 'daily')='daily' ORDER BY profile_id").fetchall()
-        out.append(_section("⑤ 다이제스트"))
-        if not any(prof["last_digest"] for prof in profs):
-            out.append("  (저장된 다이제스트 없음)")
-        for prof in profs:
-            if not prof["last_digest"]:
-                out.append(f"  [{prof['name']}] (저장된 다이제스트 없음)")
-                continue
-            out.append(f"  [{prof['name']}] 저장 시각: {_kst(prof['last_digest_at'])} KST")
-            digest_lines = (prof["last_digest"] or "").splitlines()
-            for i, line in enumerate(digest_lines):
-                if re.match(r"^\d+\. \S", line) or line.startswith("■"):   # 별점 괄호가 빠진 뒤의 제목 줄(2026-09-15)
-                    out.append("  " + line)
-                    # "동향 신호" 절은 제목 다음 줄에 들여쓰기로 온다 —
-                    # 제목만 찍고 내용을 빠뜨리면 절이 있으나 마나다.
-                    if "동향 신호" in line and i + 1 < len(digest_lines):
-                        out.append("     " + digest_lines[i + 1].strip())
-                elif line.strip().startswith(("핵심 키워드", "도메인 일치", "왜 걸렸나", "[재현")):
-                    out.append("     " + line.strip())
-
-        # ── 재현 라벨 분포
         try:
-            import digest as digest_mod
-            ids = [r[0] for r in con.execute("SELECT DISTINCT arxiv_id FROM repro_results")]
-            c = Counter()
-            for aid in ids:
-                lab = digest_mod.repro_label(aid)
-                c["성공 ✓" if "✓" in lab else
-                  ("돌렸는데 실패 ✗" if "✗" in lab else "돌려보지도 못함 –")] += 1
-            out.append(_section("⑥ ⑦ 재현 누적"))
-            out += [f"  {k:18} {v}편" for k, v in c.items()] or ["  기록 없음"]
-            recent = con.execute(
-                "SELECT arxiv_id, stage, fail_detail FROM repro_results "
-                "WHERE fail_detail IS NOT NULL ORDER BY created_at DESC LIMIT 6").fetchall()
-            if recent:
-                out.append("  최근 실패 사유:")
-                out += [f"    {r['arxiv_id']:12} {r['stage']:9} {r['fail_detail']}" for r in recent]
-        except Exception as e:  # noqa: BLE001 — 보고서가 절대 죽으면 안 된다
-            out.append(f"  (재현 집계 실패: {type(e).__name__})")
+            con.row_factory = sqlite3.Row
+            run = con.execute("SELECT * FROM search_runs ORDER BY started_at DESC LIMIT 1").fetchone()
+            out.append(_section("④ 검색"))
+            if run:
+                out.append(f"  창   : {run['window_from'][:16]} → {run['window_to'][:16]} (UTC)")
+                out.append(f"  결과 : {run['retrieved_count']}편 · status={run['status']}")
+                if run["error_detail"]:
+                    out.append(f"  오류 : {str(run['error_detail'])[:140]}")
 
-        # ── §8-16 종결 조건 추적
-        #
-        # 이 항목은 "근거가 쌓이면 판단하자"로 한 달을 보냈는데 실제로는
-        # 아무것도 안 쌓이고 있었다(network_suspected 가 계산만 되고 저장은
-        # 안 됐다). 이제 fail_detail 로 기록되므로, 사람이 기억해서 확인하는
-        # 대신 **보고서가 매일 진척을 말하고 조건이 차면 알려준다**.
-        try:
-            target = 10   # 실행 단계(run/build) 누적 시도 — §8-16 종결 조건
-            done = con.execute(
-                "SELECT COUNT(*) FROM repro_results "
-                "WHERE stage IN ('run','build','install_only') AND fail_detail IS NOT NULL").fetchone()[0]
-            success = con.execute(
-                "SELECT COUNT(*) FROM repro_results "
-                "WHERE stage='run' AND success=1").fetchone()[0]
-            suspected = con.execute(
-                "SELECT COUNT(*) FROM repro_results "
-                "WHERE fail_detail='run_network_suspected'").fetchone()[0]
-            counted = done + success
-            out.append(_section("⑦ §8-16 egress allowlist 판단 근거"))
-            out.append(f"  실행 단계 누적 {counted}/{target}건 · 네트워크 차단 의심 {suspected}건")
-            if counted < target:
-                out.append(f"  근거 수집 중 — {target - counted}건 더 필요하다.")
-            elif suspected == 0:
-                out.append("  ✅ 종결 조건 충족 — 차단이 아무 대가도 안 치르고 있다.")
-                out.append('     §8-16 을 "필요 없음"으로 닫아도 된다.')
-            else:
-                out.append(f"  ⚠ 종결 조건 충족, 다만 의심 {suspected}건 — 차단이 실제로 "
-                           "재현을 막고 있다.")
-                out.append("     egress allowlist(pypi·github·huggingface 만 허용) 구현 근거가 "
-                           "생겼다.")
-        except sqlite3.Error as e:
-            out.append(f"  (§8-16 집계 실패: {e})")
+            # 메일을 받는 프로필(daily)마다 — 분야별 프로필이 생긴 뒤(2026-09-16) `LIMIT 1` 은 첫 프로필만 보여 줬다.
+            profs = con.execute(
+                "SELECT name, last_digest, last_digest_at FROM profiles "
+                "WHERE COALESCE(schedule_frequency, 'daily')='daily' ORDER BY profile_id").fetchall()
+            out.append(_section("⑤ 다이제스트"))
+            if not any(prof["last_digest"] for prof in profs):
+                out.append("  (저장된 다이제스트 없음)")
+            for prof in profs:
+                if not prof["last_digest"]:
+                    out.append(f"  [{prof['name']}] (저장된 다이제스트 없음)")
+                    continue
+                out.append(f"  [{prof['name']}] 저장 시각: {_kst(prof['last_digest_at'])} KST")
+                digest_lines = (prof["last_digest"] or "").splitlines()
+                for i, line in enumerate(digest_lines):
+                    if re.match(r"^\d+\. \S", line) or line.startswith("■"):   # 별점 괄호가 빠진 뒤의 제목 줄(2026-09-15)
+                        out.append("  " + line)
+                        # "동향 신호" 절은 제목 다음 줄에 들여쓰기로 온다 —
+                        # 제목만 찍고 내용을 빠뜨리면 절이 있으나 마나다.
+                        if "동향 신호" in line and i + 1 < len(digest_lines):
+                            out.append("     " + digest_lines[i + 1].strip())
+                    elif line.strip().startswith(("핵심 키워드", "도메인 일치", "왜 걸렸나", "[재현")):
+                        out.append("     " + line.strip())
 
-        con.close()
+            # ── 재현 라벨 분포
+            try:
+                import digest as digest_mod
+                ids = [r[0] for r in con.execute("SELECT DISTINCT arxiv_id FROM repro_results")]
+                c = Counter()
+                for aid in ids:
+                    lab = digest_mod.repro_label(aid)
+                    c["성공 ✓" if "✓" in lab else
+                      ("돌렸는데 실패 ✗" if "✗" in lab else "돌려보지도 못함 –")] += 1
+                out.append(_section("⑥ ⑦ 재현 누적"))
+                out += [f"  {k:18} {v}편" for k, v in c.items()] or ["  기록 없음"]
+                recent = con.execute(
+                    "SELECT arxiv_id, stage, fail_detail FROM repro_results "
+                    "WHERE fail_detail IS NOT NULL ORDER BY created_at DESC LIMIT 6").fetchall()
+                if recent:
+                    out.append("  최근 실패 사유:")
+                    out += [f"    {r['arxiv_id']:12} {r['stage']:9} {r['fail_detail']}" for r in recent]
+            except Exception as e:  # noqa: BLE001 — 보고서가 절대 죽으면 안 된다
+                out.append(f"  (재현 집계 실패: {type(e).__name__})")
+
+            # ── §8-16 종결 조건 추적
+            #
+            # 이 항목은 "근거가 쌓이면 판단하자"로 한 달을 보냈는데 실제로는
+            # 아무것도 안 쌓이고 있었다(network_suspected 가 계산만 되고 저장은
+            # 안 됐다). 이제 fail_detail 로 기록되므로, 사람이 기억해서 확인하는
+            # 대신 **보고서가 매일 진척을 말하고 조건이 차면 알려준다**.
+            try:
+                target = 10   # 실행 단계(run/build) 누적 시도 — §8-16 종결 조건
+                done = con.execute(
+                    "SELECT COUNT(*) FROM repro_results "
+                    "WHERE stage IN ('run','build','install_only') AND fail_detail IS NOT NULL").fetchone()[0]
+                success = con.execute(
+                    "SELECT COUNT(*) FROM repro_results "
+                    "WHERE stage='run' AND success=1").fetchone()[0]
+                suspected = con.execute(
+                    "SELECT COUNT(*) FROM repro_results "
+                    "WHERE fail_detail='run_network_suspected'").fetchone()[0]
+                counted = done + success
+                out.append(_section("⑦ §8-16 egress allowlist 판단 근거"))
+                out.append(f"  실행 단계 누적 {counted}/{target}건 · 네트워크 차단 의심 {suspected}건")
+                if counted < target:
+                    out.append(f"  근거 수집 중 — {target - counted}건 더 필요하다.")
+                elif suspected == 0:
+                    out.append("  ✅ 종결 조건 충족 — 차단이 아무 대가도 안 치르고 있다.")
+                    out.append('     §8-16 을 "필요 없음"으로 닫아도 된다.')
+                else:
+                    out.append(f"  ⚠ 종결 조건 충족, 다만 의심 {suspected}건 — 차단이 실제로 "
+                               "재현을 막고 있다.")
+                    out.append("     egress allowlist(pypi·github·huggingface 만 허용) 구현 근거가 "
+                               "생겼다.")
+            except sqlite3.Error as e:
+                out.append(f"  (§8-16 집계 실패: {e})")
+
+        finally:
+            # 2026-11-02: 조회 실패도 기술자를 쥐고 남지 않게 연 쪽이 닫는다.
+            con.close()
 
     out.append("")
     text = "\n".join(out)

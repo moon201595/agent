@@ -8422,6 +8422,15 @@ Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 �
       다시 조회하고(`schema_guard.missing_in` 도 연결을 하나 더 연다) — GC 를 멈춘 합성 실험에서 `_deliver` 한 번(카드 6·수신자 4)에 기술자 +535, 기본 GC·한도 1024 에서
       `storage.db()` 1,021번째가 실패. GC 가 돌면 0 으로 돌아온다(영구 누수 아님 — GC 전 잔류). 장애 당시 실제 기술자 수는 미실측.
     - 완화: `run_daily_scan.sh` 맨 앞 `ulimit -n 10240`(Windows 경로와 같은 값) — 테스트가 실제 bash 로 1024 → 10240 을 확인한다. **근본 수정(연결을 닫는 공용 규약, 수신자 루프 밖으로 공통 조회 빼기)은 미착수**.
+    - **근본 수정(같은 날 저녁, Codex 구현 · Claude 검토)**: 운영 코드 43개 파일·166곳의 연결 열기를 `with closing(연결) as con, con:` 하나로 통일 — `with con` 이 하던
+      커밋/롤백을 그대로 하고 closing 이 닫는다. 연결을 돌려주는 팩토리 5개(storage.db·server._db·daily_links._ro·db_retention._read_only·ops_dashboard._ro)는 소비자가 닫고,
+      설정 실패 때만 팩토리가 닫는다. 대입 연결 3곳은 try/finally. **수신자 반복 구조는 안 바꿨다**(수신자마다 반응 링크·참고 자료가 달라 메일 내용 위험) — 닫기만으로 충분했다.
+      실측: GC 를 끈 `_deliver`(카드 6·수신자 4) 열린 기술자 **+783 → +0**, soft 한도 1024 에서 전체 테스트 2011 passed. 닫히지 않을 수 있던 자리 194 → 0.
+      `test_db_connections_closed.py` — AST 로 운영 코드의 닫지 않는 열기를 막고(Codex 는 digest 한 곳, Claude 는 research_profile 한 곳을 되돌려 실패 확인),
+      실제 `_deliver` 의 기술자 증가·커밋/롤백 유지를 본다. 기존 테스트 3개(test_mail_observations·test_mail_reformat·test_paper_sections)는 함수가 끝난 뒤
+      **열린 채 남은 연결에** PRAGMA 를 다시 묻고 있었다(누수에 기댄 검사) → 닫히기 직전 값을 기록하고 닫혔는지도 확인하게 고쳤다.
+      Claude 검토: 블록 뒤 연결 사용·블록 밖으로 커서 반환·빌린 연결 닫기를 AST 로 전수 — 0건. `ulimit -n 10240` 은 방어로 남긴다.
+      Codex 는 지정한 FD 조사 스레드(01a199bd)가 아니라 가장 최근 스레드(01a19ae3)를 이어 받았다 — 프롬프트에 필요한 사실을 다 적어 영향 없음.
 
 273. **"robot policy" 키워드가 "robot policies" 를 못 잡았다 — 매처가 -s/-es 만 붙여 자음 뒤 -y 의 복수 -ies 를 놓쳤다; match-v3** (2026-11-02, 사용자 결정 "고쳐" · Claude).
     - 결함(§269 에서 발견·미수정): `profile_scoring.keyword_pattern` 이 마지막 낱말 뒤에 `(?:es|s)?` 만 붙였다. 채점·주간 관리 근거 확인(`agent_maintenance._in_text`)·용어 발견이 다 이 매처라

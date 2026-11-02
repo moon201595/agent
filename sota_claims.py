@@ -8,6 +8,8 @@ SOTA 를 사실로 표시하지 않는다). 주장 문장은 원문 문장 번�
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import re
 import sqlite3
 from pathlib import Path
@@ -108,7 +110,7 @@ def claims_for(db: Path, arxiv_id: str | None, abstract: str | None = None) -> t
     """(주장 목록, 출처) — 출처는 'text'(원문, S번호 유효) 또는 'abstract'(초록, S번호 없음) 또는 ''."""
     if arxiv_id:
         try:
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 row = con.execute("SELECT text_path, abstract FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
         except sqlite3.Error:
             row = None

@@ -21,6 +21,8 @@ retrospective cohort · world bank)이 사라지고 고유 관련 논문이 거�
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import asyncio
 import hashlib
 import json
@@ -219,7 +221,7 @@ async def run_shadow(db: Path, profile_id: str, before: dict, after: dict,
            "policy_version": research_profile.RANK_POLICY_VERSION, "version": SHADOW_VERSION}
     if store:
         init_db(db)
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute("INSERT INTO shadow_runs (shadow_id, profile_id, analysis_id, created_at, window_start,"
                         " window_end, before_hash, after_hash, arms_json, metrics_json, api_calls, seconds,"
                         " status, partial_reason, error, policy_version, version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

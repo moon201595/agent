@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import lang_guard
 
 import hashlib
@@ -235,7 +237,7 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _schedule(db: Path, profile_id: str) -> tuple[str, str]:
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         row = con.execute("SELECT COALESCE(schedule_frequency,'daily'), COALESCE(schedule_time,'05:00') "
                           "FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
     return (row[0], row[1]) if row else ("daily", "05:00")
@@ -267,7 +269,7 @@ def build_brief(db: Path, profile_id: str, now: datetime | None = None) -> Brief
     origins = _origins(db, profile_id)
     texts: dict[str, str] = {}
 
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         obs = con.execute("SELECT paper_key, scan_id, core_hits FROM candidate_observations "
                           "WHERE profile_id=? AND observed_at>=? AND observed_at<?",
                           (profile_id, since, end.isoformat())).fetchall()
@@ -390,7 +392,7 @@ def _precision_evidence(db: Path, profile_id: str, now: datetime, reactions: lis
     """중복 스캔은 표본 수를 부풀리지 않고, 보호 검사는 자르지 않은 글을 쓴다."""
     since = (now - timedelta(days=PRECISION_DAYS)).isoformat()
     precision, papers, keywords, delivered, guards, related = {}, [], [], [], {}, []
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = con.execute("SELECT * FROM candidate_observations WHERE profile_id=? "
                            "AND julianday(observed_at)>=julianday(?) AND julianday(observed_at)<julianday(?) "
@@ -887,7 +889,7 @@ def _reserve(db: Path, profile_id: str, week: str, now: datetime, force: bool) -
     """(프로필, 주) 예약. 이미 끝난 주는 건너뛴다. 'running' 인 채 3시간이 지난 행은 프로세스가 죽은 것으로 보고 다시 잡는다 —
     그대로 두면 그 주 재시도가 --force 없이는 영영 막힌다(외부 검토 2026-09-15). 'applying' 은 revision 을 이미 썼을 수
     있으므로 자동으로 다시 잡지 않는다(pending_report 가 run_tag 로 적용 여부를 가린다)."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute("BEGIN IMMEDIATE")
         row = con.execute("SELECT status, started_at FROM agent_runs WHERE profile_id=? AND week=?",
                           (profile_id, week)).fetchone()
@@ -911,7 +913,7 @@ def _reserve(db: Path, profile_id: str, week: str, now: datetime, force: bool) -
 def _finish(db: Path, profile_id: str, week: str, **cols) -> None:
     cols["finished_at"] = _now().isoformat()
     keys = sorted(cols)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute(f"UPDATE agent_runs SET {', '.join(f'{k}=?' for k in keys)} WHERE profile_id=? AND week=?",
                     [cols[k] for k in keys] + [profile_id, week])
 
@@ -919,7 +921,7 @@ def _finish(db: Path, profile_id: str, week: str, **cols) -> None:
 def _tagged_revision(db: Path, profile_id: str, run_tag: str | None) -> int | None:
     if not run_tag:
         return None
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         row = con.execute("SELECT MAX(revision) FROM profile_revisions WHERE profile_id=? AND origin='agent' AND note=?",
                           (profile_id, run_tag)).fetchone()
     return row[0] if row and row[0] is not None else None
@@ -1057,7 +1059,7 @@ def catch_up_targets(db: Path, now: datetime | None = None) -> list[str]:
         return []
     init_db(db)
     week = week_of(now)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute("SELECT profile_id, status, started_at FROM agent_runs WHERE week=?", (week,)).fetchall()
     # 오늘 이미 다시 잡았다가 또 실패한 행도 뺀다 — "한 번만"이다. 날짜 판정만으로는 같은 날 두 번째 호출(작업 스케줄러가
     # cron 뒤에 순차로 깨우는 경우)이 실패 행을 또 잡는다(Codex 최종 검토 2026-10-01). started_at 은 _reserve 가 잡을 때 쓴 UTC 다.
@@ -1072,7 +1074,7 @@ def applied_since(db: Path, profile_id: str, since: datetime) -> list[dict]:
     init_db(db)
     # finished_at 은 `_finish` 가 UTC 로 쓴다. 문자열 비교이므로 기준도 UTC 로 맞춘다 — KST 자정("…T00:00:00+09:00")을 그대로
     # 넘기면 그날 새벽 따라잡기(UTC 로는 전날 20시)가 전부 빠졌다(Codex 최종 검토 2026-10-01).
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute("SELECT applied_json FROM agent_runs WHERE profile_id=? AND status='applied' AND finished_at>=?",
                            (profile_id, since.astimezone(timezone.utc).isoformat())).fetchall()
     out: list[dict] = []
@@ -1106,7 +1108,7 @@ def pending_report(db: Path, profile_id: str, now: datetime | None = None) -> tu
     agent_runs.rejected_json 에 남는다). 'applying' 으로 멈춘 행은 run_tag 로 revision 을 찾아 적용됐으면 변경으로, 아니면 실패로 싣는다."""
     init_db(db)
     cutoff = ((now or _now()) - REPORT_TTL).isoformat()
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute("SELECT week, status, error, base_revision, new_revision, applied_json, run_tag, impact_json FROM agent_runs "
                            "WHERE profile_id=? AND reported_at IS NULL AND status IN ('applied','failed','applying') "
                            "AND COALESCE(finished_at, started_at) >= ? ORDER BY week", (profile_id, cutoff)).fetchall()
@@ -1145,7 +1147,7 @@ def mark_reported(db: Path, keys: list[tuple[str, str]], when: datetime | None =
     if not keys:
         return
     stamp = (when or _now()).isoformat()
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.executemany("UPDATE agent_runs SET reported_at=? WHERE profile_id=? AND week=? AND reported_at IS NULL",
                         [(stamp, p, w) for p, w in keys])
 

@@ -5,6 +5,8 @@ M9(2026-09-10): 표시 문구가 아니라 저장된 상태를 비교한다. 스
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import asyncio
 import json
 import re
@@ -60,7 +62,7 @@ def _doi(paper: dict) -> str | None:
 
 def tracked_papers(db: Path, profile_id: str, now: datetime) -> list[dict]:
     """합성 ID는 DOI와 다르므로 출처의 DOI나 저장된 도착 ID로만 연결한다."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         papers = [dict(r) for r in con.execute("SELECT * FROM papers")]
         shown = con.execute(
@@ -93,7 +95,7 @@ async def recheck_retractions(db: Path, papers: list[dict], client,
     if client is None or not api_key:
         return {"checked": 0, "resolved": 0, "status": "조회 설정 없음"}
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         attempts = {r[0]: (r[1], r[2]) for r in con.execute("SELECT * FROM evidence_rechecks")}
     due = []
     for paper in papers:
@@ -130,7 +132,7 @@ async def recheck_retractions(db: Path, papers: list[dict], client,
         except Exception:
             status = None
         checked += 1
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute("INSERT INTO evidence_rechecks VALUES (?,?,?) ON CONFLICT(arxiv_id) "
                         "DO UPDATE SET last_attempt=excluded.last_attempt,last_result=excluded.last_result",
                         (aid, now.isoformat(), status))
@@ -143,7 +145,7 @@ async def recheck_retractions(db: Path, papers: list[dict], client,
 def capture(db: Path, paper: dict, now: datetime) -> dict:
     """다섯 축의 원시 값을 남기되 v1의 변화 판정은 철회·재현만 쓴다."""
     aid = paper.get("arxiv_id") or ""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         p = con.execute("SELECT is_retracted,injection_suspect FROM papers WHERE arxiv_id=?", (aid,)).fetchone()
         summary = con.execute("SELECT numbers_total,numbers_matched,coverage_ratio,coverage_kind "
@@ -191,7 +193,7 @@ def pending_updates(db: Path, profile_id: str, recipient: str, states: list[dict
     """마지막으로 실제 전송한 상태와 비교한다. 생성·미리보기는 기준을 전진시키지 않는다."""
     init_db(db)
     out = []
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for item in states:
             key = item["paper_key"]
             if key in content_keys:
@@ -214,7 +216,7 @@ def acknowledge(db: Path, profile_id: str, recipient: str, states: list[dict],
     """SMTP 전송 성공 뒤 호출한다. 사용자 수신함 도착이나 exactly-once를 뜻하지 않는다."""
     init_db(db)
     delivery_id = delivery_id or str(uuid.uuid4())
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.executemany("INSERT OR IGNORE INTO evidence_notifications "
                         "(delivery_id,profile_id,recipient,paper_key,arxiv_id,title,state_json,sent_at) "
                         "VALUES (?,?,?,?,?,?,?,?)",
@@ -233,7 +235,7 @@ async def prepare(db: Path, profile_id: str, result: dict, client,
     # 초록만 있는 항목은 저장 논문 ID가 없을 수 있다. 저장된 논문의 실제
     # 철회 판정을 가져와 이미 확정한 철회를 다시 정상으로 낮추지 않는다.
     recheck_items = []
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         for item in items:
             stored = con.execute("SELECT source,is_retracted FROM papers WHERE arxiv_id=?",

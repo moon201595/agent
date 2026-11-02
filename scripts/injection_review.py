@@ -44,15 +44,18 @@ def _context_at(text: str, index: int) -> str:
 
 def main(argv: list[str]) -> int:
     con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    if len(argv) > 1:
-        rows = con.execute("SELECT arxiv_id, title, text_path, injection_suspect "
-                           "FROM papers WHERE arxiv_id=?", (argv[1],)).fetchall()
-    else:
-        rows = con.execute("SELECT arxiv_id, title, text_path, injection_suspect "
-                           "FROM papers WHERE injection_suspect IS NOT NULL "
-                           "AND injection_suspect != ''").fetchall()
-    con.close()
+    try:
+        con.row_factory = sqlite3.Row
+        if len(argv) > 1:
+            rows = con.execute("SELECT arxiv_id, title, text_path, injection_suspect "
+                               "FROM papers WHERE arxiv_id=?", (argv[1],)).fetchall()
+        else:
+            rows = con.execute("SELECT arxiv_id, title, text_path, injection_suspect "
+                               "FROM papers WHERE injection_suspect IS NOT NULL "
+                               "AND injection_suspect != ''").fetchall()
+    finally:
+        # 2026-11-02: 조회 실패도 기술자를 쥐고 남지 않게 연 쪽이 닫는다.
+        con.close()
 
     if not rows:
         print("flag 된 논문이 없다.")

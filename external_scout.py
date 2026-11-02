@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import lang_guard
 
 import json
@@ -409,7 +411,7 @@ def gap_stage(db: Path, profile_id: str, it: dict, discovered_at: datetime) -> t
     not_yet_evaluable: 마지막 스캔 뒤에 나온 논문(잡을 기회가 없었다) · not_retrieved: 검색 소스가 가져오지 않음 ·
     no_core_hit: 가져왔으나 핵심어에 안 걸림 · excluded: 제외어에 걸림 · ranked_out: 관련인데 자리에서 밀림 · already_captured: 메일까지 감."""
     cutoff = discovered_at.isoformat()
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         scan = con.execute("SELECT scan_id, started_at FROM scan_runs WHERE profile_id=? AND started_at<=? "
                            "ORDER BY started_at DESC LIMIT 1", (profile_id, cutoff)).fetchone()
         if not scan:
@@ -446,7 +448,7 @@ def gap_stage(db: Path, profile_id: str, it: dict, discovered_at: datetime) -> t
         # 관측이 없고, 그 프로필의 가장 이른 검색 창보다 먼저 나온 논문이면 잡을 기회가 없었다 — 놓침이 아니다(2026-10-08).
         # 검색 창(window_from)으로 본다: 첫 스캔도 며칠 앞까지 검색하므로 스캔 시각으로 자르면 실제로 잡은 논문까지 빠진다.
         try:
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 start = con.execute("SELECT MIN(NULLIF(window_from, '')) FROM search_runs WHERE profile_id=? "
                                     "AND julianday(started_at)<=julianday(?)",
                                     (profile_id, cutoff)).fetchone()[0]
@@ -599,7 +601,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
     summary = {"run_id": run_id, "week": week, "status": "failed"}
     try:
         init_db(db)
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             done = con.execute("SELECT run_id, status FROM external_scout_runs WHERE week=? AND status IN ('done','partial')",
                                (week,)).fetchone()
             if done and not force:
@@ -612,7 +614,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
     def finish(status: str, **cols) -> dict:
         cols = {"status": status, "finished_at": datetime.now(timezone.utc).isoformat(), **cols}
         try:
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 con.execute(f"UPDATE external_scout_runs SET {', '.join(f'{k}=?' for k in cols)} WHERE run_id=?", [*cols.values(), run_id])
         except sqlite3.Error:
             pass
@@ -622,7 +624,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
     try:
         profiles = _profiles(db)
         ids = [p["id"] for p in profiles]
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             previous_scout = con.execute("SELECT started_at FROM external_scout_runs WHERE run_id!=? "
                                          "AND julianday(started_at)<=julianday(?) ORDER BY julianday(started_at) DESC, rowid DESC LIMIT 1",
                                          (run_id, now.isoformat())).fetchone()
@@ -711,7 +713,7 @@ def run_weekly(db: Path, now: datetime | None = None, *, scout: Callable[[str, f
         status, error = ("partial", ";".join(problems)) if problems else ("done", None)
         verified_n = 0
         try:
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 for it in items:
                     v = it.get("verified") or {"verdict": "not_sent"}
                     verified_n += v.get("verdict") == "verified" and bool(v.get("relevant"))
@@ -743,7 +745,7 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
     공식 제목·초록, 놓친 단계, 후보 용어(공식 글에 있는 것), 출처 종류만."""
     since = (now - timedelta(days=days)).isoformat()
     try:
-        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             rows = con.execute("SELECT observation_id, paper_key, title, source_type, published_at, gap_stage, evidence_json, verified_json, run_id "
                                "FROM external_observations WHERE profile_id=? AND julianday(discovered_at)>julianday(?) AND julianday(discovered_at)<=julianday(?) "
@@ -752,7 +754,7 @@ def evidence_for_brief(db: Path, profile_id: str, now: datetime, days: int = 7) 
         return []
     latest_run = rows[0][-1] if rows else None
     try:
-        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             run = con.execute("SELECT run_id FROM external_scout_runs WHERE julianday(started_at)>julianday(?) "
                               "AND julianday(started_at)<=julianday(?) ORDER BY julianday(started_at) DESC, rowid DESC LIMIT 1",
@@ -846,7 +848,7 @@ def watchlist(db: Path, profile_id: str, now: datetime, weeks: int = 8) -> list[
     now = now.astimezone(timezone.utc)
     since = now - timedelta(weeks=weeks)
     try:
-        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             rows = con.execute("SELECT observation_id, paper_key, title, source_type, published_at, gap_stage, evidence_json, "
                                "verified_json, run_id, discovered_at FROM external_observations WHERE profile_id=? "
@@ -855,7 +857,7 @@ def watchlist(db: Path, profile_id: str, now: datetime, weeks: int = 8) -> list[
                                (profile_id, since.isoformat(), now.isoformat())).fetchall()
         if not rows:
             return []
-        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             core = [r[0] for r in con.execute("SELECT keyword FROM profile_keywords WHERE profile_id=? AND kind='core'",
                                              (profile_id,))]
@@ -923,7 +925,7 @@ def emerging_axes(db: Path, profile_id: str, items: list[dict], now: datetime) -
         term = group["term"]
         recent = previous = recent_total = previous_total = None
         try:
-            with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+            with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
                 con.execute("PRAGMA query_only=ON")
                 rows = con.execute("SELECT title, abstract, julianday(first_seen)>=julianday(?) FROM search_candidates "
                                    "WHERE profile_id=? AND julianday(first_seen)>=julianday(?) AND julianday(first_seen)<=julianday(?)",

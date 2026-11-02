@@ -25,6 +25,8 @@ profile_keywords 에 provenance 컬럼이 아직 없으므로(⑨ 때 붙인다)
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import math
 from numbers import Real
@@ -169,7 +171,7 @@ def scan_metrics(db: Path, scan_id: str, prev_profile: dict | None = None) -> di
     프로필로 채점하면 "당시 무엇이 위였나"가 아니라 "지금 기준으로는"이 된다.
     관측이 없으면 None. `prev_profile` 을 주면 H7(직전 프로필 대비 상위 K 유지)을 센다.
     """
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         run, rows = _scan_rows(con, scan_id)
         # observations 가 NULL이면 finish_scan 이 성공 표식을 쓰기 전 중단된 실행이다.
         # 후보 행이나 health 행이 일부 남아도 건강 기준선에 넣지 않는다(2026-09-14 외부 검토).
@@ -271,7 +273,7 @@ def previous_profile(db: Path, profile_id: str, scan_id: str) -> dict | None:
     revision 표가 아니라 스캔 스냅샷을 쓴다: 그때 실제로 쓰인 프로필이 그것이고,
     revision 을 기록하기 전(2026-09-11 이전) 프로필도 다룰 수 있다. 앞선 스캔이 전부
     같은 프로필이면 None — 유지율은 프로필이 바뀐 뒤에만 뜻이 있다."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         cur = con.execute("SELECT started_at, profile_snapshot FROM scan_runs WHERE scan_id=?",
                           (scan_id,)).fetchone()
         if not cur:
@@ -289,7 +291,7 @@ def series(db: Path, profile_id: str, start: datetime, end: datetime) -> list[di
     """기간 안 스캔들의 지표(시간순). 관측 없는 스캔은 건너뛴다(0 으로 안 채운다).
     H7 은 `previous_profile` 이 있을 때 센다 — 처음 구현은 여기서 prev_profile 을 안 넘겨
     운영 경로에서 늘 미측정이었다(외부 검토 2026-09-12)."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         runs = [dict(r) for r in con.execute(
             "SELECT scan_id, observations, observation_error FROM scan_runs "

@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import base64
 import hashlib
 import hmac
@@ -188,7 +190,7 @@ def issue_links(db: Path, profile_id: str, issue_id: str, recipient: str, papers
     expires = int((now + timedelta(days=TOKEN_TTL_DAYS)).timestamp())
     rhash = recipient_hash(recipient, secret)
     links: dict[str, dict[str, str]] = {}
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for position, paper in enumerate(papers, start=1):
             key = research_profile.paper_key(paper)
             tid = secrets.token_urlsafe(12)
@@ -217,7 +219,7 @@ def axis_links(db: Path, profile_id: str, issue_id: str, recipient: str, terms: 
     expires = int((now + timedelta(days=TOKEN_TTL_DAYS)).timestamp())
     rhash = recipient_hash(recipient, secret)
     links: dict[str, dict[str, str]] = {}
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for position, term in enumerate(terms, start=1):
             tid = secrets.token_urlsafe(12)
             con.execute("INSERT INTO feedback_tokens (tid, issue_id, profile_id, item_no, paper_key, recipient_hash, "
@@ -246,7 +248,7 @@ def mark_delivered(db: Path, issue_id: str, recipient: str, when: datetime | Non
     if not cfg:
         return
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute("UPDATE feedback_tokens SET delivered_at=? WHERE issue_id=? AND recipient_hash=?",
                     ((when or _now()).isoformat(), issue_id, recipient_hash(recipient, cfg[1])))
 
@@ -267,7 +269,7 @@ def import_rows(db: Path, rows: list[dict], secret: str, now: datetime | None = 
     now = now or _now()
     counts: Counter = Counter()
     latest = None
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for row in sorted(rows, key=lambda r: str(r.get("received_at") or "")):
             token, received_raw = str(row.get("token") or ""), str(row.get("received_at") or "")
             received = _parse_time(received_raw)
@@ -328,7 +330,7 @@ async def sync(db: Path, client) -> Counter | None:
         return None
     url, secret = cfg
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         row = con.execute("SELECT last_received_at FROM feedback_sync WHERE id=1").fetchone()
     since = (row[0] if row and row[0] else "")
     resp = await client.get(export_url(url, secret, since), timeout=30, follow_redirects=True)
@@ -342,7 +344,7 @@ async def sync(db: Path, client) -> Counter | None:
 def valid_reactions(db: Path, profile_id: str) -> list[dict]:
     """학습에 쓸 반응 — valid 만. (paper_key, action, recipient_hash, item_no, issue_id, received_at)."""
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         return [dict(r) for r in con.execute(
             "SELECT t.paper_key, e.action, t.recipient_hash, t.item_no, t.issue_id, e.received_at "
@@ -360,7 +362,7 @@ def axis_reactions(db: Path, profile_id: str) -> dict[str, dict]:
     state: 더 보고 싶음이 많으면 `wanted`, 관심 밖이 많으면 `stopped`, 같으면 None. 읽기 전용이고 표가 없으면 빈 dict 다
     (정찰 추적 목록이 이 함수를 부른다 — 반응 표가 없다고 추적이 멈추면 안 된다)."""
     try:
-        with sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             rows = con.execute(
                 "SELECT t.paper_key, t.recipient_hash, e.action, e.received_at FROM feedback_events e "

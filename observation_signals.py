@@ -10,6 +10,8 @@ trend_report 의 emerging_terms·keyword_counts·source_mix 는 논문 **개체*
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 from collections import Counter, defaultdict
@@ -21,7 +23,7 @@ import term_hygiene
 
 
 def _rows(db: Path, profile_id: str, start: datetime, end: datetime) -> list[dict]:
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         return [dict(r) for r in con.execute(
             "SELECT * FROM candidate_observations WHERE profile_id=? "
@@ -34,8 +36,6 @@ def reserve_terms(db: Path, profile_id: str, scan_id: str | None = None,
     """실행 하나의 미배달 후보를 센다 — 관측이 없으면 미측정으로 남긴다."""
     if not db.is_file():
         return None
-    from contextlib import closing
-
     with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con:
         if scan_id is None:
             latest = con.execute(
@@ -162,7 +162,7 @@ def seed_attempts(db: Path, profile_id: str, start: datetime, end: datetime) -> 
     """시드별 시도 집계 {keyword: {scans, done, partial, failed, not_attempted, returned}}.
     scan_runs 가 없으면 None(미측정) — 관측 행이 없는 것과 스캔 기록이 없는 것은 다르다.
     이게 있어야 "0편"이 정상 0인지, 실패인지, 예산에 밀려 시도조차 못 한 것인지 갈린다."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute(
             "SELECT seed_attempts FROM scan_runs WHERE profile_id=? AND started_at >= ? AND started_at < ?",
             (profile_id, start.isoformat(), end.isoformat())).fetchall()
@@ -185,7 +185,7 @@ def seed_attempts(db: Path, profile_id: str, start: datetime, end: datetime) -> 
 
 def scan_health(db: Path, profile_id: str, start: datetime, end: datetime) -> dict | None:
     """기간 내 스캔 수와 관측 저장 상태. 없으면 None."""
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         rows = con.execute(
             "SELECT observations, observation_error FROM scan_runs "
             "WHERE profile_id=? AND started_at >= ? AND started_at < ?",

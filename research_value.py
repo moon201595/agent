@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import difflib
 import json
 import re
@@ -95,7 +97,7 @@ def set_perspective(db: Path, profile_id: str, text: str, created_by: str = "use
     if not text or len(text) > PERSPECTIVE_CHARS:
         raise ValueError(f"활용 관점은 1~{PERSPECTIVE_CHARS}자")
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         version = con.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM profile_context WHERE profile_id=?", (profile_id,)).fetchone()[0]
         con.execute("UPDATE profile_context SET active=0 WHERE profile_id=?", (profile_id,))
         con.execute("INSERT INTO profile_context VALUES (?,?,?,?,?,1)",
@@ -106,7 +108,7 @@ def set_perspective(db: Path, profile_id: str, text: str, created_by: str = "use
 def perspective(db: Path, profile_id: str) -> dict | None:
     """{"version", "text"} — 읽기 전용. 표가 없거나(migrate 전) 값이 없으면 None — 부르는 쪽은 이 단계를 건너뛴다."""
     try:
-        with sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True)) as con, con:
             row = con.execute("SELECT version, use_perspective FROM profile_context WHERE profile_id=? AND active=1 "
                               "ORDER BY version DESC LIMIT 1", (profile_id,)).fetchone()
     except sqlite3.Error:
@@ -136,7 +138,7 @@ def code_fact(db: Path, arxiv_id: str) -> str:
 def _hub_fact(db: Path, arxiv_id: str) -> str:
     """모델 입력용 참고 사실(메일 줄은 카드의 외부 신호 칸이 이미 싣는다). 조회 실패·페이지 없음은 "없음" 이 아니라 빈 문자열."""
     try:
-        with sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True)) as con, con:
             row = con.execute("SELECT signals_json FROM adoption_snapshots WHERE arxiv_id=? ORDER BY collected_on DESC LIMIT 1",
                               (arxiv_id,)).fetchone()
         hub = json.loads(row[0]).get("hub") or {} if row else {}
@@ -158,7 +160,7 @@ def _summary_items(db: Path, arxiv_id: str) -> list[str]:
     수치 검증을 모두 통과한 요약만 쓴다(⑤). 요약 안의 [S..] 태그는 지운다 — 이 호출의 근거 ID 와 섞이면 안 된다."""
     try:
         import summary_parser
-        with sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True)) as con, con:
             row = con.execute("SELECT path FROM summaries WHERE arxiv_id=? AND numbers_total = numbers_matched", (arxiv_id,)).fetchone()
         sections = summary_parser.parse_sections(Path(row[0]).read_text(encoding="utf-8")) if row else {}
     except (sqlite3.Error, OSError, UnicodeDecodeError, TypeError):
@@ -413,7 +415,7 @@ def record(db: Path, profile_id: str, reader_date: str, view: dict, engine: str 
     by_paper: dict[str, list] = {}
     for d in dropped:
         by_paper.setdefault(d["arxiv_id"], []).append({"item": d["item"], "reason": d["reason"]})
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         for aid in set(kept) | set(by_paper):
             con.execute("INSERT OR REPLACE INTO card_insights VALUES (?,?,?,?,?,?,?,?,?)",
                         (profile_id, reader_date, aid, view.get("version"), PROMPT_VERSION, engine,

@@ -180,10 +180,19 @@ def db(db_path=None) -> sqlite3.Connection:
     있었는데, 그대로 옮겼더니 `storage.DB_PATH` 를 읽게 되어 임시 DB 가 무시
     됐다(2026-09-04 실측 — 옮기자마자 55개가 깨졌다).
     호출부가 자기 경로를 넘기면 이 결합이 사라진다.
+
+    2026-11-02: 반환한 연결은 호출부가 `with closing(db(...)) as con, con:`으로 쓴다.
+    SQLite의 문맥은 트랜잭션만 끝내므로 con의 commit/rollback 뒤 closing이 닫아
+    cron의 FD 한도가 GC 시점에 좌우되지 않게 한다. 연결을 빌린 함수는 닫지 않는다.
     """
     con = sqlite3.connect(db_path or DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+    try:
+        con.row_factory = sqlite3.Row
+        return con
+    except BaseException:
+        # 2026-11-02: 초기 설정 실패 때는 호출부가 연결을 받지 못하므로 연 쪽이 닫는다.
+        con.close()
+        raise
 
 
 def now() -> str:

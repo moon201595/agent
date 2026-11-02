@@ -17,6 +17,8 @@ docs/ASTRA_PLAN_2026-09-10.md §7. 순수 계산이다 — LLM 없음, 네트워
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import hashlib
 import json
 import math
@@ -67,7 +69,7 @@ def snapshot(db: Path, profile_id: str, start: datetime, end: datetime) -> dict:
     snapshot_id 는 **내용 해시**다. 키 목록만 해시하면 초록·날짜가 바뀌어도
     같은 ID 가 나와 재현을 보장 못 한다.
     """
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute(
             "SELECT * FROM candidate_observations WHERE profile_id=? AND observed_at >= ? "
@@ -426,7 +428,7 @@ def _record_decision(con: sqlite3.Connection, analysis_id: str, profile_id: str,
 
 def latest_decision(db: Path, analysis_id: str) -> dict | None:
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT * FROM gate_decisions WHERE analysis_id=? ORDER BY decided_at DESC, rowid DESC LIMIT 1",
                           (analysis_id,)).fetchone()
@@ -443,7 +445,7 @@ def regate_with_shadow(db: Path, analysis_id: str, shadow_id: str,
     import shadow_search
     init_db(db)
     shadow_search.init_db(db)       # 표가 없으면(운영 DB 미이관) 여기서 크게 멈춘다 — 조용히 못 붙이는 게 맞다
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         an = con.execute("SELECT * FROM impact_analyses WHERE analysis_id=?", (analysis_id,)).fetchone()
         if not an:
@@ -533,7 +535,7 @@ def analyze_and_store(db: Path, snap: dict, before: dict, after: dict, k: int,
     입력이 **완전히** 같을 때만)."""
     init_db(db)
     ih = input_hash(snap, before, after, k, rules, consumed_keys)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         prior = con.execute("SELECT * FROM impact_analyses WHERE input_sha256=?", (ih,)).fetchone()
         if prior:
@@ -562,7 +564,7 @@ def analyze_and_store(db: Path, snap: dict, before: dict, after: dict, k: int,
         "gate_status": status, "reasons_json": json.dumps(reasons, ensure_ascii=False),
         "input_sha256": ih,
     }
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute(f"INSERT INTO impact_analyses ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
                     tuple(row.values()))
         _record_decision(con, row["analysis_id"], row["profile_id"], "analyze", None, status, reasons, eff_rules, None)

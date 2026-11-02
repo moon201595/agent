@@ -1,6 +1,8 @@
 """② 선별 — 주간 모델에 줄 동향 자료를 기존 집계에서 읽고 근거별로 묶는다."""
 from __future__ import annotations
 
+from contextlib import closing
+
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,7 +49,7 @@ def collect(db: Path, profile: dict, now: datetime) -> dict:
     except sqlite3.OperationalError as exc:
         errors['collection'] = type(exc).__name__
     try:
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             row = con.execute('SELECT scan_id FROM scan_runs WHERE profile_id=? AND started_at>=? '
                               'AND started_at<? ORDER BY started_at DESC, rowid DESC LIMIT 1',
                               (pid, start.isoformat(), now.isoformat())).fetchone()

@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import re
 import sqlite3
@@ -65,7 +67,7 @@ def already_sent_today(db: Path, profile_id: str, when: datetime | None = None) 
     day = operating_day(when or _now())
     if not db.exists():
         return False
-    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
         con.execute("PRAGMA query_only=ON")
         if not con.execute("SELECT 1 FROM sqlite_master WHERE name='mail_issues'").fetchone():
             return False
@@ -91,7 +93,7 @@ def record_issue(db: Path, issue_id: str, profile_id: str, subject: str, papers:
     else:
         status = "sent"
     sent_at = (when or _now()).isoformat()
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.execute("INSERT OR REPLACE INTO mail_issues (issue_id, profile_id, sent_at, subject, recipients_total, "
                     "recipients_sent, paper_count, status) VALUES (?,?,?,?,?,?,?,?)",
                     (issue_id, profile_id, sent_at, subject, recipients_total, recipients_sent, len(papers), status))
@@ -154,7 +156,7 @@ def _legacy_issues(con: sqlite3.Connection, profile_id: str, before: str | None)
 def list_issues(db: Path, profile_id: str, limit: int | None = None) -> list[dict]:
     """최신 회차부터. 표에 있는 회차 + 표 이전 날짜의 복원 회차. 각 회차에 items(위치·논문·링크·적중 키워드)를 붙인다."""
     init_db(db)
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute(
             "SELECT * FROM mail_issues WHERE profile_id=? ORDER BY sent_at DESC", (profile_id,))]

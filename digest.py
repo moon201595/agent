@@ -27,6 +27,8 @@ T+1 지연 보고(기다리지 않고 "실행중"으로 내보냄)였으나 2026
 
 from __future__ import annotations
 
+from contextlib import closing
+
 from fractions import Fraction
 import json
 import re
@@ -494,7 +496,7 @@ def summary_sections(arxiv_id: str) -> dict:
     빈 요약으로 보여주지 않는다.
     """
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             row = con.execute(
                 "SELECT path FROM summaries WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()
@@ -571,7 +573,7 @@ def verification_label(arxiv_id: str) -> str:
     "검증할 숫자가 하나도 없었다"가 "완벽 통과"로 둔갑한다 — 따로 표기한다.
     """
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             row = con.execute(
                 "SELECT numbers_total, numbers_matched FROM summaries WHERE arxiv_id=?",
                 (arxiv_id,),
@@ -611,7 +613,7 @@ def coverage_label(arxiv_id: str) -> str:
     아는 척하지 않는다.
     """
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             row = con.execute(
                 "SELECT coverage_ratio, coverage_kind FROM summaries WHERE arxiv_id=?",
                 (arxiv_id,),
@@ -749,7 +751,7 @@ def repro_label(arxiv_id: str) -> str:
     if marker.exists():
         return "[재현 ⏳ 실행중]"
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             rows = con.execute(
                 "SELECT success, stage, fail_detail FROM repro_results WHERE arxiv_id=? "
                 "ORDER BY attempt",
@@ -778,7 +780,7 @@ def repro_label(arxiv_id: str) -> str:
 def _repro_label_legacy(arxiv_id: str) -> str:
     """fail_detail 컬럼이 아직 없는 DB용 폴백 — 예전 동작 그대로."""
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             rows = con.execute(
                 "SELECT success FROM repro_results WHERE arxiv_id=?", (arxiv_id,)
             ).fetchall()
@@ -967,7 +969,7 @@ def retraction_label(arxiv_id: str) -> str:
     않는다** — "철회 아님"이라고 쓰면 조회조차 못 한 논문을 검증된 정상으로
     보이게 만든다(CLAUDE.md 8). 위험을 알릴 때만 말한다."""
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             row = con.execute(
                 "SELECT is_retracted FROM papers WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()
@@ -989,7 +991,7 @@ def injection_label(arxiv_id: str) -> str:
     논문은 본문에 공격 문구를 그대로 인용하므로 정직하게 걸린다. "위험"이
     아니라 "확인 필요"로 쓴다(injection_scan.py 참고)."""
     try:
-        with storage.db() as con:
+        with closing(storage.db()) as con, con:
             row = con.execute(
                 "SELECT injection_suspect FROM papers WHERE arxiv_id=?", (arxiv_id,)
             ).fetchone()

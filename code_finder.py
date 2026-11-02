@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import http_client
 import json
 import logging
@@ -433,7 +435,7 @@ def find_repo_candidates(arxiv_id: str) -> dict:
         {arxiv_id, title, in_text: [...], github_search: [...]}
     """
     arxiv_id = storage.clean_arxiv_id(arxiv_id)
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         row = con.execute(
             "SELECT title, text_path, authors FROM papers WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone()

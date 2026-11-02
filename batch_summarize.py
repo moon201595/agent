@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import asyncio
 import json
@@ -107,7 +109,7 @@ def _summary_already_saved(arxiv_id: str) -> bool:
     """
     if not arxiv_id:
         return False
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         return con.execute(
             "SELECT 1 FROM summaries WHERE arxiv_id=?", (arxiv_id,)
         ).fetchone() is not None
@@ -131,7 +133,7 @@ async def _wait_reproduction(arxiv_id: str) -> dict:
         await asyncio.sleep(REPRO_POLL_SECONDS)
     # launch_background가 이미 성공한 논문은 실행하지 않는다. 이 갈래는
     # 기존 DB의 성공 기록을 사용하며 새 실행을 했다고 표시하지 않는다.
-    with storage.db() as con:
+    with closing(storage.db()) as con, con:
         row = con.execute("SELECT success, exit_code, stage FROM repro_results "
                           "WHERE arxiv_id=? AND success=1 LIMIT 1", (arxiv_id,)).fetchone()
     if row:

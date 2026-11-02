@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
@@ -170,7 +172,7 @@ def _arxiv_tables(arxiv_id: str) -> list[dict] | None:
 def _paper_row(db: Path, arxiv_id: str) -> tuple[str, str, str, str]:
     """(원문/초록, 제목, 공개일, 출처). 짧은 원문도 원문이고 긴 초록도 초록이다."""
     try:
-        with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as con:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as con, con:
             con.execute("PRAGMA query_only=ON")
             row = con.execute("SELECT text_path, abstract, title, published FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
     except sqlite3.Error:

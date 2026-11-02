@@ -9,6 +9,8 @@ cron 자체가 절전·종료로 건너뛰면 스캔 로그와 DB 모두 조용�
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import json
 import re
@@ -168,7 +170,7 @@ def _database_state(db_path: Path, today: date) -> tuple[list[str], list[str], l
     2026-10-30 사용자 결정으로 팀원에게 알리지 않도록 공통 수신자만 반환한다.
     수신자 없음 사유는 기존 장애 판정을 유지하려고 첫 daily 프로필만 기준으로 삼는다.
     """
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con, con:
         rows = con.execute(
             "SELECT profile_id, last_digest_at FROM profiles "
             "WHERE COALESCE(schedule_frequency, 'daily')='daily' ORDER BY profile_id"

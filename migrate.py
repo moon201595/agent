@@ -11,6 +11,8 @@ PAPER_HARNESS_APPLY_DDL=1 없이는 실행되지 않는다 — 이 스크립트�
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import os
 import sqlite3
@@ -55,7 +57,7 @@ def data_pending(db: Path, scope: str = "operational") -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     if scope != "operational":
         return out
-    with sqlite3.connect(db) as con:
+    with closing(sqlite3.connect(db)) as con, con:
         has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_keyword_events'").fetchone()
         if not has:
             return out
@@ -88,10 +90,10 @@ def backup(db: Path) -> Path:
     if dest.exists():
         raise BackupFailed(f"백업 경로가 이미 있다 — 덮어쓰지 않는다: {dest}")
     try:
-        with sqlite3.connect(db) as src, sqlite3.connect(dest) as dst:
+        with closing(sqlite3.connect(db)) as src, src, closing(sqlite3.connect(dest)) as dst, dst:
             _copy_pages(src, dst)
             n_src = src.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-        with sqlite3.connect(dest) as chk:
+        with closing(sqlite3.connect(dest)) as chk, chk:
             verdict = chk.execute("PRAGMA integrity_check").fetchone()[0]
             n_dst = chk.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
         if verdict != "ok" or n_dst != n_src:
@@ -157,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     data_todo = data_pending(db, args.scope) if not fresh else {}
     if "keyword_events_bootstrap" in data_todo:
         import research_profile
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             profiles = [r[0] for r in con.execute("SELECT profile_id FROM profiles")]
         for pid in profiles:
             print(f"[DATA bootstrap] {pid}: 키워드 이벤트 {research_profile.bootstrap_keyword_events(db, pid)}건")
