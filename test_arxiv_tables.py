@@ -93,7 +93,7 @@ def test_spans_math_caption_and_missing() -> None:
     <tr><td></td><td>−3.1%</td></tr><tr><td>Other<br>model</td><td colspan="2"></td></tr></tbody>''',
                  'Table <b>1</b>: A&nbsp;&amp; B <math alttext="x"><mi>ignored</mi></math>')
     table, = at.parse_tables(html)
-    assert table == {'id': 'T1', 'caption': 'Table 1: A & B x', 'header_rows': 2,
+    assert table == {'id': 'T1', 'caption': 'Table 1: A & B x', 'header_rows': 2, 'group_rows': [],   # 빈 병합 칸 행은 구획 머리 후보가 아니다
                      'grid': [['Method', 'Bench', 'Bench'], ['Method', 'DS ↑', 'SR'],
                               ['P3-SAM', '87.2±0.3', 'N/A'], ['P3-SAM', '', '−3.1%'],
                               ['Other model', '', '']]}

@@ -99,6 +99,10 @@ def _descendants(node: _Node, tag: str, stop: tuple[str, ...] = ()) -> Iterator[
 _MATH_STYLE = re.compile(r'\\(?:scriptscriptstyle|scriptstyle|displaystyle|textstyle)(?![A-Za-z])')
 _MATH_WRAP = re.compile(r'\\(?:mathbf|boldsymbol|bm|textbf|underline|uline|mathit|mathrm|textit|textrm|text)\s*\{([^{}]*)\}')
 _MATH_NUMBER = re.compile(r'([+\-−]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?)(?:\s*([±∓])\s*((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?))?')
+_MATH_COLOR = re.compile(r'\\color\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}')
+_MATH_TEXTCOLOR = re.compile(r'\\textcolor\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{([^{}]*)\}')
+_SUBSCRIPT_DIGITS = str.maketrans('0123456789%', '₀₁₂₃₄₅₆₇₈₉%')
+_MATH_SUBSCRIPT_ERROR = re.compile(r'^([+\-−]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?) ?_ ?((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*%?)$')
 
 
 def math_number_text(text: str) -> str | None:
@@ -106,11 +110,26 @@ def math_number_text(text: str) -> str | None:
 
     2026-10-19 카드가 이 alttext 를 그대로 찍었고("무슨 스크립트"), 숫자로 시작하지 않아 행 이름이 값 칸까지 삼켰다(2610.22791 표 1).
     굵게·밑줄·글자 크기·좁은 띄어쓰기·묶음 괄호만 걷어 **수치(± 오차) 하나로 끝나는 경우에만** 바꾼다 — 그 밖의 수식은 None(원문 유지)."""
+    styled = bool(_MATH_STYLE.search(text) or _MATH_COLOR.search(text) or '\\textcolor' in text)
     out = _MATH_STYLE.sub(' ', text)
     out = re.sub(r'\\[,;:! ]|~', ' ', out)
+    # 글자색 — "43.17_{{\color[rgb]{0.45,0.45,0.45}\scriptscriptstyle 2.18}}"(2026-11-03, 2610.41378 표 1). 걷지 않으면 칸이 수치로 안 읽혀
+    # 행 이름이 값 칸을 삼켰고, 값 추출이 색 성분 0.45 를 성능값으로 저장했다.
+    out = _MATH_TEXTCOLOR.sub(r'\1', out)
+    out = _MATH_COLOR.sub(' ', out)
     for _ in range(4):                                       # \bm{\mathbf{..}} 같은 겹친 서식
         out = _MATH_WRAP.sub(r'\1', out)
     out = out.replace('\\pm', '±').replace('\\mp', '∓').replace('\\%', '%').replace('{', ' ').replace('}', ' ')
+    # 수치 아래첨자 하나("평균_{표준편차}")는 오차 표기로 읽는다 — 그 표 설명이 "standard deviations over three seeds in subscripts" 였다.
+    # 아래첨자가 수치가 아니면(x_{t}) 그대로 두어 None 이 된다.
+    sub = _MATH_SUBSCRIPT_ERROR.fullmatch(' '.join(out.split()))
+    if sub:
+        # 오차로 읽는 것은 소수 첨자이거나 작게·색으로 꾸민 첨자만 — 꾸밈 없는 정수 첨자("87.2_{1}")는 각주·순위일 수 있어 원문에 없는 오차를
+        # 만들지 않는다. 그때는 첨자 글자로 남긴다(본 값 87.2 는 수치로 읽힌다)(Codex 검토 2026-11-03).
+        if '.' in sub[2] or styled:
+            out = f'{sub[1]} ± {sub[2]}'
+        else:
+            return f"{sub[1].replace(' ', '')} {sub[2].replace(' ', '').translate(_SUBSCRIPT_DIGITS)}"
     match = _MATH_NUMBER.fullmatch(' '.join(out.split()))
     if match is None:
         return None
@@ -239,6 +258,14 @@ def _grid(table: _Node) -> tuple[list[list[str]], list[tuple[_Node, str, int]], 
             rows, originals)
 
 
+def _group_rows(grid: list[list[str]], originals: list[list[_Node]]) -> list[int]:
+    """첫 칸 하나 + 나머지 전폭 한 칸으로 된 행 — 본문의 두 겹 구획 머리 후보("모델 이름 | 설정 이름(나머지 전부)"). 글자가 아니라 **칸 구조**로 본다 —
+    모든 칸이 "OOM" 같은 같은 글인 방법 행을 구획으로 오인하지 않게(2026-11-03)."""
+    return [r for r in range(1, len(originals))
+            if len(originals[r]) == 2 and len(grid[r]) > 2 and _span(originals[r][1], 'colspan', MAX_COLUMNS) == len(grid[r]) - 1
+            and _text(originals[r][1], numbers=False)]          # 빈 병합 칸(결과 없는 행)은 구획 이름이 아니다
+
+
 def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
                  originals: list[list[_Node]]) -> int:
     """thead와 열 th를 우선하고, 나머지는 첫 수치·결측 본문 전까지 머리로 본다.
@@ -262,6 +289,16 @@ def _header_rows(grid: list[list[str]], rows: list[tuple[_Node, str, int]],
             count += 1
             continue
         if r and len(cells) == 1 and _span(cells[0], 'colspan', MAX_COLUMNS) == len(grid[r]):
+            break
+        # 첫 칸(모델 이름 또는 빈칸) + 나머지 전폭 한 칸 = 본문 구획 머리 — "Qwen3.5-35B-A3B | Single agent(9칸)"(2026-11-03, 2610.41378 표 1).
+        # 머리로 세면 "Single agent" 가 모든 열 이름에 붙었다. 바로 아래가 수치 행일 때만 — 단위 표시 같은 진짜 머리 행("| Accuracy (%)")과 가른다.
+        # 아래 행은 서식 변환한 글로 본다 — 원 alttext("43.33_{\\color…}")로 보면 수치 행을 못 알아봤다.
+        # 첫 칸(바깥 이름)에 글이 있어야 한다 — "(빈칸) | Accuracy (%)(전폭)" 단위 행 바로 아래가 수치여도 그건 머리다.
+        # 아래 행 첫 칸이 비었거나 같은 이름(세로 병합)이어야 한다 — 첫 칸이 방법 이름인 표("Method | Accuracy (%)" 아래 "Rival | 50.0")에서
+        # 지표 머리를 본문으로 끊지 않게(Codex 검토 2026-11-03).
+        if (r in _group_rows(grid, originals) and _text(cells[0], numbers=False) and r + 1 < len(rows)
+                and any(_numeric_cell(_text(c)) for c in originals[r + 1])
+                and grid[r + 1][0].strip() in ('', grid[r][0].strip())):
             break
         if any(_numeric_cell(t) or t.lower() in _MISSING for t in texts):
             break
@@ -352,7 +389,8 @@ def parse_tables(html: str) -> list[dict]:
                     raise _Limit
                 result.append({'id': figure.attrs.get('id') or f'T{len(result) + 1}',
                                'caption': caption, 'grid': grid,
-                               'header_rows': _header_rows(grid, rows, originals)})
+                               'header_rows': _header_rows(grid, rows, originals),
+                               'group_rows': _group_rows(grid, originals)})
         return result
     except _Limit:
         return []

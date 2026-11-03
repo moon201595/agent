@@ -175,6 +175,9 @@ _LOWER_BETTER_RE = re.compile(r"(?i)(?<![\w-])(?:FID|LPIPS|WER|CER|ADE|FDE|EPE|M
 _HIGHER_HINT_RE = re.compile(r"↑")
 _OURS_RE = re.compile(r"(?i)\bours\b|\(ours\)|\bproposed\b|\bour (?:method|model|approach)\b")
 _MEAN_RE = re.compile(r"(?i)\b(?:mean|avg\.?|average|overall|total|all)\b")
+# 방법이 아니라 다른 행에서 계산한 행 — "Improvement"(우리 − 가장 강한 비교 방법)·"Rel. Improvement"·"Δ". 이름 **전체**가 이 꼴일 때만 —
+# "Gain"·"Delta" 로 시작하는 진짜 방법 이름(결측 보간 GAIN 등)이 있다(2026-11-03, 2610.41378 표 1 의 "Improvement +2.00" 이 비교 방법으로 찍혔다).
+_DERIVED_ROW_RE = re.compile(r"(?i)(?:rel(?:ative|\.)?\s*|abs(?:olute|\.)?\s*)?(?:improvement|improv\.|impr\.|imp\.)\s*(?:\(.*\))?|(?:Δ|\\Delta)\s*(?:\((?![^)]*\b(?:ours?|proposed)\b)[^)]*\))?")   # "Δ (Ours)" 는 방법 이름(Codex 검토 2026-11-03)
 _METHOD_HEADER_RE = re.compile(r"(?i)^(?:methods?|models?|approach(?:es)?|baselines?|settings?|backbone)$")
 _ABLATION_RE = re.compile(r"(?i)\babla(?:tion|te|ting)\b|\bcontribution of\b|\beffect of\b")
 MAX_COLUMNS_PER_KEY = 8          # 한 (벤치마크, 지표)에 열이 이보다 많으면 범주별 열이다 — 평균 열만 쓴다
@@ -350,7 +353,8 @@ def row_blocks(table: dict) -> dict[int, tuple[str, str]]:
     식별자는 행 번호를 포함한다 — 떨어져 되풀이되는 같은 이름("Results")을 한 구획으로 합치지 않는다. 숫자 판정(cell_number)은 쓰지 않는다 —
     "Gemini-3-Flash" 를 3.0 으로 읽어 구획 머리를 놓쳤다(2026-10-13 재생). 글자가 있으면 이름이다."""
     grid = table.get("grid") or []
-    block, out = ("", ""), {}
+    groups = set(table.get("group_rows") or [])         # 칸 구조로 확인한 "첫 칸 + 나머지 전폭" 행(arxiv_tables._group_rows)
+    block, out, outer = ("", ""), {}, ""
     for r in range(table.get("header_rows") or 0, len(grid)):
         row = grid[r]
         first = row[0].strip() if row else ""
@@ -358,6 +362,21 @@ def row_blocks(table: dict) -> dict[int, tuple[str, str]]:
         if first and re.search(r"[^\W\d_]{2,}", first) and rest and (
                 all(not c or c == first for c in rest) or all(_MISSING_CELL_RE.fullmatch(c) for c in rest)):
             label = model_label(first)
+            block = (f"{r}:{label}", label)
+            if all(not c or c == first for c in rest):
+                outer = label          # 전폭 이름 행만 바깥 이름이다 — 결측 방법 행("Failed | - | -")은 경계일 뿐(Codex 검토 2026-11-03)
+            continue
+        # 첫 칸 + 나머지 전폭 같은 글 = 두 겹 구획 머리 — "Qwen3.5-35B-A3B | Single agent…", 그 아래 "(빈칸) | Parallel agents…"(2026-11-03,
+        # 2610.41378 표 1). 첫 칸 이름(태스크 모델)을 바깥 구획으로 잇는다 — 못 가르면 4B 모델의 값이 35B 모델 결과 옆에 "이 논문" 행으로 붙었다.
+        group = rest[0] if r in groups and rest and all(c == rest[0] for c in rest) else ""
+        # 아래 본문 행의 첫 칸이 비었거나(모델 열) 같은 이름(세로 병합)이어야 구획 머리다 — "FailedMethod | OOM(병합)" 아래 "Ours" 처럼
+        # 첫 칸이 방법 이름이면 그건 결과가 상태어뿐인 방법 행이다(Codex 검토 2026-11-03: 구획으로 보면 앞의 Rival 이 비교에서 빠졌다).
+        below = next((grid[k][0].strip() for k in range(r + 1, len(grid)) if k not in groups), None)
+        if (group and re.search(r"[^\W\d_]{2,}", group) and not _MISSING_CELL_RE.fullmatch(group)
+                and below in ("", first if first else outer)):
+            if first:
+                outer = re.sub(r"(?<=\w)- (?=\w)", "-", model_label(first))     # 칸 안 줄바꿈 "Qwen3.5-<br>4B" → "Qwen3.5- 4B"
+            label = f"{outer} · {model_label(group)}" if outer else model_label(group)
             block = (f"{r}:{label}", label)
             continue
         out[r] = block
@@ -664,6 +683,8 @@ def table_results(tables: list[dict], *, method: str, benchmarks: list[str], con
                 model = f"{model_label(arxiv_tables.row_label(t, base_row))} + {model.lstrip('+ ').strip()}"
             if len(re.findall(r"[A-Za-z]", model)) < 2:
                 continue                                    # 이름 없는 행(빈칸·체크 표시뿐) — 누구의 값인지 모른다
+            if _DERIVED_ROW_RE.fullmatch(model.strip()):
+                continue                                    # 계산 행(Improvement·Δ) — 방법이 아니다
             own = own_label(model, method)
             rows.append({"benchmark": bench, "metric": metric, "bench_key": norm_key(bench), "metric_key": metric_key(metric),
                          "direction": direction(joined), "value": cell["value"], "text": cell["text"], "model": model, "own": own,

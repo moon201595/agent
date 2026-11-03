@@ -8446,6 +8446,27 @@ Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 �
       매처가 아직 못 잡는 예(복수로 적은 키워드 "event cameras" 의 단수형)로 바꾸고 "safety policies" 는 탈락 풀에 없어야 한다로 고쳤다. 전체 2007 passed.
     - 남은 것: 복수로 적은 키워드가 단수 표기를 못 잡는 것(위 "event camera"), -f→-ves·-is→-es 같은 불규칙 복수 — 현재 키워드에 해당이 없어 두었다.
 
+274. **에이전트 메일 성능 비교 절이 "62.78_{\color[rgb]{0.45,0.45,0.45} 2.68}" 를 찍고, 비교 방법 값을 글자색 성분 0.45 로 저장했다 — 회색 아래첨자 표준편차·계산 행·두 겹 구획 머리** (2026-11-03, 사용자 지적 · Claude).
+    - 표: arXiv 2610.41378 표 1(WebShop·AppWorld). 설명 "Entries show means, with standard deviations over three seeds in subscripts. Improvement is AOD minus the strongest baseline".
+      결함 다섯: ① 값 alttext `43.17_{{\color[rgb]{0.45,0.45,0.45}\scriptscriptstyle 2.18}}` 를 `math_number_text` 가 못 풀어 원문 노출(10/19 `\scriptstyle` 과 같은 자리)
+      ② 그 칸이 수치로 안 읽혀 행 이름이 값 칸을 삼킴 ③ `cell_number` 가 `43.17_` 을 숫자로 안 보고 다음 수치인 **색 성분 0.45 를 성능값으로 저장**(관측 24행 중 16행)
+      ④ "Improvement" 계산 행이 비교 방법으로 실림 ⑤ "Qwen3.5-35B-A3B | Single agent(나머지 전폭)" 구획 머리 행을 표 머리로 세어 열 이름에 "Single agent" 가 붙고
+      (AOD 는 Parallel agents 구획 방법이다), 태스크 모델 구획을 못 갈라 4B 모델 값이 35B 결과 옆에 "이 논문" 행으로 섞임. ⑤ 는 이번 표기와 무관하게 원래 있던 결함.
+    - 수정: `math_number_text` — `\color`·`\textcolor` 걷기, "수치 _ 수치" → "수치 ± 수치"(수치 아닌 첨자 x_{t}·F_{1} 은 그대로). `performance_results._DERIVED_ROW_RE` —
+      행 이름 전체가 Improvement·Rel. Improvement·Impr.·Δ 꼴이면 결과에서 뺌(GAIN·DeltaNet 은 남김). `arxiv_tables._group_rows` — 칸 구조(첫 칸 + 나머지 전폭 한 칸,
+      글 있음)로 두 겹 구획 머리 후보를 기록(`group_rows`). 머리 판정은 그 행 첫 칸에 글이 있고 바로 아래가 수치 행이면 끊음(단위 행 "(빈칸) | Accuracy (%)" 는 머리 유지).
+      `row_blocks` 는 그 행을 구획 머리로 보고 바깥 이름(태스크 모델)을 이어 "Qwen3.5-35B-A3B · Parallel agents" 로.
+    - 결과 카드: "성능 비교 · WebShop · SR" — AOD 45.50 ± 1.73 vs 같은 구획 LTS (Adapted) 43.50 ± 3.49(차 2.00 = 논문 Improvement 행과 일치), 다른 구획 행은 "다른 구획 참고" 로 구획명 표시.
+    - 재생(최근 관측 26편 원문 HTML, 고치기 전/후 추출): 24편 동일, 2610.41378 의도대로(깨진 28행 → 24행), **2610.41275 의 "\Delta (TRACE - )" own 행 2개** 제거 —
+      차이값(2.03·0.74)이 이 논문 성능으로 잡혀 있던 것. 운영 DB 관측: 두 논문만 다시 추출해 교체(옛 행 `logs/frontier_repair_20261103/*.before.json`). `\color` 행은 그 논문뿐이었다.
+    - 테스트 `test_table_subscript_groups.py` 5건(합성 표, 원문 수치 안 씀) — 안전장치 7개를 하나씩 지우면 실패하는 것을 변이로 확인. `test_arxiv_tables` 의 표 전체 비교에 새 필드
+      `group_rows: []` 를 더했다(출력 필드 추가). 11/03 메일은 다시 보내지 않았다(사용자 "다시 보낼 필요는 없어").
+    - Codex 독립 검토(읽기 전용, 중간 5·낮음 1 — 모두 코드로 확인해 반영): ① "Method | Accuracy (%)(병합)" 지표 머리 아래 바로 "Rival | 50.0" 이면 본문으로 끊음
+      ② "FailedMethod | OOM(병합)" 상태어 방법 행이 구획 머리가 돼 앞의 Rival 이 비교에서 빠짐 → 둘 다 **아래 본문 행 첫 칸이 비었거나 같은 이름(세로 병합)일 때만**
+      ③ 결측 방법 행("Failed | - | -")이 바깥 이름을 덮어씀 → 전폭 이름 행만 바깥 이름 ④ 꾸밈 없는 정수 첨자("87.2_{1}" — 각주·순위일 수 있음)까지 ± 오차로 →
+      소수이거나 작게·색으로 꾸민 첨자만 오차, 그 밖은 "87.2 ₁"(본 값만 수치) ⑤ "Δ (Ours)" 방법 이름까지 계산 행으로 → 괄호 안 ours/proposed 면 남김
+      ⑥ 수치 행 조건을 따로 지키는 테스트가 없었음 → 고침. 테스트 9건, 안전장치 9개 변이 확인, 26편 재생 결과는 DB 에 넣은 값과 같음. 전체 2020 passed.
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
