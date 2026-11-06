@@ -28,6 +28,7 @@ import api_usage
 import batch_summarize
 import digest
 import research_profile
+import scan_search
 import trend_report
 import server
 
@@ -663,6 +664,16 @@ async def record_weekly_diagnostics(db_path: Path, profile_id: str, result: dict
         return None
 
 
+# 아침 순차 실행의 프로필 순서(2026-11-06 사용자 결정 — 우리팀 → 에이전트 → 로봇 → 비전). 그전엔 profile_id 가나다순이라 team_agent 가 맨 앞에서
+# 그날 첫 arXiv 요청의 429 를 맞았다. 목록에 없는 새 프로필은 뒤에 가나다순으로 붙는다.
+DAILY_ORDER = ("team_ai_advance", "team_agent", "team_robot", "team_vision")
+RETRY_GAP_S = 120
+
+
+def daily_order(profile_ids: list[str]) -> list[str]:
+    return [p for p in DAILY_ORDER if p in profile_ids] + sorted(p for p in profile_ids if p not in DAILY_ORDER)
+
+
 async def scan_all_profiles(
     db_path: Path, client: httpx.AsyncClient, max_pages: int = 10,
     send: bool = False,
@@ -680,28 +691,50 @@ async def scan_all_profiles(
     무슨 일이 있었는지 한눈에 보이는 형태."""
     summary: dict[str, dict] = {}
     pending_diagnostics: list[tuple[str, dict]] = []
-    # 매일 도는 프로필만(2026-09-15) — schedule_frequency='manual' 프로필은 cron 이 건드리지 않는다.
-    for profile_id in research_profile.list_profiles(db_path, schedule="daily"):
+
+    async def one(profile_id: str) -> None:
+        result, digest_text = await scan_and_digest(db_path, profile_id, client, max_pages=max_pages)
+        entry = {
+            "status": "ok", "run_status": result["run_status"],
+            "s2_status": result.get("s2_status"),
+            "candidates_found": result["candidates_found"],
+            "scored_count": result["scored_count"],
+        }
+        if send:
+            message = _deliver(db_path, profile_id, result, digest_text)
+            entry["delivery"] = message
+            # **실제로 사람에게 간 날만 소비 처리한다**(§8-77).
+            # 실패한 날도, 수신자가 없어 안 보낸 날도 그 논문은 내일 후보로
+            # 남아 다시 나갈 기회를 갖는다.
+            if delivery_reached_someone(message):
+                research_profile.mark_shown(
+                    db_path, profile_id, result.get("papers") or [])
+        summary[profile_id] = entry
+        pending_diagnostics.append((profile_id, result))
+
+    # 매일 도는 프로필만(2026-09-15) — schedule_frequency='manual' 프로필은 cron 이 건드리지 않는다. 순서는 고정(`daily_order`).
+    deferred: list[tuple[str, float]] = []
+    for profile_id in daily_order(research_profile.list_profiles(db_path, schedule="daily")):
+        token = scan_search.ARXIV_DEFER.set(True)       # 첫 바퀴: arXiv 가 통째로 실패하면 S2·요약 전에 멈추고 뒤로 미룬다
         try:
-            result, digest_text = await scan_and_digest(db_path, profile_id, client, max_pages=max_pages)
-            entry = {
-                "status": "ok", "run_status": result["run_status"],
-                "s2_status": result.get("s2_status"),
-                "candidates_found": result["candidates_found"],
-                "scored_count": result["scored_count"],
-            }
-            if send:
-                message = _deliver(db_path, profile_id, result, digest_text)
-                entry["delivery"] = message
-                # **실제로 사람에게 간 날만 소비 처리한다**(§8-77).
-                # 실패한 날도, 수신자가 없어 안 보낸 날도 그 논문은 내일 후보로
-                # 남아 다시 나갈 기회를 갖는다.
-                if delivery_reached_someone(message):
-                    research_profile.mark_shown(
-                        db_path, profile_id, result.get("papers") or [])
-            summary[profile_id] = entry
-            pending_diagnostics.append((profile_id, result))
+            await one(profile_id)
+        except scan_search.ArxivDeferred as e:
+            deferred.append((profile_id, time.monotonic()))
+            summary[profile_id] = {"status": "deferred", "detail": str(e)}
         except Exception as e:  # noqa: BLE001 — 한 프로필의 실패가 나머지를 막으면 안 됨
+            summary[profile_id] = {"status": "error", "detail": str(e)}
+        finally:
+            scan_search.ARXIV_DEFER.reset(token)
+    # 미룬 프로필은 한 번만 다시 돈다 — 이번엔 미루지 않으므로 arXiv 가 또 실패해도 S2 만으로 메일은 나간다(규칙 6). 실패 직후 바로 다시 부르면
+    # 같은 429 를 맞으니 실패 시점에서 RETRY_GAP_S 는 띄운다(앞 프로필이 많으면 이미 지나 있다).
+    for profile_id, failed_at in deferred:
+        wait = RETRY_GAP_S - (time.monotonic() - failed_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        print(f"  [순서] {profile_id}: arXiv 실패로 미뤘던 프로필을 다시 돈다")
+        try:
+            await one(profile_id)
+        except Exception as e:  # noqa: BLE001
             summary[profile_id] = {"status": "error", "detail": str(e)}
 
     # **모든 메일이 나간 뒤에 한 번**(2026-09-20 2차 지적). 프로필 루프 안에 두면 첫 메일만 안 기다리고

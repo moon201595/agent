@@ -217,7 +217,7 @@ def test_스캔_기록이_없으면_미측정이고_있으면_0편과_미시도�
     a = sig.seed_attempts(db, "p", start, end)
     assert a["zero"]["done"] == 1 and a["broken"]["failed"] == 1 and a["starved"]["not_attempted"] == 1
     h = sig.scan_health(db, "p", start, end)
-    assert h == {"scans": 1, "observed": 1, "failed": 0, "incomplete": 0}
+    assert h == {"scans": 1, "observed": 1, "failed": 0, "incomplete": 0, "deferred": 0}
     text = "\n".join(sig.format_signals(sig.seed_yield(db, "p", start, end), None, None, a, h))
     # 표 행: 시드 | 시도 | 완료 | 부분 | 실패 | 예산에 밀려 미시도 | 반환 합계 — 셋이 각자 다른 칸에 1
     assert "| zero | 1 | 1 | 0 | 0 | 0 | 0 |" in text

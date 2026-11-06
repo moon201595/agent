@@ -1017,6 +1017,12 @@ def begin_scan(db_path: Path, profile_id: str, profile: dict,
     return scan_id
 
 
+# 아침 첫 바퀴에서 arXiv 가 통째로 실패해 뒤로 미룬 시도의 표식(2026-11-06, scan_search.ArxivDeferred). 미룬 시도는 닫힌 기록으로 남긴다 —
+# 닫지 않으면 재시도가 성공해도 관측·건강 집계에 '미완'으로 영구히 남았다(Codex 검토). 관측 집계는 이 표식을 '저장 실패'와 따로 센다.
+DEFERRED_SCAN_PREFIX = "deferred:"
+DEFERRED_SCAN_NOTE = DEFERRED_SCAN_PREFIX + " arXiv 실패 — 같은 실행 안에서 다시 돈다"
+
+
 def finish_scan(db_path: Path, scan_id: str, *, arxiv_run_id: str | None = None,
                 s2_run_id: str | None = None, seed_attempts: list | None = None,
                 observations: int | None = None, observation_error: str | None = None) -> None:

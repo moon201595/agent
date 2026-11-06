@@ -192,10 +192,13 @@ def scan_health(db: Path, profile_id: str, start: datetime, end: datetime) -> di
             (profile_id, start.isoformat(), end.isoformat())).fetchall()
     if not rows:
         return None
+    # 아침 첫 바퀴에서 arXiv 실패로 미룬 시도(같은 실행에서 다시 돈다)는 '저장 실패'와 따로 센다(2026-11-06).
+    deferred = sum(1 for o, e in rows if e and e.startswith(research_profile.DEFERRED_SCAN_PREFIX))
     return {"scans": len(rows),
             "observed": sum(1 for o, e in rows if o is not None),
-            "failed": sum(1 for o, e in rows if e),
-            "incomplete": sum(1 for o, e in rows if o is None and not e)}
+            "failed": sum(1 for o, e in rows if e) - deferred,
+            "incomplete": sum(1 for o, e in rows if o is None and not e),
+            "deferred": deferred}
 
 
 def format_signals(seed: dict | None, source: dict | None, filters: dict | None,
@@ -213,7 +216,8 @@ def format_signals(seed: dict | None, source: dict | None, filters: dict | None,
         return lines
     lines.append(f"  실행 : 스캔 {health['scans']}회 · 관측 저장 {health['observed']}회"
                  + (f" · 저장 실패 {health['failed']}회" if health['failed'] else "")
-                 + (f" · 미완 {health['incomplete']}회" if health['incomplete'] else ""))
+                 + (f" · 미완 {health['incomplete']}회" if health['incomplete'] else "")
+                 + (f" · arXiv 실패로 미뤘다 다시 돈 시도 {health['deferred']}회" if health.get('deferred') else ""))
     if attempts:
         lines += ["", "▶ S2 시드별 시도"]
         lines += table_lines(["시드", "시도", "완료", "부분", "실패", "예산에 밀려 미시도", "반환 합계"],

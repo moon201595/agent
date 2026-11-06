@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import closing
 
+import contextvars
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,22 @@ def _arxiv_query_from_core_topics(core_topics: list[str]) -> str:
 # 30여 초에서 서버가 포기한다. 그날 우리팀 프로필의 arXiv 검색이 통째로 실패해 S2 만으로 갔다. 환경변수로 덮을 수 있다.
 ARXIV_TERMS_PER_QUERY = int(os.environ.get("ARXIV_TERMS_PER_QUERY", 20))
 
+# 아침 순차 실행의 첫 바퀴에서만 켠다(`run_profile_scan.scan_all_profiles`). 켜져 있으면 arXiv 검색이 **통째로** 실패한 프로필은 S2·선별·요약 전에
+# 멈추고 `ArxivDeferred` 를 올린다 — 다른 프로필을 다 돈 뒤 한 번 더 돈다. 그날 첫 arXiv 요청이 429 를 받아 90초 안에 안 풀리면 맨 앞 프로필만
+# arXiv 를 잃었다(10/22·11/04·11/06, 셋 다 그때 맨 앞이던 team_agent). 뒤 프로필은 몇 분 뒤라 통과했다. 함수 인자가 아니라 실행 맥락 값인 이유:
+# 테스트들이 scan_profile 을 고정 시그니처 가짜로 바꿔 끼운다.
+ARXIV_DEFER: contextvars.ContextVar[bool] = contextvars.ContextVar("arxiv_defer", default=False)
+
+
+class ArxivDeferred(RuntimeError):
+    """arXiv 검색이 통째로 실패해 이 프로필을 뒤로 미룬다 — `ARXIV_DEFER` 가 켜져 있을 때만."""
+
+
+def _first_line(error: BaseException, limit: int) -> str:
+    """예외 메시지 첫 줄. 메시지가 빈 예외(타임아웃 등)에서 `str(e).splitlines()[0]` 이 IndexError 를 내 **남은 질의를 건너뛰고** 진짜 원인을
+    가렸다(11/04·11/06 로그 "IndexError: list index out of range") — 빈 메시지는 빈 줄로 둔다."""
+    return (str(error).splitlines() or [""])[0][:limit]
+
 
 def _arxiv_queries_from_core_topics(core_topics: list[str], per_query: int = ARXIV_TERMS_PER_QUERY) -> list[str]:
     """core_topics 를 per_query 개 이하씩 **고르게** 갈라 질의 목록으로. 20개 이하면 종전처럼 하나다.
@@ -64,7 +81,7 @@ async def _search_arxiv_chunked(client: httpx.AsyncClient, queries: list[str], s
         try:
             r = await find_new_papers.find_new_papers_since(client, q, since, page_size=page_size, max_pages=max_pages)
         except Exception as e:  # noqa: BLE001 — 질의 하나가 죽어도 나머지는 던진다
-            errors.append(f"{type(e).__name__}: {str(e).splitlines()[0][:120]}")
+            errors.append(f"{type(e).__name__}: {_first_line(e, 120)}")
             continue
         papers += r["papers"]
         statuses.append(r["status"])
@@ -174,11 +191,16 @@ async def scan_profile(
     try:
         result = await _search_arxiv_chunked(client, queries, since, page_size or ARXIV_PAGE_SIZE, max_pages)
     except Exception as e:  # noqa: BLE001 — 실패도 search_runs 에 남기고 계속 간다
-        arxiv_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+        arxiv_error = f"{type(e).__name__}: {_first_line(e, 200)}"
         arxiv_run_id = research_profile.record_run(
             db_path, profile_id, "arxiv", query, since, until,
             "failed", 0, error_detail=str(e), signature=signature,
         )
+        if ARXIV_DEFER.get():
+            research_profile.finish_scan(db_path, scan_id, arxiv_run_id=arxiv_run_id,
+                                         observation_error=research_profile.DEFERRED_SCAN_NOTE)
+            print(f"  [경고] arXiv 검색 실패 — 다른 프로필 뒤에 한 번 더 돈다: {arxiv_error}")
+            raise ArxivDeferred(arxiv_error)
         print(f"  [경고] arXiv 검색 실패 — S2 만으로 이어간다: {arxiv_error}")
     else:
         arxiv_papers = result["papers"]
@@ -222,7 +244,7 @@ async def scan_profile(
                 "failed", 0, error_detail=str(e), signature=s2_signature,
             )
             print(f"  [경고] S2 검색 실패 — arXiv 만으로 이어간다: "
-                  f"{type(e).__name__}: {str(e).splitlines()[0][:150]}")
+                  f"{type(e).__name__}: {_first_line(e, 150)}")
         else:
             s2_papers = s2_result["papers"]
             s2_status = s2_result["status"]
@@ -399,9 +421,10 @@ async def scan_profile(
             seed_attempts=(s2_result or {}).get("per_keyword") if s2_keywords else [],
             observations=n)
         print(f"  [관측] {n}편을 스캔 {scan_id} 에 묶어 남겼다")
-        # 이 실행의 관측 묶음 id 를 결과에 실어 둔다 — 동향 서술 보관이 "어느 스캔의 글인지"를
-        # 가리키려면 필요하다(2026-09-18, §8-162). 없으면 나중에 글과 관측을 못 잇는다.
-        result["scan_id"] = scan_id
+        # 2026-09-18(§8-162) 에 여기서 `result["scan_id"] = scan_id` 로 관측 묶음 id 를 결과에 실으려 했는데, `result` 는 반환값이 아니라
+        # **arXiv 검색 결과** 변수였다 — 반환 dict 에는 한 번도 안 실렸고(하류의 result.get("scan_id") 는 늘 None), arXiv 가 실패한 날은
+        # UnboundLocalError 로 이 블록이 끊겨 관측이 저장되고도 '실패'로 남고 건강 얼리기를 건너뛰었다(2026-11-06 발견). 그 줄만 뺐다 —
+        # 반환에 실제로 싣는 것은 하류(동향 서술 보관·일일 링크)의 동작을 바꾸므로 따로 정한다(PROGRESS §275).
         # 건강 지표 입력을 **지금** 얼린다(§8-96): anchor/auto 는 이 시점 이력으로, 반사실
         # 상위 K 는 이 시점 채점 코드로. 나중에 세면 둘 다 그 뒤 이력·코드에 따라 흔들린다.
         # 관측 저장이 확정된 **뒤** 별도 try — 얼리기 실패가 "관측 저장 실패"로 둔갑하면
