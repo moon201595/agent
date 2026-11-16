@@ -596,3 +596,99 @@ def test_korean_ratio_ignores_code_identifiers_and_api_filter_has_word_bounds(tm
     assert not rac._API_LIKE_RE.search("Aggregated 데이터 예제를 제공합니다")
     assert not rac._API_LIKE_RE.search("Gated Recurrent Unit 예제를 제공합니다")
     assert rac._API_LIKE_RE.search("접근이 gated 로 막혀 있음") and rac._API_LIKE_RE.search("Licensed under MIT")
+
+
+# ── 2026-11-15: gh 호출 — 걸러 받기·재시도·오류 원문·스팸 설명 ─────────────────────
+
+def _gh_fetcher(monkeypatch, replies):
+    """실제 `_gh`·`github_search` 를 가짜 subprocess 로 탄다(네트워크 없음). replies: (rc, stdout, stderr) 차례."""
+    import contextlib
+    import subprocess as sp
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        rc, out, err = replies[len(calls) - 1]
+        return sp.CompletedProcess(argv, rc, out, err)
+
+    monkeypatch.setattr(rac.NetFetcher, "_gh", rac._real_net_gh)
+    monkeypatch.setattr(rac, "_gh_executable", lambda: "/fake/gh")
+    monkeypatch.setattr(rac.subprocess, "run", fake_run)
+    monkeypatch.setattr(rac.time, "sleep", lambda s: sleeps.append(s))
+    fetcher = rac.NetFetcher(rac.Budget())
+    fetcher.pacer = type("P", (), {"gate": staticmethod(contextlib.nullcontext)})()
+    return fetcher, calls, sleeps
+
+
+def test_github_search_filters_fields_and_retries_once(monkeypatch):
+    """검색 응답을 통째로 받아(--jq 없음) 스팸 설명에 40만 자 상한을 넘거나, 한 번 실패에 바로 포기하거나(11/12·13 아침), 재시도 전에 기다리지 않으면 실패한다."""
+    ok = json.dumps([{"full_name": "o/r", "description": "d", "description_chars": 1}])
+    fetcher, calls, sleeps = _gh_fetcher(monkeypatch, [(1, "", "HTTP 502: Bad Gateway\nmore"), (0, ok, "")])
+    assert fetcher.github_search("robosuite") == [{"full_name": "o/r", "description": "d", "description_chars": 1}]
+    assert len(calls) == 2 and "--jq" in calls[0] and calls[0][calls[0].index("--jq") + 1] == rac._SEARCH_JQ
+    assert sleeps == [rac.GH_RETRY_WAIT_S]
+
+
+def test_gh_error_keeps_masked_stderr_and_bad_json_is_one_query_failure(monkeypatch):
+    """두 번 다 실패했을 때 오류 원문(stderr 첫 줄)을 버리거나 토큰을 그대로 남기면, 깨진 JSON 을 JSONDecodeError 로 올려 그날 수집을 죽이면 실패한다."""
+    bad = "HTTP 401: Bad credentials ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    fetcher, _, _ = _gh_fetcher(monkeypatch, [(1, "", bad), (1, "", bad)])
+    with pytest.raises(rac.CollectError) as err:
+        fetcher.github_search("x")
+    assert err.value.code == "gh_error" and "Bad credentials" in err.value.detail and "ghp_" not in err.value.detail
+    fetcher, _, _ = _gh_fetcher(monkeypatch, [(0, '[{"full_name": "o/r"', "")])
+    with pytest.raises(rac.CollectError) as err:
+        fetcher.github_search("x")
+    assert err.value.code == "gh_bad_json"
+
+
+def test_oversized_api_reply_is_an_error_but_readme_is_trimmed(monkeypatch):
+    """API 응답(JSON)을 상한에서 잘라 깨진 JSON 을 넘기거나, README(글)를 상한 때문에 실패로 버리면 실패한다."""
+    big = "x" * (rac.FETCH_MAX_BYTES + 10)
+    fetcher, _, _ = _gh_fetcher(monkeypatch, [(0, big, "")])
+    with pytest.raises(rac.CollectError) as err:
+        fetcher.github_search("x")
+    assert err.value.code == "gh_too_large"
+    fetcher, _, _ = _gh_fetcher(monkeypatch, [(0, big, "")])
+    assert len(fetcher.github_readme("o/r")) == rac.FETCH_MAX_BYTES
+
+
+def test_spam_description_repo_is_not_a_candidate(tmp_path):
+    """설명란이 비정상적으로 긴(스팸) 저장소를 후보로 올리면 실패한다 — 그런 저장소가 응답을 40만 자 넘게 부풀렸다."""
+    _setup(tmp_path)
+    spam = {"full_name": "spam/pancake", "html_url": "https://github.com/spam/pancake", "description": "x" * 500,
+            "description_chars": 240_000, "fork": False, "stargazers_count": 10_000}
+    normal = FakeFetcher().items[0]
+    runner = FakeRunner(picks=[])
+    rac.run(tmp_path, today=DAY, fetcher=FakeFetcher(items=[spam, normal]), runner=runner)
+    assert [c["cid"] for c in runner.select_payloads[0]["candidates"]] == ["gh:dexsuite/dex-retargeting"]
+
+
+def test_permanent_gh_error_and_no_budget_do_not_wait(monkeypatch):
+    """README 없음(404)·인증 실패(401)까지 15초 기다려 다시 하거나, 남은 요청·시간이 없는데 기다리면 실패한다(Codex 검토 2026-11-15)."""
+    fetcher, calls, sleeps = _gh_fetcher(monkeypatch, [(1, "", "gh: Not Found (HTTP 404)"), (0, "never", "")])
+    with pytest.raises(rac.CollectError):
+        fetcher.github_readme("o/r")
+    assert len(calls) == 1 and sleeps == []
+    fetcher, calls, sleeps = _gh_fetcher(monkeypatch, [(1, "", "HTTP 502: Bad Gateway"), (0, "[]", "")])
+    fetcher.budget = rac.Budget(requests=1)
+    with pytest.raises(rac.CollectError):
+        fetcher.github_search("x")
+    assert len(calls) == 1 and sleeps == []
+    now = [0.0]
+    fetcher, calls, sleeps = _gh_fetcher(monkeypatch, [(1, "", "HTTP 502: Bad Gateway"), (0, "[]", "")])
+    fetcher.budget = rac.Budget(deadline_s=rac.GH_RETRY_WAIT_S + rac.HTTP_TIMEOUT_S, clock=lambda: now[0])
+    with pytest.raises(rac.CollectError):
+        fetcher.github_search("x")
+    assert len(calls) == 1 and sleeps == []
+
+
+def test_long_description_is_kept_for_paper_link_but_cut_for_model():
+    """설명을 500자에서 잘라 그 뒤의 arXiv 링크로 논문을 못 찾게 하거나, 모델 입력에 긴 설명을 통째로 넣으면 실패한다(Codex 검토 2026-11-15)."""
+    assert "[:2000]" in rac._SEARCH_JQ
+    desc = "x" * 900 + " https://arxiv.org/abs/2401.12345"
+    assert rac.related_arxiv_id("", {"description": desc}) == "2401.12345"
+    cand = {"cid": "gh:o/r", "kind": "github", "title": "o/r", "description": desc, "source_text": "", "arxiv": None}
+    payload = json.loads(rac.select_payload(rac.Task("p", "T", "t", "n", ["q"]), [cand]))
+    assert len(payload["candidates"][0]["description"]) == 500

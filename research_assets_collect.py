@@ -51,6 +51,16 @@ MIN_QUOTE = 15
 MIN_EVIDENCE = 2
 KOREAN_MIN_RATIO = 0.3           # 소개문 문장의 한글 비율 하한 — 자료 이름·인용 영어는 남아도 문장은 한국어여야 한다
 GITHUB_SEARCH_MIN_INTERVAL = 2.5
+GH_RETRY_WAIT_S = 15
+# 다시 해도 같은 결과인 gh 오류 — 재시도하지 않는다. 403 은 한도 초과일 수 있어 빼 두었다(일시 오류로 보고 다시 한다).
+_GH_PERMANENT_RE = re.compile(r"HTTP (?:400|401|404|410|422)\b")
+# 검색 결과에서 수집기가 쓰는 칸만(gather_candidates·select_payload·api_facts) — gh 가 걸러 응답이 수십 분의 일로 준다.
+# 설명은 앞 2000자만 받고(모델 입력에서는 500자로 줄인다 — 그 뒤의 arXiv 링크로 논문을 찾는 경로는 살린다, Codex 검토) 원래 길이를 따로 받는다 — 설명란이 24만·11만 자인 스팸 저장소가 검색 결과에 섞여 응답을 40만 자 넘게 부풀렸다
+# (2026-11-15 실측, "decision table"·"plan execution monitoring"). 원래 설명이 SPAM_DESCRIPTION_CHARS 를 넘는 저장소는 후보에서 뺀다.
+_SEARCH_JQ = ("[.items[] | {full_name, html_url, fork, archived, stargazers_count, pushed_at, homepage,"
+              " description: ((.description // \"\")[:2000]), description_chars: ((.description // \"\") | length),"
+              " license: (if .license then {spdx_id: .license.spdx_id} else null end)}]")
+SPAM_DESCRIPTION_CHARS = 2_000
 
 # 정보만 준다(v5-7, 사용자 10/24·10/26) — 팀 환경에서 되는지·도입·적용·실험 순서는 연구자가 판단한다. 이런 말이 들어간 소개문은 버린다.
 JUDGMENT_PHRASES = ("우리", "팀 ", "팀의", "도입하", "적용하기", "적합", "추천", "바로 쓸", "써 보", "해 보", "시도해", "논의해", "쉽게 시작")
@@ -101,6 +111,7 @@ class CollectError(RuntimeError):
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code = code
+        self.detail = detail
 
 
 # ── 외부 조회 ────────────────────────────────────────────────────────────────
@@ -137,6 +148,14 @@ class Fetcher(Protocol):
     def arxiv(self, arxiv_id: str) -> dict | None: ...
 
 
+_TOKENISH_RE = re.compile(r"(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+|[A-Za-z0-9_\-]{32,}")
+
+
+def secret_free(text: str) -> str:
+    """로그에 남기는 외부 오류 문구에서 토큰처럼 생긴 것을 가린다(규칙 5) — gh 는 보통 토큰을 안 찍지만 막아 둔다."""
+    return _TOKENISH_RE.sub("***", text or "")
+
+
 def _gh_executable() -> str | None:
     """cron 의 PATH 에는 ~/.local/bin 이 없다(code_finder 2026-09-16 실측) — 설치 위치를 직접 찾는다. code_finder 를 import 하면
     MCP 서버 모듈까지 따라 올라와서 같은 판정만 여기 둔다."""
@@ -157,20 +176,40 @@ class NetFetcher:
         self.transport = transport      # 테스트가 httpx.MockTransport 를 넣는다 — 실제 받기 경로(넘겨주기·조각 검사)를 그대로 탄다
         self.pacer = pacing.SyncPacer(GITHUB_SEARCH_MIN_INTERVAL)
 
-    def _gh(self, path: str, raw: bool = False) -> str:
+    def _gh(self, path: str, raw: bool = False, jq: str | None = None) -> str:
+        """gh api 한 번(실패하면 GH_RETRY_WAIT_S 뒤 한 번 더). 2026-11-15:
+        - 오류 원문(stderr 첫 줄)을 남긴다 — 11/12·11/13 아침 검색이 전부 gh_error(rc=1)로만 찍혀 원인을 알 수 없었다.
+        - 실패하면 한 번 더 — 같은 날 손으로 돌리면 됐다(일시 장애로 추정, 원인 미확인).
+        - `jq` 를 주면 gh 가 필요한 칸만 걸러 준다 — 검색 응답 원문이 40만 자를 넘는 날("decision table" 40.1만 자) 수신 상한에서 잘린
+          JSON 이 JSONDecodeError 로 그날 수집을 통째로 죽였다(11/09~11/11). 걸러도 상한을 넘으면 자르지 않고 실패로 올린다 — 잘린 JSON 은 쓸모없다.
+          README 원문(raw)은 글이라 앞부분만 잘라 써도 된다."""
         gh = _gh_executable()
         if not gh:
             raise CollectError("gh_missing")
-        self.budget.take()
-        argv = [gh, "api", path] + (["-H", "Accept: application/vnd.github.raw"] if raw else [])
-        try:
-            with self.pacer.gate():
-                done = subprocess.run(argv, capture_output=True, text=True, timeout=HTTP_TIMEOUT_S, check=False)
-        except subprocess.TimeoutExpired:
-            raise CollectError("gh_timeout")
-        if done.returncode != 0:
-            raise CollectError("gh_error", f"rc={done.returncode}")
-        return done.stdout[:FETCH_MAX_BYTES]
+        argv = ([gh, "api", path] + (["-H", "Accept: application/vnd.github.raw"] if raw else [])
+                + (["--jq", jq] if jq else []))
+        for attempt in range(2):
+            self.budget.take()
+            try:
+                with self.pacer.gate():
+                    done = subprocess.run(argv, capture_output=True, text=True, timeout=HTTP_TIMEOUT_S, check=False)
+            except subprocess.TimeoutExpired:
+                error = CollectError("gh_timeout")
+            else:
+                if done.returncode == 0:
+                    if not raw and len(done.stdout) > FETCH_MAX_BYTES:
+                        raise CollectError("gh_too_large", f"{len(done.stdout)}자")
+                    return done.stdout[:FETCH_MAX_BYTES]
+                first = (done.stderr.strip().splitlines() or [""])[0]
+                error = CollectError("gh_error", f"rc={done.returncode} {secret_free(first)[:160]}".strip())
+                if _GH_PERMANENT_RE.search(done.stderr or ""):
+                    raise error         # README 없음(404)·인증 실패(401) 같은 오류는 다시 해도 같다 — 15초씩 낭비하지 않는다(Codex 검토)
+            # 다시 할 여력(요청 하나·대기+요청 시간)이 없으면 기다리지 않는다(Codex 검토).
+            if attempt == 0 and self.budget.left > 0 and self.budget.remaining() > GH_RETRY_WAIT_S + HTTP_TIMEOUT_S:
+                time.sleep(GH_RETRY_WAIT_S)
+                continue
+            break
+        raise error
 
     def _get(self, url: str) -> str:
         """넘겨주기를 손으로 따라간다 — httpx 가 자동으로 따라가면 중간 응답 본문을 다 읽은 **뒤라** 마감·크기 검사 밖이었다(Codex 재검토
@@ -200,8 +239,12 @@ class NetFetcher:
         raise CollectError("http_redirects")
 
     def github_search(self, query: str) -> list[dict]:
-        text = self._gh(f"search/repositories?q={quote(query)}&sort=stars&order=desc&per_page={GITHUB_PER_QUERY}")
-        return list(json.loads(text).get("items") or [])
+        text = self._gh(f"search/repositories?q={quote(query)}&sort=stars&order=desc&per_page={GITHUB_PER_QUERY}", jq=_SEARCH_JQ)
+        try:
+            items = json.loads(text)
+        except json.JSONDecodeError:
+            raise CollectError("gh_bad_json")       # 검색어 하나의 깨진 응답이 그날 수집 전체를 죽이지 않게 — 그 검색어만 실패로
+        return list(items) if isinstance(items, list) else []
 
     def github_readme(self, full_name: str) -> str:
         return self._gh(f"repos/{full_name}/readme", raw=True)
@@ -450,13 +493,14 @@ def gather_candidates(task: Task, fetcher: Fetcher, known: set[str]) -> list[dic
         except CollectError as error:
             if error.code.startswith("budget"):
                 raise
-            print(f"  [참고 자료] {task.task_id} GitHub 검색 실패({error.code})")
+            print(f"  [참고 자료] {task.task_id} GitHub 검색 실패({error.code}{': ' + error.detail if error.detail else ''}) — 검색어 {query!r}")
             continue
         searched += 1
         for item in items:
             full = str(item.get("full_name") or "")
             cid = f"gh:{full}"
-            if not full or item.get("fork") or "awesome" in full.lower() or cid in known:
+            if (not full or item.get("fork") or "awesome" in full.lower() or cid in known
+                    or (item.get("description_chars") or 0) > SPAM_DESCRIPTION_CHARS):
                 continue
             hits[cid] = hits.get(cid, 0) + 1
             seen.setdefault(cid, item)
@@ -642,7 +686,7 @@ def select_payload(task: Task, candidates: list[dict]) -> str:
     rows = []
     for cand in candidates:
         rows.append({
-            "cid": cand["cid"], "kind": cand["kind"], "title": cand["title"], "description": cand.get("description") or "",
+            "cid": cand["cid"], "kind": cand["kind"], "title": cand["title"], "description": (cand.get("description") or "")[:500],
             "archived": cand.get("archived", False),
             "text": (cand.get("source_text") or "")[:README_FOR_MODEL],
             "paper_abstract": (cand.get("arxiv") or {}).get("summary") or "",

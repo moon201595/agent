@@ -88,6 +88,7 @@ def _no_real_research_assets_collect(monkeypatch):
     if not hasattr(rac, "_real_cli"):
         rac._real_cli = rac._cli
         rac._real_net_get = rac.NetFetcher._get      # 받기 경로를 MockTransport 로 보는 테스트가 되살린다
+        rac._real_net_gh = rac.NetFetcher._gh        # gh 호출 경로(재시도·걸러 받기)를 가짜 subprocess 로 보는 테스트가 되살린다
     monkeypatch.setattr(rac, "_cli", refuse)
     monkeypatch.setattr(rac.NetFetcher, "_gh", refuse)
     monkeypatch.setattr(rac.NetFetcher, "_get", refuse)

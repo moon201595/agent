@@ -8486,6 +8486,19 @@ Microsoft PowerPoint COM 읽기 전용 열기/1920×1080 렌더28장/텍스트 �
       그 줄만 뺐다(성공한 날 동작은 그대로). **반환 dict 에 scan_id 가 원래부터 없어 하류(동향 서술 보관·일일 링크 `result.get("scan_id")`)는 7주째 None** —
       실제로 싣는 것은 하류 동작을 바꾸므로 따로 정한다(열린 것). 테스트 7건, 검토 반영 4개·되살림 1개 변이 확인, 전체 2027 passed.
 
+276. **참고 자료 수집이 11/09 부터 매일 죽었다 — 스팸 저장소 설명(24만 자)이 검색 응답을 40만 자 상한 너머로 부풀려 잘린 JSON 이 수집 전체를 죽였고, 11/12·13 은 gh 검색이 전부 실패했다; 과업 13개로 교체·수신자 추가** (2026-11-15, 사용자 결정 · Claude).
+    - 실측: 11/09~11 "수집 실패: JSONDecodeError" — "decision table" 검색 응답 400,654자 > FETCH_MAX_BYTES(400,000) 에서 잘림. 원인은 설명란 242,923자(Sfedfcv/redesigned-pancake)·
+      113,511자 스팸 저장소. 11/12·13 아침은 수집기·스캔(code_finder) gh 검색이 모두 rc=1 — 오류 원문을 버려 로그로는 몰랐지만, 같은 실행의 arXiv·S2·반응 수집이
+      "Temporary failure in name resolution"(DNS)로 함께 죽었다(11/12 7회·11/13 전부) → **WSL 네트워크 끊김**으로 본다. 그날 메일도 3개 프로필이 exit 1. 결과로 안 보낸 ready 자료가 에이전트 0·로봇 1건까지 줄었다.
+    - 수정(research_assets_collect): 검색은 `gh api --jq` 로 쓰는 칸만(설명 2000자·원래 길이, 모델 입력은 500자) — 4~5천 자로 준다. 설명 2000자 초과 저장소는 후보 제외.
+      JSON API 응답이 상한을 넘으면 자르지 않고 `gh_too_large`, 깨진 JSON 은 `gh_bad_json`(그 검색어만 실패). gh 실패는 stderr 첫 줄(토큰 모양 가림)을 남기고,
+      일시 오류만 15초 뒤 한 번 더(404·401 등은 바로 실패, 요청·시간 여력 없으면 안 기다림). 테스트 +7, 장치 13개 변이 확인. Codex 적대적 검토(높음 0·중간 1·낮음 3) 모두 반영.
+    - 과업: 옛 RB-01~06·AG-01~05 를 버리고 로봇 과제 계획(robot-task-agent PLAN 11/14)에 맞춘 13개(RB-07~12·AG-06~12)로 교체(옛 목록 `tasks.before_2026-11-15.json`).
+      검색어는 초안을 GitHub 저장소 검색으로 실제 돌려 고쳤다 — 저장소 검색은 이름·설명·토픽만 봐서 설명형 문장("success detection vision language" 2건, "robot execution
+      log replay" 0건)은 후보가 안 모이고, "unified-planning"·"agent guardrails" 는 무관한 저장소가 상위를 채웠다. 도구 이름(aiplan4eu·py_trees·LIBERO-Plus·easy_handeye 등)으로
+      바꿔 대표 저장소가 상위에 오는 것을 확인했다. 수집기는 앞 3개만 쓴다. RB-09(실패 감지·성공 판정)는 고쳐도 결과가 얇다 — 논문 중심 주제.
+    - 수신자: 사용자 지시로 jowonji·apple…(로봇만 받던 팀원) 을 에이전트 프로필에도 더했다 — 이제 두 프로필 수신자가 같다(백업 data/backups/papers_before_recipients_2026-11-15.db).
+
 ## 9. 폐기된 것
 
 `~/agents-retired` — 파이프라인을 직접 오케스트레이션하던 초기 구현. `pipeline.py` 가 ①~⑤ 를 `for` 루프로 돌리는 구조였고, 이는 "오케스트레이션 코드를 쓰지 않는다"는 설계와 정면으로 어긋났다.
