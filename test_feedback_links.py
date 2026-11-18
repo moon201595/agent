@@ -344,6 +344,18 @@ def test_relay_page_source_has_no_endpoint_or_secret():
     assert '<meta name="referrer" content="no-referrer">' in src.split("</head>", 1)[0]   # 2026-10-12: 주소창 토큰이 Referer 로 새지 않게
 
 
+def test_relay_page_closes_without_waiting_and_does_not_resend():
+    """2026-11-18(응답을 기다려 닫으면 약 4초 — 사용자: "너무 느리다"). 이 테스트가 잡는 것: 기록 요청에서 keepalive 가 빠져 탭을 닫으면 요청이
+    끊기는 것, 닫기가 응답을 기다리는 쪽으로 되돌아가는 것, 닫히는 탭의 끊긴 응답을 실패로 보고 예비 요청을 다시 보내 같은 반응이 두 번 남는 것(실측 2건)."""
+    from pathlib import Path
+    code = Path("web/reaction/index.html").read_text(encoding="utf-8").split("<script>", 1)[1]
+    first = code.index("fetch(url, opts)")
+    assert "keepalive: true" in code[code.index("var opts"):first]
+    assert code.index("setTimeout(shut,", first) < code.index(".then(", first)          # 응답 처리보다 먼저 닫기를 건다
+    catch = code[code.index(".catch(", first):]
+    assert catch.index("if (window.closed) return;") < catch.index("fetch(url")       # 닫히는 중이면 다시 보내지 않는다
+
+
 def test_relay_page_must_be_github_pages(configured, db, monkeypatch):
     """Codex 검토(2026-09-16 P1). 이 테스트가 잡는 것: 임의 https 주소를 중계 페이지로 받아 서명 토큰이 제3자 페이지로 가는 것."""
     import summarize_engine as engine
