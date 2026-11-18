@@ -68,9 +68,9 @@ def is_survey_paper(title: str, abstract: str = "") -> bool:
 
 def select_template(title: str, abstract: str = "", force: str | None = None) -> str:
     """force: None(자동 판정) | 'default' | 'survey' — 오판정 시 수동 지정용."""
-    if force == "survey" or (force is None and is_survey_paper(title, abstract)):
-        return SURVEY_TEMPLATE_PATH.read_text(encoding="utf-8")
-    return TEMPLATE_PATH.read_text(encoding="utf-8")
+    import ko_terms
+    path = SURVEY_TEMPLATE_PATH if force == "survey" or (force is None and is_survey_paper(title, abstract)) else TEMPLATE_PATH
+    return ko_terms.PROMPT_RULE + "\n" + path.read_text(encoding="utf-8")     # 기술 용어 표기(2026-11-18)
 
 # Gemini는 넉넉히, Groq 무료 TPM 한도(12,000/분)에 걸리지 않게 폴백 시 더 줄인다.
 #
@@ -493,7 +493,8 @@ async def call_gemini_addendum(client: httpx.AsyncClient, chunk_text: str) -> st
     실측 재검증" 참고). 세 가지 리터럴 옵션을 R3 처럼 직접 나열해 모호함을
     없앴다.
     """
-    prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
+    import ko_terms
+    prompt = ko_terms.PROMPT_RULE + f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
 이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
 이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
 이 발췌는 문장마다 "[S번호]" 태그가 붙어 있다(예: [S0142]) — "값(조건/비교대상/지표) —
@@ -562,7 +563,8 @@ async def call_groq(client: httpx.AsyncClient, chunk_text: str, template: str) -
 async def call_groq_addendum(client: httpx.AsyncClient, chunk_text: str) -> str:
     """call_gemini_addendum 과 같은 발상, Groq 용. 발췌 자체도 GROQ_FALLBACK_CHARS
     이내로 자른다 — 청크 크기 자체가 이미 그 값이라 여기선 그대로 쓴다."""
-    prompt = f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
+    import ko_terms
+    prompt = ko_terms.PROMPT_RULE + f"""다음은 같은 논문 원문의 뒷부분 발췌다. 앞부분은 이미 다른 절로 요약됐다.
 이 발췌에**만** 있는 새로운 결과 수치나 한계점이 있으면 아래 두 항목만 채워라.
 이미 다뤘을 방법론·서론 설명은 반복하지 마라. 수치는 반드시 이 발췌에서 확인한 것만 쓰고,
 이 발췌는 문장마다 "[S번호]" 태그가 붙어 있다(예: [S0142]) — "값(조건/비교대상/지표) —
@@ -630,7 +632,8 @@ async def summarize_abstract(client: httpx.AsyncClient, title: str, abstract: st
     abstract = (abstract or "").strip()
     if not abstract:
         return ""
-    prompt = _ABSTRACT_BRIEF_PROMPT.format(title=(title or "").strip(), abstract=abstract)
+    import ko_terms
+    prompt = ko_terms.PROMPT_RULE + "\n" + _ABSTRACT_BRIEF_PROMPT.format(title=(title or "").strip(), abstract=abstract)
     for engine, post in (("Gemini(초록 정리)", _post_gemini), ("Groq(초록 정리)", _post_groq)):
         try:
             text = await _call_with_rate_limit_retry(lambda: post(client, prompt), engine)

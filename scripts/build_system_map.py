@@ -146,8 +146,10 @@ BLOCKS = [
 
     # ── 배달 · 축적 · 판단 ──
     {"id": "digest", "layer": "out", "name": "메일 본문", "step": "⑨", "status": "run", "llm": False,
-     "files": ["digest.py", "mail_layout.py", "mail_document.py", "saved_digest.py", "mail_reformat.py"], "funcs": ["digest.py:generate_digest_html"],
-     "does": "연구 흐름 + 핵심 논문 카드 + (화·목) 참고 자료 + (주 첫 근무일) 이번 주 브리프를 HTML·평문으로 짠다.", "takes": "선정 결과", "gives": "메일 본문", "note": ""},
+     "files": ["digest.py", "mail_layout.py", "mail_document.py", "saved_digest.py", "mail_reformat.py", "ko_terms.py"],
+     "funcs": ["digest.py:generate_digest_html", "ko_terms.py:fix"],
+     "does": "연구 흐름 + 핵심 논문 카드 + (화·목) 참고 자료 + (주 첫 근무일) 이번 주 브리프를 HTML·평문으로 짠다.", "takes": "선정 결과", "gives": "메일 본문",
+     "note": "기술 용어 표기는 용어집 한 곳(ko_terms)이 정한다 — 한국어를 만드는 모든 프롬프트가 같은 규칙을 싣고, 발송 직전에 틀린 표기(기억·집게 등)를 바꾼다."},
     {"id": "audit", "layer": "out", "name": "링크 감사", "step": "⑨", "status": "run", "llm": False,
      "files": ["link_policy.py"], "funcs": ["link_policy.py:audit_mail"],
      "does": "SMTP 직전에 메일의 모든 링크를 허용 목록·공인 주소·doi.org 착지로 다시 본다. 막힌 링크는 글자로 남긴다.", "takes": "메일 본문",

@@ -118,6 +118,9 @@ def send_digest_email(
     password = password.replace(" ", "")
     # SMTP 직전 최종 링크 감사(2026-09-30) — 메일에 실린 모든 링크를 한 번 더 본다. 막힌 링크만 글자로 바꾸고 메일은 보낸다(규칙 6).
     # 로그에는 호스트와 이유만 남긴다 — 반응 버튼 URL 에는 수신자별 서명 토큰이 들어 있다.
+    # 기술 용어 표기 고정(2026-11-18) — 새 메일·저장 메일 재발송이 모두 여기를 지난다. 태그·URL 은 건드리지 않으므로 링크 감사보다 먼저 해도 된다.
+    import ko_terms
+    digest_text, digest_html = ko_terms.fix(digest_text), ko_terms.fix(digest_html)
     import link_policy
     digest_text, digest_html, blocked = link_policy.audit_mail(digest_text, digest_html)
     if blocked:

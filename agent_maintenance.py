@@ -829,6 +829,11 @@ def _run(argv: list[str], stdin_text: str, timeout: int, cwd: str) -> tuple[int,
     return proc.returncode, out, err
 
 
+def _ko_rule() -> str:
+    """변경 사유가 주간 메일에 실린다 — 한국어 기술 용어 표기 규칙(2026-11-18, ko_terms)을 프롬프트 앞에 붙인다."""
+    import ko_terms
+    return ko_terms.PROMPT_RULE + "\n"
+
 def _prompt(name: str) -> str:
     return (PROMPTS / name).read_text(encoding="utf-8")
 
@@ -844,7 +849,7 @@ class HeadlessRunner:
         if not exe:
             raise StepError("claude_missing")
         with tempfile.TemporaryDirectory(prefix="agent-claude-") as cwd:
-            rc, out, err = _run([exe, "-p", _prompt("agent_propose_v1.md") + correction, "--output-format", "json",
+            rc, out, err = _run([exe, "-p", _ko_rule() + _prompt("agent_propose_v1.md") + correction, "--output-format", "json",
                                  "--json-schema", json.dumps(PROPOSAL_SCHEMA), "--tools", "",
                                  "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"],
                                 brief_json, self.timeout, cwd)
@@ -871,7 +876,7 @@ class HeadlessRunner:
                             "image_generation", "tool_suggest"):
                 argv += ["--disable", feature]
             argv += ["-c", "mcp_servers={}", "-c", 'web_search="disabled"', "--output-schema", str(schema),
-                     "-o", str(last), _prompt("agent_judge_v1.md") + correction]
+                     "-o", str(last), _ko_rule() + _prompt("agent_judge_v1.md") + correction]
             rc, _out, _err = _run(argv, payload_json, self.timeout, cwd)
             if rc != 0:
                 raise StepError("codex_exit", f"rc={rc}")

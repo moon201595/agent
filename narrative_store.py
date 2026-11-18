@@ -76,6 +76,10 @@ def save(db_path: Path, profile_id: str, kind: str, body: str, *,
     body = (body or "").strip()
     if not body:
         return None
+    # 지난 서술은 다음 날 맥락으로 모델에 다시 들어간다 — '기억' 같은 틀린 표기를 남기면 모델이 그대로 따라 쓴다(2026-11-18).
+    # 구조 자료(audit.story)도 고친다 — trend_history·trend_chains 는 story-v3 구조가 있으면 본문보다 그것을 먼저 읽는다(Codex 검토 2026-11-18).
+    import ko_terms
+    body, audit = ko_terms.fix(body), ko_terms.fix_obj(audit)
     init_db(db_path)
     nid = uuid.uuid4().hex
     with closing(sqlite3.connect(db_path)) as con, con:

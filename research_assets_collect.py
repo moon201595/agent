@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import ko_terms
+
 import argparse
 import json
 import os
@@ -632,7 +634,7 @@ class HeadlessRunner:
             raise CollectError("claude_missing")
         with tempfile.TemporaryDirectory(prefix="assets-claude-") as cwd:
             try:
-                rc, out, _err = _cli([exe, "-p", _prompt("research_assets_select_v1.md"), "--output-format", "json",
+                rc, out, _err = _cli([exe, "-p", ko_terms.PROMPT_RULE + "\n" + _prompt("research_assets_select_v1.md"), "--output-format", "json",
                                          "--json-schema", json.dumps(SELECT_SCHEMA), "--tools", "",
                                          "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"],
                                         payload_json, self.timeout, cwd)

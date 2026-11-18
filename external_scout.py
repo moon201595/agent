@@ -102,7 +102,8 @@ def scout_prompt(profiles: list[dict], now: datetime, watches: dict | None = Non
         lines.append("  last_scout_at: " + str(p.get("last_scout_at")))
         lines.append("  watch: " + json.dumps((watches or {}).get(p["id"], []), ensure_ascii=False))
     template = (Path(__file__).resolve().parent / "prompts" / "external_scout_v1.md").read_text(encoding="utf-8")
-    return template.format(max_per_profile=MAX_PER_PROFILE, since=since, source_types=", ".join(SOURCE_TYPES),
+    import ko_terms
+    return ko_terms.PROMPT_RULE + template.format(max_per_profile=MAX_PER_PROFILE, since=since, source_types=", ".join(SOURCE_TYPES),
                            max_axes=MAX_AXES, axis_since=axis_since, axis_min=AXIS_MIN_PAPERS,
                            axis_max=AXIS_MAX_PAPERS) + "\n" + "\n".join(lines)
 

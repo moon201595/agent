@@ -50,6 +50,8 @@ async def generate(client, prompt: str, *, label: str = "동향 서술",
     accept 가 있으면 출력을 그 함수에 통과시킨 결과를 돌려준다. ValueError 면 그 엔진의 출력을 버리고 다음 엔진으로 —
     구조가 깨진 글을 "그래도 글"이라며 싣지 않는다(story-v2, 2026-10-01). schema 는 Codex 에만 넘긴다."""
     global _codex_blocked
+    import ko_terms
+    prompt = ko_terms.PROMPT_RULE + "\n" + prompt     # 기술 용어 표기(2026-11-18) — 이 입구를 지나는 모든 한국어 글에 같은 규칙
     for engine in ("codex", "gemini", "groq") if order is None else order:
         if engine == "codex" and _codex_blocked:
             continue

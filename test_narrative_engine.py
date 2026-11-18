@@ -78,6 +78,12 @@ def engines(monkeypatch):
     return state
 
 
+
+def _ruled(prompt: str) -> str:
+    """서술 엔진은 받은 프롬프트 앞에 기술 용어 표기 규칙을 붙여 모든 엔진에 같은 글을 넘긴다(2026-11-18, ko_terms)."""
+    import ko_terms
+    return ko_terms.PROMPT_RULE + "\n" + prompt
+
 def test_codex_success_skips_apis(engines, capsys):
     """Codex 성공 뒤 API를 호출하거나 stdout 진행 로그를 글로 반환하면 실패한다."""
     engines.cli = "가" * 1234
@@ -102,8 +108,8 @@ def test_codex_isolation_and_stdin(engines, monkeypatch):
         "mcp_servers={}", 'web_search="disabled"'}
     assert "--output-schema" not in argv
     assert argv[-1] == "-" and "프롬프트" not in argv
-    assert engines.communicates == [("프롬프트", 17)]
-    assert engines.offload == (ne._codex, ("프롬프트", 17))
+    assert engines.communicates == [(_ruled("프롬프트"), 17)]
+    assert engines.offload == (ne._codex, (_ruled("프롬프트"), 17))
     assert opts["start_new_session"] is True and opts["text"] is True
     assert all(opts[key] == subprocess.PIPE for key in ("stdin", "stdout", "stderr"))
     assert set(opts["env"]) <= {"HOME", "PATH", "LANG", "LC_ALL", "USER", "CODEX_HOME", "XDG_CONFIG_HOME"}
@@ -125,7 +131,7 @@ def test_codex_failure_falls_back(engines, failure, gemini_fails, capsys):
     assert engines.calls == ["codex", "gemini"] + (["groq"] if gemini_fails else [])
     assert engines.killed == ([(987654, signal.SIGKILL)] if failure == "timeout" else [])
     if failure == "timeout":
-        assert engines.communicates == [("입력", 9), (None, None)]
+        assert engines.communicates == [(_ruled("입력"), 9), (None, None)]
     log = capsys.readouterr().out
     assert "codex 실패 → 다음 엔진" in log
     assert "private error detail" not in log
@@ -172,7 +178,7 @@ def test_order_and_engine_identity(engines, engine):
     assert result == ({"codex": "정상 서술", "gemini": "Gemini 서술", "groq": "Groq 서술"}[engine], engine)
     assert engines.calls == [engine]
     if engine != "codex":
-        assert engines.api_args == (client, "입력")
+        assert engines.api_args == (client, _ruled("입력"))
         assert engines.retries == ["테스트 서술"]
         assert engines.which == []
 
